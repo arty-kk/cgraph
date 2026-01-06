@@ -1,0 +1,15 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# node
+node_modules/
+dist/
+build/
+
+# app data
+*.sqlite
+*.sqlite3
+.codesurgeon/
