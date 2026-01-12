@@ -195,7 +195,10 @@ def generate_docs(facts: dict, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
             "Сгенерируй полезную документацию по проекту в Markdown.\n"
             "Критично: используй ТОЛЬКО предоставленные факты. Если данных недостаточно — явно укажи это.\n"
             "Структура: Overview, Architecture, Key modules, Hotspots, How to run (если можно вывести), Next steps.\n"
-            "Подсказка: в фактах могут быть api_summary (API индекс из Scan), key_files (snippets), run_hints (команды/таргеты).\n"
+            "Подсказка: в фактах могут быть api_summary (API индекс из Scan), module_map (агрегаты по папкам),\n"
+            "tree_outline (дерево файлов), contracts_sample (контракты файлов), key_files (snippets),\n"
+            "hotspots/hubs_by_fan_in (таблицы рисков), run_hints (команды/таргеты), counts/languages.\n"
+            "Если данные есть — используй их в соответствующих разделах.\n"
             "Если этих данных нет — так и напиши, не додумывай.\n\n"
             f"Факты (JSON):\n{ctx}"
         )},
