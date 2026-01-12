@@ -125,5 +125,5 @@ npm run preview -- --host 0.0.0.0 --port 4173
 
 ## Проверки (опционально)
 
-- Backend: `pip install -r backend/requirements-dev.txt && ruff backend/app && mypy backend/app`.【F:backend/requirements-dev.txt†L1-L2】【F:pyproject.toml†L1-L15】
-- Frontend: `cd frontend && npm run lint`.【F:frontend/package.json†L1-L12】
+- Backend: `pip install -r backend/requirements-dev.txt && ruff backend/app && mypy backend/app`.【F:pyproject.toml†L1-L15】
+- Frontend: `cd frontend && npm run lint`.
