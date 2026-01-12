@@ -39,11 +39,11 @@ CGRAPH — локальный сервис и веб‑интерфейс для
      ```
 2. Установите зависимости:
    ```bash
-   pip install -r backend/requirements.txt
+   pip install --upgrade pip && pip install -r requirements.txt
    ```
 3. Запустите API:
    ```bash
-   uvicorn backend.app.main:app --reload
+   uvicorn app.main:app --reload
    ```
 
 Backend поднимается на `http://localhost:8000` (эндпоинт здоровья: `/health`).
@@ -67,7 +67,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 1. **Backend**
    ```bash
    export OPENAI_API_KEY="..."     # Windows: setx OPENAI_API_KEY "..."
-   uvicorn backend.app.main:app --reload
+   uvicorn app.main:app --reload
    ```
 2. **Frontend** — в новом терминале:
    ```bash
@@ -81,7 +81,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 ### Backend
 
 ```bash
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 ### Frontend
