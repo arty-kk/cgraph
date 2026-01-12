@@ -152,6 +152,8 @@ export function NodePanel({
 
   const [runsFilterQ, setRunsFilterQ] = React.useState('')
   const [runsFilterMode, setRunsFilterMode] = React.useState<'all' | Mode>('all')
+  const [runsPage, setRunsPage] = React.useState(0)
+  const [runsPageSize, setRunsPageSize] = React.useState(10)
 
   const isAuto = mode === 'auto'
   const isAgentic = retrievalMode === 'agentic'
@@ -284,6 +286,22 @@ export function NodePanel({
       })
       .slice(0, 50)
   }, [runs, runsFilterMode, runsFilterQ])
+
+  React.useEffect(() => {
+    setRunsPage(0)
+  }, [runsFilterMode, runsFilterQ, runsPageSize])
+
+  const runsTotalPages = Math.max(1, Math.ceil(filteredRuns.length / runsPageSize))
+  React.useEffect(() => {
+    if (runsPage > runsTotalPages - 1) {
+      setRunsPage(Math.max(0, runsTotalPages - 1))
+    }
+  }, [runsPage, runsTotalPages])
+
+  const pagedRuns = useMemo(() => {
+    const start = runsPage * runsPageSize
+    return filteredRuns.slice(start, start + runsPageSize)
+  }, [filteredRuns, runsPage, runsPageSize])
 
   const HelpButton = ({
     topic,
@@ -961,7 +979,67 @@ export function NodePanel({
               </div>
 
               <div className="mt-6">
-                <SectionHeader title="Recent Runs" topic="runs" />
+                <SectionHeader
+                  title="Recent Runs"
+                  topic="runs"
+                  actions={(
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
+                      <span>{filteredRuns.length} total</span>
+                      <label className="flex items-center gap-1 text-[11px] text-neutral-400">
+                        <span>Per page</span>
+                        <select
+                          className="h-6 rounded-md bg-neutral-900 border border-neutral-800 px-1.5 text-[11px] text-neutral-200"
+                          value={runsPageSize}
+                          onChange={(e) => setRunsPageSize(clampInt(Number(e.target.value || 10), 5, 50))}
+                        >
+                          <option value={5}>5</option>
+                          <option value={10}>10</option>
+                          <option value={20}>20</option>
+                          <option value={50}>50</option>
+                        </select>
+                      </label>
+                      <span>
+                        Page {Math.min(runsPage + 1, runsTotalPages)}/{runsTotalPages}
+                      </span>
+                      <button
+                        type="button"
+                        className="h-6 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 font-semibold disabled:opacity-50"
+                        onClick={() => setRunsPage(0)}
+                        disabled={runsPage <= 0}
+                        title="First page"
+                      >
+                        First
+                      </button>
+                      <button
+                        type="button"
+                        className="h-6 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 font-semibold disabled:opacity-50"
+                        onClick={() => setRunsPage((p) => Math.max(0, p - 1))}
+                        disabled={runsPage <= 0}
+                        title="Previous page"
+                      >
+                        Prev
+                      </button>
+                      <button
+                        type="button"
+                        className="h-6 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 font-semibold disabled:opacity-50"
+                        onClick={() => setRunsPage((p) => Math.min(runsTotalPages - 1, p + 1))}
+                        disabled={runsPage >= runsTotalPages - 1}
+                        title="Next page"
+                      >
+                        Next
+                      </button>
+                      <button
+                        type="button"
+                        className="h-6 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 font-semibold disabled:opacity-50"
+                        onClick={() => setRunsPage(runsTotalPages - 1)}
+                        disabled={runsPage >= runsTotalPages - 1}
+                        title="Last page"
+                      >
+                        Last
+                      </button>
+                    </div>
+                  )}
+                />
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <input
                     className="w-full rounded-md bg-neutral-900 border border-neutral-800 px-2 py-1 text-xs"
@@ -982,7 +1060,9 @@ export function NodePanel({
                   </select>
                 </div>
                 <div className="mt-2 flex flex-col gap-2">
-                  {filteredRuns.slice(0, 10).map((r) => {
+                  {pagedRuns.length === 0 ? (
+                    <div className="text-xs text-neutral-500">No runs found.</div>
+                  ) : pagedRuns.map((r) => {
                     const key = r.id
                     const rid = r.id
                     return (
