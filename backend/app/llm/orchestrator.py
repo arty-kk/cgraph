@@ -59,6 +59,38 @@ def _extract_refusal(resp: Any) -> str | None:
                     return txt.strip()
     return None
 
+def _extract_output_text(resp: Any) -> str:
+    txt = getattr(resp, "output_text", None)
+    if isinstance(txt, str) and txt.strip():
+        return txt.strip()
+    out = getattr(resp, "output", None)
+    if not isinstance(out, list):
+        return ""
+    for item in out:
+        item_text = getattr(item, "text", None)
+        if item_text is None and isinstance(item, dict):
+            item_text = item.get("text")
+        if isinstance(item_text, str) and item_text.strip():
+            return item_text.strip()
+        content = getattr(item, "content", None)
+        if content is None and isinstance(item, dict):
+            content = item.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            text = getattr(c, "text", None)
+            if text is None and isinstance(c, dict):
+                text = c.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+            if isinstance(c, dict):
+                inner_text = c.get("content")
+                if isinstance(inner_text, str) and inner_text.strip():
+                    return inner_text.strip()
+    return ""
+
 def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reasoning_effort: str | None = None) -> dict:
     client = get_openai_client()
     fmt = _normalize_responses_json_schema(schema)
@@ -103,7 +135,7 @@ def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reas
         raise RuntimeError(f"OpenAI request failed: {e}") from e
 
     try:
-        txt = (getattr(resp, "output_text", None) or "").strip()
+        txt = _extract_output_text(resp)
         if not txt:
             refusal = _extract_refusal(resp)
             if refusal:
@@ -113,7 +145,7 @@ def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reas
             raise RuntimeError("Model returned JSON, but not an object")
         return data
     except Exception as e:
-        txt = (getattr(resp, "output_text", None) or "").strip()
+        txt = _extract_output_text(resp)
         start = txt.find("{")
         end = txt.rfind("}")
         if start != -1 and end != -1 and end > start:
