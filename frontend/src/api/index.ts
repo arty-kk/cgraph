@@ -9,6 +9,8 @@ export type {
   NodeSearchItem,
   NodeContract,
   NodeInfo,
+  FileContent,
+  FileSaveResult,
   Mode,
   DepMode,
   RunTaskBody,
@@ -24,5 +26,5 @@ export type {
 
 export { listProjects, createProject, deleteProject, scanProject, listProjectFiles, getProjectDocs, buildProjectDocs } from './projects'
 export { getGraph, getLocalGraph, searchNodes } from './graph'
-export { getNode, getContract } from './nodes'
+export { getNode, getContract, getFileContent, updateFileContent } from './nodes'
 export { runTask, listRuns, getRun, getRunPatch, getTaskStatus, waitForTaskResult } from './tasks'

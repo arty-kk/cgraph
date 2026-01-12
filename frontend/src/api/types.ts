@@ -72,6 +72,8 @@ export type NodeInfo = {
 }
 
 export type NodeContract = Record<string, unknown>
+export type FileContent = { path: string; content: string; truncated?: boolean; max_chars?: number | null }
+export type FileSaveResult = { path: string; saved: boolean; reindexed?: unknown }
 
 export type Mode = 'analyze' | 'evolve' | 'fix' | 'impact'
 export type DepMode = 'contracts' | 'full'
