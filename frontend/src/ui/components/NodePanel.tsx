@@ -215,6 +215,29 @@ export function NodePanel({
     return `ctx: ${String(retrieval)}`
   }, [fmtK, isRecord, retrieval, retrievalSettings])
 
+  const inlineTokenRegex =
+    /([A-Za-z0-9._-]*\/[A-Za-z0-9._/-]*\.[A-Za-z0-9]+|\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+\b|\b[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]*\b)/
+
+  const renderInlineHighlights = (children: React.ReactNode) =>
+    React.Children.map(children, (child, index) => {
+      if (typeof child !== 'string') return child
+      const parts = child.split(inlineTokenRegex)
+      return parts.map((part, partIndex) => {
+        if (!part) return null
+        if (!inlineTokenRegex.test(part)) {
+          return <React.Fragment key={`${index}-${partIndex}`}>{part}</React.Fragment>
+        }
+        return (
+          <span
+            key={`${index}-${partIndex}`}
+            className="font-mono text-[11px] rounded border border-neutral-700 bg-neutral-950 px-1 py-0.5 text-indigo-100 shadow-inner shadow-black/40"
+          >
+            {part}
+          </span>
+        )
+      })
+    })
+
   const runDisabledReasons = useMemo(() => {
     const r: string[] = []
     if (!activeProject) r.push('project not selected')
@@ -723,8 +746,84 @@ export function NodePanel({
                       </div>
                     )}
 
-                    <div className="bg-neutral-900 border border-neutral-800 rounded-md p-3">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <div className="bg-neutral-900 border border-neutral-800 rounded-md p-3 text-xs text-neutral-200 leading-relaxed">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          h1: ({ children }) => (
+                            <h1 className="text-sm font-semibold text-neutral-100 mt-1 mb-2">{children}</h1>
+                          ),
+                          h2: ({ children }) => (
+                            <h2 className="text-xs font-semibold text-neutral-100 mt-4 mb-2">{children}</h2>
+                          ),
+                          h3: ({ children }) => (
+                            <h3 className="text-[11px] font-semibold text-neutral-100 mt-3 mb-2">{children}</h3>
+                          ),
+                          p: ({ children }) => (
+                            <p className="text-xs text-neutral-200 leading-relaxed my-2">
+                              {renderInlineHighlights(children)}
+                            </p>
+                          ),
+                          ul: ({ children }) => <ul className="list-disc pl-5 my-2 space-y-1">{children}</ul>,
+                          ol: ({ children }) => <ol className="list-decimal pl-5 my-2 space-y-1">{children}</ol>,
+                          li: ({ children }) => (
+                            <li className="text-xs text-neutral-200">{renderInlineHighlights(children)}</li>
+                          ),
+                          pre: ({ children }) => (
+                            <pre className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 overflow-auto my-2">
+                              {children}
+                            </pre>
+                          ),
+                          table: ({ children }) => (
+                            <div className="my-3 overflow-auto">
+                              <table className="w-full text-xs border-collapse">{children}</table>
+                            </div>
+                          ),
+                          thead: ({ children }) => <thead className="bg-neutral-900/40">{children}</thead>,
+                          th: ({ children }) => (
+                            <th className="border border-neutral-800 px-2 py-1 text-left text-neutral-200 font-semibold align-top">
+                              {renderInlineHighlights(children)}
+                            </th>
+                          ),
+                          td: ({ children }) => (
+                            <td className="border border-neutral-800 px-2 py-1 text-neutral-200 align-top">
+                              {renderInlineHighlights(children)}
+                            </td>
+                          ),
+                          code: ({ children, className }) => {
+                            const isInline = !(className && /\blanguage-/.test(className))
+
+                            if (isInline) {
+                              return (
+                                <code
+                                  className={[
+                                    'font-mono text-[11px] rounded border border-neutral-700 bg-neutral-950 px-1 py-0.5 text-indigo-100 shadow-inner shadow-black/40',
+                                    className || '',
+                                  ].join(' ')}
+                                >
+                                  {children}
+                                </code>
+                              )
+                            }
+
+                            return (
+                              <code className={['font-mono text-[11px]', className || ''].join(' ')}>
+                                {children}
+                              </code>
+                            )
+                          },
+                          a: ({ href, children }) => (
+                            <a
+                              href={href || '#'}
+                              className="text-indigo-300 font-semibold underline decoration-indigo-500/60 hover:text-indigo-200"
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {children}
+                            </a>
+                          ),
+                        }}
+                      >
                         {formatResult(runPayload as Record<string, any> | null)}
                       </ReactMarkdown>
                     </div>
