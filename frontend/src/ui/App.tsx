@@ -6,6 +6,7 @@ import { ProjectsSidebar } from './components/ProjectsSidebar'
 import { GraphCanvas } from './components/GraphCanvas'
 import { NodePanel } from './components/NodePanel'
 import { Notifications } from './components/Notifications'
+import { FileEditorModal } from './components/FileEditorModal'
 import { useCGRAPHApp } from './useCGRAPHApp'
 import { CommandPalette } from './components/CommandPalette'
 import { Modal } from './components/Modal'
@@ -141,6 +142,7 @@ export function App() {
             onTogglePinPath={app.togglePinPath}
             onUnpin={app.unpinPath}
             onClearPins={app.clearPins}
+            onOpenFileEditor={app.openFileEditor}
           />
         </div>
 
@@ -219,6 +221,21 @@ export function App() {
         onForward={app.goForward}
         compactMode={app.compactMode}
         onToggleCompactMode={app.toggleCompactMode}
+      />
+
+      <FileEditorModal
+        open={app.fileEditorOpen}
+        path={app.fileEditorPath}
+        content={app.fileEditorContent}
+        busy={app.fileEditorBusy}
+        saving={app.fileEditorSaving}
+        dirty={app.fileEditorDirty}
+        truncated={app.fileEditorTruncated}
+        error={app.fileEditorError}
+        onChange={app.setFileEditorContent}
+        onReload={app.reloadFileEditor}
+        onSave={app.saveFileEditor}
+        onClose={app.closeFileEditor}
       />
 
       <Modal open={docsOpen && !!app.activeProject} title="Project docs" onClose={() => setDocsOpen(false)}>

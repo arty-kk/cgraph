@@ -18,9 +18,13 @@ import {
   listProjectFiles,
   getProjectDocs,
   buildProjectDocs,
+  getFileContent,
+  updateFileContent,
   type DepMode,
   type GraphData,
   type GraphNode,
+  type FileContent,
+  type FileSaveResult,
   type Mode,
   type NodeContract,
   type NodeInfo,
@@ -814,8 +818,27 @@ export function useCGRAPHApp() {
   const [docsBusy, setDocsBusy] = useState(false)
   const [docsBuildBusy, setDocsBuildBusy] = useState(false)
 
+  const [fileEditorOpen, setFileEditorOpen] = useState(false)
+  const [fileEditorPath, setFileEditorPath] = useState<string | null>(null)
+  const [fileEditorContent, setFileEditorContent] = useState('')
+  const [fileEditorOriginal, setFileEditorOriginal] = useState('')
+  const [fileEditorTruncated, setFileEditorTruncated] = useState(false)
+  const [fileEditorBusy, setFileEditorBusy] = useState(false)
+  const [fileEditorSaving, setFileEditorSaving] = useState(false)
+  const [fileEditorError, setFileEditorError] = useState<string | null>(null)
+  const FILE_EDITOR_MAX_CHARS = 200_000
+
   useEffect(() => {
     setDocs(null)
+  }, [activeProject?.id])
+
+  useEffect(() => {
+    setFileEditorOpen(false)
+    setFileEditorPath(null)
+    setFileEditorContent('')
+    setFileEditorOriginal('')
+    setFileEditorTruncated(false)
+    setFileEditorError(null)
   }, [activeProject?.id])
 
   const loadDocs = useCallback(async () => {
@@ -847,6 +870,71 @@ export function useCGRAPHApp() {
       setDocsBuildBusy(false)
     }
   }, [activeProject, notifyInfo, setErrorMessage])
+
+  const loadFileEditor = useCallback(
+    async (path: string) => {
+      if (!activeProject) return
+      const p = String(path || '').trim()
+      if (!p) return
+      setFileEditorBusy(true)
+      setFileEditorError(null)
+      try {
+        const res: FileContent = await getFileContent(activeProject.id, p, FILE_EDITOR_MAX_CHARS)
+        const content = String(res.content ?? '')
+        setFileEditorContent(content)
+        setFileEditorOriginal(content)
+        setFileEditorTruncated(Boolean(res.truncated))
+      } catch (e: any) {
+        setFileEditorError(extractError(e))
+        setFileEditorContent('')
+        setFileEditorOriginal('')
+        setFileEditorTruncated(false)
+      } finally {
+        setFileEditorBusy(false)
+      }
+    },
+    [activeProject],
+  )
+
+  const openFileEditor = useCallback(
+    async (path: string) => {
+      if (!activeProject) return
+      const p = String(path || '').trim()
+      if (!p) return
+      setFileEditorOpen(true)
+      setFileEditorPath(p)
+      await loadFileEditor(p)
+    },
+    [activeProject, loadFileEditor],
+  )
+
+  const reloadFileEditor = useCallback(async () => {
+    if (!fileEditorPath) return
+    await loadFileEditor(fileEditorPath)
+  }, [fileEditorPath, loadFileEditor])
+
+  const saveFileEditor = useCallback(async () => {
+    if (!activeProject || !fileEditorPath) return
+    setFileEditorSaving(true)
+    setFileEditorError(null)
+    try {
+      const res: FileSaveResult = await updateFileContent(activeProject.id, fileEditorPath, fileEditorContent)
+      if (res?.saved) {
+        setFileEditorOriginal(fileEditorContent)
+        setFileEditorTruncated(false)
+        notifyInfo('File saved')
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
+        ])
+      }
+    } catch (e: any) {
+      setFileEditorError(extractError(e))
+    } finally {
+      setFileEditorSaving(false)
+    }
+  }, [activeProject, fileEditorContent, fileEditorPath, notifyInfo, queryClient])
 
   const runOp = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true)
@@ -1071,6 +1159,10 @@ export function useCGRAPHApp() {
     [activeProject]
   )
 
+  const closeFileEditor = useCallback(() => {
+    setFileEditorOpen(false)
+  }, [])
+
   const selectedInGraph = useMemo(() => {
     if (!selectedPath || !graph?.nodes?.length) return false
     return graph.nodes.some((n: GraphNode) => n.path === selectedPath || n.id === selectedPath)
@@ -1079,6 +1171,7 @@ export function useCGRAPHApp() {
   const graphBusy = graphQuery.isFetching
   const nodeBusy = nodeQuery.isFetching
   const mutationBusy = busy || projectsQuery.isFetching
+  const fileEditorDirty = fileEditorContent !== fileEditorOriginal
 
   const canRun = useMemo(() => {
     const fileReady = !!selectedPath && (contract != null || nodeInfo != null)
@@ -1106,6 +1199,19 @@ export function useCGRAPHApp() {
     docsBuildBusy,
     loadDocs,
     buildDocs,
+    fileEditorOpen,
+    fileEditorPath,
+    fileEditorContent,
+    fileEditorDirty,
+    fileEditorTruncated,
+    fileEditorBusy,
+    fileEditorSaving,
+    fileEditorError,
+    setFileEditorContent,
+    openFileEditor,
+    closeFileEditor,
+    reloadFileEditor,
+    saveFileEditor,
     runs,
     newName,
     newPath,

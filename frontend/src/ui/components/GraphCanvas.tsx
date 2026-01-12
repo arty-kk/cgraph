@@ -109,6 +109,18 @@ function loadEdgeDir(pid: number | null): boolean {
   return true
 }
 
+const EyeIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-3.5 w-3.5" fill="none">
+    <path
+      d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+    <circle cx="12" cy="12" r="3.5" stroke="currentColor" strokeWidth="1.6" />
+  </svg>
+)
+
 type Props = {
   graph: GraphData | null
   activeProject: Project | null
@@ -143,6 +155,7 @@ type Props = {
   onTogglePinPath: (path: string) => void | Promise<void>
   onUnpin: (path: string) => void | Promise<void>
   onClearPins: () => void | Promise<void>
+  onOpenFileEditor: (path: string) => void | Promise<void>
 }
 
 export function GraphCanvas({ 
@@ -179,6 +192,7 @@ export function GraphCanvas({
   onTogglePinPath,
   onUnpin,
   onClearPins,
+  onOpenFileEditor,
 }: Props) {
 
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -370,6 +384,7 @@ export function GraphCanvas({
   }
 
   const [ctxMenu, setCtxMenu] = useState<null | { path: string; x: number; y: number }>(null)
+  const [fileButtonPos, setFileButtonPos] = useState<null | { x: number; y: number }>(null)
   const ctxMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -604,6 +619,44 @@ export function GraphCanvas({
     if (!graph || !selectedPath) return false
     return graph.nodes.some((n) => n.path === selectedPath || n.id === selectedPath)
   }, [graph, selectedPath])
+
+  useEffect(() => {
+    let raf = 0
+    let alive = true
+
+    const tick = () => {
+      if (!alive) return
+      const path = selectedPath
+      if (!path || !selectedInGraph) {
+        setFileButtonPos(null)
+        return
+      }
+      const next = actionsRef.current?.getRenderedPosition?.(path)
+      if (next && Number.isFinite(next.x) && Number.isFinite(next.y)) {
+        const x = next.x + 14
+        const y = next.y - 14
+        setFileButtonPos((prev) => {
+          if (!prev) return { x, y }
+          if (Math.abs(prev.x - x) > 0.5 || Math.abs(prev.y - y) > 0.5) return { x, y }
+          return prev
+        })
+      } else {
+        setFileButtonPos(null)
+      }
+      raf = window.requestAnimationFrame(tick)
+    }
+
+    if (selectedPath && selectedInGraph) {
+      raf = window.requestAnimationFrame(tick)
+    } else {
+      setFileButtonPos(null)
+    }
+
+    return () => {
+      alive = false
+      if (raf) window.cancelAnimationFrame(raf)
+    }
+  }, [selectedPath, selectedInGraph, instanceId, leftPanelOpen, rightPanelOpen, focusGraph])
 
   useEffect(() => {
     if (selectedPath) return
@@ -1304,6 +1357,19 @@ export function GraphCanvas({
           </div>
         </div>
       </Modal>
+      {fileButtonPos && selectedPath && activeProject && selectedInGraph && (
+        <button
+          type="button"
+          className="absolute z-20 flex h-6 w-6 items-center justify-center rounded-full border border-neutral-700 bg-neutral-950/90 text-neutral-200 shadow hover:border-neutral-500 hover:bg-neutral-900"
+          style={{ left: fileButtonPos.x, top: fileButtonPos.y, transform: 'translate(-50%, -50%)' }}
+          title="View/edit file"
+          aria-label="View/edit file"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => void onOpenFileEditor(selectedPath)}
+        >
+          <EyeIcon />
+        </button>
+      )}
       {ctxMenu && (
         <div
           ref={ctxMenuRef}

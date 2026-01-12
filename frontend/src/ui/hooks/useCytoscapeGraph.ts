@@ -1063,6 +1063,18 @@ export function useCytoscapeGraph({
     return match && !match.empty() ? match : null
   }, [])
 
+  const getRenderedPosition = useCallback((path: string) => {
+    const cy = cyRef.current
+    if (!cy) return null
+    const p = safeStr(path)
+    if (!p) return null
+    const match = cy.nodes().filter((n) => n.data('path') === p || n.id() === p)
+    if (!match || match.empty()) return null
+    const pos = match[0].renderedPosition()
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return null
+    return { x: Number(pos.x), y: Number(pos.y) }
+  }, [])
+
   const hidePath = useCallback(
     (path: string) => {
       const cy = cyRef.current
@@ -1327,6 +1339,7 @@ export function useCytoscapeGraph({
       relayoutVisible,
       centerSelected,
       centerPath,
+      getRenderedPosition,
       hidePath,
       hideOthers,
       showPath,
