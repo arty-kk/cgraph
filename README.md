@@ -11,17 +11,6 @@ CGRAPH — локальный сервис и веб‑интерфейс для
 - **Очередь задач**: все режимы можно запускать синхронно или в фоне; статус доступен по `task_id`.
 - **Большие патчи**: для `fix`‑задач патчи больше 50k символов сохраняются на диск и возвращаются с метаданными для скачивания через отдельный эндпоинт.
 
-## Архитектура
-
-- **Backend** — FastAPI + SQLModel. Роутеры: `projects` (создание, сканирование, граф, поиск, docs), `nodes` (контракты и метаданные), `tasks` (LLM‑задачи и история запусков).
-- **Frontend** — React + TypeScript (Vite). Общение с API через клиент в `frontend/src/api` и базовый URL из `VITE_API_BASE_URL`.
-
-## Требования
-
-- Python (в проекте настроен `python_version = 3.11`).
-- Node.js и npm (frontend на Vite/React).
-- Переменная окружения `OPENAI_API_KEY` нужна для LLM‑задач; без неё будут работать только операции навигации/графа.
-
 ## Установка и запуск (macOS / Windows)
 
 ### Backend
@@ -43,6 +32,7 @@ CGRAPH — локальный сервис и веб‑интерфейс для
    ```
 3. Запустите API:
    ```bash
+   export OPENAI_API_KEY="..."     # Windows: setx OPENAI_API_KEY "..."
    uvicorn app.main:app --reload
    ```
 
@@ -55,43 +45,26 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
    cd frontend
    npm install
    ```
-2. Запустите dev‑сервер:
+2. Запустите:
    ```bash
-   npm run dev
+   npm run build
+   npm run preview -- --host 0.0.0.0 --port 4173
    ```
+3. Откройте UI: http://localhost:5173 | http://localhost:4173 (API слушает на http://localhost:8000).
 
 По умолчанию frontend обращается к API на `http://localhost:8000`. Чтобы использовать другой адрес, задайте `VITE_API_BASE_URL` (например, в `frontend/.env`).
 
-## Быстрый dev‑сценарий
+## Архитектура
 
-1. **Backend**
-   ```bash
-   export OPENAI_API_KEY="..."     # Windows: setx OPENAI_API_KEY "..."
-   uvicorn app.main:app --reload
-   ```
-2. **Frontend** — в новом терминале:
-   ```bash
-   cd frontend
-   npm run dev
-   ```
-3. Откройте UI: http://localhost:5173 (API слушает на http://localhost:8000).
+- **Backend** — FastAPI + SQLModel. Роутеры: `projects` (создание, сканирование, граф, поиск, docs), `nodes` (контракты и метаданные), `tasks` (LLM‑задачи и история запусков).
+- **Frontend** — React + TypeScript (Vite). Общение с API через клиент в `frontend/src/api` и базовый URL из `VITE_API_BASE_URL`.
 
-## Запуск не в dev‑режиме
+## Требования
 
-### Backend
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm run build
-npm run preview -- --host 0.0.0.0 --port 4173
-```
-
+- Python (в проекте настроен `python_version = 3.11`).
+- Node.js и npm (frontend на Vite/React).
+- Переменная окружения `OPENAI_API_KEY` нужна для LLM‑задач; без неё будут работать только операции навигации/графа.
+- 
 ## Основные API‑сценарии
 
 - Создание проекта: `POST /api/projects` с `name` и `root_path`.
