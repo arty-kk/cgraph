@@ -17,6 +17,7 @@ type Props = {
   graphTruncated: boolean
   onLoadFullGraph: () => void | Promise<void>
   onHidePanel?: () => void
+  notifyInfo: (message: string) => void
 
   nodeBusy: boolean
   nodeInfo: NodeInfo | null
@@ -71,6 +72,7 @@ export function NodePanel({
   graphTruncated,
   onLoadFullGraph,
   nodeBusy,
+  notifyInfo,
   nodeInfo,
   contract,
   busy,
@@ -116,6 +118,16 @@ export function NodePanel({
     null | 'details' | 'contract' | 'run' | 'result' | 'runs' | 'context' | 'ctxSettings'
   >(null)
   const [resultOpen, setResultOpen] = React.useState(false)
+  const handleCopy = React.useCallback(
+    async (value: string, message: string) => {
+      if (!value.trim()) return
+      try {
+        await navigator.clipboard.writeText(value)
+        notifyInfo(message)
+      } catch {}
+    },
+    [notifyInfo]
+  )
 
   const [detailsOpen, setDetailsOpen] = React.useState<boolean>(() => {
     try { return (localStorage.getItem('cs.ui.detailsOpen') || '1') !== '0' } catch { return true }
@@ -914,7 +926,7 @@ export function NodePanel({
                                 className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
                                 onClick={async () => {
                                   if (!patchStr) return
-                                  try { await navigator.clipboard.writeText(patchStr) } catch {}
+                                  await handleCopy(patchStr, 'Patch copied')
                                 }}
                                 disabled={!patchStr}
                                 title={patchStr ? 'Copy patch' : 'No patch to copy'}
@@ -991,7 +1003,7 @@ export function NodePanel({
                             <button
                               type="button"
                               className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-                              onClick={async () => { try { await navigator.clipboard.writeText(String(r.prompt ?? '')) } catch {} }}
+                              onClick={() => handleCopy(String(r.prompt ?? ''), 'Prompt copied')}
                               title="Copy prompt"
                             >
                               Copy
@@ -1057,15 +1069,15 @@ export function NodePanel({
         >
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"
-                onClick={async () => {
-                  if (!resultText.trim()) return
-                  try { await navigator.clipboard.writeText(resultText) } catch {}
-                }}
-                disabled={!resultText.trim()}
-              >
+                <button
+                  type="button"
+                  className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+                  onClick={async () => {
+                    if (!resultText.trim()) return
+                    await handleCopy(resultText, 'Result copied')
+                  }}
+                  disabled={!resultText.trim()}
+                >
                 Copy result
               </button>
             </div>
