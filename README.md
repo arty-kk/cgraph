@@ -95,5 +95,5 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 ## Проверки (опционально)
 
-- Backend: `pip install -r backend/requirements-dev.txt && ruff backend/app && mypy backend/app`.【F:pyproject.toml†L1-L15】
+- Backend: `pip install -r backend/requirements-dev.txt && ruff backend/app && mypy backend/app`.
 - Frontend: `cd frontend && npm run lint`.
