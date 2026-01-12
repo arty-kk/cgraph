@@ -115,6 +115,7 @@ def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
 
     AUTO_LIMIT = 8000
     AUTO_RETURN = 2000
+    SQLITE_IN_CHUNK = 400
 
     with get_session() as s:
         total_nodes_row = s.exec(
@@ -140,13 +141,16 @@ def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
                 total_edges = _as_int(total_edges_row, 0)
 
         truncated = False
-        effective_limit = limit_nodes
-        if effective_limit is None and total_nodes > AUTO_LIMIT:
+        force_full = (limit_nodes is not None) and (_as_int(limit_nodes, 0) <= 0)
+        effective_limit = None if force_full else limit_nodes
+
+        if effective_limit is None and (not force_full) and total_nodes > AUTO_LIMIT:
             effective_limit = AUTO_RETURN
             truncated = True
 
         if effective_limit is not None and effective_limit <= 0:
             effective_limit = None
+            force_full = True
 
         def risk_value(n: FileNode) -> float:
             complexity = _as_float(getattr(n, "complexity", 0), 0.0)
@@ -193,17 +197,23 @@ def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
         if effective_limit is None:
             edges = s.exec(select(FileEdge).where(FileEdge.project_id == project_id)).all()
         else:
-            if not node_set:
-                edges = []
-            else:
-                edges = s.exec(
-                    select(FileEdge)
-                    .where(
-                        FileEdge.project_id == project_id,
-                        FileEdge.src_path.in_(node_paths),
-                        FileEdge.dst_path.in_(node_paths),
-                    )
-                ).all()
+            edges = []
+            if node_paths:
+                def _iter_chunks(seq: list[str], size: int):
+                    for i in range(0, len(seq), size):
+                        yield seq[i : i + size]
+
+                for chunk in _iter_chunks(node_paths, SQLITE_IN_CHUNK):
+                    rows = s.exec(
+                        select(FileEdge).where(
+                            FileEdge.project_id == project_id,
+                            FileEdge.src_path.in_(chunk),
+                        )
+                    ).all()
+                    for e in rows:
+                        dst = e.dst_path if isinstance(e.dst_path, str) else ""
+                        if dst and dst in node_set:
+                            edges.append(e)
 
     edge_payload: list[dict] = []
     for e in edges:
@@ -213,7 +223,11 @@ def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
             if e.src_path not in node_set or e.dst_path not in node_set:
                 continue
         edge_payload.append({"source": e.src_path, "target": e.dst_path, "kind": e.kind})
+
     edge_payload.sort(key=lambda x: (x["source"], x["target"], x.get("kind") or ""))
+
+    if effective_limit is not None and total_nodes > int(effective_limit):
+        truncated = True
 
     meta = {
         "total_nodes": total_nodes,
@@ -226,3 +240,136 @@ def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
     }
 
     return {"nodes": node_payload, "edges": edge_payload, "meta": meta}
+
+
+def local_subgraph(
+    project_id: int,
+    center_path: str,
+    hops: int = 1,
+    max_nodes: int = 400,
+    max_edges: int = 800,
+) -> dict:
+    hops = max(0, min(hops, 6))
+    max_nodes = max(1, max_nodes)
+    max_edges = max(0, max_edges)
+    SQLITE_IN_CHUNK = 400
+
+    with get_session() as s:
+        center = s.exec(
+            select(FileNode).where(FileNode.project_id == project_id, FileNode.path == center_path)
+        ).first()
+        if not center:
+            return {"nodes": [], "edges": [], "meta": {"center": center_path, "found": False}}
+
+        nodes_set: set[str] = {center_path}
+        edge_set: set[tuple[str, str, str]] = set()
+        frontier: list[str] = [center_path]
+
+        def _iter_chunks(seq: list[str], size: int):
+            for i in range(0, len(seq), size):
+                yield seq[i : i + size]
+
+        for _ in range(hops):
+            if not frontier or len(nodes_set) >= max_nodes:
+                break
+            nxt: list[str] = []
+            frontier = list(dict.fromkeys(frontier))
+            for chunk in _iter_chunks(frontier, SQLITE_IN_CHUNK):
+                rows = s.exec(
+                    select(FileEdge.src_path, FileEdge.dst_path, FileEdge.kind)
+                    .where(
+                        FileEdge.project_id == project_id,
+                        (FileEdge.src_path.in_(chunk)) | (FileEdge.dst_path.in_(chunk)),
+                    )
+                ).all()
+                for src, dst, kind in rows:
+                    src_val = src if isinstance(src, str) else ""
+                    dst_val = dst if isinstance(dst, str) else ""
+                    kind_val = kind if isinstance(kind, str) else ""
+                    if src_val and dst_val and max_edges > 0 and len(edge_set) < max_edges:
+                        edge_set.add((src_val, dst_val, kind_val))
+                    for neighbor in (src_val, dst_val):
+                        if neighbor and neighbor not in nodes_set and len(nodes_set) < max_nodes:
+                            nodes_set.add(neighbor)
+                            nxt.append(neighbor)
+            frontier = nxt
+
+        node_rows = s.exec(
+            select(FileNode)
+            .where(FileNode.project_id == project_id, FileNode.path.in_(list(nodes_set)))
+            .order_by(FileNode.path)
+        ).all()
+
+    def risk_value(n: FileNode) -> float:
+        complexity = _as_float(getattr(n, "complexity", 0), 0.0)
+        fan_in = _as_float(getattr(n, "fan_in", 0), 0.0)
+        fan_out = _as_float(getattr(n, "fan_out", 0), 0.0)
+        return (0.3 * complexity) + (0.7 * fan_in) + (0.1 * fan_out)
+
+    node_payload = [
+        {
+            "id": n.path,
+            "label": n.path.rsplit("/", 1)[-1],
+            "path": n.path,
+            "language": n.language,
+            "loc": _as_int(getattr(n, "loc", 0), 0),
+            "complexity": _as_float(getattr(n, "complexity", 0), 0.0),
+            "fan_in": _as_int(getattr(n, "fan_in", 0), 0),
+            "fan_out": _as_int(getattr(n, "fan_out", 0), 0),
+            "scc_id": _as_int(getattr(n, "scc_id", -1), -1),
+            "status": n.status,
+            "risk": risk_value(n),
+        }
+        for n in node_rows
+    ]
+
+    edge_payload = [
+        {"source": s, "target": d, "kind": k}
+        for s, d, k in edge_set
+        if s in nodes_set and d in nodes_set
+    ]
+
+    truncated_edges = bool(max_edges > 0 and len(edge_set) >= max_edges)
+    meta = {
+        "center": center_path,
+        "found": True,
+        "hops": hops,
+        "returned_nodes": len(node_payload),
+        "returned_edges": len(edge_payload),
+        "truncated": len(nodes_set) >= max_nodes or truncated_edges,
+    }
+    return {"nodes": node_payload, "edges": edge_payload, "meta": meta}
+
+
+def search_nodes(project_id: int, query: str, limit: int = 20) -> list[dict]:
+    if not query:
+        return []
+    pattern = f"%{query}%"
+    limit = max(1, min(limit, 100))
+    with get_session() as s:
+        rows = s.exec(
+            select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
+            .where(FileNode.project_id == project_id, FileNode.path.like(pattern))
+            .order_by(FileNode.path)
+            .limit(limit)
+        ).all()
+    out: list[dict] = []
+    for row in rows:
+        if isinstance(row, (tuple, list)):
+            path, lang, fi, fo = row[0], row[1], row[2], row[3]
+        else:
+            path = getattr(row, "path", "")
+            lang = getattr(row, "language", "")
+            fi = getattr(row, "fan_in", 0)
+            fo = getattr(row, "fan_out", 0)
+        if not isinstance(path, str) or not path:
+            continue
+        out.append(
+            {
+                "path": path,
+                "language": lang,
+                "fan_in": _as_int(fi, 0),
+                "fan_out": _as_int(fo, 0),
+            }
+        )
+    return out

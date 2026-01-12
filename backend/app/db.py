@@ -1,14 +1,17 @@
 #backend/app/db.py
 from __future__ import annotations
 
-from sqlmodel import SQLModel, create_engine, Session
 from pathlib import Path
-from .config import settings
+
 from sqlalchemy import event
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import event
+from sqlmodel import SQLModel, Session, create_engine
 
-DB_PATH = Path(settings.db_dir) / "code_surgeon.sqlite3"
+from .config import settings
+
+DB_DIR = Path(settings.db_dir).expanduser()
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DB_DIR / "cgraph.sqlite3"
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
@@ -27,6 +30,16 @@ def _sqlite_pragmas(dbapi_connection, connection_record) -> None:
         cur.close()
     except Exception:
         pass
+
+def _ensure_fts_sqlite(conn) -> None:
+    conn.exec_driver_sql("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS filetext_fts USING fts5(
+            project_id UNINDEXED,
+            path UNINDEXED,
+            content,
+            tokenize='unicode61'
+        );
+    """)
 
 def _dedupe_sqlite(conn) -> None:
     conn.exec_driver_sql("""
@@ -50,6 +63,16 @@ def _dedupe_sqlite(conn) -> None:
         );
     """)
 
+    try:
+        conn.exec_driver_sql("""
+            DELETE FROM filetext_fts
+            WHERE rowid NOT IN (
+                SELECT MAX(rowid) FROM filetext_fts GROUP BY project_id, path
+            );
+        """)
+    except Exception:
+        pass
+
 def _ensure_unique_indexes_sqlite(conn) -> None:
     conn.exec_driver_sql(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_filenode_project_path ON filenode (project_id, path);"
@@ -59,6 +82,12 @@ def _ensure_unique_indexes_sqlite(conn) -> None:
     )
     conn.exec_driver_sql(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_fileedge_project_src_dst_kind ON fileedge (project_id, src_path, dst_path, kind);"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_fileedge_project_dst ON fileedge (project_id, dst_path);"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_fileedge_project_src ON fileedge (project_id, src_path);"
     )
 
 def init_db() -> None:
@@ -72,6 +101,7 @@ def init_db() -> None:
                 conn.exec_driver_sql("PRAGMA foreign_keys=ON;")
             except Exception:
                 pass
+            _ensure_fts_sqlite(conn)
             _dedupe_sqlite(conn)
             _ensure_unique_indexes_sqlite(conn)
     except SQLAlchemyError as e:

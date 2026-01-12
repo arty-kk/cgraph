@@ -9,4 +9,3 @@ export function encodePath(path: string): string {
     .map(encodeURIComponent)
     .join('/')
 }
-  

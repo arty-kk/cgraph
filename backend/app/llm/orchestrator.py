@@ -5,15 +5,16 @@ import json
 import openai
 from typing import Any
 from .client import get_openai_client
-from .schemas import TRIAGE_SCHEMA, ANALYZE_SCHEMA, FIX_SCHEMA
+from .schemas import TRIAGE_SCHEMA, ANALYZE_SCHEMA, FIX_SCHEMA, DOCS_SCHEMA
 from .policy import ModelPolicy, DEFAULT_POLICY
+from ..config import settings
 
-SYSTEM_INSTRUCTIONS = """Ты — Code Surgeon: сверхточный кодовый хирург. Твоя цель — давать полезный, проверяемый результат с минимальным радиусом изменений.
+SYSTEM_INSTRUCTIONS = """Ты — CGRAPH: сверхточный кодовый архитектор. Твоя цель — давать полезный, проверяемый результат с минимальным радиусом изменений.
 Правила:
 - Опирайся только на предоставленный код/контракты/запрос.
 - Если данных недостаточно — явно укажи допущения.
 - Для фикса: предложи unified diff. Не выдумывай файлы, которых нет.
-- Сохраняй поведение, если пользователь не просит менять публичный API.
+- Сохраняй поведение и исходную стилистику, если пользователь не просит менять публичный API.
 """
 
 def _normalize_responses_json_schema(schema: dict) -> dict:
@@ -66,7 +67,11 @@ def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reas
         "input": input_items,
         "text": {"format": fmt},
     }
-    kwargs["prompt_cache_key"] = "code-surgeon-local"
+    kwargs["store"] = bool(settings.openai_store)
+    if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
+        kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
+        if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
+            kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
     if reasoning_effort:
         kwargs["reasoning"] = {"effort": reasoning_effort}
 
@@ -74,8 +79,17 @@ def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reas
         resp = client.responses.create(**kwargs)
     except TypeError as e:
         msg = str(e)
+        removed = False
         if "prompt_cache_key" in msg:
             kwargs.pop("prompt_cache_key", None)
+            removed = True
+        if "prompt_cache_retention" in msg:
+            kwargs.pop("prompt_cache_retention", None)
+            removed = True
+        if "store" in msg:
+            kwargs.pop("store", None)
+            removed = True
+        if removed:
             resp = client.responses.create(**kwargs)
         else:
             raise
@@ -139,3 +153,18 @@ def fix(packed_context: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_PO
         {"role": "user", "content": f"Задача: FIX. Требование пользователя: {user_prompt}\n\nСгенерируй минимальный безопасный unified diff (patch_unified_diff). Если нужно изменить поведение — делай это ровно по ТЗ.\n\nКонтекст (JSON):\n{ctx}"},
     ]
     return _json_call(policy.patch_model, FIX_SCHEMA, items, reasoning_effort=policy.patch_effort)
+
+def generate_docs(facts: dict, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
+    ctx = json.dumps(facts, ensure_ascii=False)
+    items = [
+        {"role": "user", "content": (
+            "Задача: PROJECT DOCS.\n"
+            "Сгенерируй полезную документацию по проекту в Markdown.\n"
+            "Критично: используй ТОЛЬКО предоставленные факты. Если данных недостаточно — явно укажи это.\n"
+            "Структура: Overview, Architecture, Key modules, Hotspots, How to run (если можно вывести), Next steps.\n"
+            "Подсказка: в фактах могут быть api_summary (API индекс из Scan), key_files (snippets), run_hints (команды/таргеты).\n"
+            "Если этих данных нет — так и напиши, не додумывай.\n\n"
+            f"Факты (JSON):\n{ctx}"
+        )},
+    ]
+    return _json_call(policy.analysis_model, DOCS_SCHEMA, items, reasoning_effort=policy.analysis_effort)

@@ -1,0 +1,1346 @@
+// frontend/src/ui/hooks/useCytoscapeGraph.ts
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Core, ElementDefinition, LayoutOptions } from 'cytoscape'
+import type { GraphData } from '../../api'
+import { riskColor } from '../../lib/riskColor'
+
+export type GraphFilters = {
+  text: string
+  minRisk: number
+  onlySelectionNeighborhood: boolean
+}
+
+export type GraphStats = {
+  totalNodes: number
+  visibleNodes: number
+  hydrating: boolean
+}
+
+export type LabelMode = 'auto' | 'on' | 'off'
+
+export type EdgeDirectionHighlight = {
+  enabled: boolean
+  inColor: string
+  outColor: string
+}
+
+export type NodeContextMenuPayload = {
+  path: string
+  x: number
+  y: number
+}
+
+export type GraphEditSnapshot = {
+  version: 1
+  zoom: number
+  pan: { x: number; y: number }
+  positions: Record<string, { x: number; y: number }> // by node id
+  hiddenKeys: string[]
+  lockedKeys: string[]
+}
+
+export type GraphEditEvent =
+  | { kind: 'dragstart' }
+  | { kind: 'dragend' }
+
+const DEFAULT_LAYOUT: LayoutOptions = ({
+  name: 'cose',
+  animate: false,
+  fit: false,
+  padding: 80,
+  randomize: false,
+  componentSpacing: 140,
+  nodeOverlap: 10,
+  nodeRepulsion: 20000,
+  idealEdgeLength: 320,
+  edgeElasticity: 0.35,
+  gravity: 0.18,
+  numIter: 1800,
+  initialTemp: 250,
+  coolingFactor: 0.95,
+  minTemp: 1.0,
+} as any)
+
+const BATCH_SIZE = 400
+const DIM_NODE_OPACITY = 0.08
+const DIM_EDGE_OPACITY = 0.05
+const STRONG_EDGE_OPACITY = 0.75
+const PINNED_BORDER = '#a855f7'
+const LABEL_ZOOM_THRESHOLD = 1.15
+const MAX_NEIGHBOR_LABELS = 28
+const EDGE_BATCH_SIZE = 1600
+
+const CENTER_MIN_ZOOM = 0.6
+const CENTER_MAX_ZOOM = 2.5
+const CENTER_RETRY_ATTEMPTS = 60
+const CENTER_RETRY_DELAY_MS = 80
+
+const GRID_SPACING = 90
+const LOCK_BORDER = '#93c5fd'
+
+const STAR_ARC_PAD = Math.PI * 0.15 // отступ от краёв полуокружности
+const STAR_BASE_RADIUS_IN = 100
+const STAR_BASE_RADIUS_OUT = 150
+const STAR_RING_SPACING = 34
+const STAR_MAX_NEIGHBORS = 180 // чтобы не пытаться “взрывать” тысячи связей
+const STAR_ANIMATE_MAX = 80 // анимацию делаем только если соседей немного
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v))
+}
+
+function safeStr(v: unknown): string {
+  if (v == null) return ''
+  const s = typeof v === 'string' ? v : String(v)
+  return s.trim()
+}
+
+function toFiniteNumber(v: unknown, fallback = 0): number {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function makeUniqueId(base: string, used: Set<string>): string {
+  const b = base || 'node'
+  let id = b
+  let i = 2
+  while (used.has(id)) {
+    id = `${b}#${i}`
+    i += 1
+  }
+  used.add(id)
+  return id
+}
+
+export function useCytoscapeGraph({
+  graph,
+  filters,
+  selectedPath,
+  onBackgroundTap,
+  onNodeTap,
+  onNodeContextMenu,
+  enableStarburst = true,
+  onEditEvent,
+  spotlight = true,
+  labelMode = 'auto',
+  pinnedPaths = [],
+  edgeDirectionHighlight,
+}: {
+  graph: GraphData | null
+  filters: GraphFilters
+  selectedPath: string | null
+  onBackgroundTap: () => void
+  onNodeTap: (path: string) => void | Promise<void>
+  onNodeContextMenu?: (p: NodeContextMenuPayload) => void
+  enableStarburst?: boolean
+  onEditEvent?: (e: GraphEditEvent) => void
+  spotlight?: boolean
+  labelMode?: LabelMode
+  pinnedPaths?: string[]
+  edgeDirectionHighlight?: Partial<EdgeDirectionHighlight>
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const cyRef = useRef<Core | null>(null)
+  const chunkTimerRef = useRef<number | null>(null)
+  const applyFiltersRef = useRef<() => void>(() => {})
+  const zoomTimerRef = useRef<number | null>(null)
+
+  const enableStarburstRef = useRef<boolean>(Boolean(enableStarburst))
+  useEffect(() => {
+    enableStarburstRef.current = Boolean(enableStarburst)
+  }, [enableStarburst])
+
+  const [instanceId, setInstanceId] = useState(0)
+  const hiddenKeysRef = useRef<Set<string>>(new Set())
+  const lockedKeysRef = useRef<Set<string>>(new Set())
+
+  const onBackgroundTapRef = useRef(onBackgroundTap)
+  const onNodeTapRef = useRef(onNodeTap)
+  const onNodeContextMenuRef = useRef(onNodeContextMenu)
+  const onEditEventRef = useRef(onEditEvent)
+  useEffect(() => { onBackgroundTapRef.current = onBackgroundTap }, [onBackgroundTap])
+  useEffect(() => { onNodeTapRef.current = onNodeTap }, [onNodeTap])
+  useEffect(() => { onNodeContextMenuRef.current = onNodeContextMenu }, [onNodeContextMenu])
+  useEffect(() => { onEditEventRef.current = onEditEvent }, [onEditEvent])
+
+  const [stats, setStats] = useState<GraphStats>({ totalNodes: 0, visibleNodes: 0, hydrating: false })
+
+  const edgeDirEnabled = Boolean(edgeDirectionHighlight?.enabled ?? true)
+  const normalizeColor = (v: unknown, fallback: string) => {
+    const s = safeStr(v)
+    if (!s) return fallback
+    const m = s.match(/^rgb\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\)$/i)
+    if (m) return `rgb(${m[1]},${m[2]},${m[3]})`
+    return s
+  }
+  const edgeDirInColor = normalizeColor(edgeDirectionHighlight?.inColor, '#22c55e')
+  const edgeDirOutColor = normalizeColor(edgeDirectionHighlight?.outColor, '#3b82f6')
+
+  const pinnedSet = useMemo(() => {
+    return new Set((pinnedPaths || []).filter((x) => typeof x === 'string' && x.trim()))
+  }, [pinnedPaths])
+
+  const isHiddenNode = useCallback((n: any) => {
+    try {
+      const id = safeStr(n.id?.())
+      const path = safeStr(n.data?.('path'))
+      const key = safeStr(path || id)
+      return (id && hiddenKeysRef.current.has(id)) || (path && hiddenKeysRef.current.has(path)) || (key && hiddenKeysRef.current.has(key))
+    } catch {
+      return false
+    }
+  }, [])
+
+  const { nodes, edges } = useMemo(() => {
+    if (!graph) return { nodes: [] as ElementDefinition[], edges: [] as ElementDefinition[] }
+
+    const usedIds = new Set<string>()
+    const idByKey = new Map<string, string>()
+
+    const normalized = (graph.nodes || []).map((n: any, idx: number) => {
+      const pathKey = safeStr(n?.path)
+      const idKey = safeStr(n?.id)
+      const base = pathKey || idKey || `n${idx}`
+      const canonical = makeUniqueId(base, usedIds)
+
+      if (idKey) idByKey.set(idKey, canonical)
+      if (pathKey) idByKey.set(pathKey, canonical)
+      idByKey.set(canonical, canonical)
+
+      return { n, canonical, pathKey }
+    })
+
+    const importantIds = new Set<string>()
+    ;[...normalized]
+      .sort((a, b) => toFiniteNumber(b.n?.risk, 0) - toFiniteNumber(a.n?.risk, 0))
+      .slice(0, Math.min(18, normalized.length))
+      .forEach((x) => importantIds.add(x.canonical))
+
+    const total = normalized.length
+    const cols = Math.max(1, Math.ceil(Math.sqrt(total)))
+    const rows = Math.max(1, Math.ceil(total / cols))
+    const width = (cols - 1) * GRID_SPACING
+    const height = (rows - 1) * GRID_SPACING
+    const ox = -width / 2
+    const oy = -height / 2
+
+    const nodeElements: ElementDefinition[] = normalized.map(({ n, canonical, pathKey }, i) => {
+      const label = safeStr(n?.label) || pathKey || canonical
+      const path = pathKey || canonical
+      const col = i % cols
+      const row = Math.floor(i / cols)
+      const x = ox + col * GRID_SPACING
+      const y = oy + row * GRID_SPACING
+
+      return {
+        data: {
+          id: canonical,
+          label,
+          path,
+          risk: toFiniteNumber(n?.risk, 0),
+          status: n?.status,
+          scc: n?.scc_id,
+        },
+        position: { x, y },
+        classes: importantIds.has(canonical) ? 'cs-important' : '',
+      }
+    })
+
+    const edgeElements: ElementDefinition[] = (graph.edges || [])
+      .map((e: any, i: number) => {
+        const sourceKey = safeStr(e?.source)
+        const targetKey = safeStr(e?.target)
+        const source = idByKey.get(sourceKey) || sourceKey
+        const target = idByKey.get(targetKey) || targetKey
+        return { data: { id: `e${i}`, source, target, kind: e?.kind } }
+      })
+      .filter((ed) => {
+        const s = safeStr((ed as any).data?.source)
+        const t = safeStr((ed as any).data?.target)
+        // edge требует валидные source/target (иначе Cytoscape может ругаться/ломать добавление)
+        return !!s && !!t && usedIds.has(s) && usedIds.has(t)
+      })
+
+    return { nodes: nodeElements, edges: edgeElements }
+  }, [graph])
+
+  const clearChunkTimer = useCallback(() => {
+    if (chunkTimerRef.current != null) {
+      window.clearTimeout(chunkTimerRef.current)
+      chunkTimerRef.current = null
+    }
+  }, [])
+
+  const clearZoomTimer = useCallback(() => {
+    if (zoomTimerRef.current != null) {
+      window.clearTimeout(zoomTimerRef.current)
+      zoomTimerRef.current = null
+    }
+  }, [])
+
+  const animateCenterTo = useCallback((eles: any) => {
+    try {
+      const cy = cyRef.current
+      if (!cy) return
+      const z0 = cy.zoom()
+      const z = Number.isFinite(z0) ? Number(z0) : 1
+      const nextZoom = clamp(z, CENTER_MIN_ZOOM, CENTER_MAX_ZOOM)
+      try {
+        cy.stop()
+      } catch {}
+      cy.animate({ center: { eles }, zoom: nextZoom }, { duration: 220 })
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  // --- Star-map: раскладка inbound/outbound вокруг выбранного узла ---
+  const starburstNeighborhood = useCallback(
+    (selectedNode: any) => {
+      const cy = cyRef.current
+      if (!cy || !selectedNode) return
+
+      // если скрыт фильтрами — не трогаем
+      try {
+        if (selectedNode.style('display') === 'none') return
+      } catch {
+        // ignore
+      }
+
+      const center = selectedNode.position()
+      if (!center || !Number.isFinite(center.x) || !Number.isFinite(center.y)) return
+
+      const isMovableNeighbor = (n: any) => {
+        if (!n) return false
+        if (n.id() === selectedNode.id()) return false
+        try {
+          if (n.style('display') === 'none') return false
+        } catch {
+          // ignore
+        }
+        const key = safeStr(n.data('path')) || safeStr(n.id())
+        if (key && pinnedSet.has(key)) return false
+        return true
+      }
+
+      // inbound / outbound
+      let inArr: any[] = []
+      let outArr: any[] = []
+
+      try {
+        inArr = selectedNode.incomers('node').filter((n: any) => isMovableNeighbor(n)).toArray()
+      } catch {
+        inArr = []
+      }
+
+      try {
+        outArr = selectedNode.outgoers('node').filter((n: any) => isMovableNeighbor(n)).toArray()
+      } catch {
+        outArr = []
+      }
+
+      if (!inArr.length && !outArr.length) return
+
+      // ограничим, чтобы не превращать в лаг-генератор на узлах с огромной степенью
+      const cap = STAR_MAX_NEIGHBORS
+      const capList = (arr: any[]) => {
+        if (arr.length <= cap) return arr
+        return arr
+          .slice()
+          .sort((a, b) => toFiniteNumber(b.data('risk'), 0) - toFiniteNumber(a.data('risk'), 0))
+          .slice(0, cap)
+      }
+      inArr = capList(inArr)
+      outArr = capList(outArr)
+
+      // сортируем, чтобы более “важные” попадали ближе
+      const byRiskDesc = (a: any, b: any) => toFiniteNumber(b.data('risk'), 0) - toFiniteNumber(a.data('risk'), 0)
+      inArr.sort(byRiskDesc)
+      outArr.sort(byRiskDesc)
+
+      const positions: Array<{ node: any; pos: { x: number; y: number } }> = []
+
+      const placeArc = (arr: any[], start: number, end: number, baseRadius: number) => {
+        const n = arr.length
+        if (!n) return
+
+        const span = end - start
+        const step = n === 1 ? 0 : span / (n - 1)
+
+        const rings = Math.min(6, Math.max(1, Math.ceil(n / 10)))
+        const dynamicBase = baseRadius + Math.min(220, Math.sqrt(n) * 55)
+
+        for (let i = 0; i < n; i++) {
+          const ring = i % rings
+          const angle = start + step * i + (rings > 1 ? (ring - (rings - 1) / 2) * step * 0.22 : 0)
+          const radius = dynamicBase + ring * STAR_RING_SPACING
+
+          const x = center.x + Math.cos(angle) * radius
+          const y = center.y + Math.sin(angle) * radius
+          positions.push({ node: arr[i], pos: { x, y } })
+        }
+      }
+
+      // inbound — верхняя полуокружность, outbound — нижняя
+      placeArc(inArr, -Math.PI + STAR_ARC_PAD, -STAR_ARC_PAD, STAR_BASE_RADIUS_IN)
+      placeArc(outArr, STAR_ARC_PAD, Math.PI - STAR_ARC_PAD, STAR_BASE_RADIUS_OUT)
+
+      try {
+        cy.stop()
+      } catch {}
+
+      const doAnimate = positions.length > 0 && positions.length <= STAR_ANIMATE_MAX
+      if (doAnimate) {
+        for (const { node, pos } of positions) {
+          try {
+            node.animate({ position: pos }, { duration: 260 })
+          } catch {
+            try {
+              node.position(pos)
+            } catch {}
+          }
+        }
+      } else {
+        cy.batch(() => {
+          for (const { node, pos } of positions) {
+            try {
+              node.position(pos)
+            } catch {
+              // ignore
+            }
+          }
+        })
+      }
+    },
+    [pinnedSet],
+  )
+
+  const starburstRef = useRef<((n: any) => void) | null>(null)
+  useEffect(() => {
+    starburstRef.current = starburstNeighborhood
+  }, [starburstNeighborhood])
+
+  const applyFilters = useCallback(() => {
+    const cy = cyRef.current
+    if (!cy) return
+
+    const zoomRaw = cy.zoom()
+    const zoom = Number.isFinite(zoomRaw) ? Number(zoomRaw) : 1
+    const zoomOk = zoom >= LABEL_ZOOM_THRESHOLD
+
+    const query = filters.text.trim().toLowerCase()
+    const minRisk = filters.minRisk
+
+    const selected = selectedPath
+      ? cy.nodes().filter((n) => n.data('path') === selectedPath || n.id() === selectedPath)
+      : cy.collection()
+
+    const hasSelection = !selected.empty()
+    const neighborhood = hasSelection ? selected.closedNeighborhood() : cy.collection()
+    const neighborhoodNodes = neighborhood.nodes()
+    const neighborhoodEdges = neighborhood.edges()
+
+    const allowNeighborhoodLabels = zoomOk && neighborhoodNodes.length <= MAX_NEIGHBOR_LABELS
+
+    const neighborhoodFilterActive = Boolean(filters.onlySelectionNeighborhood && hasSelection)
+    const spotlightActive = Boolean(spotlight && hasSelection && !neighborhoodFilterActive)
+
+    const dirActive = Boolean(edgeDirEnabled && hasSelection)
+    const inEdgeIds = new Set<string>()
+    const outEdgeIds = new Set<string>()
+    if (dirActive) {
+      try {
+        selected.incomers('edge').forEach((e: any) => {
+          const id = safeStr(e?.id?.())
+          if (id) inEdgeIds.add(id)
+        })
+      } catch {}
+      try {
+        selected.outgoers('edge').forEach((e: any) => {
+          const id = safeStr(e?.id?.())
+          if (id) outEdgeIds.add(id)
+        })
+      } catch {}
+    }
+
+    const visibleNodeIds = new Set<string>()
+    let visibleCount = 0
+
+    cy.batch(() => {
+      cy.nodes().forEach((n) => {
+        const label: string = n.data('label') ?? ''
+        const path: string = n.data('path') ?? ''
+        const risk = toFiniteNumber(n.data('risk'), 0)
+
+        const isSelectedNode = Boolean(selectedPath) && (path === selectedPath || n.id() === selectedPath)
+
+        if (isHiddenNode(n)) {
+          n.style('display', 'none')
+          n.removeClass('cs-dim cs-neighbor cs-label cs-pinned cs-locked cs-hover')
+          return
+        }
+
+        const matchesText = query ? label.toLowerCase().includes(query) || path.toLowerCase().includes(query) : true
+        const matchesRisk = Number.isFinite(risk) ? risk >= minRisk : true
+        const matchesNeighborhood = neighborhoodFilterActive ? neighborhoodNodes.contains(n) : true
+
+        const visible = (matchesText && matchesRisk && matchesNeighborhood) || isSelectedNode
+        n.style('display', visible ? 'element' : 'none')
+
+        n.removeClass('cs-dim cs-neighbor cs-label cs-pinned cs-locked')
+        if (!visible) {
+          try {
+            n.removeClass('cs-hover')
+          } catch {}
+          return
+        }
+
+        visibleNodeIds.add(n.id())
+        visibleCount += 1
+
+        const key = safeStr(path || n.id() || '')
+        if (key && pinnedSet.has(key)) n.addClass('cs-pinned')
+
+          if ((key && lockedKeysRef.current.has(key)) || lockedKeysRef.current.has(n.id())) {
+            try {
+              if (!n.locked()) n.lock()
+            } catch {}
+            n.addClass('cs-locked')
+          } else {
+            try {
+              if (n.locked()) n.unlock()
+            } catch {}
+          }
+
+        const inSpot = spotlightActive ? neighborhoodNodes.contains(n) : false
+        if (spotlightActive && !inSpot) n.addClass('cs-dim')
+        if (spotlightActive && inSpot && !n.selected()) n.addClass('cs-neighbor')
+
+        let shouldLabel = false
+        if (labelMode === 'on') {
+          shouldLabel = true
+        } else if (labelMode === 'auto') {
+          shouldLabel =
+            n.selected() ||
+            n.hasClass('cs-hover') ||
+            (zoomOk && n.hasClass('cs-important')) ||
+            n.hasClass('cs-pinned') ||
+            (spotlightActive && inSpot && allowNeighborhoodLabels)
+        } else {
+          shouldLabel = false
+        }
+
+        if (shouldLabel && !n.selected() && !n.hasClass('cs-hover')) {
+          n.addClass('cs-label')
+        }
+      })
+
+      cy.edges().forEach((e) => {
+        const src = e.source()
+        const tgt = e.target()
+        const visible = visibleNodeIds.has(src.id()) && visibleNodeIds.has(tgt.id())
+
+        e.style('display', visible ? 'element' : 'none')
+        e.removeClass('cs-dim cs-strong cs-edge-in cs-edge-out')
+        if (!visible) return
+
+        if (spotlightActive) {
+          const strong = neighborhoodEdges.contains(e)
+          if (strong) e.addClass('cs-strong')
+          else e.addClass('cs-dim')
+        }
+
+        if (dirActive) {
+          const eid = safeStr(e.id?.())
+          if (eid) {
+            if (outEdgeIds.has(eid)) e.addClass('cs-edge-out')
+            else if (inEdgeIds.has(eid)) e.addClass('cs-edge-in')
+          }
+        }
+      })
+    })
+
+    setStats((prev) => ({ ...prev, visibleNodes: visibleCount }))
+  }, [
+    filters.minRisk,
+    filters.onlySelectionNeighborhood,
+    filters.text,
+    labelMode,
+    pinnedSet,
+    selectedPath,
+    spotlight,
+    edgeDirEnabled,
+  ])
+
+  // даём доступ к актуальной версии applyFilters из обработчиков, не пересоздавая cy
+  useEffect(() => {
+    applyFiltersRef.current = applyFilters
+  }, [applyFilters])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    if (!graph) {
+      cyRef.current?.destroy()
+      cyRef.current = null
+      hiddenKeysRef.current = new Set()
+      lockedKeysRef.current = new Set()
+      setStats({ totalNodes: 0, visibleNodes: 0, hydrating: false })
+      return
+    }
+
+    setInstanceId((x) => x + 1)
+    
+    hiddenKeysRef.current = new Set()
+    lockedKeysRef.current = new Set()
+
+    clearChunkTimer()
+    clearZoomTimer()
+
+    if (cyRef.current) {
+      cyRef.current.destroy()
+      cyRef.current = null
+    }
+
+    let cancelled = false
+    let ro: ResizeObserver | null = null
+
+    ;(async () => {
+      const cytoscape = (await import('cytoscape')).default
+      if (cancelled) return
+
+      const cy = cytoscape({
+        container,
+        elements: [],
+        style: ([
+          {
+            selector: 'core',
+            style: {
+              'active-bg-color': '#e2e8f0',
+              'active-bg-opacity': 0.06,
+              'active-bg-size': 24,
+              'selection-box-color': '#60a5fa',
+              'selection-box-border-color': '#93c5fd',
+              'selection-box-border-width': 1,
+              'selection-box-opacity': 0.12,
+            },
+          },
+          {
+            selector: 'node',
+            style: {
+              label: '',
+              shape: 'round-rectangle',
+              width: 18,
+              height: 18,
+              'background-color': (ele: { data: (k: string) => any }) => riskColor(toFiniteNumber(ele.data('risk'), 0)),
+              'background-opacity': 0.98,
+              'border-width': 1.5,
+              'border-color': '#0b1220',
+              'border-opacity': 0.9,
+              color: '#e5e7eb',
+              'font-size': 10,
+              'font-family': 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial',
+              'text-zooming': 'none',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'text-outline-color': '#0b1220',
+              'text-outline-width': 2,
+              'text-outline-opacity': 0.9,
+              'transition-property': 'opacity border-color border-width overlay-opacity overlay-padding',
+              'transition-duration': '0.12s',
+              'transition-timing-function': 'ease-out',
+            },
+          },
+          { selector: 'node.cs-important', style: { width: 22, height: 22, 'border-width': 2 } },
+          { selector: 'node.cs-dim', style: { opacity: DIM_NODE_OPACITY } },
+          { selector: 'node.cs-neighbor', style: { 'border-width': 2, 'border-color': '#64748b' } },
+          {
+            selector: 'node.cs-pinned',
+            style: {
+              'border-width': 3,
+              'border-color': PINNED_BORDER,
+              'overlay-color': PINNED_BORDER,
+              'overlay-opacity': 0.06,
+              'overlay-padding': 6,
+            },
+          },
+          {
+            selector: 'node.cs-locked',
+            style: {
+              'border-width': 3,
+              'border-color': LOCK_BORDER
+            }
+          },
+          {
+            selector: 'node.cs-label',
+            style: {
+              label: 'data(label)',
+              'font-size': 11,
+              'text-wrap': 'ellipsis',
+              'text-max-width': 240,
+              'text-background-color': '#0b1220',
+              'text-background-opacity': 0.7,
+              'text-background-padding': '3px',
+              'text-background-shape': 'roundrectangle',
+              'text-border-color': '#334155',
+              'text-border-opacity': 0.35,
+              'text-border-width': 1,
+            },
+          },
+          {
+            selector: 'node.cs-hover',
+            style: {
+              label: 'data(label)',
+              'font-size': 12,
+              'text-wrap': 'ellipsis',
+              'text-max-width': 280,
+              'border-width': 2,
+              'border-color': '#e2e8f0',
+              'overlay-color': '#e2e8f0',
+              'overlay-opacity': 0.08,
+              'overlay-padding': 10,
+              ghost: 'yes',
+              'ghost-offset-x': 0,
+              'ghost-offset-y': 2,
+              'ghost-opacity': 0.22,
+        
+              'z-index': 9999,
+            },
+          },
+          {
+            selector: 'node:selected',
+            style: {
+              label: 'data(label)',
+              'font-size': 12,
+              'text-wrap': 'ellipsis',
+              'text-max-width': 320,
+              'border-width': 2,
+              'border-color': '#e2e8f0',
+        
+              'overlay-color': '#e2e8f0',
+              'overlay-opacity': 0.12,
+              'overlay-padding': 12,
+              ghost: 'yes',
+              'ghost-offset-x': 0,
+              'ghost-offset-y': 2,
+              'ghost-opacity': 0.26,
+              'z-index': 9999,
+            },
+          },
+          {
+            selector: 'edge',
+            style: {
+              width: 1.0,
+              'curve-style': 'bezier',
+              'line-cap': 'round',
+              'line-fill': 'solid',
+              'line-color': 'rgba(148,163,184,0.30)',
+              'mid-target-arrow-shape': 'none',
+              'target-arrow-shape': 'none',
+              'source-arrow-shape': 'none',
+              'arrow-scale': 0.45,
+              'source-endpoint': 'outside-to-node-or-label',
+              'target-endpoint': 'outside-to-node-or-label',
+              opacity: 0.32,
+              'transition-property': 'opacity width line-color',
+              'transition-duration': '0.12s',
+              'transition-timing-function': 'ease-out',
+            },
+          },
+          { 
+            selector: 'edge.cs-dim',
+            style: { 
+              opacity: DIM_EDGE_OPACITY
+            }
+          },
+          {
+            selector: 'edge.cs-strong',
+            style: {
+              opacity: STRONG_EDGE_OPACITY,
+              width: 1.7,
+              'line-fill': 'solid',
+              'line-color': 'rgba(226,232,240,0.90)',
+            },
+          },
+          {
+            selector: 'edge.cs-edge-in',
+            style: {
+              'line-fill': 'solid',
+              'line-color': edgeDirInColor,
+              opacity: 0.5,
+              width: 1,
+              'mid-target-arrow-shape': 'none',
+              'target-arrow-shape': 'triangle',
+              'target-arrow-fill': 'filled',
+              'target-arrow-color': edgeDirInColor,
+              'arrow-scale': 0.5,
+            },
+          },
+          {
+            selector: 'edge.cs-edge-out',
+            style: {
+              'line-fill': 'solid',
+              'line-color': edgeDirOutColor,
+              opacity: 0.5,
+              width: 1,
+              'mid-target-arrow-shape': 'none',
+              'target-arrow-shape': 'triangle',
+              'source-arrow-fill': 'filled',
+              'source-arrow-color': edgeDirOutColor,
+              'arrow-scale': 0.5,
+            },
+          },
+        ] as any),        
+        layout: DEFAULT_LAYOUT,
+        wheelSensitivity: 0.14,
+        minZoom: 0.18,
+        maxZoom: 3.0,
+      })
+
+      cy.on('tap', (evt) => {
+        if (evt.target !== cy) return
+        onBackgroundTapRef.current?.()
+      })
+
+      cy.on('grab', 'node', () => {
+        onEditEventRef.current?.({ kind: 'dragstart' })
+      })
+      cy.on('dragfree', 'node', () => {
+        onEditEventRef.current?.({ kind: 'dragend' })
+      })
+
+      cy.on('zoom', () => {
+        if (zoomTimerRef.current != null) window.clearTimeout(zoomTimerRef.current)
+        zoomTimerRef.current = window.setTimeout(() => {
+          zoomTimerRef.current = null
+          applyFiltersRef.current()
+        }, 60)
+      })
+
+      cy.on('mouseover', 'node', (evt) => {
+        try {
+          evt.target.addClass('cs-hover')
+        } catch {}
+      })
+      cy.on('mouseout', 'node', (evt) => {
+        try {
+          evt.target.removeClass('cs-hover')
+        } catch {}
+      })
+
+      cy.on('tap', 'node', (evt) => {
+        const node = evt.target
+        const path = (node.data('path') as string) || node.id()
+        void onNodeTapRef.current?.(path)
+      })
+
+      cy.on('cxttap', 'node', (evt: any) => {
+        try {
+          evt?.originalEvent?.preventDefault?.()
+        } catch {}
+        const node = evt.target
+        const path = (node.data('path') as string) || node.id()
+        const rp = evt?.renderedPosition
+        const x = Number.isFinite(Number(rp?.x)) ? Number(rp.x) : 0
+        const y = Number.isFinite(Number(rp?.y)) ? Number(rp.y) : 0
+        onNodeContextMenuRef.current?.({ path, x, y })
+      })
+
+      cyRef.current = cy
+
+      try {
+        ro = new ResizeObserver(() => {
+          try {
+            cy.resize()
+          } catch {}
+        })
+        ro.observe(container)
+      } catch {}
+
+      const returnedNodes = Number.isFinite(Number(graph?.meta?.returned_nodes)) ? Number(graph?.meta?.returned_nodes) : nodes.length
+      const hydrating0 = nodes.length > BATCH_SIZE || edges.length > EDGE_BATCH_SIZE
+      setStats({ totalNodes: returnedNodes, visibleNodes: nodes.length, hydrating: hydrating0 })
+
+      const addChunk = (offset: number) => {
+        if (cancelled || !cyRef.current) return
+        const next = offset + BATCH_SIZE
+        const chunk = nodes.slice(offset, next)
+
+        if (chunk.length) {
+          try {
+            cyRef.current.add(chunk)
+          } catch {
+            // если что-то всё же невалидно — не валим весь граф
+          }
+        }
+
+        if (next < nodes.length) {
+          chunkTimerRef.current = window.setTimeout(() => addChunk(next), 20)
+          return
+        }
+
+        const addEdgesChunk = (edgeOffset: number) => {
+          if (cancelled || !cyRef.current) return
+          const nextEdge = edgeOffset + EDGE_BATCH_SIZE
+          const chunkEdges = edges.slice(edgeOffset, nextEdge)
+
+          if (chunkEdges.length) {
+            try {
+              cyRef.current.add(chunkEdges)
+            } catch {
+              // ignore (but chunking makes failures far less likely)
+            }
+          }
+
+          if (nextEdge < edges.length) {
+            chunkTimerRef.current = window.setTimeout(() => addEdgesChunk(nextEdge), 20)
+            return
+          }
+
+          const cyNow = cyRef.current
+          if (cyNow) {
+            const layout: any = cyNow.layout(DEFAULT_LAYOUT)
+            layout.on('layoutstop', () => {
+              try {
+                cyNow.fit(cyNow.elements(':visible'), 60)
+              } catch {}
+            })
+            layout.run()
+          }
+          setStats((prev) => ({ ...prev, hydrating: false }))
+          applyFiltersRef.current()
+        }
+
+        if (!edges.length) {
+          const cyNow = cyRef.current
+          if (cyNow) {
+            const layout: any = cyNow.layout(DEFAULT_LAYOUT)
+            layout.on('layoutstop', () => {
+              try { cyNow.fit(cyNow.elements(':visible'), 60) } catch {}
+            })
+            layout.run()
+          }
+          setStats((prev) => ({ ...prev, hydrating: false }))
+          applyFiltersRef.current()
+          return
+        }
+
+        addEdgesChunk(0)
+      }
+
+      addChunk(0)
+    })()
+
+    return () => {
+      cancelled = true
+      clearChunkTimer()
+      clearZoomTimer()
+      try {
+        cyRef.current?.destroy()
+      } catch {}
+      try {
+        ro?.disconnect()
+      } catch {}
+      cyRef.current = null
+    }
+  }, [clearChunkTimer, clearZoomTimer, edges, graph, nodes, edgeDirInColor, edgeDirOutColor])
+
+  useEffect(() => {
+    applyFilters()
+  }, [applyFilters])
+
+  // Выделение + star-map (с ретраями, если граф ещё гидратится)
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy) return
+
+    try { cy.nodes().unselect() } catch {}
+    const wanted = safeStr(selectedPath)
+    if (!wanted) return
+
+    let cancelled = false
+    let attempt = 0
+
+    const trySelect = () => {
+      if (cancelled) return
+      const cyNow = cyRef.current
+      if (!cyNow) return
+
+      const match = cyNow.nodes().filter((n) => n.data('path') === wanted || n.id() === wanted)
+      if (match && match.length) {
+        match.select()
+        applyFiltersRef.current()
+
+        if (enableStarburstRef.current) {
+          starburstRef.current?.(match[0])
+        }
+
+        animateCenterTo(match)
+        
+        return
+      }
+
+      attempt += 1
+      if (attempt < CENTER_RETRY_ATTEMPTS) {
+        window.setTimeout(trySelect, CENTER_RETRY_DELAY_MS)
+      }
+    }
+
+    trySelect()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedPath, instanceId, animateCenterTo])
+
+  useEffect(() => clearChunkTimer, [clearChunkTimer])
+
+  const fit = useCallback(() => {
+    try {
+      const cy = cyRef.current
+      if (!cy) return
+      const visible = cy.elements(':visible')
+      if (visible && !visible.empty()) cy.fit(visible, 60)
+      else cy.fit(undefined, 60)
+    } catch {}
+  }, [])
+
+  const relayout = useCallback(() => {
+    try {
+      const cy = cyRef.current
+      if (!cy) return
+      const layout: any = cy.layout(DEFAULT_LAYOUT)
+      layout.on('layoutstop', () => {
+        try {
+          cy.fit(cy.elements(':visible'), 60)
+        } catch {}
+      })
+      layout.run()
+    } catch {}
+  }, [])
+
+  const centerSelected = useCallback(() => {
+    try {
+      const cy = cyRef.current
+      if (!cy) return
+      const sel = cy.nodes(':selected')
+      if (!sel || sel.empty()) return
+      animateCenterTo(sel)
+    } catch {}
+  }, [animateCenterTo])
+
+  const centerPath = useCallback(
+    (path: string) => {
+      const p = safeStr(path)
+      if (!p) return
+
+      let attempt = 0
+      const tryCenter = () => {
+        const cy = cyRef.current
+        if (!cy) return
+        const match = cy.nodes().filter((n) => n.data('path') === p || n.id() === p)
+        if (match && !match.empty()) {
+          animateCenterTo(match)
+          return
+        }
+        attempt += 1
+        if (attempt < CENTER_RETRY_ATTEMPTS) {
+          window.setTimeout(tryCenter, CENTER_RETRY_DELAY_MS)
+        }
+      }
+
+      tryCenter()
+    },
+    [animateCenterTo],
+  )
+
+  const getMatch = useCallback((path: string) => {
+    const cy = cyRef.current
+    if (!cy) return null
+    const p = safeStr(path)
+    if (!p) return null
+    const match = cy.nodes().filter((n) => n.data('path') === p || n.id() === p)
+    return match && !match.empty() ? match : null
+  }, [])
+
+  const hidePath = useCallback(
+    (path: string) => {
+      const cy = cyRef.current
+      if (!cy) return
+      const match = getMatch(path)
+      if (!match) return
+      match.forEach((n: any) => {
+        const id = safeStr(n.id())
+        const p = safeStr(n.data('path'))
+        const key = safeStr(p || id)
+        if (id) hiddenKeysRef.current.add(id)
+        if (p) hiddenKeysRef.current.add(p)
+        if (key) hiddenKeysRef.current.add(key)
+      })
+      applyFiltersRef.current()
+    },
+    [getMatch],
+  )
+
+  const showPath = useCallback(
+    (path: string) => {
+      const cy = cyRef.current
+      if (!cy) return
+      const match = getMatch(path)
+      if (!match) return
+      match.forEach((n: any) => {
+        const id = safeStr(n.id())
+        const p = safeStr(n.data('path'))
+        const key = safeStr(p || id)
+        if (id) hiddenKeysRef.current.delete(id)
+        if (p) hiddenKeysRef.current.delete(p)
+        if (key) hiddenKeysRef.current.delete(key)
+      })
+      applyFiltersRef.current()
+    },
+    [getMatch],
+  )
+
+  const showAll = useCallback(() => {
+    hiddenKeysRef.current = new Set()
+    applyFiltersRef.current()
+  }, [])
+
+  const hideOthers = useCallback(
+    (path: string) => {
+      const cy = cyRef.current
+      if (!cy) return
+      const match = getMatch(path)
+      if (!match) return
+      const keep = match.closedNeighborhood().nodes()
+      cy.nodes().forEach((n: any) => {
+        if (keep.contains(n)) return
+        const id = safeStr(n.id())
+        const p = safeStr(n.data('path'))
+        const key = safeStr(p || id)
+        if (id) hiddenKeysRef.current.add(id)
+        if (p) hiddenKeysRef.current.add(p)
+        if (key) hiddenKeysRef.current.add(key)
+      })
+      applyFiltersRef.current()
+    },
+    [getMatch],
+  )
+
+  const toggleLockPath = useCallback(
+    (path: string) => {
+      const cy = cyRef.current
+      if (!cy) return
+      const match = getMatch(path)
+      if (!match) return
+      match.forEach((n: any) => {
+        const id = safeStr(n.id())
+        const p = safeStr(n.data('path'))
+        const key = safeStr(p || id)
+        const isLocked = (id && lockedKeysRef.current.has(id)) || (p && lockedKeysRef.current.has(p)) || (key && lockedKeysRef.current.has(key))
+        if (isLocked) {
+          if (id) lockedKeysRef.current.delete(id)
+          if (p) lockedKeysRef.current.delete(p)
+          if (key) lockedKeysRef.current.delete(key)
+          try { n.unlock() } catch {}
+        } else {
+          if (id) lockedKeysRef.current.add(id)
+          if (p) lockedKeysRef.current.add(p)
+          if (key) lockedKeysRef.current.add(key)
+          try { n.lock() } catch {}
+        }
+      })
+      applyFiltersRef.current()
+    },
+    [getMatch],
+  )
+
+  const unlockAll = useCallback(() => {
+    const cy = cyRef.current
+    if (!cy) return
+    lockedKeysRef.current = new Set()
+    try {
+      cy.nodes().unlock()
+    } catch {}
+    applyFiltersRef.current()
+  }, [])
+
+  const relayoutVisible = useCallback(() => {
+    try {
+      const cy = cyRef.current
+      if (!cy) return
+      const visible = cy.elements(':visible')
+      const layout: any = visible.layout(DEFAULT_LAYOUT as any)
+      layout.on('layoutstop', () => {
+        try { cy.fit(cy.elements(':visible'), 60) } catch {}
+      })
+      layout.run()
+    } catch {}
+  }, [])
+
+  const exportSnapshot = useCallback((opts?: { visibleOnly?: boolean }): GraphEditSnapshot | null => {
+    try {
+      const cy = cyRef.current
+      if (!cy) return null
+      const visibleOnly = Boolean(opts?.visibleOnly)
+      const positions: Record<string, { x: number; y: number }> = {}
+      const nodes = visibleOnly ? cy.nodes(':visible') : cy.nodes()
+      nodes.forEach((n: any) => {
+        const id = safeStr(n.id())
+        const pos = n.position()
+        if (!id || !pos) return
+        if (!Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return
+        positions[id] = { x: Number(pos.x), y: Number(pos.y) }
+      })
+      const z = cy.zoom()
+      const p = cy.pan()
+      return {
+        version: 1,
+        zoom: Number.isFinite(Number(z)) ? Number(z) : 1,
+        pan: { x: Number.isFinite(Number(p?.x)) ? Number(p.x) : 0, y: Number.isFinite(Number(p?.y)) ? Number(p.y) : 0 },
+        positions,
+        hiddenKeys: Array.from(hiddenKeysRef.current),
+        lockedKeys: Array.from(lockedKeysRef.current),
+      }
+    } catch {
+      return null
+    }
+  }, [])
+
+  const applySnapshot = useCallback((snap: GraphEditSnapshot): boolean => {
+    try {
+      const cy = cyRef.current
+      if (!cy || !snap || snap.version !== 1) return false
+
+      hiddenKeysRef.current = new Set((snap.hiddenKeys || []).map((x) => safeStr(x)).filter(Boolean))
+      lockedKeysRef.current = new Set((snap.lockedKeys || []).map((x) => safeStr(x)).filter(Boolean))
+
+      const pos = snap.positions || {}
+      cy.batch(() => {
+        cy.nodes().forEach((n: any) => {
+          const id = safeStr(n.id())
+          const p = pos[id]
+          if (!p) return
+          if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return
+          try { n.position({ x: p.x, y: p.y }) } catch {}
+        })
+      })
+
+      applyFiltersRef.current()
+      try { cy.zoom(snap.zoom) } catch {}
+      try { cy.pan(snap.pan as any) } catch {}
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const saveLayout = useCallback((storageKey: string): boolean => {
+    try {
+      const key = safeStr(storageKey)
+      if (!key) return false
+      const snap = exportSnapshot()
+      if (!snap) return false
+      localStorage.setItem(key, JSON.stringify(snap))
+      return true
+    } catch {
+      return false
+    }
+  }, [exportSnapshot])
+
+  const clearLayout = useCallback((storageKey: string) => {
+    try {
+      const key = safeStr(storageKey)
+      if (!key) return
+      localStorage.removeItem(key)
+    } catch {}
+  }, [])
+
+  const loadLayout = useCallback(
+    (
+      storageKey: string,
+      opts?: { attempts?: number; onApplied?: () => void }
+    ): boolean => {
+    try {
+      const key = safeStr(storageKey)
+      if (!key) return false
+      const raw = localStorage.getItem(key)
+      if (!raw) return false
+      const parsed = JSON.parse(raw) as GraphEditSnapshot
+      const attempts = Number.isFinite(Number(opts?.attempts)) ? Number(opts?.attempts) : 10
+      
+      const tryApply = (n: number): boolean => {
+        const cy = cyRef.current
+        if (!cy) return false
+        if (cy.nodes().length === 0 && n > 0) {
+          window.setTimeout(() => tryApply(n - 1), 80)
+          return true
+        }
+        applySnapshot(parsed)
+        try { 
+          opts?.onApplied?.() 
+        } catch {}
+        return true
+      }
+      return tryApply(attempts)
+    } catch {
+      return false
+    }
+  }, [applySnapshot])
+
+  const getEditStats = useCallback(() => {
+    try {
+      const cy = cyRef.current
+      if (!cy) return { hidden: 0, locked: 0 }
+      let hidden = 0
+      let locked = 0
+      cy.nodes().forEach((n: any) => {
+        if (isHiddenNode(n)) hidden += 1
+        const id = safeStr(n.id())
+        const path = safeStr(n.data('path'))
+        const key = safeStr(path || id)
+        const isLocked = (id && lockedKeysRef.current.has(id)) || (path && lockedKeysRef.current.has(path)) || (key && lockedKeysRef.current.has(key))
+        if (isLocked) locked += 1
+      })
+      return { hidden, locked }
+    } catch {
+      return { hidden: 0, locked: 0 }
+    }
+  }, [isHiddenNode])
+
+  const resize = useCallback(() => {
+    try {
+      const cy = cyRef.current
+      if (!cy) return
+      cy.resize()
+    } catch {}
+  }, [])
+
+  return {
+    containerRef,
+    stats,
+    instanceId,
+    actions: {
+      resize,
+      fit,
+      relayout,
+      relayoutVisible,
+      centerSelected,
+      centerPath,
+      hidePath,
+      hideOthers,
+      showPath,
+      showAll,
+      toggleLockPath,
+      unlockAll,
+      exportSnapshot,
+      applySnapshot,
+      saveLayout,
+      loadLayout,
+      clearLayout,
+      getEditStats,
+    },
+  }
+}
+
+export type CytoscapeGraphActions = ReturnType<typeof useCytoscapeGraph>['actions']

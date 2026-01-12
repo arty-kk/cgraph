@@ -12,4 +12,4 @@ build/
 # app data
 *.sqlite
 *.sqlite3
-.codesurgeon/
+.CGRAPH/

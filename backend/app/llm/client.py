@@ -2,14 +2,22 @@
 from __future__ import annotations
 
 from openai import OpenAI
+
 from ..config import settings
 
 _client: OpenAI | None = None
 
+
 def get_openai_client() -> OpenAI:
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY не задан. Экспортируй переменную окружения OPENAI_API_KEY.")
+
     global _client
     if _client is None:
-        _client = OpenAI(api_key=settings.openai_api_key)
+        _client = OpenAI(
+            api_key=settings.openai_api_key,
+            timeout=settings.openai_timeout_seconds,
+            max_retries=settings.openai_max_retries,
+        )
+
     return _client

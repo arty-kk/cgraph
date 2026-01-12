@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 ANALYZE_SCHEMA = {
-  "name": "code_surgeon_analyze",
+  "name": "cgraph_analyze",
   "schema": {
     "type": "object",
     "additionalProperties": False,
@@ -19,7 +19,7 @@ ANALYZE_SCHEMA = {
 }
 
 TRIAGE_SCHEMA = {
-  "name": "code_surgeon_triage",
+  "name": "cgraph_triage",
   "schema": {
     "type": "object",
     "additionalProperties": False,
@@ -36,7 +36,7 @@ TRIAGE_SCHEMA = {
 }
 
 FIX_SCHEMA = {
-  "name": "code_surgeon_fix",
+  "name": "cgraph_fix",
   "schema": {
     "type": "object",
     "additionalProperties": False,
@@ -48,6 +48,19 @@ FIX_SCHEMA = {
       "notes": {"type": "string"}
     },
     "required": ["diagnosis", "plan", "patch_unified_diff", "tests", "notes"]
+  },
+  "strict": True
+}
+
+DOCS_SCHEMA = {
+  "name": "cgraph_docs",
+  "schema": {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+      "markdown": {"type": "string"}
+    },
+    "required": ["markdown"]
   },
   "strict": True
 }

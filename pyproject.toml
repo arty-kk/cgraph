@@ -1,0 +1,16 @@
+[tool.ruff]
+line-length = 100
+src = ["backend/app"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = ["backend/app"]
+warn_unused_configs = true
+warn_return_any = true
+warn_unused_ignores = true
+strict_optional = true
+ignore_missing_imports = true
