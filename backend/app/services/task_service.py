@@ -202,6 +202,13 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
     if dep_mode not in ("contracts", "full"):
         raise BadRequestError("Неизвестный dep_mode")
 
+    if not settings.openai_api_key and (mode is None or mode in ("analyze", "evolve", "fix")):
+        raise BadRequestError(
+            "OPENAI_API_KEY не задан. Для Run без LLM доступен только режим impact. "
+            "Укажи mode=impact или настрой ключ.",
+            context={"mode": mode or "auto"},
+        )
+
     if mode is None:
         try:
             triage_result = triage(request.prompt)
