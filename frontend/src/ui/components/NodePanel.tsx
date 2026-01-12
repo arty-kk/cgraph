@@ -1,6 +1,6 @@
 // frontend/src/ui/components/NodePanel.tsx
 import React, { useMemo } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { DepMode, Mode, NodeContract, NodeInfo, Project, RunRecord, RunTaskResult } from '../../api'
 import { clampInt } from '../../lib/number'
@@ -115,6 +115,7 @@ export function NodePanel({
   const [helpOpen, setHelpOpen] = React.useState<
     null | 'details' | 'contract' | 'run' | 'result' | 'runs' | 'context' | 'ctxSettings'
   >(null)
+  const [resultOpen, setResultOpen] = React.useState(false)
 
   const [detailsOpen, setDetailsOpen] = React.useState<boolean>(() => {
     try { return (localStorage.getItem('cs.ui.detailsOpen') || '1') !== '0' } catch { return true }
@@ -328,23 +329,141 @@ export function NodePanel({
     open,
     onToggle,
     toggleTitle,
+    actions,
   }: {
     title: string
     topic: 'details' | 'contract' | 'run' | 'result' | 'runs' | 'context' | 'ctxSettings'
     open?: boolean
     onToggle?: () => void
     toggleTitle?: string
+    actions?: React.ReactNode
   }) => (
     <div className="flex items-center justify-between gap-3 min-h-6">
       <div className="flex items-center gap-2">
         <div className="text-sm font-semibold text-neutral-200 leading-none">{title}</div>
         <HelpButton topic={topic} label={`Help: ${title}`} />
       </div>
-      {typeof open === 'boolean' && onToggle ? (
-        <ToggleBtn open={open} onClick={onToggle} title={toggleTitle || `${open ? 'Hide' : 'Show'} ${title}`} />
-      ) : null}
+      <div className="flex items-center gap-2">
+        {actions}
+        {typeof open === 'boolean' && onToggle ? (
+          <ToggleBtn open={open} onClick={onToggle} title={toggleTitle || `${open ? 'Hide' : 'Show'} ${title}`} />
+        ) : null}
+      </div>
     </div>
   )
+
+  const resultText = useMemo(
+    () => formatResult(runPayload as Record<string, any> | null),
+    [runPayload],
+  )
+  const resultMarkdownComponents = useMemo<Components>(() => ({
+    h1: ({ node, className, ...props }) => (
+      <h1
+        {...props}
+        className={['text-sm font-semibold text-neutral-100 mt-1 mb-2', className].filter(Boolean).join(' ')}
+      />
+    ),
+    h2: ({ node, className, ...props }) => (
+      <h2
+        {...props}
+        className={['text-xs font-semibold text-neutral-100 mt-4 mb-2', className].filter(Boolean).join(' ')}
+      />
+    ),
+    h3: ({ node, className, ...props }) => (
+      <h3
+        {...props}
+        className={['text-[11px] font-semibold text-neutral-100 mt-3 mb-2', className].filter(Boolean).join(' ')}
+      />
+    ),
+    p: ({ node, className, children, ...props }) => (
+      <p
+        {...props}
+        className={['text-xs text-neutral-200 leading-relaxed my-2', className].filter(Boolean).join(' ')}
+      >
+        {renderInlineHighlights(children)}
+      </p>
+    ),
+    ul: ({ node, className, ...props }) => (
+      <ul {...props} className={['list-disc pl-5 my-2 space-y-1', className].filter(Boolean).join(' ')} />
+    ),
+    ol: ({ node, className, ...props }) => (
+      <ol {...props} className={['list-decimal pl-5 my-2 space-y-1', className].filter(Boolean).join(' ')} />
+    ),
+    li: ({ node, className, children, ...props }) => (
+      <li {...props} className={['text-xs text-neutral-200', className].filter(Boolean).join(' ')}>
+        {renderInlineHighlights(children)}
+      </li>
+    ),
+    pre: ({ node, className, ...props }) => (
+      <pre
+        {...props}
+        className={['text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 overflow-auto my-2', className]
+          .filter(Boolean)
+          .join(' ')}
+      />
+    ),
+    table: ({ node, className, ...props }) => (
+      <div className="my-3 overflow-auto">
+        <table {...props} className={['w-full text-xs border-collapse', className].filter(Boolean).join(' ')} />
+      </div>
+    ),
+    thead: ({ node, className, ...props }) => (
+      <thead {...props} className={['bg-neutral-900/40', className].filter(Boolean).join(' ')} />
+    ),
+    th: ({ node, className, children, ...props }) => (
+      <th
+        {...props}
+        className={['border border-neutral-800 px-2 py-1 text-left text-neutral-200 font-semibold align-top', className]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        {renderInlineHighlights(children)}
+      </th>
+    ),
+    td: ({ node, className, children, ...props }) => (
+      <td
+        {...props}
+        className={['border border-neutral-800 px-2 py-1 text-neutral-200 align-top', className]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        {renderInlineHighlights(children)}
+      </td>
+    ),
+    code: ({ node, className, children, ...props }) => {
+      const isInline = !(className && /\blanguage-/.test(className))
+
+      if (isInline) {
+        return (
+          <code
+            {...props}
+            className={[
+              'font-mono text-[11px] rounded border border-neutral-700 bg-neutral-950 px-1 py-0.5 text-indigo-100 shadow-inner shadow-black/40',
+              className || '',
+            ].join(' ')}
+          >
+            {children}
+          </code>
+        )
+      }
+
+      return (
+        <code {...props} className={['font-mono text-[11px]', className || ''].join(' ')}>
+          {children}
+        </code>
+      )
+    },
+    a: ({ node, className, ...props }) => (
+      <a
+        {...props}
+        className={['text-indigo-300 font-semibold underline decoration-indigo-500/60 hover:text-indigo-200', className]
+          .filter(Boolean)
+          .join(' ')}
+        target={props.target ?? '_blank'}
+        rel={props.rel ?? 'noreferrer'}
+      />
+    ),
+  }), [renderInlineHighlights])
 
   return (
     <div className="relative h-full min-h-0 border-l border-neutral-800 overflow-visible">
@@ -717,8 +836,23 @@ export function NodePanel({
               )}
             </div>
 
-              <div className="mt-4">
-                <SectionHeader title="Result" topic="result" />
+                <div className="mt-4">
+                  <SectionHeader
+                    title="Result"
+                    topic="result"
+                    actions={
+                      runResult ? (
+                        <button
+                          type="button"
+                          className="h-6 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2.5 text-[11px] font-semibold"
+                          onClick={() => setResultOpen(true)}
+                          title="Open result in a separate window"
+                        >
+                          Open
+                        </button>
+                      ) : null
+                    }
+                  />
                 {!runResult ? (
                   <div className="mt-2 text-xs text-neutral-400">—</div>
                 ) : (
@@ -747,84 +881,8 @@ export function NodePanel({
                     )}
 
                     <div className="bg-neutral-900 border border-neutral-800 rounded-md p-3 text-xs text-neutral-200 leading-relaxed">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          h1: ({ children }) => (
-                            <h1 className="text-sm font-semibold text-neutral-100 mt-1 mb-2">{children}</h1>
-                          ),
-                          h2: ({ children }) => (
-                            <h2 className="text-xs font-semibold text-neutral-100 mt-4 mb-2">{children}</h2>
-                          ),
-                          h3: ({ children }) => (
-                            <h3 className="text-[11px] font-semibold text-neutral-100 mt-3 mb-2">{children}</h3>
-                          ),
-                          p: ({ children }) => (
-                            <p className="text-xs text-neutral-200 leading-relaxed my-2">
-                              {renderInlineHighlights(children)}
-                            </p>
-                          ),
-                          ul: ({ children }) => <ul className="list-disc pl-5 my-2 space-y-1">{children}</ul>,
-                          ol: ({ children }) => <ol className="list-decimal pl-5 my-2 space-y-1">{children}</ol>,
-                          li: ({ children }) => (
-                            <li className="text-xs text-neutral-200">{renderInlineHighlights(children)}</li>
-                          ),
-                          pre: ({ children }) => (
-                            <pre className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 overflow-auto my-2">
-                              {children}
-                            </pre>
-                          ),
-                          table: ({ children }) => (
-                            <div className="my-3 overflow-auto">
-                              <table className="w-full text-xs border-collapse">{children}</table>
-                            </div>
-                          ),
-                          thead: ({ children }) => <thead className="bg-neutral-900/40">{children}</thead>,
-                          th: ({ children }) => (
-                            <th className="border border-neutral-800 px-2 py-1 text-left text-neutral-200 font-semibold align-top">
-                              {renderInlineHighlights(children)}
-                            </th>
-                          ),
-                          td: ({ children }) => (
-                            <td className="border border-neutral-800 px-2 py-1 text-neutral-200 align-top">
-                              {renderInlineHighlights(children)}
-                            </td>
-                          ),
-                          code: ({ children, className }) => {
-                            const isInline = !(className && /\blanguage-/.test(className))
-
-                            if (isInline) {
-                              return (
-                                <code
-                                  className={[
-                                    'font-mono text-[11px] rounded border border-neutral-700 bg-neutral-950 px-1 py-0.5 text-indigo-100 shadow-inner shadow-black/40',
-                                    className || '',
-                                  ].join(' ')}
-                                >
-                                  {children}
-                                </code>
-                              )
-                            }
-
-                            return (
-                              <code className={['font-mono text-[11px]', className || ''].join(' ')}>
-                                {children}
-                              </code>
-                            )
-                          },
-                          a: ({ href, children }) => (
-                            <a
-                              href={href || '#'}
-                              className="text-indigo-300 font-semibold underline decoration-indigo-500/60 hover:text-indigo-200"
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              {children}
-                            </a>
-                          ),
-                        }}
-                      >
-                        {formatResult(runPayload as Record<string, any> | null)}
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>
+                        {resultText}
                       </ReactMarkdown>
                     </div>
 
@@ -849,7 +907,21 @@ export function NodePanel({
 
                         return (
                           <>
-                            <div className="text-xs font-semibold text-neutral-200">Patch (Unified Diff)</div>
+                            <div className="flex items-center justify-between gap-2 text-xs font-semibold text-neutral-200">
+                              <div>Patch (Unified Diff)</div>
+                              <button
+                                type="button"
+                                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+                                onClick={async () => {
+                                  if (!patchStr) return
+                                  try { await navigator.clipboard.writeText(patchStr) } catch {}
+                                }}
+                                disabled={!patchStr}
+                                title={patchStr ? 'Copy patch' : 'No patch to copy'}
+                              >
+                                Copy patch
+                              </button>
+                            </div>
 
                             {hasPatch ? (
                               <pre className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 overflow-auto max-h-72">
@@ -977,6 +1049,40 @@ export function NodePanel({
             </div>
           </div>
         )}
+
+        <Modal
+          open={resultOpen && !!runResult}
+          title="Result"
+          onClose={() => setResultOpen(false)}
+        >
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+                onClick={async () => {
+                  if (!resultText.trim()) return
+                  try { await navigator.clipboard.writeText(resultText) } catch {}
+                }}
+                disabled={!resultText.trim()}
+              >
+                Copy result
+              </button>
+            </div>
+            <div className="text-xs text-neutral-500">
+              {runResult?.run_id ? `run_id: ${runResult.run_id}` : 'Result preview'}
+            </div>
+            <div className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-3 overflow-auto max-h-[70vh]">
+              {!resultText.trim() ? (
+                <div className="text-neutral-500">—</div>
+              ) : (
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={resultMarkdownComponents}>
+                  {resultText}
+                </ReactMarkdown>
+              )}
+            </div>
+          </div>
+        </Modal>
 
         <Modal
           open={helpOpen != null}
