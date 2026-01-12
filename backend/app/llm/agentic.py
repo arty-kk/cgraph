@@ -23,6 +23,7 @@ from ..api_contracts import build_backend_contract_for_route
 from ..ts_edits import unified_diff as _unified_diff, ts_add_fields_to_typedef, ts_patch_wrapper_function
 from ..py_edits import py_add_keys_to_function_return_dicts
 from .client import get_openai_client
+from .model_caps import supports_reasoning, supports_temperature
 from .policy import ModelPolicy, DEFAULT_POLICY
 from .schemas import ANALYZE_SCHEMA, FIX_SCHEMA
 from .orchestrator import SYSTEM_INSTRUCTIONS
@@ -2860,14 +2861,15 @@ def _agentic_json_call(
             "tools": tools,
             "text": {"format": fmt},
             "store": bool(settings.openai_store),
-            "temperature": float(eff_temp),
             "parallel_tool_calls": False,
         }
+        if supports_temperature(model):
+            kwargs["temperature"] = float(eff_temp)
         if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
             kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
             if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
                 kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
-        if reasoning_effort:
+        if reasoning_effort and supports_reasoning(model):
             kwargs["reasoning"] = {"effort": reasoning_effort}
 
         try:

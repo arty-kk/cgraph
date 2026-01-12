@@ -7,6 +7,7 @@ from typing import Any
 from .client import get_openai_client
 from .schemas import TRIAGE_SCHEMA, ANALYZE_SCHEMA, FIX_SCHEMA, DOCS_SCHEMA
 from .policy import ModelPolicy, DEFAULT_POLICY
+from .model_caps import supports_reasoning
 from ..config import settings
 
 SYSTEM_INSTRUCTIONS = """Ты — CGRAPH: сверхточный кодовый архитектор. Твоя цель — давать полезный, проверяемый результат с минимальным радиусом изменений.
@@ -72,7 +73,7 @@ def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reas
         kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
         if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
             kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
-    if reasoning_effort:
+    if reasoning_effort and supports_reasoning(model):
         kwargs["reasoning"] = {"effort": reasoning_effort}
 
     try:
