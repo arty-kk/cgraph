@@ -18,8 +18,7 @@ CGRAPH — локальный сервис и веб‑интерфейс для
 1. Создайте виртуальное окружение и активируйте его:
    - macOS:
      ```bash
-     python3 -m venv .venv
-     source .venv/bin/activate
+     python3 -m venv .venv && source .venv/bin/activate
      ```
    - Windows (PowerShell):
      ```powershell
@@ -42,13 +41,11 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 1. Перейдите в папку фронтенда и установите зависимости:
    ```bash
-   cd frontend
-   npm install
+   cd frontend && npm install
    ```
 2. Запустите:
    ```bash
-   npm run build
-   npm run preview -- --host 0.0.0.0 --port 4173
+   npm run build && npm run preview -- --host 0.0.0.0 --port 4173
    ```
 3. Откройте UI: http://localhost:5173 | http://localhost:4173 (API слушает на http://localhost:8000).
 
