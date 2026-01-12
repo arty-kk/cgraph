@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 
-_GPT_VERSION_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?(?:[.-].*)?$")
+_GPT_VERSION_RE = re.compile(r"^gpt-(\d+)(?:\.(\d+))?(?:[.-].*|[a-z].*)?$")
+_REASONING_MODEL_RE = re.compile(r"^o(\d+)(?:[.-].*)?$")
 
 
 def _gpt_major_version(model: str) -> int | None:
@@ -21,7 +22,18 @@ def _gpt_major_version(model: str) -> int | None:
         return None
 
 
+def _is_reasoning_model(model: str) -> bool:
+    if not isinstance(model, str):
+        return False
+    name = model.strip().lower()
+    if not name:
+        return False
+    return _REASONING_MODEL_RE.match(name) is not None
+
+
 def supports_reasoning(model: str) -> bool:
+    if _is_reasoning_model(model):
+        return True
     major = _gpt_major_version(model)
     if major is None:
         return False
@@ -29,6 +41,8 @@ def supports_reasoning(model: str) -> bool:
 
 
 def supports_temperature(model: str) -> bool:
+    if _is_reasoning_model(model):
+        return False
     major = _gpt_major_version(model)
     if major is None:
         return True
