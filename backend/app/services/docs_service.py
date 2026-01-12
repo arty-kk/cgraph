@@ -763,15 +763,17 @@ def build_project_docs(project_id: int) -> dict:
     risks: list[dict] = []
     paths: list[str] = []
     for row in nodes:
-        path = row[0] if isinstance(row, (tuple, list)) else ""
+        try:
+            path, language, loc, complexity, fan_in, fan_out, status = row
+        except Exception:
+            continue
         if not isinstance(path, str) or not path:
             continue
-        language = row[1] if isinstance(row, (tuple, list)) else "unknown"
-        loc = int(row[2] or 0)
-        complexity = int(row[3] or 0)
-        fan_in = int(row[4] or 0)
-        fan_out = int(row[5] or 0)
-        status = str(row[6] or "")
+        loc = int(loc or 0)
+        complexity = int(complexity or 0)
+        fan_in = int(fan_in or 0)
+        fan_out = int(fan_out or 0)
+        status = str(status or "")
         total_loc += loc
         lang_count[str(language or "unknown")] = lang_count.get(str(language or "unknown"), 0) + 1
         paths.append(path)
