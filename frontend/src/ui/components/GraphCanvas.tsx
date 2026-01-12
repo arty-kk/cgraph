@@ -1416,6 +1416,7 @@ export function GraphCanvas({
               className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
               onClick={async () => {
                 try { await navigator.clipboard.writeText(ctxMenu.path) } catch {}
+                notifyInfo('Path copied')
                 setCtxMenu(null)
               }}
             >
