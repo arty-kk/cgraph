@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from .base import ImportRef, SymbolDef
+from .tree_sitter_utils import iter_nodes, node_text, parse_tree
 
 JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 JS_LINE_COMMENT_RE = re.compile(r"//.*?$", re.MULTILINE)
@@ -58,99 +59,174 @@ EXPORT_RE = re.compile(r"""(?x)
     )
 """, re.MULTILINE)
 
+def _strip_quotes(s: str) -> str:
+    s = (s or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"', "`"):
+        return s[1:-1]
+    return s
+
+def _js_ts_language(path: Path) -> str:
+    suf = (path.suffix or "").lower()
+    if suf in (".ts", ".mts", ".cts"):
+        return "typescript"
+    if suf in (".tsx",):
+        return "tsx"
+    return "javascript"
+
+def _string_literal_value(node_text_raw: str) -> str:
+    if not node_text_raw:
+        return ""
+    if "${" in node_text_raw:
+        return ""
+    return _strip_quotes(node_text_raw)
+
+def _first_call_string_arg(node, data: bytes) -> str:
+    args = None
+    for ch in node.children:
+        if ch.type in ("arguments", "argument_list"):
+            args = ch
+            break
+    if args is None:
+        args = node.child_by_field_name("arguments")
+    if args is None:
+        return ""
+    for ch in args.children:
+        if ch.type in ("string", "string_literal", "template_string", "template_literal"):
+            return _string_literal_value(node_text(ch, data))
+    return ""
+
+def _first_string_literal(node, data: bytes) -> str:
+    if node is None:
+        return ""
+    for ch in iter_nodes(node):
+        if ch.type in ("string", "string_literal", "template_string", "template_literal"):
+            return _string_literal_value(node_text(ch, data))
+    return ""
+
 class JsTsIndexer:
     def language(self) -> str:
         return "js_ts"
 
     def parse_imports(self, file_path: Path, text: str) -> list[ImportRef]:
         out: list[ImportRef] = []
-        cleaned = _strip_js_comments(text)
         seen: set[tuple[str, str]] = set()
+        tree, data = parse_tree(_js_ts_language(file_path), text)
 
-        for m in STATIC_FROM_RE.finditer(cleaned):
-            spec = (m.group("from1") or m.group("from2") or "").strip()
+        def _add(raw: str, spec: str, kind: str) -> None:
+            spec = (spec or "").strip()
             if not spec:
-                continue
-            raw = m.group(0).strip()
-            is_export = raw.lstrip().startswith("export")
-            is_type = bool(m.group("import_type") or m.group("export_type"))
-            if is_export:
-                kind = "type_reexport" if is_type else "reexport"
-            else:
-                kind = "type" if is_type else "runtime"
+                return
             key = (kind, spec)
             if key in seen:
-                continue
+                return
             seen.add(key)
             out.append(ImportRef(raw=raw, spec=spec, kind=kind))
- 
-        for m in SIDE_EFFECT_IMPORT_RE.finditer(cleaned):
-            spec = (m.group("side") or "").strip()
-            if not spec:
-                continue
-            key = ("runtime", spec)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(ImportRef(raw=m.group(0).strip(), spec=spec, kind="runtime"))
 
-        for m in IMPORT_EQUALS_RE.finditer(cleaned):
-            spec = (m.group("req") or "").strip()
-            if not spec:
-                continue
-            key = ("runtime", spec)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(ImportRef(raw=m.group(0).strip(), spec=spec, kind="runtime"))
+        if tree is not None:
+            for node in iter_nodes(tree.root_node):
+                if node.type in ("import_statement", "import_declaration"):
+                    raw = node_text(node, data).strip()
+                    source = node.child_by_field_name("source")
+                    spec = _string_literal_value(node_text(source, data))
+                    kind = "type" if raw.lstrip().startswith("import type") else "runtime"
+                    _add(raw, spec, kind)
+                    continue
+                if node.type in ("export_statement", "export_declaration"):
+                    source = node.child_by_field_name("source")
+                    if source is not None:
+                        raw = node_text(node, data).strip()
+                        spec = _string_literal_value(node_text(source, data))
+                        kind = "type_reexport" if raw.lstrip().startswith("export type") else "reexport"
+                        _add(raw, spec, kind)
+                    continue
+                if node.type in ("call_expression", "import_call"):
+                    raw = node_text(node, data).strip()
+                    func = node.child_by_field_name("function")
+                    func_name = node_text(func, data).strip()
+                    if node.type == "import_call" or func_name in ("import", "require"):
+                        spec = _first_call_string_arg(node, data)
+                        if spec:
+                            _add(raw, spec, "runtime")
+                    continue
+                if node.type in ("import_assignment", "import_equals_declaration"):
+                    raw = node_text(node, data).strip()
+                    spec = _first_string_literal(node, data)
+                    if spec:
+                        _add(raw, spec, "runtime")
+                    continue
 
-        for m in DYNAMIC_IMPORT_RE.finditer(cleaned):
-            spec = (m.group("dyn") or "").strip()
-            if not spec:
-                continue
-            key = ("runtime", spec)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(ImportRef(raw=m.group(0).strip(), spec=spec, kind="runtime"))
+        if not out:
+            cleaned = _strip_js_comments(text)
+            for m in STATIC_FROM_RE.finditer(cleaned):
+                spec = (m.group("from1") or m.group("from2") or "").strip()
+                if not spec:
+                    continue
+                raw = m.group(0).strip()
+                is_export = raw.lstrip().startswith("export")
+                is_type = bool(m.group("import_type") or m.group("export_type"))
+                if is_export:
+                    kind = "type_reexport" if is_type else "reexport"
+                else:
+                    kind = "type" if is_type else "runtime"
+                _add(raw, spec, kind)
 
-        for m in REQUIRE_RE.finditer(cleaned):
-            spec = (m.group("req") or "").strip()
-            if not spec:
-                continue
-            key = ("runtime", spec)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(ImportRef(raw=m.group(0).strip(), spec=spec, kind="runtime"))
+            for m in SIDE_EFFECT_IMPORT_RE.finditer(cleaned):
+                spec = (m.group("side") or "").strip()
+                if spec:
+                    _add(m.group(0).strip(), spec, "runtime")
+
+            for m in IMPORT_EQUALS_RE.finditer(cleaned):
+                spec = (m.group("req") or "").strip()
+                if spec:
+                    _add(m.group(0).strip(), spec, "runtime")
+
+            for m in DYNAMIC_IMPORT_RE.finditer(cleaned):
+                spec = (m.group("dyn") or "").strip()
+                if spec:
+                    _add(m.group(0).strip(), spec, "runtime")
+
+            for m in REQUIRE_RE.finditer(cleaned):
+                spec = (m.group("req") or "").strip()
+                if spec:
+                    _add(m.group(0).strip(), spec, "runtime")
         return out
 
     def parse_exports(self, file_path: Path, text: str) -> list[str]:
         exports: list[str] = []
-        for m in EXPORT_RE.finditer(text):
-            raw = (m.group(0) or "").strip()
-            for g in ("d_fn", "d_cls", "fn", "cls", "const", "let", "var"):
-                v = m.group(g)
-                if v:
-                    exports.append(v)
-            for g in ("intf", "type_alias", "enum", "namespace", "star_as"):
-                v = m.group(g)
-                if v:
-                    exports.append(v)
-            if raw.lstrip().startswith("export default"):
-                exports.append("default")
-            brace = m.group("brace")
-            if brace:
-                parts = [p.strip() for p in brace.split(",")]
-                for p in parts:
-                    if p.startswith("type "):
-                        p = p[5:].strip()
-                    if p.startswith("typeof "):
-                        p = p[7:].strip()
-                    if " as " in p:
-                        exports.append(p.split(" as ")[-1].strip())
-                    else:
-                        exports.append(p.split(":")[0].strip())
+        tree, data = parse_tree(_js_ts_language(file_path), text)
+        snippets: list[str] = []
+        if tree is not None:
+            for node in iter_nodes(tree.root_node):
+                if node.type in ("export_statement", "export_declaration"):
+                    snippets.append(node_text(node, data))
+        else:
+            snippets = [text]
+
+        for snippet in snippets:
+            for m in EXPORT_RE.finditer(snippet):
+                raw = (m.group(0) or "").strip()
+                for g in ("d_fn", "d_cls", "fn", "cls", "const", "let", "var"):
+                    v = m.group(g)
+                    if v:
+                        exports.append(v)
+                for g in ("intf", "type_alias", "enum", "namespace", "star_as"):
+                    v = m.group(g)
+                    if v:
+                        exports.append(v)
+                if raw.lstrip().startswith("export default"):
+                    exports.append("default")
+                brace = m.group("brace")
+                if brace:
+                    parts = [p.strip() for p in brace.split(",")]
+                    for p in parts:
+                        if p.startswith("type "):
+                            p = p[5:].strip()
+                        if p.startswith("typeof "):
+                            p = p[7:].strip()
+                        if " as " in p:
+                            exports.append(p.split(" as ")[-1].strip())
+                        else:
+                            exports.append(p.split(":")[0].strip())
         seen = set()
         out: list[str] = []
         for e in exports:
@@ -162,20 +238,25 @@ class JsTsIndexer:
     def parse_symbols(self, file_path: Path, text: str) -> list[SymbolDef]:
         out: list[SymbolDef] = []
         seen: set[tuple[str, str, int]] = set()
+        lines = text.splitlines()
+        tree, data = parse_tree(_js_ts_language(file_path), text)
 
-        def _line_no(pos: int) -> int:
-            return text.count("\n", 0, max(0, pos)) + 1
+        def _line_text(line_no: int) -> str:
+            if 1 <= line_no <= len(lines):
+                return lines[line_no - 1].strip()
+            return ""
 
-        def _line_text(pos: int) -> str:
-            s0 = text.rfind("\n", 0, max(0, pos))
-            s0 = 0 if s0 < 0 else (s0 + 1)
-            e0 = text.find("\n", max(0, pos))
-            e0 = len(text) if e0 < 0 else e0
-            return text[s0:e0].strip()
+        snippets: list[tuple[str, int]] = []
+        if tree is not None:
+            for node in iter_nodes(tree.root_node):
+                if node.type in ("export_statement", "export_declaration"):
+                    ln = int(node.start_point[0]) + 1
+                    snippets.append((node_text(node, data), ln))
+        else:
+            snippets = [(text, 1)]
 
-        for m in EXPORT_RE.finditer(text):
-            ln = _line_no(m.start())
-            sig = _line_text(m.start())
+        for snippet, ln in snippets:
+            sig = _line_text(ln)
 
             def _add(name: str, kind: str) -> None:
                 if not name:
@@ -195,40 +276,41 @@ class JsTsIndexer:
                     )
                 )
 
-            if m.group("d_fn") or m.group("fn"):
-                _add(m.group("d_fn") or m.group("fn") or "", "function")
-            if m.group("d_cls") or m.group("cls"):
-                _add(m.group("d_cls") or m.group("cls") or "", "class")
-            if m.group("const") or m.group("let") or m.group("var"):
-                _add(m.group("const") or m.group("let") or m.group("var") or "", "variable")
+            for m in EXPORT_RE.finditer(snippet):
+                if m.group("d_fn") or m.group("fn"):
+                    _add(m.group("d_fn") or m.group("fn") or "", "function")
+                if m.group("d_cls") or m.group("cls"):
+                    _add(m.group("d_cls") or m.group("cls") or "", "class")
+                if m.group("const") or m.group("let") or m.group("var"):
+                    _add(m.group("const") or m.group("let") or m.group("var") or "", "variable")
 
-            if m.group("intf"):
-                _add(m.group("intf") or "", "interface")
-            if m.group("type_alias"):
-                _add(m.group("type_alias") or "", "type")
-            if m.group("enum"):
-                _add(m.group("enum") or "", "enum")
-            if m.group("namespace"):
-                _add(m.group("namespace") or "", "namespace")
-            if m.group("star_as"):
-                _add(m.group("star_as") or "", "reexport_namespace")
+                if m.group("intf"):
+                    _add(m.group("intf") or "", "interface")
+                if m.group("type_alias"):
+                    _add(m.group("type_alias") or "", "type")
+                if m.group("enum"):
+                    _add(m.group("enum") or "", "enum")
+                if m.group("namespace"):
+                    _add(m.group("namespace") or "", "namespace")
+                if m.group("star_as"):
+                    _add(m.group("star_as") or "", "reexport_namespace")
 
-            raw = (m.group(0) or "").strip()
-            if raw.lstrip().startswith("export default"):
-                _add("default", "default")
+                raw = (m.group(0) or "").strip()
+                if raw.lstrip().startswith("export default"):
+                    _add("default", "default")
 
-            brace = m.group("brace")
-            if brace:
-                parts = [p.strip() for p in brace.split(",")]
-                for p in parts:
-                    if p.startswith("type "):
-                        p = p[5:].strip()
-                    if p.startswith("typeof "):
-                        p = p[7:].strip()
-                    if " as " in p:
-                        _add(p.split(" as ")[-1].strip(), "reexport")
-                    else:
-                        _add(p.split(":")[0].strip(), "reexport")
+                brace = m.group("brace")
+                if brace:
+                    parts = [p.strip() for p in brace.split(",")]
+                    for p in parts:
+                        if p.startswith("type "):
+                            p = p[5:].strip()
+                        if p.startswith("typeof "):
+                            p = p[7:].strip()
+                        if " as " in p:
+                            _add(p.split(" as ")[-1].strip(), "reexport")
+                        else:
+                            _add(p.split(":")[0].strip(), "reexport")
         return out
 
 

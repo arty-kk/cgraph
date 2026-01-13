@@ -5,6 +5,8 @@ from .base import Indexer, ImportRef
 from .python_indexer import PythonIndexer
 from .js_ts_indexer import JsTsIndexer
 from .go_indexer import GoIndexer
+from .java_indexer import JavaIndexer
+from .php_indexer import PhpIndexer
 from .generic_indexer import GenericIndexer
 
 __all__ = ["Indexer", "ImportRef", "pick_indexer"]
@@ -18,4 +20,8 @@ def pick_indexer(path: str) -> Indexer:
         return JsTsIndexer()
     if p.endswith(".go"):
         return GoIndexer()
+    if p.endswith(".java"):
+        return JavaIndexer()
+    if p.endswith(".php"):
+        return PhpIndexer()
     return GenericIndexer()
