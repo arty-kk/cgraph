@@ -6,6 +6,7 @@ from pathlib import Path
 from .base import ImportRef, SymbolDef
 
 _TYPE_CHECKING_MODULES = {"typing", "typing_extensions"}
+_IMPORTLIB_MODULES = {"importlib"}
 
 def _is_type_checking_test(
     test: ast.AST,
@@ -39,6 +40,24 @@ def _collect_type_checking_aliases(tree: ast.Module) -> tuple[set[str], set[str]
                     type_checking_names.add(alias.asname or "TYPE_CHECKING")
 
     return typing_names, type_checking_names
+
+def _collect_importlib_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
+    module_names = set(_IMPORTLIB_MODULES)
+    import_module_names = {"import_module"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = getattr(alias, "name", "")
+                if name in _IMPORTLIB_MODULES:
+                    module_names.add(alias.asname or name)
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "") in _IMPORTLIB_MODULES:
+                for alias in node.names:
+                    if getattr(alias, "name", "") == "import_module":
+                        import_module_names.add(alias.asname or "import_module")
+
+    return module_names, import_module_names
 
 def _collect_assigned_names(t: ast.AST) -> list[str]:
     if isinstance(t, ast.Name):
@@ -131,6 +150,9 @@ def _safe_unparse(node: ast.AST) -> str:
             return ""
     return ""
 
+def _dynamic_kind(kind: str) -> str:
+    return "type_dynamic" if kind == "type" else "dynamic"
+
 def _format_function_signature(node: ast.AST) -> str:
 
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -207,6 +229,7 @@ class PythonIndexer:
         except SyntaxError:
             return imports
         typing_names, type_checking_names = _collect_type_checking_aliases(tree)
+        importlib_module_names, import_module_names = _collect_importlib_aliases(tree)
 
         def _walk(n: ast.AST, *, kind: str) -> None:
             # Mark imports under TYPE_CHECKING as type-only edges.
@@ -247,6 +270,21 @@ class PythonIndexer:
                             raw_prefix = (prefix or ".")
                             imports.append(ImportRef(raw=f"from {raw_prefix} import {name}", spec=spec, kind=kind))
                 return
+
+            if isinstance(n, ast.Call):
+                func = n.func
+                spec = _literal_str(n.args[0]) if n.args else None
+                if spec:
+                    if isinstance(func, ast.Name):
+                        if func.id in import_module_names or func.id == "__import__":
+                            raw = _safe_unparse(n) or f"{func.id}(...)"
+                            imports.append(ImportRef(raw=raw, spec=spec, kind=_dynamic_kind(kind)))
+                    elif isinstance(func, ast.Attribute):
+                        if func.attr == "import_module":
+                            v = func.value
+                            if isinstance(v, ast.Name) and v.id in importlib_module_names:
+                                raw = _safe_unparse(n) or "importlib.import_module(...)"
+                                imports.append(ImportRef(raw=raw, spec=spec, kind=_dynamic_kind(kind)))
 
             for ch in ast.iter_child_nodes(n):
                 _walk(ch, kind=kind)
