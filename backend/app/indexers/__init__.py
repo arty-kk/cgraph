@@ -8,6 +8,7 @@ from .go_indexer import GoIndexer
 from .java_indexer import JavaIndexer
 from .php_indexer import PhpIndexer
 from .generic_indexer import GenericIndexer
+from .infra_indexer import InfraIndexer, is_infra_file
 
 __all__ = ["Indexer", "ImportRef", "pick_indexer"]
 
@@ -24,4 +25,6 @@ def pick_indexer(path: str) -> Indexer:
         return JavaIndexer()
     if p.endswith(".php"):
         return PhpIndexer()
+    if is_infra_file(p):
+        return InfraIndexer()
     return GenericIndexer()
