@@ -93,8 +93,14 @@ def _parse_use_item(item: str, default_kind: str) -> tuple[str, str, str | None]
 
 def _split_use_items(spec: str, default_kind: str) -> list[tuple[str, str, str | None]]:
     if "{" not in spec or "}" not in spec:
-        item, kind, alias = _parse_use_item(spec, default_kind)
-        return [(item, kind, alias)]
+        parts = [p.strip() for p in spec.split(",") if p.strip()]
+        out: list[tuple[str, str, str | None]] = []
+        for part in parts:
+            item, kind, alias = _parse_use_item(part, default_kind)
+            if not item:
+                continue
+            out.append((item, kind, alias))
+        return out
     base, rest = spec.split("{", 1)
     base = base.rstrip("\\").strip()
     inner = rest.split("}", 1)[0]
