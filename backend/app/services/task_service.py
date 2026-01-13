@@ -704,6 +704,16 @@ def get_run_patch(project_id: int, run_id: int) -> dict:
     raise NotFoundError("Патч не найден", context={"run_id": run_id})
 
 
+def delete_run(project_id: int, run_id: int) -> dict:
+    with get_session() as session:
+        run = session.get(AnalysisRun, run_id)
+        if not run or run.project_id != project_id:
+            raise NotFoundError("Запуск не найден", context={"run_id": run_id, "project_id": project_id})
+        session.delete(run)
+        session.commit()
+    return {"ok": True}
+
+
 def describe_task(task_id: str) -> dict:
     state: TaskState | None = task_queue.get(task_id)
     if not state:

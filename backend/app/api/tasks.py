@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..services.task_service import (
     TaskRequest, describe_task,
-    get_run, get_run_patch,
+    delete_run, get_run, get_run_patch,
     list_runs, run_task_with_background,
 )
 
@@ -70,6 +70,11 @@ def get_run_endpoint(project_id: int, run_id: int):
 @router.get("/{project_id}/runs/{run_id}/patch")
 def get_run_patch_endpoint(project_id: int, run_id: int):
     return get_run_patch(project_id, run_id)
+
+
+@router.delete("/{project_id}/runs/{run_id}")
+def delete_run_endpoint(project_id: int, run_id: int):
+    return delete_run(project_id, run_id)
 
 
 @router.get("/status/{task_id}")

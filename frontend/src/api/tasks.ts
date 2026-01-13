@@ -86,3 +86,8 @@ export async function getRun(projectId: number, runId: number): Promise<RunDetai
   const r = await api.get(`/api/tasks/${projectId}/runs/${runId}`)
   return r.data
 }
+
+export async function deleteRun(projectId: number, runId: number): Promise<{ ok: boolean }> {
+  const r = await api.delete(`/api/tasks/${projectId}/runs/${runId}`)
+  return r.data
+}
