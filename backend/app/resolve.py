@@ -322,6 +322,34 @@ def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[s
             return p.relative_to(project_root).as_posix()
         return None
 
+    if spec_clean.endswith(".php"):
+        spec_path = Path(spec_clean)
+        if spec_path.is_absolute():
+            try:
+                abs_path = spec_path.resolve()
+            except Exception:
+                abs_path = spec_path
+            if (project_root in abs_path.parents) or (abs_path == project_root):
+                if abs_path.exists() and abs_path.is_file():
+                    return abs_path.relative_to(project_root).as_posix()
+        else:
+            candidate = (importer_dir / spec_clean)
+            try:
+                candidate_resolved = candidate.resolve()
+            except Exception:
+                candidate_resolved = candidate
+            if (project_root in candidate_resolved.parents) or (candidate_resolved == project_root):
+                if candidate_resolved.exists() and candidate_resolved.is_file():
+                    return candidate_resolved.relative_to(project_root).as_posix()
+            candidate_root = (project_root / spec_clean)
+            try:
+                candidate_root_resolved = candidate_root.resolve()
+            except Exception:
+                candidate_root_resolved = candidate_root
+            if (project_root in candidate_root_resolved.parents) or (candidate_root_resolved == project_root):
+                if candidate_root_resolved.exists() and candidate_root_resolved.is_file():
+                    return candidate_root_resolved.relative_to(project_root).as_posix()
+
     if spec_clean.startswith("."):
         return _resolve_python_relative(project_root, importer_dir, spec_clean)
 
