@@ -93,7 +93,17 @@ def _eval_plus_build(lines: list[str], tags: set[str]) -> bool:
 
 
 def _eval_go_build(expr: str, tags: set[str]) -> bool:
-    tokens = [m.group(1) for m in _GO_BUILD_TOKEN_RE.finditer(expr)]
+    tokens: list[str] = []
+    last_end = 0
+    for match in _GO_BUILD_TOKEN_RE.finditer(expr):
+        if expr[last_end:match.start()].strip():
+            raise ValueError("invalid go:build expression")
+        tokens.append(match.group(1))
+        last_end = match.end()
+    if expr[last_end:].strip():
+        raise ValueError("invalid go:build expression")
+    if not tokens:
+        raise ValueError("empty go:build expression")
     idx = 0
 
     def _peek() -> str | None:
@@ -109,13 +119,16 @@ def _eval_go_build(expr: str, tags: set[str]) -> bool:
     def _parse_primary() -> bool:
         tok = _peek()
         if tok is None:
-            return False
+            raise ValueError("unexpected end of go:build expression")
         if tok == "(":
             _consume()
             val = _parse_or()
-            if _peek() == ")":
-                _consume()
+            if _peek() != ")":
+                raise ValueError("missing closing paren in go:build expression")
+            _consume()
             return val
+        if tok in (")", "&&", "||"):
+            raise ValueError("unexpected token in go:build expression")
         _consume()
         return _eval_tag(tok, tags)
 
@@ -140,7 +153,10 @@ def _eval_go_build(expr: str, tags: set[str]) -> bool:
             val = val or _parse_and()
         return val
 
-    return _parse_or()
+    result = _parse_or()
+    if _peek() is not None:
+        raise ValueError("trailing tokens in go:build expression")
+    return result
 
 
 def _build_context_tags() -> set[str]:
