@@ -7,7 +7,7 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Optional
 
-JS_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
+JS_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"]
 PY_EXTS = [".py", ".pyi"]
 TSCONFIG_NAMES = ("tsconfig.json", "jsconfig.json")
 
