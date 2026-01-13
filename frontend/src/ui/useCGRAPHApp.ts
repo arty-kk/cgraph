@@ -12,6 +12,7 @@ import {
   getRunPatch,
   listProjects,
   listRuns,
+  deleteRun,
   runTask,
   scanProject,
   searchNodes,
@@ -1003,6 +1004,22 @@ export function useCGRAPHApp() {
     })
   }, [activeProject, queryClient, runOp])
 
+  const onDeleteRun = useCallback(
+    async (runId: number) => {
+      const pid = Number(activeProject?.id)
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(runId)) return
+      await runOp(async () => {
+        await deleteRun(pid, runId)
+        if (runResult?.run_id === runId) {
+          setRunResult(null)
+          setFullPatch(null)
+        }
+        await queryClient.invalidateQueries({ queryKey: ['runs', pid] })
+      })
+    },
+    [activeProject?.id, queryClient, runOp, runResult?.run_id]
+  )
+
   const onLoadFullGraph = useCallback(() => {
     if (!activeProject) return
     setGraphMode('full')
@@ -1316,6 +1333,7 @@ export function useCGRAPHApp() {
     onSelectNodePath,
     onGraphNodeTap,
     onRun,
+    onDeleteRun,
     onLoadFullPatch,
     onLoadRun,
 

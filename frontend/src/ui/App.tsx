@@ -193,6 +193,7 @@ export function App() {
             runLoadBusy={app.runLoadBusy}
             onLoadFullPatch={app.onLoadFullPatch}
             onLoadRun={app.onLoadRun}
+            onDeleteRun={app.onDeleteRun}
             runs={app.runs}
           />
         )}

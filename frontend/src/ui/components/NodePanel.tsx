@@ -61,6 +61,7 @@ type Props = {
   runLoadBusy: boolean
   onLoadFullPatch: () => void | Promise<void>
   onLoadRun: (runId: number) => void | Promise<void>
+  onDeleteRun: (runId: number) => void | Promise<void>
   runs: RunRecord[]
 }
 
@@ -110,6 +111,7 @@ export function NodePanel({
   runLoadBusy,
   onLoadFullPatch,
   onLoadRun,
+  onDeleteRun,
   runs,
 }: Props) {
 
@@ -162,11 +164,6 @@ export function NodePanel({
   const isAgentic = retrievalMode === 'agentic'
   const patchAllowed = isAuto || mode === 'fix'
   const isRecord = (val: unknown): val is Record<string, unknown> => typeof val === 'object' && val !== null
-  const coerceAutoOrMode = (val: unknown): AutoOrMode => {
-    if (val === 'analyze' || val === 'evolve' || val === 'fix' || val === 'impact') return val
-    return 'auto'
-  }
-
   React.useEffect(() => {
     if (applyPatch && !patchAllowed) setApplyPatch(false)
   }, [applyPatch, patchAllowed, setApplyPatch])
@@ -878,74 +875,8 @@ export function NodePanel({
               </div>
 
               <div className="mt-4">
-                <SectionHeader title="Results" topic="runs" />
-                <div className="mt-2">
-                  <input
-                    className="w-full rounded-md bg-neutral-900 border border-neutral-800 px-2 py-1 text-xs"
-                    placeholder="Filter by path or prompt…"
-                    value={runsFilterQ}
-                    onChange={(e) => setRunsFilterQ(e.target.value)}
-                  />
-                </div>
-                <div className="mt-2 flex flex-col gap-2">
-                  {filteredRuns.slice(0, 10).map((r) => {
-                    const key = r.id
-                    const rid = r.id
-                    const isNew = newRunId === rid
-                    return (
-                      <div
-                        key={key}
-                        className={[
-                          'text-xs border rounded-md p-2 transition-colors',
-                          isNew ? 'bg-indigo-500/5 border-indigo-500/60' : 'bg-neutral-950 border-neutral-800',
-                        ].join(' ')}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="text-neutral-200 font-semibold truncate">
-                              #{r.id} · {r.mode} · {r.target_path}
-                            </div>
-                            <div className="text-neutral-300 line-clamp-2">{r.prompt}</div>
-                          </div>
-                          <div className="shrink-0 flex flex-col gap-1">
-                            <button
-                              type="button"
-                              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-                              onClick={() => handleCopy(String(r.prompt ?? ''), 'Prompt copied')}
-                              title="Copy prompt"
-                              disabled={busy}
-                            >
-                              Copy
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-                              onClick={async () => {
-                                if (!Number.isFinite(rid)) return
-                                setActiveRunId(rid)
-                                setOpenedRunId(rid)
-                                if (newRunId === rid) setNewRunId(null)
-                                setResultOpen(true)
-                                if (runResult?.run_id !== rid) {
-                                  await onLoadRun(rid)
-                                }
-                              }}
-                              disabled={busy || nodeBusy || patchBusy || runLoadBusy || !activeProject || !Number.isFinite(rid)}
-                              title="Open result"
-                            >
-                              Open
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-
-              <div className="mt-6">
                 <SectionHeader
-                  title="Recent Runs"
+                  title="Runs"
                   topic="runs"
                   actions={(
                     <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
@@ -1030,8 +961,15 @@ export function NodePanel({
                   ) : pagedRuns.map((r) => {
                     const key = r.id
                     const rid = r.id
+                    const isNew = newRunId === rid
                     return (
-                      <div key={key} className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2">
+                      <div
+                        key={key}
+                        className={[
+                          'text-xs border rounded-md p-2 transition-colors',
+                          isNew ? 'bg-indigo-500/5 border-indigo-500/60' : 'bg-neutral-950 border-neutral-800',
+                        ].join(' ')}
+                      >
                         <div className="flex items-start justify-between gap-2">
                           <button
                             type="button"
@@ -1047,29 +985,39 @@ export function NodePanel({
                           <div className="shrink-0 flex flex-col gap-1">
                             <button
                               type="button"
-                              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-                              onClick={() => handleCopy(String(r.prompt ?? ''), 'Prompt copied')}
-                              title="Copy prompt"
+                              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+                              onClick={async () => {
+                                if (!Number.isFinite(rid)) return
+                                setActiveRunId(rid)
+                                setOpenedRunId(rid)
+                                if (newRunId === rid) setNewRunId(null)
+                                setResultOpen(true)
+                                if (runResult?.run_id !== rid) {
+                                  await onLoadRun(rid)
+                                }
+                              }}
+                              disabled={busy || nodeBusy || patchBusy || runLoadBusy || !activeProject || !Number.isFinite(rid)}
+                              title="Open result"
                             >
-                              Copy
+                              Open
                             </button>
                             <button
                               type="button"
-                              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-                              onClick={() => {
-                                const nextMode = coerceAutoOrMode(r.mode)
-                                setMode(nextMode)
-                                setApplyPatch(nextMode === 'fix')
-                                setPrompt(String(r.prompt ?? ''))
-                                try {
-                                  window.setTimeout(() => {
-                                    promptRef.current?.focus?.()
-                                  }, 0)
-                                } catch {}
+                              className="rounded-md bg-red-900/40 hover:bg-red-900/60 border border-red-800 px-2 py-1 text-[11px] font-semibold text-red-100 disabled:opacity-50"
+                              onClick={async () => {
+                                if (!Number.isFinite(rid)) return
+                                if (!window.confirm('Удалить этот запуск?')) return
+                                if (activeRunId === rid) {
+                                  setActiveRunId(null)
+                                  setResultOpen(false)
+                                }
+                                if (newRunId === rid) setNewRunId(null)
+                                await onDeleteRun(rid)
                               }}
-                              title="Use this prompt/mode"
+                              disabled={busy || nodeBusy || patchBusy || runLoadBusy || !activeProject || !Number.isFinite(rid)}
+                              title="Delete run"
                             >
-                              Use
+                              Delete
                             </button>
                           </div>
                         </div>
