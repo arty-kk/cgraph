@@ -16,7 +16,7 @@ def pick_indexer(path: str) -> Indexer:
 
     if p.endswith((".py", ".pyi")):
         return PythonIndexer()
-    if p.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")):
+    if p.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".vue")):
         return JsTsIndexer()
     if p.endswith(".go"):
         return GoIndexer()

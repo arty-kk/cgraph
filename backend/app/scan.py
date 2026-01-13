@@ -43,12 +43,12 @@ def _store_cached_parse(lang: str, file_hash: str, complexity: int, imports: lis
 
 IGNORE_DIRS = {
     ".git", "node_modules", "dist", "build", ".venv", "venv", "__pycache__",
-    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".next", ".turbo"
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".next", ".turbo", ".nuxt", ".output"
 }
 
 CODE_EXTS = {
     ".py", ".pyi",
-    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".vue",
     ".go", ".java", ".kt", ".rs", ".rb", ".php", ".c", ".cc", ".cpp", ".h", ".hpp"
 }
 
