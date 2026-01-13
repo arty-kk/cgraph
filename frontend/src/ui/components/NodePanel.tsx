@@ -281,6 +281,22 @@ export function NodePanel({
       .slice(0, 50)
   }, [runs, runsFilterQ])
 
+  React.useEffect(() => {
+    setRunsPage(0)
+  }, [runsFilterMode, runsFilterQ, runsPageSize])
+
+  const runsTotalPages = Math.max(1, Math.ceil(filteredRuns.length / runsPageSize))
+  React.useEffect(() => {
+    if (runsPage > runsTotalPages - 1) {
+      setRunsPage(Math.max(0, runsTotalPages - 1))
+    }
+  }, [runsPage, runsTotalPages])
+
+  const pagedRuns = useMemo(() => {
+    const start = runsPage * runsPageSize
+    return filteredRuns.slice(start, start + runsPageSize)
+  }, [filteredRuns, runsPage, runsPageSize])
+
   const HelpButton = ({
     topic,
     label,
