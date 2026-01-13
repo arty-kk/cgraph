@@ -16,6 +16,25 @@ _PHP_INCLUDE_RE = re.compile(
     """,
     re.IGNORECASE,
 )
+_PHP_INCLUDE_CONCAT_RE = re.compile(
+    r"""(?x)(?<![\w$])
+    (?P<kw>include|include_once|require|require_once)\s*
+    (?:\(|\s)\s*(?P<expr>
+        (?:__DIR__\s*\.\s*)?
+        ['"][^'"]*['"]
+        (?:\s*\.\s*['"][^'"]*['"])*
+    )
+    """,
+    re.IGNORECASE,
+)
+_PHP_INCLUDE_CONCAT_EXPR_RE = re.compile(
+    r"""(?x)
+    \s*
+    (?:__DIR__\s*\.\s*)?
+    ['"][^'"]*['"]
+    (?:\s*\.\s*['"][^'"]*['"])*\s*
+    """,
+)
 
 
 def _strip_php_comments(text: str) -> str:
@@ -46,33 +65,47 @@ def _strip_use_prefix(raw: str) -> tuple[str, str]:
     return s.strip(), kind
 
 
-def _parse_use_item(item: str, default_kind: str) -> tuple[str, str]:
+def _split_alias(item: str) -> tuple[str, str | None]:
+    parts = _USE_SPLIT_RE.split(item, 1)
+    if len(parts) == 2:
+        base = parts[0].strip()
+        alias = parts[1].strip() or None
+        return base, alias
+    return item.strip(), None
+
+
+def _parse_use_item(item: str, default_kind: str) -> tuple[str, str, str | None]:
     item = (item or "").strip()
     if not item:
-        return "", default_kind
+        return "", default_kind, None
     lower = item.lower()
     if lower.startswith("function "):
-        return item[len("function "):].strip(), "function"
+        base = item[len("function ") :].strip()
+        base, alias = _split_alias(base)
+        return base, "function", alias
     if lower.startswith("const "):
-        return item[len("const "):].strip(), "const"
-    return item, default_kind
+        base = item[len("const ") :].strip()
+        base, alias = _split_alias(base)
+        return base, "const", alias
+    base, alias = _split_alias(item)
+    return base, default_kind, alias
 
 
-def _split_use_items(spec: str, default_kind: str) -> list[tuple[str, str]]:
+def _split_use_items(spec: str, default_kind: str) -> list[tuple[str, str, str | None]]:
     if "{" not in spec or "}" not in spec:
-        item, kind = _parse_use_item(spec, default_kind)
-        return [(item, kind)]
+        item, kind, alias = _parse_use_item(spec, default_kind)
+        return [(item, kind, alias)]
     base, rest = spec.split("{", 1)
     base = base.rstrip("\\").strip()
     inner = rest.split("}", 1)[0]
     parts = [p.strip() for p in inner.split(",") if p.strip()]
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str | None]] = []
     for part in parts:
-        item, kind = _parse_use_item(part, default_kind)
+        item, kind, alias = _parse_use_item(part, default_kind)
         if not item:
             continue
         spec_item = f"{base}\\{item}".strip("\\") if base else item
-        out.append((spec_item, kind))
+        out.append((spec_item, kind, alias))
     return out
 
 
@@ -80,8 +113,34 @@ def _clean_use_item(item: str) -> str:
     item = (item or "").strip()
     if not item:
         return ""
-    item = _USE_SPLIT_RE.split(item, 1)[0].strip()
     return item
+
+
+def _format_use_raw(spec: str, kind: str, alias: str | None) -> str:
+    prefix = ""
+    if kind == "function":
+        prefix = "function "
+    elif kind == "const":
+        prefix = "const "
+    alias_part = f" as {alias}" if alias else ""
+    return f"use {prefix}{spec}{alias_part}".strip()
+
+
+def _parse_include_concat(expr: str) -> str | None:
+    expr_clean = (expr or "").strip()
+    if not expr_clean:
+        return None
+    if "." not in expr_clean and "__DIR__" not in expr_clean:
+        return None
+    if not _PHP_INCLUDE_CONCAT_EXPR_RE.fullmatch(expr_clean):
+        return None
+    literals = re.findall(r"""['"][^'"]*['"]""", expr_clean)
+    if not literals:
+        return None
+    joined = "".join(_strip_quotes(lit) for lit in literals)
+    if "__DIR__" in expr_clean:
+        return f"__DIR__{joined}"
+    return joined
 
 
 class PhpIndexer:
@@ -113,15 +172,23 @@ class PhpIndexer:
                 if not raw.lower().startswith("use "):
                     continue
                 spec_raw, kind = _strip_use_prefix(raw)
-                for item, item_kind in _split_use_items(spec_raw, kind):
+                for item, item_kind, alias in _split_use_items(spec_raw, kind):
                     spec = _clean_use_item(item)
-                    _add(raw, spec, item_kind)
+                    raw_item = _format_use_raw(spec, item_kind, alias)
+                    _add(raw_item or raw, spec, item_kind)
 
         stripped = _strip_php_comments(text or "")
         for match in _PHP_INCLUDE_RE.finditer(stripped):
             raw = match.group(0).strip()
             spec = _strip_quotes(match.group("path"))
             _add(raw, spec, "include")
+        for match in _PHP_INCLUDE_CONCAT_RE.finditer(stripped):
+            expr = match.group("expr")
+            spec = _parse_include_concat(expr)
+            if not spec:
+                continue
+            raw = match.group(0).strip()
+            _add(raw, spec, "include-conditional")
         return out
 
     def parse_exports(self, file_path: Path, text: str) -> list[str]:
