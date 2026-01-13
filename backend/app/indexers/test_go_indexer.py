@@ -54,6 +54,13 @@ type Widget struct{}
         exports = idx.parse_exports(Path("main.go"), src)
         self.assertIn("Widget", exports)
 
+    def test_invalid_build_expr_falls_back_to_active(self) -> None:
+        settings.go_build_tags = "linux"
+        src = """//go:build linux &&
+package main
+"""
+        self.assertTrue(_is_build_context_active(src))
+
     def test_build_tags_use_runtime_defaults(self) -> None:
         settings.go_build_tags = ""
         runtime = _runtime_go_env()
