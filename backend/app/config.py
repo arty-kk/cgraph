@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     llm_agentic_max_file_chars: int = Field(default=24_000, alias="CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS")
     llm_agentic_temperature: float = Field(default=0.0, alias="CGRAPH_LLM_AGENTIC_TEMPERATURE")
 
+    go_build_tags: str = Field(default="", alias="CGRAPH_GO_BUILD_TAGS")
+    go_include_unexported_symbols: bool = Field(
+        default=False, alias="CGRAPH_GO_INCLUDE_UNEXPORTED_SYMBOLS"
+    )
+
     def cors_origins(self) -> list[str]:
         raw = (self.cors_allow_origins or "").strip()
         if not raw:
