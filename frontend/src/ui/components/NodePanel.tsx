@@ -162,6 +162,10 @@ export function NodePanel({
   const isAgentic = retrievalMode === 'agentic'
   const patchAllowed = isAuto || mode === 'fix'
   const isRecord = (val: unknown): val is Record<string, unknown> => typeof val === 'object' && val !== null
+  const coerceAutoOrMode = (val: unknown): AutoOrMode => {
+    if (val === 'analyze' || val === 'evolve' || val === 'fix' || val === 'impact') return val
+    return 'auto'
+  }
 
   React.useEffect(() => {
     if (applyPatch && !patchAllowed) setApplyPatch(false)
@@ -281,24 +285,9 @@ export function NodePanel({
         const hay = `${r.target_path ?? ''} ${r.prompt ?? ''} ${r.mode ?? ''}`.toLowerCase()
         return hay.includes(q)
       })
+      .filter((r) => (runsFilterMode === 'all' ? true : r.mode === runsFilterMode))
       .slice(0, 50)
-  }, [runs, runsFilterQ])
-
-  React.useEffect(() => {
-    setRunsPage(0)
-  }, [runsFilterMode, runsFilterQ, runsPageSize])
-
-  const runsTotalPages = Math.max(1, Math.ceil(filteredRuns.length / runsPageSize))
-  React.useEffect(() => {
-    if (runsPage > runsTotalPages - 1) {
-      setRunsPage(Math.max(0, runsTotalPages - 1))
-    }
-  }, [runsPage, runsTotalPages])
-
-  const pagedRuns = useMemo(() => {
-    const start = runsPage * runsPageSize
-    return filteredRuns.slice(start, start + runsPageSize)
-  }, [filteredRuns, runsPage, runsPageSize])
+  }, [runs, runsFilterMode, runsFilterQ])
 
   React.useEffect(() => {
     setRunsPage(0)
@@ -633,344 +622,325 @@ export function NodePanel({
                   toggleTitle="Show/hide run task section"
                 />
 
-              {runOpen && (
-                <>
-                  <div className="mt-2">
-                    <div className={labelRowClass}>
-                      <span className={fieldLabelClass}>Prompt</span>
-                    </div>
-                    <textarea
-                      ref={promptRef}
-                      className="mt-1 w-full rounded-md bg-neutral-900 border border-neutral-800 px-3 py-2 text-xs min-h-[110px] placeholder:text-neutral-600 disabled:opacity-50"
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      disabled={busy}
-                      placeholder={promptPlaceholder}
-                    />
-                  </div>
-
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {promptChips.map((c) => (
-                      <button
-                        key={c.label}
-                        type="button"
-                        className={[chipBase, prompt.trim() === c.text.trim() ? chipActive : chipIdle].join(' ')}
-                        onClick={() => {
-                          setMode(c.mode)
-                          setPrompt(c.text)
-                          try {
-                            window.setTimeout(() => {
-                              promptRef.current?.focus?.()
-                            }, 0)
-                          } catch {}
-                        }}
+                {runOpen && (
+                  <>
+                    <div className="mt-2">
+                      <div className={labelRowClass}>
+                        <span className={fieldLabelClass}>Prompt</span>
+                      </div>
+                      <textarea
+                        ref={promptRef}
+                        className="mt-1 w-full rounded-md bg-neutral-900 border border-neutral-800 px-3 py-2 text-xs min-h-[110px] placeholder:text-neutral-600 disabled:opacity-50"
+                        value={prompt}
+                        onChange={(e) => setPrompt(e.target.value)}
                         disabled={busy}
-                        title="Insert template"
-                      >
-                        {c.label}
-                      </button>
-                    ))}
-                  </div>
+                        placeholder={promptPlaceholder}
+                      />
+                    </div>
 
-                  <div className="mt-2">
-                    <SectionHeader
-                      title="Context Settings"
-                      topic="ctxSettings"
-                      open={ctxAdvancedOpen}
-                      onToggle={() => setCtxAdvancedOpen((v) => !v)}
-                      toggleTitle="Show/hide context settings"
-                    />
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {promptChips.map((c) => (
+                        <button
+                          key={c.label}
+                          type="button"
+                          className={[chipBase, prompt.trim() === c.text.trim() ? chipActive : chipIdle].join(' ')}
+                          onClick={() => {
+                            setMode(c.mode)
+                            setPrompt(c.text)
+                            try {
+                              window.setTimeout(() => {
+                                promptRef.current?.focus?.()
+                              }, 0)
+                            } catch {}
+                          }}
+                          disabled={busy}
+                          title="Insert template"
+                        >
+                          {c.label}
+                        </button>
+                      ))}
+                    </div>
 
-                    {ctxAdvancedOpen && (
-                      <div className="mt-2 space-y-3">
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="text-xs text-neutral-300">
-                            <div className={labelRowClass}>
-                              <span className={fieldLabelClass}>Context</span>
+                    <div className="mt-2">
+                      <SectionHeader
+                        title="Context Settings"
+                        topic="ctxSettings"
+                        open={ctxAdvancedOpen}
+                        onToggle={() => setCtxAdvancedOpen((v) => !v)}
+                        toggleTitle="Show/hide context settings"
+                      />
+
+                      {ctxAdvancedOpen && (
+                        <div className="mt-2 space-y-3">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="text-xs text-neutral-300">
+                              <div className={labelRowClass}>
+                                <span className={fieldLabelClass}>Context</span>
+                              </div>
+                              <select
+                                className={controlClass + ' mt-1'}
+                                value={retrievalMode}
+                                onChange={(e) => setRetrievalMode(e.target.value as RetrievalMode)}
+                                disabled={busy}
+                              >
+                                <option value="agentic">Agentic</option>
+                                <option value="pack">Pack Context</option>
+                              </select>
                             </div>
-                            <select
-                              className={controlClass + ' mt-1'}
-                              value={retrievalMode}
-                              onChange={(e) => setRetrievalMode(e.target.value as RetrievalMode)}
-                              disabled={busy}
+
+                            <div>
+                              <div className={labelRowClass}>
+                                <span className={fieldLabelClass}>Mode</span>
+                              </div>
+                              <select
+                                className={controlClass + ' mt-1'}
+                                value={mode}
+                                onChange={(e) => setMode(e.target.value as AutoOrMode)}
+                                disabled={busy}
+                                title="Auto — выбрать режим автоматически. Analyze — разбор/диагностика. Evolve — план улучшений. Fix — исправление (возможен patch). Impact — что затронет изменение."
+                              >
+                                <option value="auto">Auto</option>
+                                <option value="analyze">Analyze</option>
+                                <option value="evolve">Evolve</option>
+                                <option value="fix">Fix</option>
+                                <option value="impact">Impact</option>
+                              </select>
+                            </div>
+
+                            <div>
+                              <div className={labelRowClass}>
+                                <span className={fieldLabelClass}>Depth</span>
+                              </div>
+                              <input
+                                type="number"
+                                className={controlClass + ' mt-1'}
+                                value={depth}
+                                min={0}
+                                max={6}
+                                title="Глубина захвата зависимостей для режима (кроме Auto). 0 — только файл, выше — глубже по графу."
+                                onChange={(e) => {
+                                  const raw = e.target.value
+                                  const next = raw === '' ? 1 : clampInt(Number(raw), 0, 6)
+                                  setDepth(next)
+                                }}
+                                disabled={busy || isAuto}
+                              />
+                            </div>
+
+                            <div>
+                              <div className={labelRowClass}>
+                                <span className={fieldLabelClass}>Dependencies</span>
+                              </div>
+                              <select
+                                className={controlClass + ' mt-1'}
+                                value={depMode}
+                                onChange={(e) => setDepMode(e.target.value as DepMode)}
+                                disabled={busy || isAuto || isAgentic}
+                                title={isAgentic ? 'В agentic режиме dep_mode не используется' : 'dep_mode для pack_context'}
+                              >
+                                <option value="contracts">Contracts</option>
+                                <option value="full">Full</option>
+                              </select>
+                            </div>
+
+                            <label
+                              className="col-span-2 h-9 rounded-md bg-neutral-900 border border-neutral-800 px-2 flex items-center justify-between gap-2"
+                              title="Если включено — применить Unified Diff к репозиторию (имеет смысл в основном для Fix)."
                             >
-                              <option value="agentic">Agentic</option>
-                              <option value="pack">Pack Context</option>
-                            </select>
+                              <span className="text-[11px] font-semibold text-neutral-200">
+                                Apply patch
+                              </span>
+                              <input
+                                type="checkbox"
+                                checked={applyPatch}
+                                onChange={(e) => setApplyPatch(e.target.checked)}
+                                disabled={busy || !patchAllowed}
+                              />
+                            </label>
                           </div>
 
-                          <div>
-                            <div className={labelRowClass}>
-                              <span className={fieldLabelClass}>Mode</span>
+                          <div className="border-t border-neutral-800 pt-3">
+                            <div className="text-[11px] font-semibold text-neutral-400">Limits</div>
+                            <div className="mt-2 grid grid-cols-2 gap-2">
+                              {isAgentic ? (
+                                <>
+                                  <label className="text-xs text-neutral-300">
+                                    <div className={labelRowClass}>
+                                      <span className={fieldLabelClass}>Max calls</span>
+                                    </div>
+                                    <input
+                                      type="number"
+                                      className={controlClass + ' mt-1'}
+                                      value={agenticMaxCalls}
+                                      min={1}
+                                      max={100}
+                                      onChange={(e) => setAgenticMaxCalls(clampInt(Number(e.target.value || 0), 1, 100))}
+                                      disabled={busy}
+                                    />
+                                  </label>
+                                  <label className="text-xs text-neutral-300">
+                                    <div className={labelRowClass}>
+                                      <span className={fieldLabelClass}>Max file chars</span>
+                                    </div>
+                                    <input
+                                      type="number"
+                                      className={controlClass + ' mt-1'}
+                                      value={agenticMaxFileChars}
+                                      min={200}
+                                      max={50000}
+                                      onChange={(e) => setAgenticMaxFileChars(clampInt(Number(e.target.value || 0), 200, 50000))}
+                                      disabled={busy}
+                                    />
+                                  </label>
+                                  <label className="text-xs text-neutral-300">
+                                    <div className={labelRowClass}>
+                                      <span className={fieldLabelClass}>Max tool output</span>
+                                    </div>
+                                    <input
+                                      type="number"
+                                      className={controlClass + ' mt-1'}
+                                      value={agenticMaxTotalToolOutputChars}
+                                      min={2000}
+                                      max={1000000}
+                                      onChange={(e) => setAgenticMaxTotalToolOutputChars(clampInt(Number(e.target.value || 0), 2000, 1000000))}
+                                      disabled={busy}
+                                    />
+                                  </label>
+                                  <label className="text-xs text-neutral-300">
+                                    <div className={labelRowClass}>
+                                      <span className={fieldLabelClass}>Temperature</span>
+                                    </div>
+                                    <input
+                                      type="number"
+                                      step={0.1}
+                                      className={controlClass + ' mt-1'}
+                                      value={agenticTemperature}
+                                      min={0}
+                                      max={2}
+                                      onChange={(e) => setAgenticTemperature(clampFloat(Number(e.target.value || 0), 0, 2))}
+                                      disabled={busy}
+                                    />
+                                  </label>
+                                </>
+                              ) : (
+                                <>
+                                  <label className="text-xs text-neutral-300">
+                                    <div className={labelRowClass}>
+                                      <span className={fieldLabelClass}>Max files</span>
+                                    </div>
+                                    <input
+                                      type="number"
+                                      className={controlClass + ' mt-1'}
+                                      value={packMaxFiles}
+                                      min={1}
+                                      max={80}
+                                      onChange={(e) => setPackMaxFiles(clampInt(Number(e.target.value || 0), 1, 80))}
+                                      disabled={busy}
+                                    />
+                                  </label>
+                                  <label className="text-xs text-neutral-300">
+                                    <div className={labelRowClass}>
+                                      <span className={fieldLabelClass}>Max chars/file</span>
+                                    </div>
+                                    <input
+                                      type="number"
+                                      className={controlClass + ' mt-1'}
+                                      value={packMaxCharsPerFile}
+                                      min={200}
+                                      max={50000}
+                                      onChange={(e) => setPackMaxCharsPerFile(clampInt(Number(e.target.value || 0), 200, 50000))}
+                                      disabled={busy}
+                                    />
+                                  </label>
+                                  <label className="text-xs text-neutral-300 col-span-2">
+                                    <div className={labelRowClass}>
+                                      <span className={fieldLabelClass}>Max total chars</span>
+                                    </div>
+                                    <input
+                                      type="number"
+                                      className={controlClass + ' mt-1'}
+                                      value={packMaxTotalChars}
+                                      min={1000}
+                                      max={500000}
+                                      onChange={(e) => setPackMaxTotalChars(clampInt(Number(e.target.value || 0), 1000, 500000))}
+                                      disabled={busy}
+                                    />
+                                  </label>
+                                </>
+                              )}
                             </div>
-                            <select
-                              className={controlClass + ' mt-1'}
-                              value={mode}
-                              onChange={(e) => setMode(e.target.value as AutoOrMode)}
-                              disabled={busy}
-                              title="Auto — выбрать режим автоматически. Analyze — разбор/диагностика. Evolve — план улучшений. Fix — исправление (возможен patch). Impact — что затронет изменение."
-                            >
-                              <option value="auto">Auto</option>
-                              <option value="analyze">Analyze</option>
-                              <option value="evolve">Evolve</option>
-                              <option value="fix">Fix</option>
-                              <option value="impact">Impact</option>
-                            </select>
                           </div>
-
-                          <div>
-                            <div className={labelRowClass}>
-                              <span className={fieldLabelClass}>Depth</span>
-                            </div>
-                            <input
-                              type="number"
-                              className={controlClass + ' mt-1'}
-                              value={depth}
-                              min={0}
-                              max={6}
-                              title="Глубина захвата зависимостей для режима (кроме Auto). 0 — только файл, выше — глубже по графу."
-                              onChange={(e) => {
-                                const raw = e.target.value
-                                const next = raw === '' ? 1 : clampInt(Number(raw), 0, 6)
-                                setDepth(next)
-                              }}
-                              disabled={busy || isAuto}
-                            />
-                          </div>
-
-                          <div>
-                            <div className={labelRowClass}>
-                              <span className={fieldLabelClass}>Dependencies</span>
-                            </div>
-                            <select
-                              className={controlClass + ' mt-1'}
-                              value={depMode}
-                              onChange={(e) => setDepMode(e.target.value as DepMode)}
-                              disabled={busy || isAuto || isAgentic}
-                              title={isAgentic ? 'В agentic режиме dep_mode не используется' : 'dep_mode для pack_context'}
-                            >
-                              <option value="contracts">Contracts</option>
-                              <option value="full">Full</option>
-                            </select>
-                          </div>
-
-                          <label
-                            className="col-span-2 h-9 rounded-md bg-neutral-900 border border-neutral-800 px-2 flex items-center justify-between gap-2"
-                            title="Если включено — применить Unified Diff к репозиторию (имеет смысл в основном для Fix)."
-                          >
-                            <span className="text-[11px] font-semibold text-neutral-200">
-                              Apply patch
-                            </span>
-                            <input
-                              type="checkbox"
-                              checked={applyPatch}
-                              onChange={(e) => setApplyPatch(e.target.checked)}
-                              disabled={busy || !patchAllowed}
-                            />
-                          </label>
                         </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
 
-                        <div className="border-t border-neutral-800 pt-3">
-                          <div className="text-[11px] font-semibold text-neutral-400">Limits</div>
-                          <div className="mt-2 grid grid-cols-2 gap-2">
-                            {isAgentic ? (
-                              <>
-                                <label className="text-xs text-neutral-300">
-                                  <div className={labelRowClass}>
-                                    <span className={fieldLabelClass}>Max calls</span>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    className={controlClass + ' mt-1'}
-                                    value={agenticMaxCalls}
-                                    min={1}
-                                    max={100}
-                                    onChange={(e) => setAgenticMaxCalls(clampInt(Number(e.target.value || 0), 1, 100))}
-                                    disabled={busy}
-                                  />
-                                </label>
-                                <label className="text-xs text-neutral-300">
-                                  <div className={labelRowClass}>
-                                    <span className={fieldLabelClass}>Max file chars</span>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    className={controlClass + ' mt-1'}
-                                    value={agenticMaxFileChars}
-                                    min={200}
-                                    max={50000}
-                                    onChange={(e) => setAgenticMaxFileChars(clampInt(Number(e.target.value || 0), 200, 50000))}
-                                    disabled={busy}
-                                  />
-                                </label>
-                                <label className="text-xs text-neutral-300">
-                                  <div className={labelRowClass}>
-                                    <span className={fieldLabelClass}>Max tool output</span>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    className={controlClass + ' mt-1'}
-                                    value={agenticMaxTotalToolOutputChars}
-                                    min={2000}
-                                    max={1000000}
-                                    onChange={(e) => setAgenticMaxTotalToolOutputChars(clampInt(Number(e.target.value || 0), 2000, 1000000))}
-                                    disabled={busy}
-                                  />
-                                </label>
-                                <label className="text-xs text-neutral-300">
-                                  <div className={labelRowClass}>
-                                    <span className={fieldLabelClass}>Temperature</span>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    step={0.1}
-                                    className={controlClass + ' mt-1'}
-                                    value={agenticTemperature}
-                                    min={0}
-                                    max={2}
-                                    onChange={(e) => setAgenticTemperature(clampFloat(Number(e.target.value || 0), 0, 2))}
-                                    disabled={busy}
-                                  />
-                                </label>
-                              </>
-                            ) : (
-                              <>
-                                <label className="text-xs text-neutral-300">
-                                  <div className={labelRowClass}>
-                                    <span className={fieldLabelClass}>Max files</span>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    className={controlClass + ' mt-1'}
-                                    value={packMaxFiles}
-                                    min={1}
-                                    max={80}
-                                    onChange={(e) => setPackMaxFiles(clampInt(Number(e.target.value || 0), 1, 80))}
-                                    disabled={busy}
-                                  />
-                                </label>
-                                <label className="text-xs text-neutral-300">
-                                  <div className={labelRowClass}>
-                                    <span className={fieldLabelClass}>Max chars/file</span>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    className={controlClass + ' mt-1'}
-                                    value={packMaxCharsPerFile}
-                                    min={200}
-                                    max={50000}
-                                    onChange={(e) => setPackMaxCharsPerFile(clampInt(Number(e.target.value || 0), 200, 50000))}
-                                    disabled={busy}
-                                  />
-                                </label>
-                                <label className="text-xs text-neutral-300 col-span-2">
-                                  <div className={labelRowClass}>
-                                    <span className={fieldLabelClass}>Max total chars</span>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    className={controlClass + ' mt-1'}
-                                    value={packMaxTotalChars}
-                                    min={1000}
-                                    max={500000}
-                                    onChange={(e) => setPackMaxTotalChars(clampInt(Number(e.target.value || 0), 1000, 500000))}
-                                    disabled={busy}
-                                  />
-                                </label>
-                              </>
-                            )}
+              <div className="mt-4">
+                <SectionHeader title="Results" topic="runs" />
+                <div className="mt-2">
+                  <input
+                    className="w-full rounded-md bg-neutral-900 border border-neutral-800 px-2 py-1 text-xs"
+                    placeholder="Filter by path or prompt…"
+                    value={runsFilterQ}
+                    onChange={(e) => setRunsFilterQ(e.target.value)}
+                  />
+                </div>
+                <div className="mt-2 flex flex-col gap-2">
+                  {filteredRuns.slice(0, 10).map((r) => {
+                    const key = r.id
+                    const rid = r.id
+                    const isNew = newRunId === rid
+                    return (
+                      <div
+                        key={key}
+                        className={[
+                          'text-xs border rounded-md p-2 transition-colors',
+                          isNew ? 'bg-indigo-500/5 border-indigo-500/60' : 'bg-neutral-950 border-neutral-800',
+                        ].join(' ')}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-neutral-200 font-semibold truncate">
+                              #{r.id} · {r.mode} · {r.target_path}
+                            </div>
+                            <div className="text-neutral-300 line-clamp-2">{r.prompt}</div>
+                          </div>
+                          <div className="shrink-0 flex flex-col gap-1">
+                            <button
+                              type="button"
+                              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+                              onClick={() => handleCopy(String(r.prompt ?? ''), 'Prompt copied')}
+                              title="Copy prompt"
+                              disabled={busy}
+                            >
+                              Copy
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+                              onClick={async () => {
+                                if (!Number.isFinite(rid)) return
+                                setActiveRunId(rid)
+                                setOpenedRunId(rid)
+                                if (newRunId === rid) setNewRunId(null)
+                                setResultOpen(true)
+                                if (runResult?.run_id !== rid) {
+                                  await onLoadRun(rid)
+                                }
+                              }}
+                              disabled={busy || nodeBusy || patchBusy || runLoadBusy || !activeProject || !Number.isFinite(rid)}
+                              title="Open result"
+                            >
+                              Open
+                            </button>
                           </div>
                         </div>
                       </div>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-
-                <div className="mt-4">
-                  <SectionHeader title="Results" topic="runs" />
-                  <div className="mt-2">
-                    <input
-                      className="w-full rounded-md bg-neutral-900 border border-neutral-800 px-2 py-1 text-xs"
-                      placeholder="Filter by path or prompt…"
-                      value={runsFilterQ}
-                      onChange={(e) => setRunsFilterQ(e.target.value)}
-                    />
-                  </div>
-                  <div className="mt-2 flex flex-col gap-2">
-                    {filteredRuns.slice(0, 10).map((r) => {
-                      const key = r.id
-                      const rid = r.id
-                      const isNew = newRunId === rid
-                      return (
-                        <div
-                          key={key}
-                          className={[
-                            'text-xs border rounded-md p-2 transition-colors',
-                            isNew ? 'bg-indigo-500/5 border-indigo-500/60' : 'bg-neutral-950 border-neutral-800',
-                          ].join(' ')}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="text-neutral-200 font-semibold truncate">
-                                #{r.id} · {r.mode} · {r.target_path}
-                              </div>
-                              <div className="text-neutral-300 line-clamp-2">{r.prompt}</div>
-                            </div>
-                            <div className="shrink-0 flex flex-col gap-1">
-                              <button
-                                type="button"
-                                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-                                onClick={() => handleCopy(String(r.prompt ?? ''), 'Prompt copied')}
-                                title="Copy prompt"
-                                disabled={busy}
-                              >
-                                Copy
-                              </button>
-                              <button
-                                type="button"
-                                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-                                onClick={async () => {
-                                  if (!Number.isFinite(rid)) return
-                                  setActiveRunId(rid)
-                                  setOpenedRunId(rid)
-                                  if (newRunId === rid) setNewRunId(null)
-                                  setResultOpen(true)
-                                  if (runResult?.run_id !== rid) {
-                                    await onLoadRun(rid)
-                                  }
-                                }}
-                                disabled={busy || nodeBusy || patchBusy || runLoadBusy || !activeProject || !Number.isFinite(rid)}
-                                title="Open result"
-                              >
-                                Open
-                              </button>
-                            </div>
-
-                            {hasPatch ? (
-                              <pre className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 overflow-auto max-h-72">
-                                {patchStr}
-                              </pre>
-                            ) : (
-                              <div className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2">
-                                <div className="text-neutral-300">
-                                  Patch Omitted{metaChars != null ? ` (${metaChars} chars)` : ''}. Load it on demand.
-                                </div>
-                                <button
-                                  className="mt-2 rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"
-                                  onClick={onLoadFullPatch}
-                                  disabled={patchBusy || busy || !activeProject || !runResult?.run_id}
-                                >
-                                  {patchBusy ? 'Loading…' : 'Load full patch'}
-                                </button>
-                              </div>
-                            )}
-                          </>
-                        )
-                    })()}
-                  </div>
-                )}
+                    )
+                  })}
+                </div>
               </div>
 
               <div className="mt-6">
@@ -1103,13 +1073,11 @@ export function NodePanel({
                             </button>
                           </div>
                         </div>
-                      )
-                    })}
-                    {!filteredRuns.length && (
-                      <div className="text-xs text-neutral-500">No completed runs yet.</div>
-                    )}
-                  </div>
+                      </div>
+                    )
+                  })}
                 </div>
+              </div>
             </>
           )}
         </div>
