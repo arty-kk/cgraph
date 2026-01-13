@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import sys
 from pathlib import Path
 from .base import ImportRef, SymbolDef
 from .tree_sitter_utils import iter_nodes, node_text, parse_tree
@@ -144,57 +145,53 @@ def _eval_go_build(expr: str, tags: set[str]) -> bool:
 
 def _build_context_tags() -> set[str]:
     tags = _split_build_tags(getattr(settings, "go_build_tags", "") or "")
-    runtime_goos, runtime_goarch = _runtime_goos_goarch()
-    for env_key, runtime_val in (("GOOS", runtime_goos), ("GOARCH", runtime_goarch)):
+    runtime_defaults = _runtime_go_env()
+    for env_key in ("GOOS", "GOARCH"):
         try:
             env_val = os.getenv(env_key, "")
         except Exception:
             env_val = ""
         if env_val:
             tags.add(env_val)
-        elif runtime_val:
-            tags.add(runtime_val)
+        else:
+            fallback = runtime_defaults.get(env_key)
+            if fallback:
+                tags.add(fallback)
     return tags
 
 
-def _runtime_goos_goarch() -> tuple[str | None, str | None]:
+def _runtime_go_env() -> dict[str, str]:
     goos = None
     goarch = None
-    try:
-        system = platform.system().lower()
-    except Exception:
-        system = ""
-    if system.startswith("linux"):
+
+    sys_platform = sys.platform
+    if sys_platform.startswith("linux"):
         goos = "linux"
-    elif system.startswith("darwin"):
+    elif sys_platform == "darwin":
         goos = "darwin"
-    elif system.startswith("windows"):
+    elif sys_platform in ("win32", "cygwin", "msys"):
         goos = "windows"
-    elif system.startswith("freebsd"):
-        goos = "freebsd"
-    elif system.startswith("openbsd"):
-        goos = "openbsd"
-    try:
-        machine = platform.machine().lower()
-    except Exception:
-        machine = ""
+    else:
+        system = platform.system().lower()
+        if system:
+            goos = system
+
+    machine = platform.machine().lower()
     arch_map = {
         "x86_64": "amd64",
         "amd64": "amd64",
         "aarch64": "arm64",
         "arm64": "arm64",
-        "armv7l": "arm",
-        "armv6l": "arm",
-        "arm": "arm",
         "i386": "386",
         "i686": "386",
         "x86": "386",
-        "ppc64le": "ppc64le",
-        "ppc64": "ppc64",
-        "s390x": "s390x",
+        "armv6l": "arm",
+        "armv7l": "arm",
+        "armv6": "arm",
+        "armv7": "arm",
     }
     goarch = arch_map.get(machine)
-    return goos, goarch
+    return {key: val for key, val in {"GOOS": goos, "GOARCH": goarch}.items() if val}
 
 
 def _is_build_context_active(text: str) -> bool:
