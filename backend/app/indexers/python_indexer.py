@@ -7,14 +7,38 @@ from .base import ImportRef, SymbolDef
 
 _TYPE_CHECKING_MODULES = {"typing", "typing_extensions"}
 
-def _is_type_checking_test(test: ast.AST) -> bool:
-    if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+def _is_type_checking_test(
+    test: ast.AST,
+    *,
+    typing_names: set[str],
+    type_checking_names: set[str],
+) -> bool:
+    if isinstance(test, ast.Name) and test.id in type_checking_names:
         return True
     if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
         v = test.value
-        if isinstance(v, ast.Name) and v.id in _TYPE_CHECKING_MODULES:
+        if isinstance(v, ast.Name) and v.id in typing_names:
             return True
     return False
+
+def _collect_type_checking_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
+    typing_names = set(_TYPE_CHECKING_MODULES)
+    type_checking_names = {"TYPE_CHECKING"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = getattr(alias, "name", "")
+                if name in _TYPE_CHECKING_MODULES:
+                    typing_names.add(alias.asname or name)
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "") in _TYPE_CHECKING_MODULES:
+                for alias in node.names:
+                    if getattr(alias, "name", "") != "TYPE_CHECKING":
+                        continue
+                    type_checking_names.add(alias.asname or "TYPE_CHECKING")
+
+    return typing_names, type_checking_names
 
 def _collect_assigned_names(t: ast.AST) -> list[str]:
     if isinstance(t, ast.Name):
@@ -182,10 +206,15 @@ class PythonIndexer:
             tree = ast.parse(text)
         except SyntaxError:
             return imports
+        typing_names, type_checking_names = _collect_type_checking_aliases(tree)
 
         def _walk(n: ast.AST, *, kind: str) -> None:
             # Mark imports under TYPE_CHECKING as type-only edges.
-            if isinstance(n, ast.If) and _is_type_checking_test(n.test):
+            if isinstance(n, ast.If) and _is_type_checking_test(
+                n.test,
+                typing_names=typing_names,
+                type_checking_names=type_checking_names,
+            ):
                 for ch in n.body:
                     _walk(ch, kind="type")
                 for ch in n.orelse:
