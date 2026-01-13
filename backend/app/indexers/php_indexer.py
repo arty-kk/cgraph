@@ -13,7 +13,8 @@ _PHP_INCLUDE_RE = re.compile(
     r"""(?x)(?<![\w$])
     (?:include|include_once|require|require_once)\s*
     (?:\(|\s)\s*(?P<path>['"][^'"]+['"])
-    """
+    """,
+    re.IGNORECASE,
 )
 
 
@@ -45,16 +46,33 @@ def _strip_use_prefix(raw: str) -> tuple[str, str]:
     return s.strip(), kind
 
 
-def _split_use_items(spec: str) -> list[str]:
+def _parse_use_item(item: str, default_kind: str) -> tuple[str, str]:
+    item = (item or "").strip()
+    if not item:
+        return "", default_kind
+    lower = item.lower()
+    if lower.startswith("function "):
+        return item[len("function "):].strip(), "function"
+    if lower.startswith("const "):
+        return item[len("const "):].strip(), "const"
+    return item, default_kind
+
+
+def _split_use_items(spec: str, default_kind: str) -> list[tuple[str, str]]:
     if "{" not in spec or "}" not in spec:
-        return [spec]
+        item, kind = _parse_use_item(spec, default_kind)
+        return [(item, kind)]
     base, rest = spec.split("{", 1)
     base = base.rstrip("\\").strip()
     inner = rest.split("}", 1)[0]
     parts = [p.strip() for p in inner.split(",") if p.strip()]
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     for part in parts:
-        out.append(f"{base}\\{part}".strip("\\"))
+        item, kind = _parse_use_item(part, default_kind)
+        if not item:
+            continue
+        spec_item = f"{base}\\{item}".strip("\\") if base else item
+        out.append((spec_item, kind))
     return out
 
 
@@ -95,9 +113,9 @@ class PhpIndexer:
                 if not raw.lower().startswith("use "):
                     continue
                 spec_raw, kind = _strip_use_prefix(raw)
-                for item in _split_use_items(spec_raw):
+                for item, item_kind in _split_use_items(spec_raw, kind):
                     spec = _clean_use_item(item)
-                    _add(raw, spec, kind)
+                    _add(raw, spec, item_kind)
 
         stripped = _strip_php_comments(text or "")
         for match in _PHP_INCLUDE_RE.finditer(stripped):
