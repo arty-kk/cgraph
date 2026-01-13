@@ -1202,6 +1202,7 @@ export function useCGRAPHApp() {
     fileEditorOpen,
     fileEditorPath,
     fileEditorContent,
+    fileEditorOriginal,
     fileEditorDirty,
     fileEditorTruncated,
     fileEditorBusy,

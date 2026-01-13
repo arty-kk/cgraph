@@ -226,6 +226,7 @@ export function App() {
       <FileEditorModal
         open={app.fileEditorOpen}
         path={app.fileEditorPath}
+        original={app.fileEditorOriginal}
         content={app.fileEditorContent}
         busy={app.fileEditorBusy}
         saving={app.fileEditorSaving}
