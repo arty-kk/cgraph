@@ -1,8 +1,9 @@
+import os
 import unittest
 from pathlib import Path
 
 from ..config import settings
-from .go_indexer import GoIndexer, _is_build_context_active
+from .go_indexer import GoIndexer, _is_build_context_active, _runtime_goos_goarch
 from .tree_sitter_utils import parse_tree
 
 
@@ -51,6 +52,24 @@ type Widget struct{}
         idx = GoIndexer()
         exports = idx.parse_exports(Path("main.go"), src)
         self.assertIn("Widget", exports)
+
+    def test_build_tags_default_goos(self) -> None:
+        settings.go_build_tags = ""
+        goos, _ = _runtime_goos_goarch()
+        if not goos:
+            self.skipTest("runtime GOOS unavailable")
+        src = f"""//go:build {goos}
+package main
+"""
+        old_goos = os.environ.pop("GOOS", None)
+        old_goarch = os.environ.pop("GOARCH", None)
+        try:
+            self.assertTrue(_is_build_context_active(src))
+        finally:
+            if old_goos is not None:
+                os.environ["GOOS"] = old_goos
+            if old_goarch is not None:
+                os.environ["GOARCH"] = old_goarch
 
     def test_include_unexported_symbols(self) -> None:
         settings.go_build_tags = ""

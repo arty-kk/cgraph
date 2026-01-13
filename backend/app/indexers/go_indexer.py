@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import re
 from pathlib import Path
 from .base import ImportRef, SymbolDef
@@ -143,14 +144,57 @@ def _eval_go_build(expr: str, tags: set[str]) -> bool:
 
 def _build_context_tags() -> set[str]:
     tags = _split_build_tags(getattr(settings, "go_build_tags", "") or "")
-    for env_key in ("GOOS", "GOARCH"):
+    runtime_goos, runtime_goarch = _runtime_goos_goarch()
+    for env_key, runtime_val in (("GOOS", runtime_goos), ("GOARCH", runtime_goarch)):
         try:
             env_val = os.getenv(env_key, "")
         except Exception:
             env_val = ""
         if env_val:
             tags.add(env_val)
+        elif runtime_val:
+            tags.add(runtime_val)
     return tags
+
+
+def _runtime_goos_goarch() -> tuple[str | None, str | None]:
+    goos = None
+    goarch = None
+    try:
+        system = platform.system().lower()
+    except Exception:
+        system = ""
+    if system.startswith("linux"):
+        goos = "linux"
+    elif system.startswith("darwin"):
+        goos = "darwin"
+    elif system.startswith("windows"):
+        goos = "windows"
+    elif system.startswith("freebsd"):
+        goos = "freebsd"
+    elif system.startswith("openbsd"):
+        goos = "openbsd"
+    try:
+        machine = platform.machine().lower()
+    except Exception:
+        machine = ""
+    arch_map = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+        "armv7l": "arm",
+        "armv6l": "arm",
+        "arm": "arm",
+        "i386": "386",
+        "i686": "386",
+        "x86": "386",
+        "ppc64le": "ppc64le",
+        "ppc64": "ppc64",
+        "s390x": "s390x",
+    }
+    goarch = arch_map.get(machine)
+    return goos, goarch
 
 
 def _is_build_context_active(text: str) -> bool:
