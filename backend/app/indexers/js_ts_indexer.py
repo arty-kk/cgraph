@@ -59,6 +59,12 @@ EXPORT_RE = re.compile(r"""(?x)
     )
 """, re.MULTILINE)
 
+VUE_SCRIPT_TAG_RE = re.compile(
+    r"""(?is)<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>"""
+)
+VUE_SCRIPT_LANG_RE = re.compile(r"""(?i)\blang\s*=\s*["']?([A-Za-z0-9_-]+)["']?""")
+VUE_SCRIPT_SRC_RE = re.compile(r"""(?i)\bsrc\s*=\s*["']([^"']+)["']""")
+
 def _strip_quotes(s: str) -> str:
     s = (s or "").strip()
     if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"', "`"):
@@ -72,6 +78,44 @@ def _js_ts_language(path: Path) -> str:
     if suf in (".tsx",):
         return "tsx"
     return "javascript"
+
+def _vue_language(attrs: str) -> str | None:
+    if not attrs:
+        return None
+    match = VUE_SCRIPT_LANG_RE.search(attrs)
+    if not match:
+        return None
+    lang = match.group(1).strip().lower()
+    if lang in ("ts", "tsx", "typescript"):
+        return "typescript"
+    return "javascript"
+
+def _extract_vue_scripts(text: str) -> tuple[str, list[str], str]:
+    if not text:
+        return "", [], "javascript"
+    bodies: list[str] = []
+    srcs: list[str] = []
+    lang: str = "javascript"
+    for match in VUE_SCRIPT_TAG_RE.finditer(text):
+        attrs = match.group("attrs") or ""
+        src_match = VUE_SCRIPT_SRC_RE.search(attrs)
+        if src_match:
+            src = src_match.group(1).strip()
+            if src:
+                srcs.append(src)
+        body = match.group("body") or ""
+        if body.strip():
+            bodies.append(body)
+        lang_hint = _vue_language(attrs)
+        if lang_hint == "typescript":
+            lang = "typescript"
+    return "\n".join(bodies).strip(), srcs, lang
+
+def _prepare_js_source(file_path: Path, text: str) -> tuple[str, str, list[str]]:
+    if file_path.suffix.lower() == ".vue":
+        script_text, srcs, lang = _extract_vue_scripts(text)
+        return lang, script_text, srcs
+    return _js_ts_language(file_path), text, []
 
 def _string_literal_value(node_text_raw: str) -> str:
     if not node_text_raw:
@@ -110,7 +154,8 @@ class JsTsIndexer:
     def parse_imports(self, file_path: Path, text: str) -> list[ImportRef]:
         out: list[ImportRef] = []
         seen: set[tuple[str, str]] = set()
-        tree, data = parse_tree(_js_ts_language(file_path), text)
+        lang, source_text, vue_srcs = _prepare_js_source(file_path, text)
+        tree, data = parse_tree(lang, source_text)
 
         def _add(raw: str, spec: str, kind: str) -> None:
             spec = (spec or "").strip()
@@ -128,7 +173,8 @@ class JsTsIndexer:
                     raw = node_text(node, data).strip()
                     source = node.child_by_field_name("source")
                     spec = _string_literal_value(node_text(source, data))
-                    kind = "type" if raw.lstrip().startswith("import type") else "runtime"
+                    raw_l = raw.lstrip()
+                    kind = "type" if raw_l.startswith("import type") else "runtime"
                     _add(raw, spec, kind)
                     continue
                 if node.type in ("export_statement", "export_declaration"):
@@ -156,7 +202,7 @@ class JsTsIndexer:
                     continue
 
         if not out:
-            cleaned = _strip_js_comments(text)
+            cleaned = _strip_js_comments(source_text)
             for m in STATIC_FROM_RE.finditer(cleaned):
                 spec = (m.group("from1") or m.group("from2") or "").strip()
                 if not spec:
@@ -189,18 +235,21 @@ class JsTsIndexer:
                 spec = (m.group("req") or "").strip()
                 if spec:
                     _add(m.group(0).strip(), spec, "runtime")
+        for src in vue_srcs:
+            _add(f'script src="{src}"', src, "runtime")
         return out
 
     def parse_exports(self, file_path: Path, text: str) -> list[str]:
         exports: list[str] = []
-        tree, data = parse_tree(_js_ts_language(file_path), text)
+        lang, source_text, _vue_srcs = _prepare_js_source(file_path, text)
+        tree, data = parse_tree(lang, source_text)
         snippets: list[str] = []
         if tree is not None:
             for node in iter_nodes(tree.root_node):
                 if node.type in ("export_statement", "export_declaration"):
                     snippets.append(node_text(node, data))
         else:
-            snippets = [text]
+            snippets = [source_text]
 
         for snippet in snippets:
             for m in EXPORT_RE.finditer(snippet):
@@ -238,8 +287,9 @@ class JsTsIndexer:
     def parse_symbols(self, file_path: Path, text: str) -> list[SymbolDef]:
         out: list[SymbolDef] = []
         seen: set[tuple[str, str, int]] = set()
-        lines = text.splitlines()
-        tree, data = parse_tree(_js_ts_language(file_path), text)
+        lang, source_text, _vue_srcs = _prepare_js_source(file_path, text)
+        lines = source_text.splitlines()
+        tree, data = parse_tree(lang, source_text)
 
         def _line_text(line_no: int) -> str:
             if 1 <= line_no <= len(lines):
@@ -253,7 +303,7 @@ class JsTsIndexer:
                     ln = int(node.start_point[0]) + 1
                     snippets.append((node_text(node, data), ln))
         else:
-            snippets = [(text, 1)]
+            snippets = [(source_text, 1)]
 
         for snippet, ln in snippets:
             sig = _line_text(ln)
@@ -315,9 +365,14 @@ class JsTsIndexer:
 
 
     def naive_complexity(self, text: str) -> int:
+        source_text = text
+        if isinstance(text, str):
+            source_text, _vue_srcs, _lang = _extract_vue_scripts(text)
+            if not source_text:
+                source_text = text
         keywords = ["if(", "if (", "for(", "for (", "while(", "while (", "&&", "||", "catch", "case "]
         c = 1
-        low = text.lower()
+        low = source_text.lower()
         for k in keywords:
             c += low.count(k)
         return c
