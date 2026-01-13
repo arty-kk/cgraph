@@ -88,6 +88,8 @@ def _vue_language(attrs: str) -> str | None:
     if not match:
         return None
     lang = match.group(1).strip().lower()
+    if lang == "tsx":
+        return "tsx"
     if lang in ("ts", "tsx", "typescript"):
         return "typescript"
     return "javascript"
@@ -109,7 +111,9 @@ def _extract_vue_scripts(text: str) -> tuple[str, list[str], str]:
         if body.strip():
             bodies.append(body)
         lang_hint = _vue_language(attrs)
-        if lang_hint == "typescript":
+        if lang_hint == "tsx":
+            lang = "tsx"
+        elif lang_hint == "typescript":
             lang = "typescript"
     return "\n".join(bodies).strip(), srcs, lang
 
@@ -130,9 +134,24 @@ def _template_literal_value(node_text_raw: str) -> str:
     if not node_text_raw:
         return ""
     raw = node_text_raw.strip()
+    if "${" in raw:
+        return ""
     if len(raw) >= 2 and raw[0] == raw[-1] == "`":
         return raw[1:-1]
     return ""
+
+def _all_type_only_specifiers(raw: str) -> bool:
+    match = re.search(r"\{([^}]*)\}", raw)
+    if not match:
+        return False
+    specs = [spec.strip() for spec in match.group(1).split(",") if spec.strip()]
+    if not specs:
+        return False
+    for spec in specs:
+        spec_norm = " ".join(spec.split())
+        if not spec_norm.startswith("type "):
+            return False
+    return True
 
 def _first_call_string_arg(node, data: bytes, *, allow_template: bool = False) -> str:
     args = None
@@ -188,7 +207,8 @@ class JsTsIndexer:
                     source = node.child_by_field_name("source")
                     spec = _string_literal_value(node_text(source, data))
                     raw_l = raw.lstrip()
-                    kind = "type" if raw_l.startswith("import type") else "runtime"
+                    is_type_only = raw_l.startswith("import type") or _all_type_only_specifiers(raw)
+                    kind = "type" if is_type_only else "runtime"
                     _add(raw, spec, kind)
                     continue
                 if node.type in ("export_statement", "export_declaration"):
@@ -196,7 +216,9 @@ class JsTsIndexer:
                     if source is not None:
                         raw = node_text(node, data).strip()
                         spec = _string_literal_value(node_text(source, data))
-                        kind = "type_reexport" if raw.lstrip().startswith("export type") else "reexport"
+                        raw_l = raw.lstrip()
+                        is_type_only = raw_l.startswith("export type") or _all_type_only_specifiers(raw)
+                        kind = "type_reexport" if is_type_only else "reexport"
                         _add(raw, spec, kind)
                     continue
                 if node.type in ("call_expression", "import_call"):
@@ -224,7 +246,7 @@ class JsTsIndexer:
                     continue
                 raw = m.group(0).strip()
                 is_export = raw.lstrip().startswith("export")
-                is_type = bool(m.group("import_type") or m.group("export_type"))
+                is_type = bool(m.group("import_type") or m.group("export_type") or _all_type_only_specifiers(raw))
                 if is_export:
                     kind = "type_reexport" if is_type else "reexport"
                 else:
@@ -243,7 +265,7 @@ class JsTsIndexer:
 
             for m in DYNAMIC_IMPORT_RE.finditer(cleaned):
                 spec = (m.group("dyn_sq") or m.group("dyn_dq") or m.group("dyn_tpl") or "").strip()
-                if spec:
+                if spec and "${" not in spec:
                     _add(m.group(0).strip(), spec, "runtime")
 
             for m in REQUIRE_RE.finditer(cleaned):
