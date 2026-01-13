@@ -50,10 +50,11 @@ type Props = {
   open: boolean
   title: string
   onClose: () => void
+  panelClassName?: string
   children: React.ReactNode
 }
 
-export function Modal({ open, title, onClose, children }: Props) {
+export function Modal({ open, title, onClose, panelClassName, children }: Props) {
   const idRef = useRef<number>(0)
   if (idRef.current === 0) idRef.current = ++modalIdSeq
 
@@ -91,7 +92,10 @@ export function Modal({ open, title, onClose, children }: Props) {
       <div className="absolute inset-0 bg-black/60" />
 
       <div
-        className="relative w-[min(720px,calc(100vw-32px))] max-h-[calc(100vh-32px)] overflow-auto rounded-md bg-neutral-950 border border-neutral-800 shadow-xl p-4"
+        className={[
+          'relative max-h-[calc(100vh-32px)] overflow-auto rounded-md bg-neutral-950 border border-neutral-800 shadow-xl p-4',
+          panelClassName || 'w-[min(720px,calc(100vw-32px))]',
+        ].filter(Boolean).join(' ')}
         onMouseDown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

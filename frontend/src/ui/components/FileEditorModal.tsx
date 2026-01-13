@@ -1,10 +1,13 @@
 // frontend/src/ui/components/FileEditorModal.tsx
 import React from 'react'
+import { DiffEditor, Editor } from '@monaco-editor/react'
+import type { editor, IPosition } from 'monaco-editor'
 import { Modal } from './Modal'
 
 type Props = {
   open: boolean
   path: string | null
+  original: string
   content: string
   busy: boolean
   saving: boolean
@@ -20,6 +23,7 @@ type Props = {
 export function FileEditorModal({
   open,
   path,
+  original,
   content,
   busy,
   saving,
@@ -34,32 +38,81 @@ export function FileEditorModal({
   const title = path ? `File: ${path}` : 'File viewer'
   const [wrap, setWrap] = React.useState(true)
   const [fontSize, setFontSize] = React.useState(13)
+  const [showDiff, setShowDiff] = React.useState(false)
   const [cursorInfo, setCursorInfo] = React.useState({ line: 1, column: 1 })
-  const gutterRef = React.useRef<HTMLDivElement | null>(null)
-  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null)
   const lineCount = React.useMemo(() => content.split('\n').length || 1, [content])
-  const lineNumbers = React.useMemo(() => Array.from({ length: lineCount }, (_, i) => i + 1), [lineCount])
+  const language = React.useMemo(() => {
+    if (!path) return 'plaintext'
+    const ext = path.split('.').pop()?.toLowerCase()
+    switch (ext) {
+      case 'ts':
+      case 'tsx':
+        return 'typescript'
+      case 'js':
+      case 'jsx':
+        return 'javascript'
+      case 'json':
+        return 'json'
+      case 'md':
+      case 'markdown':
+        return 'markdown'
+      case 'yml':
+      case 'yaml':
+        return 'yaml'
+      case 'toml':
+        return 'toml'
+      case 'py':
+        return 'python'
+      case 'go':
+        return 'go'
+      case 'rs':
+        return 'rust'
+      case 'java':
+        return 'java'
+      case 'kt':
+        return 'kotlin'
+      case 'swift':
+        return 'swift'
+      case 'rb':
+        return 'ruby'
+      case 'php':
+        return 'php'
+      case 'cs':
+        return 'csharp'
+      case 'c':
+      case 'h':
+        return 'c'
+      case 'cpp':
+      case 'cc':
+      case 'hpp':
+        return 'cpp'
+      case 'html':
+        return 'html'
+      case 'css':
+        return 'css'
+      case 'scss':
+      case 'sass':
+        return 'scss'
+      case 'sql':
+        return 'sql'
+      case 'sh':
+      case 'bash':
+        return 'shell'
+      case 'xml':
+        return 'xml'
+      default:
+        return 'plaintext'
+    }
+  }, [path])
 
   React.useEffect(() => {
     setCursorInfo({ line: 1, column: 1 })
-    if (textareaRef.current) textareaRef.current.scrollTop = 0
-    if (gutterRef.current) gutterRef.current.scrollTop = 0
   }, [path, open])
 
-  const updateCursorInfo = React.useCallback(() => {
-    const el = textareaRef.current
-    if (!el) return
-    const idx = el.selectionStart || 0
-    const before = content.slice(0, idx)
-    const line = before.split('\n').length
-    const column = before.length - (before.lastIndexOf('\n') + 1) + 1
-    setCursorInfo({ line, column })
-  }, [content])
-
-  const handleScroll = (event: React.UIEvent<HTMLTextAreaElement>) => {
-    if (!gutterRef.current) return
-    gutterRef.current.scrollTop = event.currentTarget.scrollTop
-  }
+  const updateCursorInfo = React.useCallback((position?: IPosition | null) => {
+    if (!position) return
+    setCursorInfo({ line: position.lineNumber, column: position.column })
+  }, [])
 
   const handleCopyPath = async () => {
     if (!path) return
@@ -73,8 +126,44 @@ export function FileEditorModal({
     void onSave()
   }
 
+  const editorOptions = React.useMemo<editor.IStandaloneEditorConstructionOptions>(() => ({
+    readOnly: busy || saving,
+    fontSize,
+    wordWrap: wrap ? 'on' : 'off',
+    minimap: { enabled: false },
+    renderWhitespace: 'selection',
+    automaticLayout: true,
+    scrollBeyondLastLine: false,
+  }), [busy, saving, fontSize, wrap])
+
+  const handleEditorMount = React.useCallback((instance: editor.IStandaloneCodeEditor, monaco: typeof import('monaco-editor')) => {
+    updateCursorInfo(instance.getPosition())
+    instance.onDidChangeCursorPosition((e) => updateCursorInfo(e.position))
+    instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      handleSave()
+    })
+  }, [handleSave, updateCursorInfo])
+
+  const handleDiffMount = React.useCallback((instance: editor.IStandaloneDiffEditor, monaco: typeof import('monaco-editor')) => {
+    const modified = instance.getModifiedEditor()
+    updateCursorInfo(modified.getPosition())
+    modified.onDidChangeCursorPosition((e) => updateCursorInfo(e.position))
+    modified.onDidChangeModelContent(() => {
+      const model = modified.getModel()
+      onChange(model?.getValue() ?? '')
+    })
+    modified.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      handleSave()
+    })
+  }, [handleSave, onChange, updateCursorInfo])
+
   return (
-    <Modal open={open} title={title} onClose={onClose}>
+    <Modal
+      open={open}
+      title={title}
+      onClose={onClose}
+      panelClassName="w-[min(1400px,calc(100vw-32px))]"
+    >
       <div className="flex flex-col gap-3">
         {error && (
           <div className="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-xs text-rose-200">
@@ -107,6 +196,13 @@ export function FileEditorModal({
             <button
               type="button"
               className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+              onClick={() => setShowDiff((prev) => !prev)}
+            >
+              {showDiff ? 'Diff on' : 'Diff off'}
+            </button>
+            <button
+              type="button"
+              className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
               onClick={() => setWrap((prev) => !prev)}
             >
               {wrap ? 'Wrap on' : 'Wrap off'}
@@ -128,38 +224,31 @@ export function FileEditorModal({
           </div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-gradient-to-b from-neutral-950 via-neutral-950 to-neutral-900/70 shadow-inner">
-          <div className="flex items-stretch">
-            <div
-              ref={gutterRef}
-              className="hidden max-h-[60vh] min-h-[60vh] w-12 flex-none overflow-hidden border-r border-neutral-800 bg-neutral-950/80 py-3 text-right text-[11px] leading-5 text-neutral-600 sm:block"
-            >
-              {lineNumbers.map((line) => (
-                <div key={line} className="px-2">{line}</div>
-              ))}
-            </div>
-            <textarea
-              ref={textareaRef}
-              className="min-h-[60vh] w-full resize-none bg-transparent px-4 py-3 font-mono text-neutral-100 focus:outline-none"
-              style={{
-                fontSize: `${fontSize}px`,
-                lineHeight: '1.25rem',
-                whiteSpace: wrap ? 'pre-wrap' : 'pre',
-              }}
-              value={content}
-              onChange={(e) => onChange(e.target.value)}
-              onScroll={handleScroll}
-              onClick={updateCursorInfo}
-              onKeyUp={updateCursorInfo}
-              onSelect={updateCursorInfo}
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-                  e.preventDefault()
-                  handleSave()
-                }
-              }}
-              spellCheck={false}
-              disabled={busy || saving}
-            />
+          <div className="min-h-[60vh]">
+            {showDiff ? (
+              <DiffEditor
+                height="60vh"
+                language={language}
+                original={original}
+                modified={content}
+                options={{
+                  ...editorOptions,
+                  renderSideBySide: true,
+                }}
+                onMount={handleDiffMount}
+                theme="vs-dark"
+              />
+            ) : (
+              <Editor
+                height="60vh"
+                language={language}
+                value={content}
+                onChange={(value) => onChange(value ?? '')}
+                options={editorOptions}
+                onMount={handleEditorMount}
+                theme="vs-dark"
+              />
+            )}
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px] text-neutral-400">
