@@ -36,7 +36,9 @@ IMPORT_EQUALS_RE = re.compile(
     """
 )
 
-DYNAMIC_IMPORT_RE = re.compile(r"""(?x)(?<![\w$])import\s*\(\s*['"](?P<dyn>[^'"]+)['"]\s*\)""")
+DYNAMIC_IMPORT_RE = re.compile(
+    r"""(?x)(?<![\w$])import\s*\(\s*(?:'(?P<dyn_sq>[^']+)'|"(?P<dyn_dq>[^"]+)"|`(?P<dyn_tpl>[^`]+)`)\s*\)"""
+)
 REQUIRE_RE = re.compile(r"""(?x)(?<![\w$])require\s*\(\s*['"](?P<req>[^'"]+)['"]\s*\)""")
 
 EXPORT_RE = re.compile(r"""(?x)
@@ -124,7 +126,15 @@ def _string_literal_value(node_text_raw: str) -> str:
         return ""
     return _strip_quotes(node_text_raw)
 
-def _first_call_string_arg(node, data: bytes) -> str:
+def _template_literal_value(node_text_raw: str) -> str:
+    if not node_text_raw:
+        return ""
+    raw = node_text_raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == "`":
+        return raw[1:-1]
+    return ""
+
+def _first_call_string_arg(node, data: bytes, *, allow_template: bool = False) -> str:
     args = None
     for ch in node.children:
         if ch.type in ("arguments", "argument_list"):
@@ -135,8 +145,12 @@ def _first_call_string_arg(node, data: bytes) -> str:
     if args is None:
         return ""
     for ch in args.children:
-        if ch.type in ("string", "string_literal", "template_string", "template_literal"):
+        if ch.type in ("string", "string_literal"):
             return _string_literal_value(node_text(ch, data))
+        if ch.type in ("template_string", "template_literal"):
+            if allow_template:
+                return _template_literal_value(node_text(ch, data))
+            return ""
     return ""
 
 def _first_string_literal(node, data: bytes) -> str:
@@ -190,7 +204,8 @@ class JsTsIndexer:
                     func = node.child_by_field_name("function")
                     func_name = node_text(func, data).strip()
                     if node.type == "import_call" or func_name in ("import", "require"):
-                        spec = _first_call_string_arg(node, data)
+                        allow_template = node.type == "import_call" or func_name == "import"
+                        spec = _first_call_string_arg(node, data, allow_template=allow_template)
                         if spec:
                             _add(raw, spec, "runtime")
                     continue
@@ -227,7 +242,7 @@ class JsTsIndexer:
                     _add(m.group(0).strip(), spec, "runtime")
 
             for m in DYNAMIC_IMPORT_RE.finditer(cleaned):
-                spec = (m.group("dyn") or "").strip()
+                spec = (m.group("dyn_sq") or m.group("dyn_dq") or m.group("dyn_tpl") or "").strip()
                 if spec:
                     _add(m.group(0).strip(), spec, "runtime")
 
@@ -296,8 +311,71 @@ class JsTsIndexer:
                 return lines[line_no - 1].strip()
             return ""
 
+        def _add(name: str, kind: str, line_no: int) -> None:
+            if not name:
+                return
+            key = (kind, name, line_no)
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(
+                SymbolDef(
+                    name=name,
+                    kind=kind,
+                    signature=_line_text(line_no),
+                    doc="",
+                    start_line=int(line_no),
+                    end_line=int(line_no),
+                )
+            )
+
+        def _extract_binding_names(node) -> list[str]:
+            if node is None:
+                return []
+            names: list[str] = []
+            for ch in iter_nodes(node):
+                if ch.type in (
+                    "identifier",
+                    "binding_identifier",
+                    "property_identifier",
+                    "shorthand_property_identifier",
+                    "type_identifier",
+                ):
+                    name = node_text(ch, data)
+                    if name:
+                        names.append(name)
+            return names
+
+        def _collect_var_names(node) -> list[str]:
+            names: list[str] = []
+            for ch in node.children:
+                if ch.type == "variable_declarator":
+                    name_node = ch.child_by_field_name("name")
+                    names.extend(_extract_binding_names(name_node))
+            return names
+
+        def _collect_top_level(node) -> None:
+            if node.type == "function_declaration":
+                name = node_text(node.child_by_field_name("name"), data)
+                _add(name, "function", int(node.start_point[0]) + 1)
+                return
+            if node.type == "class_declaration":
+                name = node_text(node.child_by_field_name("name"), data)
+                _add(name, "class", int(node.start_point[0]) + 1)
+                return
+            if node.type in ("lexical_declaration", "variable_declaration"):
+                line_no = int(node.start_point[0]) + 1
+                for name in _collect_var_names(node):
+                    _add(name, "variable", line_no)
+                return
+            if node.type in ("export_statement", "export_declaration"):
+                for ch in node.children:
+                    _collect_top_level(ch)
+
         snippets: list[tuple[str, int]] = []
         if tree is not None:
+            for node in tree.root_node.children:
+                _collect_top_level(node)
             for node in iter_nodes(tree.root_node):
                 if node.type in ("export_statement", "export_declaration"):
                     ln = int(node.start_point[0]) + 1
@@ -308,46 +386,28 @@ class JsTsIndexer:
         for snippet, ln in snippets:
             sig = _line_text(ln)
 
-            def _add(name: str, kind: str) -> None:
-                if not name:
-                    return
-                key = (kind, name, ln)
-                if key in seen:
-                    return
-                seen.add(key)
-                out.append(
-                    SymbolDef(
-                        name=name,
-                        kind=kind,
-                        signature=sig,
-                        doc="",
-                        start_line=int(ln),
-                        end_line=int(ln),
-                    )
-                )
-
             for m in EXPORT_RE.finditer(snippet):
                 if m.group("d_fn") or m.group("fn"):
-                    _add(m.group("d_fn") or m.group("fn") or "", "function")
+                    _add(m.group("d_fn") or m.group("fn") or "", "function", ln)
                 if m.group("d_cls") or m.group("cls"):
-                    _add(m.group("d_cls") or m.group("cls") or "", "class")
+                    _add(m.group("d_cls") or m.group("cls") or "", "class", ln)
                 if m.group("const") or m.group("let") or m.group("var"):
-                    _add(m.group("const") or m.group("let") or m.group("var") or "", "variable")
+                    _add(m.group("const") or m.group("let") or m.group("var") or "", "variable", ln)
 
                 if m.group("intf"):
-                    _add(m.group("intf") or "", "interface")
+                    _add(m.group("intf") or "", "interface", ln)
                 if m.group("type_alias"):
-                    _add(m.group("type_alias") or "", "type")
+                    _add(m.group("type_alias") or "", "type", ln)
                 if m.group("enum"):
-                    _add(m.group("enum") or "", "enum")
+                    _add(m.group("enum") or "", "enum", ln)
                 if m.group("namespace"):
-                    _add(m.group("namespace") or "", "namespace")
+                    _add(m.group("namespace") or "", "namespace", ln)
                 if m.group("star_as"):
-                    _add(m.group("star_as") or "", "reexport_namespace")
+                    _add(m.group("star_as") or "", "reexport_namespace", ln)
 
                 raw = (m.group(0) or "").strip()
                 if raw.lstrip().startswith("export default"):
-                    _add("default", "default")
+                    _add("default", "default", ln)
 
                 brace = m.group("brace")
                 if brace:
@@ -358,9 +418,9 @@ class JsTsIndexer:
                         if p.startswith("typeof "):
                             p = p[7:].strip()
                         if " as " in p:
-                            _add(p.split(" as ")[-1].strip(), "reexport")
+                            _add(p.split(" as ")[-1].strip(), "reexport", ln)
                         else:
-                            _add(p.split(":")[0].strip(), "reexport")
+                            _add(p.split(":")[0].strip(), "reexport", ln)
         return out
 
 
