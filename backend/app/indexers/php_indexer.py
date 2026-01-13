@@ -7,6 +7,27 @@ from .tree_sitter_utils import iter_nodes, node_text, parse_tree
 
 
 _USE_SPLIT_RE = re.compile(r"\s+as\s+", re.IGNORECASE)
+_PHP_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_PHP_LINE_COMMENT_RE = re.compile(r"//.*?$|#.*?$", re.MULTILINE)
+_PHP_INCLUDE_RE = re.compile(
+    r"""(?x)(?<![\w$])
+    (?:include|include_once|require|require_once)\s*
+    (?:\(|\s)\s*(?P<path>['"][^'"]+['"])
+    """
+)
+
+
+def _strip_php_comments(text: str) -> str:
+    text = _PHP_BLOCK_COMMENT_RE.sub("", text)
+    text = _PHP_LINE_COMMENT_RE.sub("", text)
+    return text
+
+
+def _strip_quotes(s: str) -> str:
+    s = (s or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        return s[1:-1]
+    return s
 
 
 def _strip_use_prefix(raw: str) -> tuple[str, str]:
@@ -53,24 +74,36 @@ class PhpIndexer:
         out: list[ImportRef] = []
         tree, data = parse_tree("php", text)
         if tree is None:
-            return out
+            tree = None
         seen: set[tuple[str, str]] = set()
-        for node in iter_nodes(tree.root_node):
-            if node.type not in ("namespace_use_declaration", "namespace_use_clause"):
-                continue
-            raw = node_text(node, data).strip()
-            if not raw.lower().startswith("use "):
-                continue
-            spec_raw, kind = _strip_use_prefix(raw)
-            for item in _split_use_items(spec_raw):
-                spec = _clean_use_item(item)
-                if not spec:
+
+        def _add(raw: str, spec: str, kind: str) -> None:
+            spec = (spec or "").strip()
+            if not spec:
+                return
+            key = (kind, spec)
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(ImportRef(raw=raw, spec=spec, kind=kind))
+
+        if tree is not None:
+            for node in iter_nodes(tree.root_node):
+                if node.type not in ("namespace_use_declaration", "namespace_use_clause"):
                     continue
-                key = (kind, spec)
-                if key in seen:
+                raw = node_text(node, data).strip()
+                if not raw.lower().startswith("use "):
                     continue
-                seen.add(key)
-                out.append(ImportRef(raw=raw, spec=spec, kind=kind))
+                spec_raw, kind = _strip_use_prefix(raw)
+                for item in _split_use_items(spec_raw):
+                    spec = _clean_use_item(item)
+                    _add(raw, spec, kind)
+
+        stripped = _strip_php_comments(text or "")
+        for match in _PHP_INCLUDE_RE.finditer(stripped):
+            raw = match.group(0).strip()
+            spec = _strip_quotes(match.group("path"))
+            _add(raw, spec, "include")
         return out
 
     def parse_exports(self, file_path: Path, text: str) -> list[str]:
