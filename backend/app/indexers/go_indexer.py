@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import platform
 import re
+import sys
 from pathlib import Path
 from .base import ImportRef, SymbolDef
 from .tree_sitter_utils import iter_nodes, node_text, parse_tree
@@ -143,6 +145,7 @@ def _eval_go_build(expr: str, tags: set[str]) -> bool:
 
 def _build_context_tags() -> set[str]:
     tags = _split_build_tags(getattr(settings, "go_build_tags", "") or "")
+    runtime_defaults = _runtime_go_env()
     for env_key in ("GOOS", "GOARCH"):
         try:
             env_val = os.getenv(env_key, "")
@@ -150,7 +153,45 @@ def _build_context_tags() -> set[str]:
             env_val = ""
         if env_val:
             tags.add(env_val)
+        else:
+            fallback = runtime_defaults.get(env_key)
+            if fallback:
+                tags.add(fallback)
     return tags
+
+
+def _runtime_go_env() -> dict[str, str]:
+    goos = None
+    goarch = None
+
+    sys_platform = sys.platform
+    if sys_platform.startswith("linux"):
+        goos = "linux"
+    elif sys_platform == "darwin":
+        goos = "darwin"
+    elif sys_platform in ("win32", "cygwin", "msys"):
+        goos = "windows"
+    else:
+        system = platform.system().lower()
+        if system:
+            goos = system
+
+    machine = platform.machine().lower()
+    arch_map = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+        "i386": "386",
+        "i686": "386",
+        "x86": "386",
+        "armv6l": "arm",
+        "armv7l": "arm",
+        "armv6": "arm",
+        "armv7": "arm",
+    }
+    goarch = arch_map.get(machine)
+    return {key: val for key, val in {"GOOS": goos, "GOARCH": goarch}.items() if val}
 
 
 def _is_build_context_active(text: str) -> bool:
