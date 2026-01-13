@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from .db import get_session
 from .models import FileNode, FileEdge, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef
 from .indexers import pick_indexer
+from .indexers.infra_indexer import is_infra_file
 from .resolve import resolve_spec
 from .utils import resolve_under_root, sha256_text, project_lock
 from .api_map import extract_fastapi_routes, extract_frontend_api_calls, extract_fastapi_includes
@@ -63,7 +64,7 @@ def iter_code_files(root: Path) -> Iterable[Path]:
         )
         for fn in sorted(filenames):
             p = Path(dirpath) / fn
-            if p.suffix.lower() in CODE_EXTS and p.is_file():
+            if (p.suffix.lower() in CODE_EXTS or is_infra_file(p)) and p.is_file():
                 yield p
 
 def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:

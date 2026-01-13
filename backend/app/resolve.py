@@ -315,6 +315,8 @@ def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[s
         base = (importer_dir / spec_clean).resolve()
         if project_root not in base.parents and base != project_root:
             return None
+        if base.exists() and base.is_file():
+            return base.relative_to(project_root).as_posix()
         p = _try_files(base, JS_EXTS + PY_EXTS)
         if p:
             return p.relative_to(project_root).as_posix()
