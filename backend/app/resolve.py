@@ -10,6 +10,7 @@ from typing import Optional
 JS_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"]
 PY_EXTS = [".py", ".pyi"]
 TSCONFIG_NAMES = ("tsconfig.json", "jsconfig.json")
+PACKAGE_JSON_EXTS = JS_EXTS + [".d.ts"]
 
 def _try_files(base: Path, exts: list[str]) -> Optional[Path]:
     try:
@@ -83,6 +84,277 @@ def _resolve_python_relative(project_root: Path, importer_dir: Path, spec: str) 
         pr = project_root.resolve()
         if pr in init_pyi.resolve().parents or init_pyi.resolve() == pr:
             return init_pyi.resolve().relative_to(pr).as_posix()
+    return None
+
+def _read_package_json(path: Path) -> Optional[dict]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return None
+    if isinstance(data, dict):
+        return data
+    return None
+
+def _workspace_globs_from_package_json(project_root: Path) -> list[str]:
+    pkg_json = project_root / "package.json"
+    if not pkg_json.exists() or not pkg_json.is_file():
+        return []
+    data = _read_package_json(pkg_json)
+    if not data:
+        return []
+    workspaces = data.get("workspaces")
+    if isinstance(workspaces, list):
+        return [w for w in workspaces if isinstance(w, str)]
+    if isinstance(workspaces, dict):
+        packages = workspaces.get("packages")
+        if isinstance(packages, list):
+            return [w for w in packages if isinstance(w, str)]
+    return []
+
+def _workspace_globs_from_pnpm_workspace(project_root: Path) -> list[str]:
+    ws = project_root / "pnpm-workspace.yaml"
+    if not ws.exists() or not ws.is_file():
+        return []
+    try:
+        text = ws.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    globs: list[str] = []
+    in_packages = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not in_packages:
+            if stripped == "packages:":
+                in_packages = True
+            continue
+        if not line.startswith((" ", "\t")):
+            break
+        if stripped.startswith("- "):
+            glob = stripped[2:].strip().strip('"\'')
+            if glob:
+                globs.append(glob)
+    return globs
+
+def _workspace_paths_from_pnpm_lock(project_root: Path) -> list[str]:
+    lock = project_root / "pnpm-lock.yaml"
+    if not lock.exists() or not lock.is_file():
+        return []
+    try:
+        text = lock.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    paths: list[str] = []
+    in_importers = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not in_importers:
+            if stripped == "importers:":
+                in_importers = True
+            continue
+        if not line.startswith((" ", "\t")):
+            break
+        match = re.match(r"^\s{2}([^:#]+):\s*$", line)
+        if match:
+            entry = match.group(1).strip().strip('"\'')
+            if entry:
+                paths.append(entry)
+    return paths
+
+def _workspace_paths_from_package_lock(project_root: Path) -> list[str]:
+    lock = project_root / "package-lock.json"
+    if not lock.exists() or not lock.is_file():
+        return []
+    data = _read_package_json(lock)
+    if not data:
+        return []
+    packages = data.get("packages")
+    if not isinstance(packages, dict):
+        return []
+    paths: list[str] = []
+    for key in packages.keys():
+        if not isinstance(key, str) or not key:
+            continue
+        if "node_modules" in key.split("/"):
+            continue
+        paths.append(key)
+    return paths
+
+@lru_cache(maxsize=64)
+def _local_package_info(project_root_str: str) -> dict[str, list[tuple[str, dict]]]:
+    project_root = Path(project_root_str).resolve()
+    candidates: set[Path] = set()
+
+    for pattern in ("packages/*/package.json", "apps/*/package.json"):
+        for path in project_root.glob(pattern):
+            if path.is_file():
+                candidates.add(path)
+
+    for glob in _workspace_globs_from_package_json(project_root):
+        for path in project_root.glob(glob):
+            pkg = path / "package.json"
+            if pkg.is_file():
+                candidates.add(pkg)
+
+    for glob in _workspace_globs_from_pnpm_workspace(project_root):
+        for path in project_root.glob(glob):
+            pkg = path / "package.json"
+            if pkg.is_file():
+                candidates.add(pkg)
+
+    for rel in _workspace_paths_from_pnpm_lock(project_root):
+        pkg = project_root / rel / "package.json"
+        if pkg.is_file():
+            candidates.add(pkg)
+
+    for rel in _workspace_paths_from_package_lock(project_root):
+        pkg = project_root / rel / "package.json"
+        if pkg.is_file():
+            candidates.add(pkg)
+
+    root_pkg = project_root / "package.json"
+    if root_pkg.is_file():
+        candidates.add(root_pkg)
+
+    info: dict[str, list[tuple[str, dict]]] = {}
+    for pkg_path in sorted(candidates):
+        try:
+            resolved = pkg_path.resolve()
+        except Exception:
+            resolved = pkg_path
+        if project_root not in resolved.parents and resolved != project_root:
+            continue
+        data = _read_package_json(resolved)
+        if not data:
+            continue
+        name = data.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        entries = info.setdefault(name, [])
+        entries.append((str(resolved.parent), data))
+    return info
+
+def _export_targets(value: object) -> list[str]:
+    targets: list[str] = []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        for item in value:
+            targets.extend(_export_targets(item))
+        return targets
+    if isinstance(value, dict):
+        for key in ("types", "import", "module", "default", "require"):
+            if key in value:
+                targets.extend(_export_targets(value.get(key)))
+        return targets
+    return targets
+
+def _resolve_package_target(project_root: Path, pkg_dir: Path, target: str) -> Optional[str]:
+    if not target:
+        return None
+    target = target.strip()
+    if not target:
+        return None
+    if target.startswith("./"):
+        target = target[2:]
+    candidate = pkg_dir / target
+    p = _try_files(candidate, PACKAGE_JSON_EXTS)
+    if not p:
+        return None
+    try:
+        pr = project_root.resolve()
+        rp = p.resolve()
+    except Exception:
+        pr = project_root
+        rp = p
+    if pr not in rp.parents and rp != pr:
+        return None
+    try:
+        return rp.relative_to(pr).as_posix()
+    except Exception:
+        return None
+
+def _resolve_package_entry(project_root: Path, pkg_dir: Path, data: dict, subpath: str) -> Optional[str]:
+    exports = data.get("exports")
+    if exports is not None:
+        if subpath:
+            key = f"./{subpath}"
+            if isinstance(exports, dict) and key in exports:
+                for target in _export_targets(exports.get(key)):
+                    resolved = _resolve_package_target(project_root, pkg_dir, target)
+                    if resolved:
+                        return resolved
+        else:
+            if isinstance(exports, str):
+                resolved = _resolve_package_target(project_root, pkg_dir, exports)
+                if resolved:
+                    return resolved
+            if isinstance(exports, dict):
+                val = exports.get(".")
+                for target in _export_targets(val):
+                    resolved = _resolve_package_target(project_root, pkg_dir, target)
+                    if resolved:
+                        return resolved
+            if isinstance(exports, list):
+                for target in _export_targets(exports):
+                    resolved = _resolve_package_target(project_root, pkg_dir, target)
+                    if resolved:
+                        return resolved
+
+    if subpath:
+        candidate = pkg_dir / subpath
+        p = _try_files(candidate, PACKAGE_JSON_EXTS)
+        if p:
+            try:
+                pr = project_root.resolve()
+                rp = p.resolve()
+            except Exception:
+                pr = project_root
+                rp = p
+            if pr in rp.parents or rp == pr:
+                return rp.relative_to(pr).as_posix()
+        return None
+
+    for key in ("module", "main", "types"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            resolved = _resolve_package_target(project_root, pkg_dir, value)
+            if resolved:
+                return resolved
+
+    fallback = _try_files(pkg_dir / "index", PACKAGE_JSON_EXTS)
+    if fallback:
+        try:
+            pr = project_root.resolve()
+            rp = fallback.resolve()
+        except Exception:
+            pr = project_root
+            rp = fallback
+        if pr in rp.parents or rp == pr:
+            return rp.relative_to(pr).as_posix()
+    return None
+
+def _resolve_local_package(project_root: Path, spec: str) -> Optional[str]:
+    info = _local_package_info(str(project_root))
+    if not info:
+        return None
+    best_name: Optional[str] = None
+    best_entries: Optional[list[tuple[str, dict]]] = None
+    for name, entries in info.items():
+        if spec == name or spec.startswith(name + "/"):
+            if best_name is None or len(name) > len(best_name):
+                best_name = name
+                best_entries = entries
+    if not best_name or not best_entries:
+        return None
+    subpath = spec[len(best_name) :].lstrip("/")
+    for pkg_dir_str, data in best_entries:
+        resolved = _resolve_package_entry(project_root, Path(pkg_dir_str), data, subpath)
+        if resolved:
+            return resolved
     return None
 
 def _parse_go_module_line(go_mod_text: str) -> Optional[str]:
@@ -356,6 +628,10 @@ def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[s
     ts_resolved = _resolve_tsconfig_path(project_root, importer_path, spec_clean)
     if ts_resolved:
         return ts_resolved
+
+    pkg_resolved = _resolve_local_package(project_root, spec_clean)
+    if pkg_resolved:
+        return pkg_resolved
 
     def _best_prefix_match(value: str, candidates: list[tuple[str, str, int]]) -> Optional[tuple[str, str]]:
         best: Optional[tuple[str, str, int]] = None
