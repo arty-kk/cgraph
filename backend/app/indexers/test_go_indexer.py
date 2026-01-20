@@ -61,6 +61,24 @@ package main
 """
         self.assertTrue(_is_build_context_active(src))
 
+    def test_invalid_go_build_falls_back_to_plus_build(self) -> None:
+        settings.go_build_tags = "prod"
+        src = """//go:build linux &&
+// +build prod
+
+package main
+"""
+        self.assertTrue(_is_build_context_active(src))
+
+    def test_go_build_mismatch_plus_build_falls_back_to_active(self) -> None:
+        settings.go_build_tags = "prod"
+        src = """//go:build prod
+// +build dev
+
+package main
+"""
+        self.assertTrue(_is_build_context_active(src))
+
     def test_build_tags_use_runtime_defaults(self) -> None:
         settings.go_build_tags = ""
         runtime = _runtime_go_env()
