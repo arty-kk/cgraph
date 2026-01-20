@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import shlex
 import sys
 from pathlib import Path
 from .base import ImportRef, SymbolDef
@@ -163,7 +164,12 @@ def _eval_go_build(expr: str, tags: set[str]) -> bool:
 
 
 def _build_context_tags() -> set[str]:
-    tags = _split_build_tags(getattr(settings, "go_build_tags", "") or "")
+    try:
+        goflags = os.getenv("GOFLAGS", "")
+    except Exception:
+        goflags = ""
+    tags = _extract_goflags_tags(goflags)
+    tags.update(_split_build_tags(getattr(settings, "go_build_tags", "") or ""))
     runtime_defaults = _runtime_go_env()
     for env_key in ("GOOS", "GOARCH"):
         try:
@@ -176,6 +182,27 @@ def _build_context_tags() -> set[str]:
             fallback = runtime_defaults.get(env_key)
             if fallback:
                 tags.add(fallback)
+    return tags
+
+
+def _extract_goflags_tags(raw: str) -> set[str]:
+    if not raw:
+        return set()
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        return set()
+    tags: set[str] = set()
+    idx = 0
+    while idx < len(parts):
+        part = parts[idx]
+        if part == "-tags" and idx + 1 < len(parts):
+            tags.update(_split_build_tags(_strip_quotes(parts[idx + 1])))
+            idx += 2
+            continue
+        if part.startswith("-tags="):
+            tags.update(_split_build_tags(_strip_quotes(part[len("-tags=") :])))
+        idx += 1
     return tags
 
 
