@@ -22,6 +22,7 @@ CGRAPH — локальный сервис и веб‑интерфейс для
 - `include`/`require` с строковым литералом (`'path.php'`, `"path.php"`).
 - Конкатенация строковых литералов с базой `__DIR__`, `dirname(__FILE__)`, `dirname(__DIR__)` (например, `include __DIR__ . '/file.php'`).
 - `realpath(...)` вокруг таких конкатенаций (например, `require realpath(__DIR__ . '/../vendor/autoload.php')`).
+- Динамические `include`/`require` с нелитеральным аргументом отмечаются как `kind=include_dynamic` и `spec=<dynamic>` без резолва пути.
 
 ## Установка и запуск (macOS / Windows)
 

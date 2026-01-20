@@ -40,6 +40,14 @@ _PHP_INCLUDE_CONCAT_EXPR_RE = re.compile(
     re.IGNORECASE,
 )
 _PHP_REALPATH_RE = re.compile(r"(?is)^realpath\s*\(\s*(?P<inner>.*)\s*\)$")
+_PHP_STRING_LITERAL_RE = re.compile(r"""(?s)^\s*['"][^'"]*['"]\s*$""")
+_PHP_INCLUDE_DYNAMIC_RE = re.compile(
+    r"""(?x)(?<![\w$])
+    (?:include|include_once|require|require_once)\s*
+    (?:\(|\s)\s*(?P<expr>[^;]+?)\s*(?:\)|;)
+    """,
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _strip_php_comments(text: str) -> str:
@@ -203,10 +211,12 @@ class PhpIndexer:
                     _add(raw_item or raw, spec, item_kind)
 
         stripped = _strip_php_comments(text or "")
+        include_starts: set[int] = set()
         for match in _PHP_INCLUDE_RE.finditer(stripped):
             raw = match.group(0).strip()
             spec = _strip_quotes(match.group("path"))
             _add(raw, spec, "include")
+            include_starts.add(match.start())
         for match in _PHP_INCLUDE_CONCAT_RE.finditer(stripped):
             expr = match.group("expr")
             spec = _parse_include_concat(expr)
@@ -214,6 +224,19 @@ class PhpIndexer:
                 continue
             raw = match.group(0).strip()
             _add(raw, spec, "include-conditional")
+            include_starts.add(match.start())
+        for match in _PHP_INCLUDE_DYNAMIC_RE.finditer(stripped):
+            if match.start() in include_starts:
+                continue
+            expr = (match.group("expr") or "").strip()
+            if not expr:
+                continue
+            if _PHP_STRING_LITERAL_RE.fullmatch(expr):
+                continue
+            if _parse_include_concat(expr):
+                continue
+            raw = match.group(0).strip()
+            _add(raw, "<dynamic>", "include_dynamic")
         return out
 
     def parse_exports(self, file_path: Path, text: str) -> list[str]:

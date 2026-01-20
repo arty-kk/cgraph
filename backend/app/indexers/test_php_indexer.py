@@ -93,6 +93,21 @@ require_once realpath('c' . '/d.php');
         self.assertTrue(has_import("__DIR__/../vendor/autoload.php", "include-conditional"))
         self.assertTrue(has_import("./c/d.php", "include-conditional"))
 
+    def test_include_dynamic(self) -> None:
+        src = """<?php
+include $path;
+require $base . '/file.php';
+require_once realpath($vendor);
+include dirname($root) . '/lib.php';
+"""
+        idx = PhpIndexer()
+        imports = idx.parse_imports(Path("example.php"), src)
+
+        def has_dynamic() -> bool:
+            return any(imp.spec == "<dynamic>" and imp.kind == "include_dynamic" for imp in imports)
+
+        self.assertTrue(has_dynamic())
+
 
 if __name__ == "__main__":
     unittest.main()
