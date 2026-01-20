@@ -729,44 +729,55 @@ def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[s
     return None
 
 
-@lru_cache(maxsize=128)
-def _tsconfig_info(project_root_str: str) -> dict:
+@lru_cache(maxsize=256)
+def _tsconfig_info(project_root_str: str, importer_dir_str: str) -> dict:
     project_root = Path(project_root_str).resolve()
-    for name in TSCONFIG_NAMES:
-        cfg = project_root / name
-        if not cfg.exists() or not cfg.is_file():
-            continue
-        try:
-            data = json.loads(cfg.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            continue
-        if not isinstance(data, dict):
-            continue
-        compiler_opts = data.get("compilerOptions")
-        if not isinstance(compiler_opts, dict):
-            compiler_opts = {}
-        base_url = compiler_opts.get("baseUrl")
-        if not isinstance(base_url, str):
-            base_url = ""
-        paths = compiler_opts.get("paths")
-        if not isinstance(paths, dict):
-            paths = {}
-        try:
-            base_dir = cfg.parent.resolve()
-        except Exception:
-            base_dir = cfg.parent
-        return {
-            "base_dir": base_dir,
-            "base_url": base_url,
-            "paths": paths,
-        }
+    cur = Path(importer_dir_str).resolve()
+
+    if project_root not in cur.parents and cur != project_root:
+        return {}
+
+    while True:
+        for name in TSCONFIG_NAMES:
+            cfg = cur / name
+            if not cfg.exists() or not cfg.is_file():
+                continue
+            try:
+                data = json.loads(cfg.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            compiler_opts = data.get("compilerOptions")
+            if not isinstance(compiler_opts, dict):
+                compiler_opts = {}
+            base_url = compiler_opts.get("baseUrl")
+            if not isinstance(base_url, str):
+                base_url = ""
+            paths = compiler_opts.get("paths")
+            if not isinstance(paths, dict):
+                paths = {}
+            try:
+                base_dir = cfg.parent.resolve()
+            except Exception:
+                base_dir = cfg.parent
+            return {
+                "base_dir": base_dir,
+                "base_url": base_url,
+                "paths": paths,
+            }
+        if cur == project_root:
+            break
+        cur = cur.parent
+        if project_root not in cur.parents and cur != project_root:
+            break
     return {}
 
 
 def _resolve_tsconfig_path(project_root: Path, importer_path: Path, spec: str) -> Optional[str]:
     if importer_path.suffix.lower() not in JS_EXTS:
         return None
-    info = _tsconfig_info(str(project_root))
+    info = _tsconfig_info(str(project_root), str(importer_path.parent))
     if not info:
         return None
 
