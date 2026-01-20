@@ -214,7 +214,8 @@ def scan_files(
             continue
         if not p.is_file():
             continue
-        if p.suffix.lower() not in CODE_EXTS:
+        # Allow infra files here; they are handled by InfraIndexer.
+        if not (p.suffix.lower() in CODE_EXTS or is_infra_file(p)):
             continue
         present.append(rel)
 
