@@ -76,10 +76,11 @@ def get_or_build_contract(project_id: int, project_root: Path, rel_path: str) ->
         kind = str(getattr(imp, "kind", "") or "import")
         raw = str(getattr(imp, "raw", "") or "")
         resolved = None
-        try:
-            resolved = resolve_spec(project_root, rel_norm, spec)
-        except Exception:
-            resolved = None
+        if kind != "runtime_dynamic":
+            try:
+                resolved = resolve_spec(project_root, rel_norm, spec)
+            except Exception:
+                resolved = None
         imports.append({"spec": spec, "kind": kind, "raw": raw, "resolved_path": resolved})
 
     symbols_raw = []

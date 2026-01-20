@@ -40,6 +40,10 @@ DYNAMIC_IMPORT_RE = re.compile(
     r"""(?x)(?<![\w$])import\s*\(\s*(?:'(?P<dyn_sq>[^']+)'|"(?P<dyn_dq>[^"]+)"|`(?P<dyn_tpl>[^`]+)`)\s*\)"""
 )
 REQUIRE_RE = re.compile(r"""(?x)(?<![\w$])require\s*\(\s*['"](?P<req>[^'"]+)['"]\s*\)""")
+DYNAMIC_CALL_RE = re.compile(
+    r"""(?x)(?<![\w$])(?P<fn>import|require)\s*\(\s*(?P<arg>[^)]+)\)"""
+)
+DYNAMIC_SPEC_MARKER = "<dynamic>"
 
 EXPORT_RE = re.compile(r"""(?x)
     ^\s*export\s+
@@ -172,6 +176,33 @@ def _first_call_string_arg(node, data: bytes, *, allow_template: bool = False) -
             return ""
     return ""
 
+def _first_call_arg(node):
+    args = None
+    for ch in node.children:
+        if ch.type in ("arguments", "argument_list"):
+            args = ch
+            break
+    if args is None:
+        args = node.child_by_field_name("arguments")
+    if args is None:
+        return None
+    for ch in args.children:
+        if ch.is_named:
+            return ch
+    return None
+
+def _is_dynamic_call_arg(node, data: bytes, *, allow_template: bool) -> bool:
+    first_arg = _first_call_arg(node)
+    if first_arg is None:
+        return False
+    if first_arg.type in ("string", "string_literal"):
+        return False
+    if first_arg.type in ("template_string", "template_literal"):
+        if not allow_template:
+            return True
+        return _template_literal_value(node_text(first_arg, data)) == ""
+    return True
+
 def _first_string_literal(node, data: bytes) -> str:
     if node is None:
         return ""
@@ -230,6 +261,8 @@ class JsTsIndexer:
                         spec = _first_call_string_arg(node, data, allow_template=allow_template)
                         if spec:
                             _add(raw, spec, "runtime")
+                        elif _is_dynamic_call_arg(node, data, allow_template=allow_template):
+                            _add(raw, DYNAMIC_SPEC_MARKER, "runtime_dynamic")
                     continue
                 if node.type in ("import_assignment", "import_equals_declaration"):
                     raw = node_text(node, data).strip()
@@ -272,6 +305,17 @@ class JsTsIndexer:
                 spec = (m.group("req") or "").strip()
                 if spec:
                     _add(m.group(0).strip(), spec, "runtime")
+
+            for m in DYNAMIC_CALL_RE.finditer(cleaned):
+                raw = m.group(0).strip()
+                arg = (m.group("arg") or "").strip()
+                if not arg:
+                    continue
+                if arg[0] in ("'", '"') and len(arg) >= 2 and arg[-1] == arg[0]:
+                    continue
+                if arg[0] == "`" and arg.endswith("`") and "${" not in arg:
+                    continue
+                _add(raw, DYNAMIC_SPEC_MARKER, "runtime_dynamic")
         for src in vue_srcs:
             _add(f'script src="{src}"', src, "runtime")
         return out
