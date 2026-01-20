@@ -9,6 +9,9 @@ from pathlib import Path
 from .base import ImportRef, SymbolDef
 from .tree_sitter_utils import iter_nodes, node_text, parse_tree
 from ..config import settings
+from ..logging import get_logger
+
+LOGGER = get_logger("cgraph.indexer.go")
 
 
 def _strip_quotes(s: str) -> str:
@@ -217,9 +220,27 @@ def _is_build_context_active(text: str) -> bool:
     tags = _build_context_tags()
     if go_build:
         try:
-            return _eval_go_build(go_build, tags)
+            go_result = _eval_go_build(go_build, tags)
         except Exception:
+            if plus_build:
+                try:
+                    plus_result = _eval_plus_build(plus_build, tags)
+                except Exception:
+                    LOGGER.warning("Invalid go:build expression; fallback +build also failed.")
+                    return True
+                LOGGER.warning("Invalid go:build expression; falling back to +build.")
+                return plus_result
             return True
+        if plus_build:
+            try:
+                plus_result = _eval_plus_build(plus_build, tags)
+            except Exception:
+                return go_result
+            if plus_result != go_result:
+                # Safe fallback: treat as active on go:build/+build mismatch.
+                LOGGER.warning("go:build and +build mismatch; treating as active.")
+                return True
+        return go_result
     try:
         return _eval_plus_build(plus_build, tags)
     except Exception:
