@@ -74,6 +74,10 @@ use const Foo\\{BAR as BAR_ALIAS};
 include __DIR__ . '/file.php';
 require 'a' . '/b.php';
 require_once 'single.php';
+include dirname(__FILE__) . '/lib.php';
+include dirname(__DIR__) . '/deep.php';
+require realpath(__DIR__ . '/../vendor' . '/autoload.php');
+require_once realpath('c' . '/d.php');
 """
         idx = PhpIndexer()
         imports = idx.parse_imports(Path("example.php"), src)
@@ -82,8 +86,12 @@ require_once 'single.php';
             return any(imp.spec == spec and imp.kind == kind for imp in imports)
 
         self.assertTrue(has_import("__DIR__/file.php", "include-conditional"))
-        self.assertTrue(has_import("a/b.php", "include-conditional"))
+        self.assertTrue(has_import("./a/b.php", "include-conditional"))
         self.assertTrue(has_import("single.php", "include"))
+        self.assertTrue(has_import("__DIR__/lib.php", "include-conditional"))
+        self.assertTrue(has_import("__DIR__/deep.php", "include-conditional"))
+        self.assertTrue(has_import("__DIR__/../vendor/autoload.php", "include-conditional"))
+        self.assertTrue(has_import("./c/d.php", "include-conditional"))
 
 
 if __name__ == "__main__":

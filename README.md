@@ -17,6 +17,12 @@ CGRAPH — локальный сервис и веб‑интерфейс для
 - Статические `import`/`export from`/`require` резолвятся и участвуют в графе.
 - Динамические `import()`/`require()` с нелитеральным аргументом отмечаются как `kind=runtime_dynamic` и `spec=<dynamic>`, но не резолвятся, чтобы не создавать ложные рёбра.
 
+## PHP индексатор
+
+- `include`/`require` с строковым литералом (`'path.php'`, `"path.php"`).
+- Конкатенация строковых литералов с базой `__DIR__`, `dirname(__FILE__)`, `dirname(__DIR__)` (например, `include __DIR__ . '/file.php'`).
+- `realpath(...)` вокруг таких конкатенаций (например, `require realpath(__DIR__ . '/../vendor/autoload.php')`).
+
 ## Установка и запуск (macOS / Windows)
 
 ### Backend

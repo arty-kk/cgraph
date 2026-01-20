@@ -16,25 +16,30 @@ _PHP_INCLUDE_RE = re.compile(
     """,
     re.IGNORECASE,
 )
+_PHP_DIR_BASE_PATTERN = r"(?:__DIR__|dirname\s*\(\s*__FILE__\s*\)|dirname\s*\(\s*__DIR__\s*\))"
 _PHP_INCLUDE_CONCAT_RE = re.compile(
-    r"""(?x)(?<![\w$])
+    rf"""(?x)(?<![\w$])
     (?P<kw>include|include_once|require|require_once)\s*
     (?:\(|\s)\s*(?P<expr>
-        (?:__DIR__\s*\.\s*)?
+        (?:realpath\s*\(\s*)?
+        (?:{_PHP_DIR_BASE_PATTERN}\s*\.\s*)?
         ['"][^'"]*['"]
-        (?:\s*\.\s*['"][^'"]*['"])*
+        (?:\s*\.\s*['"][^'"]*['"])*\s*
+        (?:\))?
     )
     """,
     re.IGNORECASE,
 )
 _PHP_INCLUDE_CONCAT_EXPR_RE = re.compile(
-    r"""(?x)
+    rf"""(?x)
     \s*
-    (?:__DIR__\s*\.\s*)?
+    (?:{_PHP_DIR_BASE_PATTERN}\s*\.\s*)?
     ['"][^'"]*['"]
     (?:\s*\.\s*['"][^'"]*['"])*\s*
     """,
+    re.IGNORECASE,
 )
+_PHP_REALPATH_RE = re.compile(r"(?is)^realpath\s*\(\s*(?P<inner>.*)\s*\)$")
 
 
 def _strip_php_comments(text: str) -> str:
@@ -136,17 +141,31 @@ def _parse_include_concat(expr: str) -> str | None:
     expr_clean = (expr or "").strip()
     if not expr_clean:
         return None
-    if "." not in expr_clean and "__DIR__" not in expr_clean:
+    realpath_match = _PHP_REALPATH_RE.match(expr_clean)
+    expr_unwrapped = realpath_match.group("inner").strip() if realpath_match else expr_clean
+    dir_base_match = re.search(
+        r"(?i)\b__DIR__\b|dirname\s*\(\s*(?:__FILE__|__DIR__)\s*\)", expr_unwrapped
+    )
+    if "." not in expr_unwrapped and not dir_base_match:
         return None
-    if not _PHP_INCLUDE_CONCAT_EXPR_RE.fullmatch(expr_clean):
+    if not _PHP_INCLUDE_CONCAT_EXPR_RE.fullmatch(expr_unwrapped):
         return None
-    literals = re.findall(r"""['"][^'"]*['"]""", expr_clean)
+    literals = re.findall(r"""['"][^'"]*['"]""", expr_unwrapped)
     if not literals:
         return None
     joined = "".join(_strip_quotes(lit) for lit in literals)
-    if "__DIR__" in expr_clean:
+    if dir_base_match:
+        if joined.startswith("./"):
+            joined = joined[2:]
+        if not joined.startswith("/"):
+            joined = f"/{joined}"
         return f"__DIR__{joined}"
-    return joined
+    joined = joined.lstrip("/")
+    if not joined:
+        return "./"
+    if joined.startswith("./"):
+        return joined
+    return f"./{joined}"
 
 
 class PhpIndexer:
