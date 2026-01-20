@@ -57,6 +57,9 @@ TS_TYPEDEF_EXTS = (".ts", ".tsx", ".mts", ".cts")
 
 SEARCH_INDEX_MAX_CHARS = 200_000
 
+def _is_supported_file(path: Path) -> bool:
+    return path.suffix.lower() in CODE_EXTS or is_infra_file(path)
+
 def iter_code_files(root: Path) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
@@ -64,7 +67,7 @@ def iter_code_files(root: Path) -> Iterable[Path]:
         )
         for fn in sorted(filenames):
             p = Path(dirpath) / fn
-            if (p.suffix.lower() in CODE_EXTS or is_infra_file(p)) and p.is_file():
+            if _is_supported_file(p) and p.is_file():
                 yield p
 
 def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
@@ -215,7 +218,7 @@ def scan_files(
         if not p.is_file():
             continue
         # Allow infra files here; they are handled by InfraIndexer.
-        if not (p.suffix.lower() in CODE_EXTS or is_infra_file(p)):
+        if not _is_supported_file(p):
             continue
         present.append(rel)
 
