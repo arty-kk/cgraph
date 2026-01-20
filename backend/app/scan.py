@@ -393,6 +393,9 @@ def scan_files(
             spec = str(imp.get("spec") or "").strip()
             if not spec:
                 continue
+            kind = str(imp.get("kind") or "import")
+            if kind == "runtime_dynamic":
+                continue
             try:
                 dst_raw = resolve_spec(project_root, rel, spec)
             except Exception:
@@ -406,7 +409,6 @@ def scan_files(
                 continue
             if not dst or dst == rel:
                 continue
-            kind = str(imp.get("kind") or "import")
             raw = str(imp.get("raw") or "")
             key = (rel, dst, kind)
             if key not in edge_map:
