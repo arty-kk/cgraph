@@ -87,6 +87,20 @@ package main
         for value in runtime.values():
             self.assertIn(value, tags)
 
+    def test_goflags_tags_include_build_tags(self) -> None:
+        settings.go_build_tags = ""
+        with mock.patch.dict(os.environ, {"GOFLAGS": "-tags=prod,dev"}, clear=True):
+            tags = _build_context_tags()
+        self.assertIn("prod", tags)
+        self.assertIn("dev", tags)
+
+    def test_goflags_tags_and_settings_tags_combine(self) -> None:
+        settings.go_build_tags = "local"
+        with mock.patch.dict(os.environ, {"GOFLAGS": "-tags=prod"}, clear=True):
+            tags = _build_context_tags()
+        self.assertIn("prod", tags)
+        self.assertIn("local", tags)
+
     def test_include_unexported_symbols(self) -> None:
         settings.go_build_tags = ""
         settings.go_include_unexported_symbols = True
