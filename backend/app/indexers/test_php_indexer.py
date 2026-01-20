@@ -99,6 +99,7 @@ include $path;
 require $base . '/file.php';
 require_once realpath($vendor);
 include dirname($root) . '/lib.php';
+include "$path/file.php";
 """
         idx = PhpIndexer()
         imports = idx.parse_imports(Path("example.php"), src)

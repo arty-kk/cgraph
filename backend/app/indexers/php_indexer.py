@@ -63,6 +63,15 @@ def _strip_quotes(s: str) -> str:
     return s
 
 
+def _is_plain_string_literal(expr: str) -> bool:
+    expr_clean = (expr or "").strip()
+    if not _PHP_STRING_LITERAL_RE.fullmatch(expr_clean):
+        return False
+    if expr_clean.startswith('"'):
+        return re.search(r"(?<!\\)\$", expr_clean) is None
+    return True
+
+
 def _strip_use_prefix(raw: str) -> tuple[str, str]:
     s = (raw or "").strip().rstrip(";").strip()
     kind = "import"
@@ -214,8 +223,12 @@ class PhpIndexer:
         include_starts: set[int] = set()
         for match in _PHP_INCLUDE_RE.finditer(stripped):
             raw = match.group(0).strip()
-            spec = _strip_quotes(match.group("path"))
-            _add(raw, spec, "include")
+            path_literal = match.group("path")
+            if _is_plain_string_literal(path_literal):
+                spec = _strip_quotes(path_literal)
+                _add(raw, spec, "include")
+            else:
+                _add(raw, "<dynamic>", "include_dynamic")
             include_starts.add(match.start())
         for match in _PHP_INCLUDE_CONCAT_RE.finditer(stripped):
             expr = match.group("expr")
@@ -231,7 +244,7 @@ class PhpIndexer:
             expr = (match.group("expr") or "").strip()
             if not expr:
                 continue
-            if _PHP_STRING_LITERAL_RE.fullmatch(expr):
+            if _is_plain_string_literal(expr):
                 continue
             if _parse_include_concat(expr):
                 continue
