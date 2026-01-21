@@ -57,12 +57,20 @@ class ModuleContract(SQLModel, table=True):
 
 class AnalysisRun(SQLModel, table=True):
     __tablename__ = "analysisrun"
+    # Store run parameters in explicit nullable columns for easier querying; keep
+    # nested settings in JSON text fields for forward-compatible payloads.
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(index=True)
     target_path: str
     mode: str
     prompt: str
     model_used: str
+    depth: Optional[int] = Field(default=None)
+    dep_mode: Optional[str] = Field(default=None)
+    retrieval: Optional[str] = Field(default=None)
+    retrieval_settings_json: Optional[str] = Field(default=None)
+    apply_patch: Optional[bool] = Field(default=None)
+    applied_json: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     result_json: str
 

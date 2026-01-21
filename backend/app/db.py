@@ -90,6 +90,28 @@ def _ensure_unique_indexes_sqlite(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_fileedge_project_src ON fileedge (project_id, src_path);"
     )
 
+def _ensure_analysisrun_columns_sqlite(conn) -> None:
+    try:
+        rows = conn.exec_driver_sql("PRAGMA table_info(analysisrun);").fetchall()
+    except Exception:
+        return
+    existing = {row[1] for row in rows if isinstance(row, (tuple, list)) and len(row) > 1}
+    desired = {
+        "depth": "INTEGER",
+        "dep_mode": "TEXT",
+        "retrieval": "TEXT",
+        "retrieval_settings_json": "TEXT",
+        "apply_patch": "INTEGER",
+        "applied_json": "TEXT",
+    }
+    for column, col_type in desired.items():
+        if column in existing:
+            continue
+        try:
+            conn.exec_driver_sql(f"ALTER TABLE analysisrun ADD COLUMN {column} {col_type};")
+        except Exception:
+            pass
+
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     try:
@@ -104,6 +126,7 @@ def init_db() -> None:
             _ensure_fts_sqlite(conn)
             _dedupe_sqlite(conn)
             _ensure_unique_indexes_sqlite(conn)
+            _ensure_analysisrun_columns_sqlite(conn)
     except SQLAlchemyError as e:
         raise RuntimeError(f"DB init failed while ensuring uniqueness: {e}") from e
 

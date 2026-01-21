@@ -513,6 +513,11 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             mode=mode,
             prompt=request.prompt,
             model_used=model_used,
+            depth=depth,
+            dep_mode=dep_mode,
+            retrieval=retrieval_used,
+            retrieval_settings_json=json.dumps(retrieval_settings, ensure_ascii=False),
+            apply_patch=bool(request.apply_patch),
             result_json=json.dumps(result_for_db, ensure_ascii=False),
         )
         session.add(run)
@@ -599,6 +604,14 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         except PatchApplyError as error:
             applied = {"error": str(error)}
 
+    if applied is not None:
+        with get_session() as session:
+            run_update = session.get(AnalysisRun, run.id)
+            if run_update:
+                run_update.applied_json = json.dumps(applied, ensure_ascii=False)
+                session.add(run_update)
+                session.commit()
+
     return {
         "run_id": run.id,
         "mode": mode,
@@ -606,6 +619,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         "dep_mode": dep_mode,
         "retrieval": retrieval_used,
         "retrieval_settings": retrieval_settings,
+        "apply_patch": bool(request.apply_patch),
         "result": result_for_response,
         "applied": applied,
     }
@@ -658,6 +672,16 @@ def get_run(project_id: int, run_id: int) -> dict:
     except Exception:  # noqa: BLE001
         result = {}
 
+    try:
+        retrieval_settings: Any = json.loads(run.retrieval_settings_json or "{}")
+    except Exception:  # noqa: BLE001
+        retrieval_settings = {}
+
+    try:
+        applied: Any = json.loads(run.applied_json or "null")
+    except Exception:  # noqa: BLE001
+        applied = None
+
     return {
         "id": run.id,
         "project_id": run.project_id,
@@ -665,6 +689,12 @@ def get_run(project_id: int, run_id: int) -> dict:
         "mode": run.mode,
         "prompt": run.prompt,
         "model_used": run.model_used,
+        "depth": run.depth,
+        "dep_mode": run.dep_mode,
+        "retrieval": run.retrieval,
+        "retrieval_settings": retrieval_settings,
+        "apply_patch": run.apply_patch,
+        "applied": applied,
         "created_at": run.created_at.isoformat(),
         "result": result,
     }
