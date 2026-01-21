@@ -130,7 +130,9 @@ def pack_context(
         candidates = [c for c in candidates if isinstance(c, str) and c and c not in prioritized and c != target_rel]
         for c in candidates:
             try:
-                text = (project_root / c).read_text(encoding="utf-8", errors="replace")
+                # Limit scan size: heuristic mentions are usually near file headers/usages.
+                with open(project_root / c, encoding="utf-8", errors="replace") as f:
+                    text = f.read(max_chars_per_file)
             except Exception:
                 continue
             for sym in exports:
