@@ -2,6 +2,7 @@
 import React from 'react'
 import type { Project, ProjectFileItem, NodeSearchItem, SemanticSearchItem } from '../../api'
 import { clampInt } from '../../lib/number'
+import type { SemanticSearchErrorReason } from '../../lib/errors'
 import { Modal } from './Modal'
 
 type Props = {
@@ -34,6 +35,7 @@ type Props = {
   searchResults: NodeSearchItem[]
   searchSemanticResults: SemanticSearchItem[]
   semanticSearchEnabled: boolean
+  semanticSearchUnavailableReason: SemanticSearchErrorReason | null
   searchBusy: boolean
   setSearchQuery: (v: string) => void
   setSemanticSearchEnabled: (v: boolean) => void
@@ -77,6 +79,7 @@ export function ProjectsSidebar({
   searchResults,
   searchSemanticResults,
   semanticSearchEnabled,
+  semanticSearchUnavailableReason,
   searchBusy,
   setSearchQuery,
   setSemanticSearchEnabled,
@@ -127,6 +130,11 @@ export function ProjectsSidebar({
   const searchResultRowClass = 'text-left text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 hover:border-neutral-700 disabled:opacity-50'
   const confirmDangerClass = 'h-9 rounded-md bg-red-700 hover:bg-red-600 px-3 text-sm font-semibold disabled:opacity-50'
   const confirmCancelClass = 'h-9 rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 text-sm font-semibold disabled:opacity-50'
+  const semanticUnavailableText = semanticSearchUnavailableReason === 'missing_api_key'
+    ? 'нужен OPENAI_API_KEY'
+    : semanticSearchUnavailableReason === 'embeddings_disabled'
+      ? 'эмбеддинги отключены'
+      : ''
 
   const HelpButton = ({
     topic,
@@ -964,6 +972,9 @@ export function ProjectsSidebar({
               disabled={!activeProject || busy}
             />
             <span>Semantic search</span>
+            {semanticSearchUnavailableReason ? (
+              <span className="text-[11px] text-neutral-500">{semanticUnavailableText}</span>
+            ) : null}
           </label>
           <div className="flex gap-2">
             <input

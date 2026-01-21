@@ -118,6 +118,10 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - SQLite хранится в `~/.CGRAPH/cgraph.sqlite3` (можно переопределить `CGRAPH_DB_DIR`).
 - Большие патчи сохраняются в `~/.CGRAPH/patches` и возвращаются по отдельному запросу, если превышен лимит 50k символов.
 
+## Ручная проверка
+
+- Включить Semantic search без `OPENAI_API_KEY` → увидеть авто‑fallback на обычный поиск и информационное уведомление.
+
 ## Проверки (опционально)
 
 - Backend: `pip install -r backend/requirements-dev.txt && ruff backend/app && mypy backend/app`.
