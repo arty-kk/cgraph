@@ -425,8 +425,23 @@ def scan_files(
         try:
             to_del = sorted(set((present or []) + (removed or [])))
             if to_del:
-                _fts_delete(s, project_id, to_del)
-                _delete_api_indexes(s, project_id, to_del)
+                try:
+                    _fts_delete(s, project_id, to_del)
+                except OperationalError as e:
+                    if not _is_missing_table_error(e, "filetext_fts"):
+                        raise
+                try:
+                    _delete_api_indexes(s, project_id, to_del)
+                except OperationalError as e:
+                    if not (
+                        _is_missing_table_error(e, "apiroute")
+                        or _is_missing_table_error(e, "apicall")
+                        or _is_missing_table_error(e, "apiinclude")
+                        or _is_missing_table_error(e, "apiroutecontract")
+                        or _is_missing_table_error(e, "apicallmeta")
+                        or _is_missing_table_error(e, "tstypedef")
+                    ):
+                        raise
             if fts_rows:
                 s.execute(
                     sa_text("INSERT INTO filetext_fts (project_id, path, content) VALUES (:project_id, :path, :content)"),
