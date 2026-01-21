@@ -16,7 +16,7 @@ from ..config import settings
 from ..contracts import get_or_build_contract
 from ..db import get_session
 from ..graph import search_nodes, search_semantic
-from ..models import FileEdge, FileNode, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef
+from ..models import FileEdge, FileNode, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef, ModuleContract
 from ..utils import resolve_under_root
 from ..api_map import split_skeleton, patterns_compatible, static_match_score, backend_path_skeleton
 from ..api_scaffold import suggest_frontend_module_file, build_frontend_snippet
@@ -321,6 +321,27 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {},
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "search_symbols",
+            "description": (
+                "Search symbols and exports from module contracts. Faster and more precise than search_text "
+                "for navigating definitions and exports."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "query": {"type": "string", "description": "Symbol name to search for"},
+                    "exported_only": {"type": ["boolean", "null"], "description": "Only return exported symbols"},
+                    "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500, "default": 100},
+                    "match": {"type": ["string", "null"], "enum": ["exact", "contains", "prefix"]},
+                    "case_sensitive": {"type": ["boolean", "null"], "default": False},
+                },
+                "required": ["query"],
             },
             "strict": True,
         },
@@ -767,6 +788,150 @@ def _tool_search_paths(project_id: int, args: dict) -> dict:
         return {"error": "bad_args", "message": "query is required"}
     rows = search_nodes(project_id, query.strip(), limit=limit)
     return {"query": query.strip(), "limit": limit, "results": rows}
+
+
+def _tool_search_symbols(project_id: int, args: dict) -> dict:
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return {"error": "bad_args", "message": "query is required"}
+    needle = query.strip()
+    match = args.get("match")
+    match_mode = match if isinstance(match, str) and match in ("exact", "prefix", "contains") else None
+    if match_mode is None:
+        match_mode = "contains"
+
+    case_sensitive_raw = args.get("case_sensitive")
+    case_sensitive = bool(case_sensitive_raw) if case_sensitive_raw is not None else False
+
+    exported_only = args.get("exported_only") is True
+
+    limit = _clamp_int(args.get("limit"), 100, 1, 500)
+
+    def _cmp_val(val: str) -> str:
+        return val if case_sensitive else val.lower()
+
+    needle_cmp = _cmp_val(needle)
+
+    def _match_type(name: str) -> str | None:
+        if not name:
+            return None
+        name_cmp = _cmp_val(name)
+        if name_cmp == needle_cmp:
+            return "exact"
+        if name_cmp.startswith(needle_cmp):
+            return "prefix"
+        if needle_cmp in name_cmp:
+            return "contains"
+        return None
+
+    def _allow_match(match_type: str) -> bool:
+        if match_mode == "exact":
+            return match_type == "exact"
+        if match_mode == "prefix":
+            return match_type in ("exact", "prefix")
+        if match_mode == "contains":
+            return match_type in ("exact", "prefix", "contains")
+        return False
+
+    rows: list[ModuleContract] = []
+    with get_session() as s:
+        rows = s.exec(
+            select(ModuleContract)
+            .where(ModuleContract.project_id == project_id)
+            .order_by(ModuleContract.path.asc())
+        ).all()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            contract = json.loads(row.contract_json)
+        except Exception:
+            continue
+        if not isinstance(contract, dict):
+            continue
+        path = str(row.path or contract.get("path") or "")
+        if not path:
+            continue
+
+        symbol_names: set[str] = set()
+        symbols = contract.get("symbols")
+        if isinstance(symbols, list):
+            for item in symbols:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                if not name:
+                    continue
+                symbol_names.add(name)
+                match_type = _match_type(name)
+                if not match_type:
+                    continue
+                if not _allow_match(match_type):
+                    continue
+                exported = bool(item.get("exported"))
+                if exported_only and not exported:
+                    continue
+                results.append(
+                    {
+                        "path": path,
+                        "name": name,
+                        "kind": item.get("kind") if item.get("kind") is not None else None,
+                        "signature": item.get("signature") if item.get("signature") is not None else None,
+                        "start_line": item.get("start_line") if item.get("start_line") is not None else None,
+                        "end_line": item.get("end_line") if item.get("end_line") is not None else None,
+                        "exported": exported,
+                        "source": "symbol",
+                        "_match": match_type,
+                    }
+                )
+
+        exports = contract.get("exports")
+        if isinstance(exports, list):
+            for exp in exports:
+                name = str(exp or "")
+                if not name or name in symbol_names:
+                    continue
+                match_type = _match_type(name)
+                if not match_type:
+                    continue
+                if not _allow_match(match_type):
+                    continue
+                results.append(
+                    {
+                        "path": path,
+                        "name": name,
+                        "kind": None,
+                        "signature": None,
+                        "start_line": None,
+                        "end_line": None,
+                        "exported": True,
+                        "source": "export",
+                        "_match": match_type,
+                    }
+                )
+
+    match_rank = {"exact": 0, "prefix": 1, "contains": 2}
+    results.sort(
+        key=lambda r: (
+            match_rank.get(r.get("_match"), 99),
+            0 if r.get("exported") else 1,
+            str(r.get("path") or ""),
+            str(r.get("name") or ""),
+        )
+    )
+    results = results[:limit]
+    for item in results:
+        item.pop("_match", None)
+
+    return {
+        "query": needle,
+        "match": match_mode,
+        "case_sensitive": bool(case_sensitive),
+        "exported_only": bool(exported_only),
+        "limit": int(limit),
+        "count": len(results),
+        "results": results,
+    }
 
 
 def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
@@ -2112,6 +2277,8 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
         return _tool_get_neighbors(project_id, root, args)
     if name == "search_paths":
         return _tool_search_paths(project_id, args)
+    if name == "search_symbols":
+        return _tool_search_symbols(project_id, args)
     if name == "get_tree_outline":
         return _tool_get_tree_outline(project_id, args)
     if name == "project_summary":
@@ -3040,6 +3207,7 @@ def _agentic_json_call(
     tool_rules = (
         "Tooling rules:\n"
         "- Use tools sparingly. Prefer get_contract before get_file.\n"
+        "- For definition/export lookups, use search_symbols first (faster and more precise). If no results, fall back to search_text.\n"
         "- Prefer search_semantic for conceptual queries; if no results, use search_text.\n"
         "- Prefer search_text to locate occurrences before fetching many files.\n"
         "- Never assume missing code; fetch it.\n"
