@@ -1,6 +1,9 @@
 #backend/app/services/project_service.py
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi import BackgroundTasks
 from sqlmodel import select, delete
 from sqlalchemy import func, text as sa_text
@@ -9,6 +12,7 @@ from ..config import settings
 from ..db import get_session
 from ..errors import BadRequestError, NotFoundError
 from ..graph import compute_graph_metrics, graph_payload, local_subgraph, search_nodes
+from ..logging import get_logger
 from ..models import (
     Project, FileNode, FileEdge, ModuleContract,
     AnalysisRun, ProjectDoc, ApiRoute, ApiCall,
@@ -17,6 +21,24 @@ from ..models import (
 from ..scan import scan_project
 from ..utils import normalize_project_root, project_lock, resolve_under_root
 from .task_queue import task_queue
+
+PATCH_BLOB_DIRNAME = "patches"
+logger = get_logger("cgraph.api")
+
+
+def _delete_patch_blob_for_sha(sha: str) -> None:
+    if not isinstance(sha, str) or not sha:
+        return
+    base = Path(settings.db_dir).resolve()
+    fp = (base / PATCH_BLOB_DIRNAME / f"{sha}.diff").resolve()
+    if base not in fp.parents and fp != base:
+        logger.warning("Refusing to delete patch blob outside db_dir", extra={"sha": sha})
+        return
+    if fp.exists() and fp.is_file():
+        try:
+            fp.unlink()
+        except Exception as error:  # noqa: BLE001
+            logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
 
 
 def create_project(name: str, root_path: str) -> Project:
@@ -50,6 +72,22 @@ def delete_project(project_id: int) -> None:
             session.exec(delete(ApiRouteContract).where(ApiRouteContract.project_id == project_id))
             session.exec(delete(ApiCallMeta).where(ApiCallMeta.project_id == project_id))
             session.exec(delete(TsTypeDef).where(TsTypeDef.project_id == project_id))
+            runs = session.exec(select(AnalysisRun).where(AnalysisRun.project_id == project_id)).all()
+            shas: set[str] = set()
+            for run in runs:
+                try:
+                    data = json.loads(run.result_json or "{}")
+                except Exception:  # noqa: BLE001
+                    data = {}
+                if not isinstance(data, dict):
+                    continue
+                meta = data.get("patch_unified_diff_meta")
+                if isinstance(meta, dict):
+                    sha = meta.get("sha256")
+                    if isinstance(sha, str) and sha:
+                        shas.add(sha)
+            for sha in shas:
+                _delete_patch_blob_for_sha(sha)
             session.exec(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
             session.exec(delete(ProjectDoc).where(ProjectDoc.project_id == project_id))
             try:
