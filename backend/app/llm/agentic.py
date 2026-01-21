@@ -20,7 +20,7 @@ from ..utils import resolve_under_root
 from ..api_map import split_skeleton, patterns_compatible, static_match_score, backend_path_skeleton
 from ..api_scaffold import suggest_frontend_module_file, build_frontend_snippet
 from ..api_contracts import build_backend_contract_for_route
-from ..services.docs_service import _tree_outline
+from ..services.docs_service import _compute_project_summary_facts, _tree_outline
 from ..ts_edits import unified_diff as _unified_diff, ts_add_fields_to_typedef, ts_patch_wrapper_function
 from ..py_edits import py_add_keys_to_function_return_dicts
 from ..scan import SEARCH_INDEX_MAX_CHARS
@@ -308,6 +308,17 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                     "max_depth": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
                 },
                 "required": [],
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "project_summary",
+            "description": "Get project-level summary facts (counts, hotspots, hubs by fan-in, module map).",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
             },
             "strict": True,
         },
@@ -774,6 +785,29 @@ def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
         "lines": outline.get("lines", []),
         "truncated": bool(outline.get("truncated")),
         "max_lines": int(outline.get("max_lines", max_lines)),
+    }
+
+
+def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
+    with get_session() as s:
+        nodes = s.exec(
+            select(FileNode.path, FileNode.language, FileNode.loc, FileNode.complexity, FileNode.fan_in, FileNode.fan_out, FileNode.status)
+            .where(FileNode.project_id == project_id)
+            .order_by(FileNode.path)
+        ).all()
+    if not nodes:
+        return {"error": "not_indexed", "message": "Project is not indexed. Run scan first."}
+    summary = _compute_project_summary_facts(nodes)
+    return {
+        "counts": summary["counts"],
+        "hotspots": summary["hotspots"],
+        "hubs_by_fan_in": summary["hubs_by_fan_in"],
+        "module_map": summary["module_map"],
+        "truncation": {
+            "hotspots": bool(summary["hotspots_truncated"]),
+            "hubs_by_fan_in": bool(summary["hubs_by_fan_in_truncated"]),
+            "module_map": bool(summary["module_map_truncated"]),
+        },
     }
 
 
@@ -2003,6 +2037,8 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
         return _tool_search_paths(project_id, args)
     if name == "get_tree_outline":
         return _tool_get_tree_outline(project_id, args)
+    if name == "project_summary":
+        return _tool_project_summary(project_id, root, args)
     if name == "search_text":
         return _tool_search_text(project_id, root, args, max_file_chars=max_file_chars)
     if name == "search_routes":

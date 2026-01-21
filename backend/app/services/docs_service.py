@@ -111,6 +111,97 @@ def _risk_row(path: str, loc: int, complexity: int, fan_in: int, fan_out: int, s
     }
 
 
+def _compute_project_summary_facts(
+    nodes: list[tuple],
+    *,
+    hotspots_limit: int = 25,
+    hubs_limit: int = 25,
+    module_map_limit: int = 100,
+) -> dict:
+    lang_count: dict[str, int] = {}
+    total_loc = 0
+    risks: list[dict] = []
+    paths: list[str] = []
+    for row in nodes:
+        try:
+            path, language, loc, complexity, fan_in, fan_out, status = row
+        except Exception:
+            continue
+        if not isinstance(path, str) or not path:
+            continue
+        loc = int(loc or 0)
+        complexity = int(complexity or 0)
+        fan_in = int(fan_in or 0)
+        fan_out = int(fan_out or 0)
+        status = str(status or "")
+        total_loc += loc
+        lang_key = str(language or "unknown")
+        lang_count[lang_key] = lang_count.get(lang_key, 0) + 1
+        paths.append(path)
+        risks.append(_risk_row(path, loc, complexity, fan_in, fan_out, status))
+
+    hotspots = heapq.nlargest(
+        int(hotspots_limit),
+        risks,
+        key=lambda x: (float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
+    )
+    hubs = heapq.nlargest(
+        int(hubs_limit),
+        risks,
+        key=lambda x: (int(x.get("fan_in", 0)), float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
+    )
+
+    # Module map: top-level folders -> aggregated stats + top hotspots
+    module_map: dict[str, dict[str, Any]] = {}
+    for r in risks:
+        p = str(r.get("path") or "").strip()
+        if not p:
+            continue
+        top = p.split("/", 1)[0] if "/" in p else "."
+        m = module_map.get(top)
+        if not m:
+            m = {"module": top, "files": 0, "loc": 0, "risk_max": 0.0, "top_hotspots": []}
+            module_map[top] = m
+        m["files"] = int(m["files"]) + 1
+        m["loc"] = int(m["loc"]) + int(r.get("loc") or 0)
+        risk_v = float(r.get("risk") or 0.0)
+        if risk_v > float(m["risk_max"]):
+            m["risk_max"] = risk_v
+        # keep top 3 hotspots per module
+        top_list: list[tuple[float, str]] = list(m["top_hotspots"])
+        insert_at: int | None = None
+        for idx, (risk_existing, path_existing) in enumerate(top_list):
+            if risk_v > risk_existing or (risk_v == risk_existing and p < path_existing):
+                insert_at = idx
+                break
+        if insert_at is None:
+            top_list.append((risk_v, p))
+        else:
+            top_list.insert(insert_at, (risk_v, p))
+        if len(top_list) > 3:
+            top_list = top_list[:3]
+        m["top_hotspots"] = top_list
+
+    module_rows = sorted(
+        module_map.values(),
+        key=lambda x: (-float(x.get("risk_max") or 0.0), -int(x.get("files") or 0), str(x.get("module") or "")),
+    )
+
+    return {
+        "counts": {"files": len(paths), "loc": total_loc},
+        "hotspots": hotspots,
+        "hubs_by_fan_in": hubs,
+        "module_map": module_rows[: int(module_map_limit)],
+        "hotspots_truncated": len(risks) > int(hotspots_limit),
+        "hubs_by_fan_in_truncated": len(risks) > int(hubs_limit),
+        "module_map_truncated": len(module_rows) > int(module_map_limit),
+        "languages": lang_count,
+        "paths": paths,
+        "risks": risks,
+        "module_rows": module_rows,
+    }
+
+
 def _tree_outline(paths: list[str], max_lines: int = 1200) -> dict:
     root: dict[str, Any] = {}
     for p in paths:
@@ -764,75 +855,14 @@ def build_project_docs(project_id: int) -> dict:
     if not nodes:
         raise BadRequestError("Проект не проиндексирован. Сначала сделай Scan.")
 
-    lang_count: dict[str, int] = {}
-    total_loc = 0
-    risks: list[dict] = []
-    paths: list[str] = []
-    for row in nodes:
-        try:
-            path, language, loc, complexity, fan_in, fan_out, status = row
-        except Exception:
-            continue
-        if not isinstance(path, str) or not path:
-            continue
-        loc = int(loc or 0)
-        complexity = int(complexity or 0)
-        fan_in = int(fan_in or 0)
-        fan_out = int(fan_out or 0)
-        status = str(status or "")
-        total_loc += loc
-        lang_count[str(language or "unknown")] = lang_count.get(str(language or "unknown"), 0) + 1
-        paths.append(path)
-        risks.append(_risk_row(path, loc, complexity, fan_in, fan_out, status))
-
-    risks_sorted = heapq.nlargest(
-        25,
-        risks,
-        key=lambda x: (float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
-    )
-    hotspots = risks_sorted
-
-    hubs = heapq.nlargest(
-        25,
-        risks,
-        key=lambda x: (int(x.get("fan_in", 0)), float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
-    )
- 
-    # Module map: top-level folders -> aggregated stats + top hotspots
-    module_map: dict[str, dict[str, Any]] = {}
-    for r in risks:
-        p = str(r.get("path") or "").strip()
-        if not p:
-            continue
-        top = p.split("/", 1)[0] if "/" in p else "."
-        m = module_map.get(top)
-        if not m:
-            m = {"module": top, "files": 0, "loc": 0, "risk_max": 0.0, "top_hotspots": []}
-            module_map[top] = m
-        m["files"] = int(m["files"]) + 1
-        m["loc"] = int(m["loc"]) + int(r.get("loc") or 0)
-        risk_v = float(r.get("risk") or 0.0)
-        if risk_v > float(m["risk_max"]):
-            m["risk_max"] = risk_v
-        # keep top 3 hotspots per module
-        top_list: list[tuple[float, str]] = list(m["top_hotspots"])
-        insert_at: int | None = None
-        for idx, (risk_existing, path_existing) in enumerate(top_list):
-            if risk_v > risk_existing or (risk_v == risk_existing and p < path_existing):
-                insert_at = idx
-                break
-        if insert_at is None:
-            top_list.append((risk_v, p))
-        else:
-            top_list.insert(insert_at, (risk_v, p))
-        if len(top_list) > 3:
-            top_list = top_list[:3]
-        m["top_hotspots"] = top_list
-
-    module_rows = sorted(
-        module_map.values(),
-        key=lambda x: (-float(x.get("risk_max") or 0.0), -int(x.get("files") or 0), str(x.get("module") or "")),
-    )
+    summary = _compute_project_summary_facts(nodes)
+    risks = summary["risks"]
+    paths = summary["paths"]
+    lang_count = summary["languages"]
+    total_loc = summary["counts"]["loc"]
+    hotspots = summary["hotspots"]
+    hubs = summary["hubs_by_fan_in"]
+    module_rows = summary["module_rows"]
 
     module_table = [
         "| module | files | loc | risk_max | top hotspots |",
@@ -919,7 +949,7 @@ def build_project_docs(project_id: int) -> dict:
         "languages": [{"language": k, "files": v} for k, v in sorted(lang_count.items(), key=lambda x: (-x[1], x[0]))],
         "hotspots": hotspots,
         "hubs_by_fan_in": hubs,
-        "module_map": module_rows[:100],
+        "module_map": summary["module_map"],
         "tree_outline": outline,
         "contracts_sample": contracts,
         "api_summary": api_summary,
