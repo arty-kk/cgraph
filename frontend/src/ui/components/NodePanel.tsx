@@ -194,6 +194,8 @@ export function NodePanel({
 
   const retrieval = (runResult as any)?.retrieval ?? runResult?.retrieval ?? '—'
   const retrievalSettings = (runResult as any)?.retrieval_settings ?? runResult?.retrieval_settings
+  const applyPatchLabel =
+    typeof runResult?.apply_patch === 'boolean' ? (runResult.apply_patch ? 'yes' : 'no') : '—'
 
   const fmtK = (n: unknown): string => {
     const v = Number(n)
@@ -1088,7 +1090,7 @@ export function NodePanel({
                 <div className="text-xs text-neutral-400">
                   run_id: {runResult?.run_id ?? '—'} · mode: {runResult?.mode ?? '—'} · depth:{' '}
                   {runResult?.depth ?? '—'} · dep_mode: {runResult?.dep_mode ?? '—'} · retrieval:{' '}
-                  {String(retrieval)}
+                  {String(retrieval)} · apply_patch: {applyPatchLabel}
                 </div>
                 {retrievalSummary && (
                   <div className="text-[11px] text-neutral-500 whitespace-pre-wrap">{retrievalSummary}</div>

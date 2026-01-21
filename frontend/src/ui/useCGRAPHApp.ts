@@ -1095,10 +1095,13 @@ export function useCGRAPHApp() {
         setRunResult({
           run_id: r.id,
           mode: r.mode,
-          depth: undefined,
-          dep_mode: undefined,
+          depth: r.depth ?? undefined,
+          dep_mode: r.dep_mode ?? undefined,
+          retrieval: r.retrieval ?? undefined,
+          retrieval_settings: r.retrieval_settings ?? undefined,
+          apply_patch: r.apply_patch ?? undefined,
           result: r.result,
-          applied: undefined,
+          applied: r.applied ?? undefined,
         })
         setFullPatch(null)
       } catch (e: any) {

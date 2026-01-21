@@ -120,6 +120,18 @@ export type RunDetails = {
   mode: string
   prompt: string
   model_used: string
+  depth?: number | null
+  dep_mode?: DepMode | string | null
+  retrieval?: 'agentic' | 'pack' | 'graph' | string | null
+  retrieval_settings?: RetrievalSettings
+  apply_patch?: boolean | null
+  applied?: {
+    modified?: string[] | string
+    reindexed?: unknown
+    contracts_updated?: string[]
+    contracts_removed?: string[]
+    error?: string
+  } | null
   created_at: string
   result: unknown
 }
@@ -131,6 +143,7 @@ export type RunTaskResult = {
   dep_mode?: DepMode | string
   retrieval?: 'agentic' | 'pack' | 'graph' | string
   retrieval_settings?: RetrievalSettings
+  apply_patch?: boolean | null
   result: unknown
   applied?: {
     modified?: string[] | string
