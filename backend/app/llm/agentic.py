@@ -22,6 +22,7 @@ from ..api_scaffold import suggest_frontend_module_file, build_frontend_snippet
 from ..api_contracts import build_backend_contract_for_route
 from ..ts_edits import unified_diff as _unified_diff, ts_add_fields_to_typedef, ts_patch_wrapper_function
 from ..py_edits import py_add_keys_to_function_return_dicts
+from ..scan import SEARCH_INDEX_MAX_CHARS
 from .client import get_openai_client
 from .model_caps import supports_reasoning, supports_temperature
 from .policy import ModelPolicy, DEFAULT_POLICY
@@ -738,6 +739,7 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
 
     # Cap per-file read for search to avoid heavy IO (still bounded by server ceiling).
     scan_max_chars = max(200, min(int(max_file_chars), 50_000))
+    index_scan_max_chars = max(scan_max_chars, SEARCH_INDEX_MAX_CHARS)
 
     paths: list[str] = []
 
@@ -799,43 +801,63 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
         except Exception:
             continue
         scanned += 1
-        truncated = len(text) > scan_max_chars
-        if truncated:
-            truncated_files += 1
+        truncated_initial = len(text) > scan_max_chars
+        if truncated_initial:
             text = text[:scan_max_chars]
 
-        hay = text if case_sensitive else text.lower()
-        start_i = 0
-        while True:
-            if len(matches) >= max_matches:
-                break
-            idx = hay.find(needle_cmp, start_i)
-            if idx == -1:
-                break
-            matched_files.add(rel_norm)
+        def _search_text(payload: str, *, truncated_flag: bool) -> bool:
+            haystack = payload if case_sensitive else payload.lower()
+            start_idx = 0
+            found_any = False
+            while True:
+                if len(matches) >= max_matches:
+                    break
+                idx = haystack.find(needle_cmp, start_idx)
+                if idx == -1:
+                    break
+                found_any = True
+                matched_files.add(rel_norm)
 
-            # Line/col (1-based)
-            line = text.count("\n", 0, idx) + 1
-            last_nl = text.rfind("\n", 0, idx)
-            col = (idx - (last_nl + 1)) + 1 if last_nl != -1 else idx + 1
+                # Line/col (1-based)
+                line = payload.count("\n", 0, idx) + 1
+                last_nl = payload.rfind("\n", 0, idx)
+                col = (idx - (last_nl + 1)) + 1 if last_nl != -1 else idx + 1
 
-            half = max(10, context_chars // 2)
-            s0 = max(0, idx - half)
-            e0 = min(len(text), idx + len(needle) + half)
-            snippet = text[s0:e0]
+                half = max(10, context_chars // 2)
+                s0 = max(0, idx - half)
+                e0 = min(len(payload), idx + len(needle) + half)
+                snippet = payload[s0:e0]
 
-            matches.append(
-                {
-                    "path": rel_norm,
-                    "line": int(line),
-                    "col": int(col),
-                    "snippet": snippet,
-                    "truncated_file": bool(truncated),
-                }
-            )
+                matches.append(
+                    {
+                        "path": rel_norm,
+                        "line": int(line),
+                        "col": int(col),
+                        "snippet": snippet,
+                        "truncated_file": bool(truncated_flag),
+                    }
+                )
 
-            step = max(1, len(needle_cmp))
-            start_i = idx + step
+                step = max(1, len(needle_cmp))
+                start_idx = idx + step
+            return found_any
+
+        truncated = truncated_initial
+        matched = _search_text(text, truncated_flag=truncated)
+
+        if truncated_initial and not matched and scan_max_chars < index_scan_max_chars:
+            try:
+                with abs_path.open("r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(int(index_scan_max_chars) + 1)
+            except Exception:
+                continue
+            truncated = len(text) > index_scan_max_chars
+            if truncated:
+                text = text[:index_scan_max_chars]
+            matched = _search_text(text, truncated_flag=truncated)
+
+        if truncated:
+            truncated_files += 1
 
     return {
         "query": needle,
