@@ -352,6 +352,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                 _llm_http_error(mode or "agentic", error)
 
             if agentic_meta is not None:
+                # Files read via get_contract/get_symbol are whitelisted for patching.
                 allowed_patch_paths = set(agentic_meta.full_file_paths) | {target}
                 try:
                     if isinstance(retrieval_settings, dict) and isinstance(retrieval_settings.get("agentic"), dict):
