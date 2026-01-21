@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     openai_timeout_seconds: float = Field(default=30.0, alias="CGRAPH_OPENAI_TIMEOUT_SECONDS")
     openai_max_retries: int = Field(default=3, alias="CGRAPH_OPENAI_MAX_RETRIES")
 
+    embeddings_enabled: bool = Field(default=False, alias="CGRAPH_EMBEDDINGS_ENABLED")
+    embeddings_model: str = Field(default="text-embedding-3-small", alias="CGRAPH_EMBEDDINGS_MODEL")
+    embeddings_chunk_size: int = Field(default=1500, alias="CGRAPH_EMBEDDINGS_CHUNK_SIZE")
+    embeddings_chunk_overlap: int = Field(default=200, alias="CGRAPH_EMBEDDINGS_CHUNK_OVERLAP")
+    embeddings_max_file_chars: int = Field(default=200_000, alias="CGRAPH_EMBEDDINGS_MAX_FILE_CHARS")
+
     # Agentic tool-based retrieval (LLM chooses which context to fetch)
     llm_agentic_retrieval: bool = Field(default=True, alias="CGRAPH_LLM_AGENTIC_RETRIEVAL")
     llm_agentic_max_calls: int = Field(default=100, alias="CGRAPH_LLM_AGENTIC_MAX_CALLS")
@@ -83,6 +89,16 @@ class Settings(BaseSettings):
             raise ValueError("Таймаут OpenAI должен быть положительным")
         if self.openai_max_retries < 0:
             raise ValueError("Количество ретраев OpenAI не может быть отрицательным")
+        if self.embeddings_chunk_size <= 0:
+            raise ValueError("CGRAPH_EMBEDDINGS_CHUNK_SIZE должен быть положительным")
+        if self.embeddings_chunk_overlap < 0:
+            raise ValueError("CGRAPH_EMBEDDINGS_CHUNK_OVERLAP должен быть неотрицательным")
+        if self.embeddings_chunk_overlap >= self.embeddings_chunk_size:
+            raise ValueError("CGRAPH_EMBEDDINGS_CHUNK_OVERLAP должен быть меньше размера чанка")
+        if self.embeddings_max_file_chars <= 0:
+            raise ValueError("CGRAPH_EMBEDDINGS_MAX_FILE_CHARS должен быть положительным")
+        if not self.embeddings_model or not self.embeddings_model.strip():
+            raise ValueError("CGRAPH_EMBEDDINGS_MODEL должен быть непустым")
         if self.llm_agentic_max_calls <= 0:
             raise ValueError("CGRAPH_LLM_AGENTIC_MAX_CALLS должен быть положительным")
         if self.llm_agentic_max_total_tool_output_chars <= 0:
