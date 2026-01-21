@@ -816,8 +816,17 @@ def build_project_docs(project_id: int) -> dict:
             m["risk_max"] = risk_v
         # keep top 3 hotspots per module
         top_list: list[tuple[float, str]] = list(m["top_hotspots"])
-        top_list.append((risk_v, p))
-        top_list = sorted(top_list, key=lambda x: (-x[0], x[1]))[:3]
+        insert_at: int | None = None
+        for idx, (risk_existing, path_existing) in enumerate(top_list):
+            if risk_v > risk_existing or (risk_v == risk_existing and p < path_existing):
+                insert_at = idx
+                break
+        if insert_at is None:
+            top_list.append((risk_v, p))
+        else:
+            top_list.insert(insert_at, (risk_v, p))
+        if len(top_list) > 3:
+            top_list = top_list[:3]
         m["top_hotspots"] = top_list
 
     module_rows = sorted(
