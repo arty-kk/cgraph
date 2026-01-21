@@ -1,6 +1,7 @@
 #backend/app/services/docs_service.py
 from __future__ import annotations
 
+import heapq
 import json
 import re
 from datetime import datetime
@@ -155,6 +156,11 @@ def _basename(p: str) -> str:
     if not isinstance(p, str) or not p:
         return ""
     return p.rsplit("/", 1)[-1] if "/" in p else p
+
+def _invert_str(value: str) -> tuple[int, ...]:
+    if not isinstance(value, str):
+        value = str(value or "")
+    return tuple(-ord(c) for c in value) + (1,)
 
 def _best_paths(paths: list[str], *, limit: int) -> list[str]:
     uniq = list(dict.fromkeys([p for p in paths if isinstance(p, str) and p.strip()]))
@@ -779,10 +785,18 @@ def build_project_docs(project_id: int) -> dict:
         paths.append(path)
         risks.append(_risk_row(path, loc, complexity, fan_in, fan_out, status))
 
-    risks_sorted = sorted(risks, key=lambda x: (-float(x.get("risk", 0.0)), x.get("path", "")))
-    hotspots = risks_sorted[:25]
+    risks_sorted = heapq.nlargest(
+        25,
+        risks,
+        key=lambda x: (float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
+    )
+    hotspots = risks_sorted
 
-    hubs = sorted(risks, key=lambda x: (-int(x.get("fan_in", 0)), -float(x.get("risk", 0.0)), x.get("path", "")))[:25]
+    hubs = heapq.nlargest(
+        25,
+        risks,
+        key=lambda x: (int(x.get("fan_in", 0)), float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
+    )
  
     # Module map: top-level folders -> aggregated stats + top hotspots
     module_map: dict[str, dict[str, Any]] = {}
@@ -838,7 +852,11 @@ def build_project_docs(project_id: int) -> dict:
     for item in hubs[:8]:
         _push_path(str(item.get("path") or ""))
 
-    top_fan_out = sorted(risks, key=lambda x: (-int(x.get("fan_out", 0)), -float(x.get("risk", 0.0)), x.get("path", "")))[:8]
+    top_fan_out = heapq.nlargest(
+        8,
+        risks,
+        key=lambda x: (int(x.get("fan_out", 0)), float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
+    )
     for item in top_fan_out:
         _push_path(str(item.get("path") or ""))
 
