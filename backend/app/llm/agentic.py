@@ -626,7 +626,7 @@ def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: d
     meta.full_file_paths.add(rel_norm)
     return {"path": rel_norm, "start_line": s_ln, "end_line": e_ln, "content": snippet, "truncated": truncated, "max_chars": max_chars}
 
-def _tool_get_contract(project_id: int, root: Path, args: dict) -> dict:
+def _tool_get_contract(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return {"error": "bad_args", "message": "path is required"}
@@ -635,11 +635,13 @@ def _tool_get_contract(project_id: int, root: Path, args: dict) -> dict:
     except Exception as e:
         return {"error": "invalid_path", "message": str(e)}
     try:
-        return get_or_build_contract(project_id, root, rel_norm)
+        contract = get_or_build_contract(project_id, root, rel_norm)
     except Exception as e:
         return {"error": "contract_failed", "path": rel_norm, "message": str(e)}
+    meta.full_file_paths.add(rel_norm)
+    return contract
 
-def _tool_get_symbol(project_id: int, root: Path, args: dict) -> dict:
+def _tool_get_symbol(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     path = args.get("path")
     name = args.get("name")
     if not isinstance(path, str) or not path.strip():
@@ -654,6 +656,7 @@ def _tool_get_symbol(project_id: int, root: Path, args: dict) -> dict:
         c = get_or_build_contract(project_id, root, rel_norm)
     except Exception as e:
         return {"error": "contract_failed", "path": rel_norm, "message": str(e)}
+    meta.full_file_paths.add(rel_norm)
     if not isinstance(c, dict):
         return {"error": "contract_failed", "path": rel_norm}
     syms = c.get("symbols")
@@ -1932,9 +1935,9 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
     if name == "get_file_lines":
         return _tool_get_file_lines(project_id, root, meta, args, max_file_chars=max_file_chars)
     if name == "get_contract":
-        return _tool_get_contract(project_id, root, args)
+        return _tool_get_contract(project_id, root, meta, args)
     if name == "get_symbol":
-        return _tool_get_symbol(project_id, root, args)
+        return _tool_get_symbol(project_id, root, meta, args)
     if name == "get_node":
         return _tool_get_node(project_id, root, args)
     if name == "get_neighbors":
