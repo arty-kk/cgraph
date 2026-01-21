@@ -155,6 +155,7 @@ export function App() {
             graphTruncated={Boolean(app.graph?.meta?.truncated || (app.graph?.meta?.limit_nodes ?? 0) > 0)}
             onLoadFullGraph={app.onLoadFullGraph}
             notifyInfo={app.notifyInfo}
+            onScan={app.onScan}
             nodeBusy={app.nodeBusy}
             nodeInfo={app.nodeInfo}
             contract={app.contract}

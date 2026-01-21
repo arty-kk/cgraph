@@ -79,6 +79,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 - Создание проекта: `POST /api/projects` с `name` и `root_path`.
 - Сканирование: `POST /api/projects/{id}/scan` (можно `background=true`).
+- Для корректного контекста LLM/impact нужен полный Scan: если в индексе меньше 2 узлов или нет рёбер, backend считает граф не готов и возвращает предупреждение `warning: "graph not built"` в ответах `run`/`runs/{run_id}`.
 - Граф: `GET /api/projects/{id}/graph` или локальный `GET /api/projects/{id}/graph/local?path=...&hops=1&max_nodes=400`.
 - Поиск: `GET /api/projects/{id}/search?q=...`.
 - Метаданные узла: `GET /api/nodes/{id}/{path}/node`; контракт файла: `GET /api/nodes/{id}/{path}/contract`.

@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks
 from sqlmodel import delete, select
+from sqlalchemy import func
 
 from ..config import settings
 from ..context_pack import pack_context
@@ -38,6 +39,9 @@ MAX_GRAPH_INBOUND_FOR_LLM = 200
 MAX_GRAPH_OUTBOUND_FOR_LLM = 200
 MAX_OMITTED_PATHS_FOR_LLM = 200
 MAX_OMITTED_METRICS_FOR_LLM = 50
+MIN_GRAPH_NODES_FOR_READY = 2
+MIN_GRAPH_EDGES_FOR_READY = 1
+GRAPH_NOT_READY_WARNING = "graph not built"
 
 logger = get_logger("cgraph.api")
 
@@ -191,6 +195,23 @@ def _ensure_node_exists(project_id: int, target: str, root: Path) -> None:
         )
 
 
+def _graph_warning(project_id: int) -> str | None:
+    with get_session() as session:
+        nodes_row = session.exec(
+            select(func.count()).select_from(FileNode).where(FileNode.project_id == project_id)
+        ).one()
+        edges_row = session.exec(
+            select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
+        ).one()
+
+    node_count = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
+    edge_count = int(edges_row[0] if isinstance(edges_row, (tuple, list)) else edges_row or 0)
+
+    if node_count < MIN_GRAPH_NODES_FOR_READY or edge_count < MIN_GRAPH_EDGES_FOR_READY:
+        return GRAPH_NOT_READY_WARNING
+    return None
+
+
 def run_task(project_id: int, request: TaskRequest) -> dict:
     project = get_project(project_id)
 
@@ -210,6 +231,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         raise BadRequestError("Цель должна быть файлом")
 
     _ensure_node_exists(project_id, target, root)
+    warning = _graph_warning(project_id)
 
     mode = request.mode
     depth = request.depth
@@ -640,6 +662,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         "apply_patch": bool(request.apply_patch),
         "result": result_for_response,
         "applied": applied,
+        "warning": warning,
     }
 
 
@@ -700,6 +723,8 @@ def get_run(project_id: int, run_id: int) -> dict:
     except Exception:  # noqa: BLE001
         applied = None
 
+    warning = _graph_warning(project_id)
+
     return {
         "id": run.id,
         "project_id": run.project_id,
@@ -715,6 +740,7 @@ def get_run(project_id: int, run_id: int) -> dict:
         "applied": applied,
         "created_at": run.created_at.isoformat(),
         "result": result,
+        "warning": warning,
     }
 
 

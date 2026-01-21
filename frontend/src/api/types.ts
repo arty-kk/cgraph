@@ -134,6 +134,7 @@ export type RunDetails = {
   } | null
   created_at: string
   result: unknown
+  warning?: string | null
 }
 
 export type RunTaskResult = {
@@ -152,6 +153,7 @@ export type RunTaskResult = {
     contracts_removed?: string[]
     error?: string
   }
+  warning?: string | null
 }
 
 export type TaskStatus = {

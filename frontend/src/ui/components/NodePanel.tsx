@@ -18,6 +18,7 @@ type Props = {
   onLoadFullGraph: () => void | Promise<void>
   onHidePanel?: () => void
   notifyInfo: (message: string) => void
+  onScan: () => void | Promise<void>
 
   nodeBusy: boolean
   nodeInfo: NodeInfo | null
@@ -74,6 +75,7 @@ export function NodePanel({
   onLoadFullGraph,
   nodeBusy,
   notifyInfo,
+  onScan,
   nodeInfo,
   contract,
   busy,
@@ -623,6 +625,21 @@ export function NodePanel({
 
                 {runOpen && (
                   <>
+                    {runResult?.warning && (
+                      <div className="mt-2 text-xs bg-amber-950/40 border border-amber-800 rounded-md p-2 text-amber-200 space-y-2">
+                        <div>
+                          Индекс графа неполный. Для корректного контекста нужен полный Scan — иначе результаты LLM/impact могут быть неполными.
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-md bg-amber-900/40 hover:bg-amber-900/60 border border-amber-800 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
+                          onClick={() => onScan()}
+                          disabled={!activeProject || busy}
+                        >
+                          Scan
+                        </button>
+                      </div>
+                    )}
                     <div className="mt-2">
                       <div className={labelRowClass}>
                         <span className={fieldLabelClass}>Prompt</span>
