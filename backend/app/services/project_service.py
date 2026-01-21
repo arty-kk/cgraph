@@ -16,7 +16,7 @@ from ..logging import get_logger
 from ..models import (
     Project, FileNode, FileEdge, ModuleContract,
     AnalysisRun, ProjectDoc, ApiRoute, ApiCall,
-    ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef
+    ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef, FileChunkEmbedding
 )
 from ..scan import scan_project
 from ..utils import normalize_project_root, project_lock, resolve_under_root
@@ -72,6 +72,7 @@ def delete_project(project_id: int) -> None:
             session.exec(delete(ApiRouteContract).where(ApiRouteContract.project_id == project_id))
             session.exec(delete(ApiCallMeta).where(ApiCallMeta.project_id == project_id))
             session.exec(delete(TsTypeDef).where(TsTypeDef.project_id == project_id))
+            session.exec(delete(FileChunkEmbedding).where(FileChunkEmbedding.project_id == project_id))
             runs = session.exec(select(AnalysisRun).where(AnalysisRun.project_id == project_id)).all()
             shas: set[str] = set()
             for run in runs:

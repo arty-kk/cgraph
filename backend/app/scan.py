@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+import json
 
 from collections import OrderedDict
 from pathlib import Path
@@ -12,8 +13,14 @@ from sqlmodel import delete, select
 from sqlalchemy import text as sa_text, bindparam
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from .config import settings
 from .db import get_session
-from .models import FileNode, FileEdge, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef
+from .logging import get_logger
+from .llm.client import get_openai_client
+from .models import (
+    FileNode, FileEdge, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef,
+    FileChunkEmbedding,
+)
 from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
 from .resolve import resolve_spec
@@ -25,6 +32,7 @@ from .api_contracts import extract_backend_route_contract_rows, extract_frontend
 PARSE_CACHE_LIMIT = 256
 _parse_cache: OrderedDict[Tuple[str, str], tuple[int, list[dict]]] = OrderedDict()
 _parse_cache_lock = Lock()
+logger = get_logger("cgraph.scan")
 
 
 def _get_cached_parse(lang: str, file_hash: str) -> tuple[int, list[dict]] | None:
@@ -86,6 +94,30 @@ def _fts_delete(session, project_id: int, paths: list[str]) -> None:
     )
     for chunk in _chunks(paths, 400):
         session.execute(stmt, {"pid": int(project_id), "paths": chunk})
+
+def _delete_embeddings(session, project_id: int, paths: list[str]) -> None:
+    if not paths:
+        return
+    for chunk in _chunks(paths, 400):
+        session.exec(
+            delete(FileChunkEmbedding).where(
+                FileChunkEmbedding.project_id == project_id,
+                FileChunkEmbedding.path.in_(chunk),
+            )
+        )
+
+def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
+    if size <= 0:
+        return []
+    overlap = max(0, min(overlap, size - 1))
+    step = max(1, size - overlap)
+    chunks: list[str] = []
+    for start in range(0, len(text), step):
+        end = start + size
+        chunk = text[start:end]
+        if chunk:
+            chunks.append(chunk)
+    return chunks
 
 def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
     if not paths:
@@ -174,6 +206,11 @@ def scan_project(project_id: int, project_root: Path) -> dict:
                     if not _is_missing_table_error(e, "filetext_fts"):
                         raise
                 try:
+                    _delete_embeddings(s, project_id, removed)
+                except OperationalError as e:
+                    if not _is_missing_table_error(e, "filechunkembedding"):
+                        raise
+                try:
                     _delete_api_indexes(s, project_id, removed)
                 except OperationalError as e:
                     if not (
@@ -232,6 +269,11 @@ def scan_files(
                 )
             )
             s.exec(delete(FileNode).where(FileNode.project_id == project_id, FileNode.path.in_(removed)))
+            try:
+                _delete_embeddings(s, project_id, removed)
+            except OperationalError as e:
+                if not _is_missing_table_error(e, "filechunkembedding"):
+                    raise
             s.commit()
 
     node_rows: list[dict] = []
@@ -243,6 +285,32 @@ def scan_files(
     route_contract_rows: list[dict] = []
     call_meta_rows: list[dict] = []
     ts_type_rows: list[dict] = []
+    embedding_rows: list[dict] = []
+    embedding_paths_to_delete: list[str] = []
+    embedding_hashes: dict[str, set[str]] = {}
+    embedding_warned_missing_key = False
+
+    embeddings_enabled = bool(settings.embeddings_enabled)
+    if embeddings_enabled and present:
+        with get_session() as s:
+            try:
+                rows = s.exec(
+                    select(FileChunkEmbedding.path, FileChunkEmbedding.file_hash).where(
+                        FileChunkEmbedding.project_id == project_id,
+                        FileChunkEmbedding.path.in_(present),
+                    )
+                ).all()
+                for row in rows:
+                    if isinstance(row, tuple) and len(row) >= 2:
+                        path, file_hash = row[0], row[1]
+                    else:
+                        path = getattr(row, "path", "")
+                        file_hash = getattr(row, "file_hash", "")
+                    if isinstance(path, str) and path:
+                        embedding_hashes.setdefault(path, set()).add(str(file_hash or ""))
+            except OperationalError as e:
+                if not _is_missing_table_error(e, "filechunkembedding"):
+                    raise
 
     JS_TS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
 
@@ -342,6 +410,7 @@ def scan_files(
         lang = idx.language()
         file_hash = sha256_text(text)
         loc = sum(1 for line in text.splitlines() if line.strip())
+        embed_text_len = len(text)
 
         try:
             fts_rows.append({"project_id": int(project_id), "path": rel, "content": text[:SEARCH_INDEX_MAX_CHARS]})
@@ -387,6 +456,51 @@ def scan_files(
             "file_mtime": float(stat_mtime),
             "file_size": int(stat_size),
         })
+
+        if embeddings_enabled:
+            existing_hashes = embedding_hashes.get(rel, set())
+            should_embed = (
+                embed_text_len > 0
+                and embed_text_len <= settings.embeddings_max_file_chars
+                and file_hash not in existing_hashes
+            )
+            if should_embed and existing_hashes:
+                embedding_paths_to_delete.append(rel)
+            if should_embed:
+                chunks = _chunk_text(
+                    text,
+                    settings.embeddings_chunk_size,
+                    settings.embeddings_chunk_overlap,
+                )
+                if chunks:
+                    if not settings.openai_api_key:
+                        if not embedding_warned_missing_key:
+                            logger.warning("Embeddings enabled but OPENAI_API_KEY is not set; skipping embeddings.")
+                            embedding_warned_missing_key = True
+                    else:
+                        client = get_openai_client()
+                        try:
+                            response = client.embeddings.create(
+                                model=settings.embeddings_model,
+                                input=chunks,
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            raise RuntimeError(f"Embeddings request failed for {rel}: {e}") from e
+                        for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
+                            embedding = getattr(item, "embedding", None)
+                            if embedding is None:
+                                continue
+                            embedding_rows.append(
+                                {
+                                    "project_id": project_id,
+                                    "path": rel,
+                                    "chunk_index": idx_chunk,
+                                    "file_hash": file_hash,
+                                    "embedding_json": json.dumps(embedding),
+                                }
+                            )
+            elif embed_text_len > settings.embeddings_max_file_chars and existing_hashes:
+                embedding_paths_to_delete.append(rel)
 
         for imp in cached_imports:
             if not isinstance(imp, dict):
@@ -441,6 +555,12 @@ def scan_files(
                         or _is_missing_table_error(e, "apicallmeta")
                         or _is_missing_table_error(e, "tstypedef")
                     ):
+                        raise
+            if embedding_paths_to_delete:
+                try:
+                    _delete_embeddings(s, project_id, sorted(set(embedding_paths_to_delete)))
+                except OperationalError as e:
+                    if not _is_missing_table_error(e, "filechunkembedding"):
                         raise
             if fts_rows:
                 s.execute(
@@ -504,6 +624,16 @@ def scan_files(
                     },
                 )
                 s.exec(stmt_tt)
+            if embedding_rows:
+                stmt_emb = sqlite_insert(FileChunkEmbedding).values(embedding_rows)
+                stmt_emb = stmt_emb.on_conflict_do_nothing(
+                    index_elements=["project_id", "path", "chunk_index", "file_hash"]
+                )
+                try:
+                    s.exec(stmt_emb)
+                except OperationalError as e:
+                    if not _is_missing_table_error(e, "filechunkembedding"):
+                        raise
         except Exception as e:
             s.rollback()
             raise RuntimeError(f"scan_files: DB write failed: {e}") from e

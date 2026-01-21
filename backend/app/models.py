@@ -192,3 +192,19 @@ class TsTypeDef(SQLModel, table=True):
     kind: str = Field(default="type")
     source_path: str = Field(index=True)
     fields_json: str = Field(default="[]")
+
+
+class FileChunkEmbedding(SQLModel, table=True):
+    __tablename__ = "filechunkembedding"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "path", "chunk_index", "file_hash",
+            name="uq_filechunkembedding_project_path_chunk_hash",
+        ),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(index=True)
+    path: str = Field(index=True)
+    chunk_index: int
+    file_hash: str = Field(index=True)
+    embedding_json: str
