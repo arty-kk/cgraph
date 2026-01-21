@@ -11,6 +11,14 @@ export type AgenticRetrievalSettings = {
   tool_output_chars_used?: number
   cache_hits?: number
   files_read?: number
+  tool_trace?: {
+    name?: string
+    args?: Record<string, unknown>
+    cache_hit?: boolean
+    response_chars?: number
+    duration_ms?: number
+    status?: 'ok' | 'error' | string
+  }[]
 }
 
 export type PackRetrievalSettings = {
