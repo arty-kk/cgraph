@@ -15,7 +15,7 @@ from sqlalchemy import text as sa_text
 from ..config import settings
 from ..contracts import get_or_build_contract
 from ..db import get_session
-from ..graph import search_nodes
+from ..graph import search_nodes, search_semantic
 from ..models import FileEdge, FileNode, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef
 from ..utils import resolve_under_root
 from ..api_map import split_skeleton, patterns_compatible, static_match_score, backend_path_skeleton
@@ -341,6 +341,25 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                     "max_files": {"type": ["integer", "null"], "minimum": 1, "maximum": 2000},
                     "max_matches": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
                     "context_chars": {"type": ["integer", "null"], "minimum": 40, "maximum": 400},
+                },
+                "required": ["query"],
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "search_semantic",
+            "description": (
+                "Semantic search over indexed file chunks using embeddings. "
+                "Returns best-matching paths with snippets."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "query": {"type": "string", "description": "Natural-language query"},
+                    "max_results": {"type": ["integer", "null"], "minimum": 1, "maximum": 200},
+                    "prefix": {"type": ["string", "null"], "description": "Optional path prefix filter (folder)"},
                 },
                 "required": ["query"],
             },
@@ -965,6 +984,65 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
         "truncated_files": int(truncated_files),
         "matches": matches,
     }
+
+
+def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return {"error": "bad_args", "message": "query is required"}
+
+    prefix = args.get("prefix")
+    prefix_norm: str | None = None
+    if isinstance(prefix, str) and prefix.strip():
+        prefix_norm = prefix.strip().replace("\\", "/").strip("/")
+        if not prefix_norm:
+            prefix_norm = None
+
+    max_results = None
+    if args.get("max_results") is not None:
+        max_results = _clamp_int(
+            args.get("max_results"),
+            int(settings.embeddings_search_max_results),
+            1,
+            int(settings.embeddings_search_max_results),
+        )
+
+    semantic = search_semantic(
+        project_id,
+        root,
+        query,
+        max_results=max_results,
+        prefix=prefix_norm,
+    )
+    results = semantic.get("results") if isinstance(semantic, dict) else None
+    if isinstance(semantic, dict) and ("error" in semantic or not results):
+        reason = ""
+        if isinstance(semantic, dict):
+            meta = semantic.get("meta")
+            if isinstance(meta, dict):
+                reason = str(meta.get("reason") or "")
+            if not reason:
+                reason = str(semantic.get("error") or "no_results")
+        text_out = _tool_search_text(
+            project_id,
+            root,
+            {"query": query, "prefix": prefix_norm},
+            max_file_chars=max_file_chars,
+        )
+        meta = text_out.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["fallback_used"] = True
+        meta["reason"] = reason
+        text_out["meta"] = meta
+        return text_out
+
+    meta = semantic.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["fallback_used"] = False
+    semantic["meta"] = meta
+    return semantic
 
 
 def _tool_search_routes(project_id: int, args: dict) -> dict:
@@ -2040,6 +2118,8 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
         return _tool_project_summary(project_id, root, args)
     if name == "search_text":
         return _tool_search_text(project_id, root, args, max_file_chars=max_file_chars)
+    if name == "search_semantic":
+        return _tool_search_semantic(project_id, root, args, max_file_chars=max_file_chars)
     if name == "search_routes":
         return _tool_search_routes(project_id, args)
     if name == "search_api_calls":
@@ -2960,6 +3040,7 @@ def _agentic_json_call(
     tool_rules = (
         "Tooling rules:\n"
         "- Use tools sparingly. Prefer get_contract before get_file.\n"
+        "- Prefer search_semantic for conceptual queries; if no results, use search_text.\n"
         "- Prefer search_text to locate occurrences before fetching many files.\n"
         "- Never assume missing code; fetch it.\n"
         "- Keep changes minimal; for fixes, only propose changes you can justify from retrieved context.\n"

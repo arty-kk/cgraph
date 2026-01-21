@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
+import json
+import logging
+import math
 from sqlmodel import select
 from sqlalchemy import text, func
 from .db import get_session
-from .models import FileNode, FileEdge
+from .models import FileNode, FileEdge, FileChunkEmbedding
 from .config import settings
+from .llm.client import get_openai_client
+from .utils import resolve_under_root
 import networkx as nx
+
+logger = logging.getLogger(__name__)
 
 def _as_int(v: Any, default: int = 0) -> int:
     try:
@@ -373,3 +381,222 @@ def search_nodes(project_id: int, query: str, limit: int = 20) -> list[dict]:
             }
         )
     return out
+
+
+def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
+    if size <= 0:
+        return []
+    overlap = max(0, min(overlap, size - 1))
+    step = max(1, size - overlap)
+    chunks: list[str] = []
+    for start in range(0, len(text), step):
+        end = start + size
+        chunk = text[start:end]
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
+    if not vec_a or not vec_b:
+        return 0.0
+    n = min(len(vec_a), len(vec_b))
+    if n <= 0:
+        return 0.0
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for i in range(n):
+        a = float(vec_a[i])
+        b = float(vec_b[i])
+        dot += a * b
+        norm_a += a * a
+        norm_b += b * b
+    denom = math.sqrt(norm_a) * math.sqrt(norm_b)
+    if denom <= 0:
+        return 0.0
+    return dot / denom
+
+
+def search_semantic(
+    project_id: int,
+    root: Path,
+    query: str,
+    *,
+    max_results: int | None = None,
+    prefix: str | None = None,
+) -> dict:
+    if not isinstance(query, str) or not query.strip():
+        return {"error": "bad_args", "message": "query is required", "meta": {"reason": "bad_args"}}
+
+    if not bool(getattr(settings, "embeddings_enabled", False)):
+        return {
+            "error": "embeddings_disabled",
+            "message": "Embeddings are disabled in settings.",
+            "meta": {"reason": "embeddings_disabled"},
+        }
+
+    if not settings.openai_api_key:
+        return {
+            "error": "missing_api_key",
+            "message": "OPENAI_API_KEY is not configured.",
+            "meta": {"reason": "missing_api_key"},
+        }
+
+    q = query.strip()
+    prefix_norm: str | None = None
+    if isinstance(prefix, str) and prefix.strip():
+        prefix_norm = prefix.strip().replace("\\", "/").strip("/")
+        if not prefix_norm:
+            prefix_norm = None
+
+    max_candidates = int(getattr(settings, "embeddings_search_max_candidates", 500))
+    max_results_eff = int(getattr(settings, "embeddings_search_max_results", 20))
+    if max_results is not None:
+        try:
+            max_results_eff = min(max_results_eff, max(1, int(max_results)))
+        except Exception:
+            max_results_eff = max_results_eff
+
+    try:
+        client = get_openai_client()
+        resp = client.embeddings.create(model=settings.embeddings_model, input=[q])
+    except Exception as e:  # noqa: BLE001
+        return {
+            "error": "embedding_failed",
+            "message": f"Failed to get embedding: {e}",
+            "meta": {"reason": "embedding_failed"},
+        }
+
+    data = getattr(resp, "data", None) or []
+    if not data:
+        return {
+            "error": "embedding_empty",
+            "message": "Embedding response is empty.",
+            "meta": {"reason": "embedding_empty"},
+        }
+
+    query_embedding = getattr(data[0], "embedding", None)
+    if not isinstance(query_embedding, list) or not query_embedding:
+        return {
+            "error": "embedding_empty",
+            "message": "Embedding vector is missing.",
+            "meta": {"reason": "embedding_empty"},
+        }
+
+    filters = [FileChunkEmbedding.project_id == project_id]
+    if prefix_norm:
+        like = f"{prefix_norm}/%"
+        filters.append((FileChunkEmbedding.path == prefix_norm) | (FileChunkEmbedding.path.like(like)))
+
+    with get_session() as s:
+        total_candidates_row = s.exec(
+            select(func.count())
+            .select_from(FileChunkEmbedding)
+            .where(*filters)
+        ).one()
+        if isinstance(total_candidates_row, (tuple, list)):
+            total_candidates = _as_int(total_candidates_row[0] if total_candidates_row else 0, 0)
+        else:
+            try:
+                total_candidates = _as_int(total_candidates_row[0], 0)  # type: ignore[index]
+            except Exception:
+                total_candidates = _as_int(total_candidates_row, 0)
+
+        rows = s.exec(
+            select(
+                FileChunkEmbedding.path,
+                FileChunkEmbedding.chunk_index,
+                FileChunkEmbedding.embedding_json,
+            )
+            .where(*filters)
+            .order_by(FileChunkEmbedding.path.asc(), FileChunkEmbedding.chunk_index.asc())
+            .limit(int(max_candidates))
+        ).all()
+
+    compared = 0
+    scored: list[dict] = []
+
+    file_cache: dict[str, str] = {}
+    chunk_size = int(settings.embeddings_chunk_size)
+    overlap = int(settings.embeddings_chunk_overlap)
+    step = max(1, chunk_size - overlap)
+    max_file_chars = int(settings.embeddings_max_file_chars)
+
+    for row in rows:
+        if isinstance(row, (tuple, list)):
+            path, chunk_index, embedding_json = row[0], row[1], row[2]
+        else:
+            path = getattr(row, "path", "")
+            chunk_index = getattr(row, "chunk_index", 0)
+            embedding_json = getattr(row, "embedding_json", "")
+        if not isinstance(path, str) or not path:
+            continue
+        try:
+            embedding = json.loads(embedding_json) if isinstance(embedding_json, str) else None
+        except Exception:
+            continue
+        if not isinstance(embedding, list) or not embedding:
+            continue
+        try:
+            score = _cosine_similarity(query_embedding, embedding)
+        except Exception:
+            continue
+        compared += 1
+
+        snippet = ""
+        if path not in file_cache:
+            try:
+                abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+            except Exception:
+                file_cache[path] = ""
+            else:
+                if abs_path.exists() and abs_path.is_file():
+                    try:
+                        with abs_path.open("r", encoding="utf-8", errors="replace") as f:
+                            file_cache[path] = f.read(max_file_chars)
+                    except Exception:
+                        file_cache[path] = ""
+                else:
+                    file_cache[path] = ""
+        text = file_cache.get(path, "")
+        if text:
+            try:
+                start = max(0, int(chunk_index) * step)
+            except Exception:
+                start = 0
+            end = start + chunk_size
+            if start < len(text):
+                snippet = text[start:end]
+            else:
+                chunks = _chunk_text(text, chunk_size, overlap)
+                if isinstance(chunk_index, int) and 0 <= chunk_index < len(chunks):
+                    snippet = chunks[chunk_index]
+
+        scored.append({"path": path, "score": float(score), "snippet": snippet})
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    results = scored[: max_results_eff]
+    truncated = total_candidates > max_candidates or len(scored) > max_results_eff
+    if truncated:
+        logger.info(
+            "Semantic search truncated results for project %s (candidates=%s, returned=%s).",
+            project_id,
+            max_candidates,
+            max_results_eff,
+        )
+
+    return {
+        "query": q,
+        "prefix": prefix_norm or "",
+        "results": results,
+        "meta": {
+            "compared": int(compared),
+            "total_candidates": int(total_candidates),
+            "max_candidates": int(max_candidates),
+            "max_results": int(max_results_eff),
+            "returned": int(len(results)),
+            "truncated": bool(truncated),
+            "reason": "",
+        },
+    }

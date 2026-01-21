@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     embeddings_chunk_size: int = Field(default=1500, alias="CGRAPH_EMBEDDINGS_CHUNK_SIZE")
     embeddings_chunk_overlap: int = Field(default=200, alias="CGRAPH_EMBEDDINGS_CHUNK_OVERLAP")
     embeddings_max_file_chars: int = Field(default=200_000, alias="CGRAPH_EMBEDDINGS_MAX_FILE_CHARS")
+    embeddings_search_max_candidates: int = Field(
+        default=500, alias="CGRAPH_EMBEDDINGS_SEARCH_MAX_CANDIDATES"
+    )
+    embeddings_search_max_results: int = Field(
+        default=20, alias="CGRAPH_EMBEDDINGS_SEARCH_MAX_RESULTS"
+    )
 
     # Agentic tool-based retrieval (LLM chooses which context to fetch)
     llm_agentic_retrieval: bool = Field(default=True, alias="CGRAPH_LLM_AGENTIC_RETRIEVAL")
@@ -97,6 +103,10 @@ class Settings(BaseSettings):
             raise ValueError("CGRAPH_EMBEDDINGS_CHUNK_OVERLAP должен быть меньше размера чанка")
         if self.embeddings_max_file_chars <= 0:
             raise ValueError("CGRAPH_EMBEDDINGS_MAX_FILE_CHARS должен быть положительным")
+        if self.embeddings_search_max_candidates <= 0:
+            raise ValueError("CGRAPH_EMBEDDINGS_SEARCH_MAX_CANDIDATES должен быть положительным")
+        if self.embeddings_search_max_results <= 0:
+            raise ValueError("CGRAPH_EMBEDDINGS_SEARCH_MAX_RESULTS должен быть положительным")
         if not self.embeddings_model or not self.embeddings_model.strip():
             raise ValueError("CGRAPH_EMBEDDINGS_MODEL должен быть непустым")
         if self.llm_agentic_max_calls <= 0:
