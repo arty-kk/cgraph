@@ -20,6 +20,7 @@ from ..utils import resolve_under_root
 from ..api_map import split_skeleton, patterns_compatible, static_match_score, backend_path_skeleton
 from ..api_scaffold import suggest_frontend_module_file, build_frontend_snippet
 from ..api_contracts import build_backend_contract_for_route
+from ..services.docs_service import _tree_outline
 from ..ts_edits import unified_diff as _unified_diff, ts_add_fields_to_typedef, ts_patch_wrapper_function
 from ..py_edits import py_add_keys_to_function_return_dicts
 from ..scan import SEARCH_INDEX_MAX_CHARS
@@ -288,6 +289,25 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                     "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 100},
                 },
                 "required": ["query"],
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
+            "name": "get_tree_outline",
+            "description": (
+                "Return a tree outline of the project structure without reading file contents. "
+                "Useful for a quick overview of folders/files."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "prefix": {"type": ["string", "null"], "description": "Optional folder/path prefix to scope the tree"},
+                    "max_lines": {"type": ["integer", "null"], "minimum": 100, "maximum": 2000},
+                    "max_depth": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
+                },
+                "required": [],
             },
             "strict": True,
         },
@@ -718,6 +738,43 @@ def _tool_search_paths(project_id: int, args: dict) -> dict:
         return {"error": "bad_args", "message": "query is required"}
     rows = search_nodes(project_id, query.strip(), limit=limit)
     return {"query": query.strip(), "limit": limit, "results": rows}
+
+
+def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
+    prefix = args.get("prefix")
+    prefix_norm = ""
+    if isinstance(prefix, str) and prefix.strip():
+        prefix_norm = prefix.strip().replace("\\", "/").strip("/")
+
+    max_lines = _clamp_int(args.get("max_lines"), 1200, 100, 2000)
+    max_depth_raw = args.get("max_depth")
+    max_depth = None
+    if max_depth_raw is not None:
+        max_depth = _clamp_int(max_depth_raw, 10, 1, 20)
+
+    with get_session() as s:
+        q = select(FileNode.path).where(FileNode.project_id == project_id)
+        if prefix_norm:
+            like = f"{prefix_norm}/%"
+            q = q.where((FileNode.path == prefix_norm) | (FileNode.path.like(like)))
+        q = q.order_by(FileNode.path.asc())
+        rows = s.exec(q).all()
+
+    paths: list[str] = []
+    for row in rows:
+        p = row[0] if isinstance(row, (tuple, list)) else row
+        if not isinstance(p, str) or not p:
+            continue
+        if max_depth is not None and len(p.split("/")) > max_depth:
+            continue
+        paths.append(p)
+
+    outline = _tree_outline(paths, max_lines=max_lines)
+    return {
+        "lines": outline.get("lines", []),
+        "truncated": bool(outline.get("truncated")),
+        "max_lines": int(outline.get("max_lines", max_lines)),
+    }
 
 
 def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
@@ -1944,6 +2001,8 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
         return _tool_get_neighbors(project_id, root, args)
     if name == "search_paths":
         return _tool_search_paths(project_id, args)
+    if name == "get_tree_outline":
+        return _tool_get_tree_outline(project_id, args)
     if name == "search_text":
         return _tool_search_text(project_id, root, args, max_file_chars=max_file_chars)
     if name == "search_routes":
