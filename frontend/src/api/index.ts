@@ -7,6 +7,8 @@ export type {
   GraphMeta,
   GraphNode,
   NodeSearchItem,
+  SemanticSearchItem,
+  SemanticSearchResult,
   NodeContract,
   NodeInfo,
   FileContent,
@@ -24,7 +26,16 @@ export type {
   ProjectDocs,
 } from './types'
 
-export { listProjects, createProject, deleteProject, scanProject, listProjectFiles, getProjectDocs, buildProjectDocs } from './projects'
+export {
+  listProjects,
+  createProject,
+  deleteProject,
+  scanProject,
+  listProjectFiles,
+  getProjectDocs,
+  buildProjectDocs,
+  searchProjectSemantic,
+} from './projects'
 export { getGraph, getLocalGraph, searchNodes } from './graph'
 export { getNode, getContract, getFileContent, updateFileContent } from './nodes'
 export { runTask, listRuns, getRun, getRunPatch, deleteRun, getTaskStatus, waitForTaskResult } from './tasks'

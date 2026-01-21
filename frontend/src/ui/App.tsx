@@ -99,6 +99,9 @@ export function App() {
             searchQuery={app.searchQuery}
             setSearchQuery={app.setSearchQuery}
             searchResults={app.searchResults}
+            searchSemanticResults={app.searchSemanticResults}
+            semanticSearchEnabled={app.semanticSearchEnabled}
+            setSemanticSearchEnabled={app.setSemanticSearchEnabled}
             searchBusy={app.searchBusy}
             onSearchNodes={app.onSearchNodes}
             onSelectPath={app.onSelectNodePath}

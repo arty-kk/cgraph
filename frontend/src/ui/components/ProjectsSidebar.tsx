@@ -1,6 +1,6 @@
 // frontend/src/ui/components/ProjectsSidebar.tsx
 import React from 'react'
-import type { Project, ProjectFileItem } from '../../api'
+import type { Project, ProjectFileItem, NodeSearchItem, SemanticSearchItem } from '../../api'
 import { clampInt } from '../../lib/number'
 import { Modal } from './Modal'
 
@@ -31,9 +31,12 @@ type Props = {
   setGraphLocalMax: (v: number) => void
 
   searchQuery: string
-  searchResults: { path: string; language?: string; fan_in?: number; fan_out?: number }[]
+  searchResults: NodeSearchItem[]
+  searchSemanticResults: SemanticSearchItem[]
+  semanticSearchEnabled: boolean
   searchBusy: boolean
   setSearchQuery: (v: string) => void
+  setSemanticSearchEnabled: (v: boolean) => void
   onSearchNodes: (q: string) => void | Promise<void>
 
   onPickProject: (p: Project) => void | Promise<void>
@@ -72,8 +75,11 @@ export function ProjectsSidebar({
   setGraphLocalMax,
   searchQuery,
   searchResults,
+  searchSemanticResults,
+  semanticSearchEnabled,
   searchBusy,
   setSearchQuery,
+  setSemanticSearchEnabled,
   onSearchNodes,
   onPickProject,
   onCreateProject,
@@ -950,10 +956,19 @@ export function ProjectsSidebar({
           <div className="mt-4">
             <SectionHeader title="File Search" topic="search" />
           </div>
+          <label className="mt-2 flex items-center gap-2 text-xs text-neutral-300">
+            <input
+              type="checkbox"
+              checked={semanticSearchEnabled}
+              onChange={(e) => setSemanticSearchEnabled(e.target.checked)}
+              disabled={!activeProject || busy}
+            />
+            <span>Semantic search</span>
+          </label>
           <div className="flex gap-2">
             <input
               className={inputSmFlexClass}
-              placeholder="path substring"
+              placeholder={semanticSearchEnabled ? 'semantic query' : 'path substring'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -972,7 +987,7 @@ export function ProjectsSidebar({
             </button>
           </div>
 
-          {searchResults.length > 0 && (
+          {!semanticSearchEnabled && searchResults.length > 0 && (
             <div className="mt-2 flex flex-col gap-1 max-h-40 overflow-auto">
               {searchResults.map((r) => (
                 <button
@@ -987,6 +1002,32 @@ export function ProjectsSidebar({
                   <div className="text-neutral-500">{r.language ?? '—'} · In:{r.fan_in ?? 0} · Out:{r.fan_out ?? 0}</div>
                 </button>
               ))}
+            </div>
+          )}
+
+          {semanticSearchEnabled && searchSemanticResults.length > 0 && (
+            <div className="mt-2 flex flex-col gap-1 max-h-40 overflow-auto">
+              {searchSemanticResults.map((r, idx) => {
+                const score = Number.isFinite(r.score) ? r.score.toFixed(3) : '—'
+                return (
+                  <button
+                    key={`${r.path}-${idx}`}
+                    className={searchResultRowClass}
+                    onClick={() => onSelectPath(r.path)}
+                    onMouseDown={(e) => e.preventDefault()}
+                    disabled={!activeProject || busy}
+                    title="Выбрать файл (и открыть его в правой панели / Local-графе)"
+                  >
+                    <div className="text-neutral-200 font-semibold">{r.path}</div>
+                    <div className="text-neutral-500">Score: {score}</div>
+                    {r.snippet ? (
+                      <div className="mt-1 text-[11px] text-neutral-400 whitespace-pre-wrap line-clamp-3">
+                        {r.snippet}
+                      </div>
+                    ) : null}
+                  </button>
+                )
+              })}
             </div>
           )}
 
