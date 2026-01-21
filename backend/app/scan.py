@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Iterable, Tuple
 from sqlmodel import delete, select
 from sqlalchemy import text as sa_text, bindparam
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from .db import get_session
 from .models import FileNode, FileEdge, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef
