@@ -208,6 +208,30 @@ export function NodePanel({
     return String(Math.round(v))
   }
 
+  const fmtDuration = (n: unknown): string => {
+    const v = Number(n)
+    if (!Number.isFinite(v)) return '—'
+    if (Math.abs(v) >= 1000) return `${(v / 1000).toFixed(2)}s`
+    return `${Math.round(v)}ms`
+  }
+
+  const fmtTraceArgs = (args: unknown): string => {
+    if (args == null) return '—'
+    let raw = ''
+    if (typeof args === 'string') {
+      raw = args
+    } else {
+      try {
+        raw = JSON.stringify(args)
+      } catch {
+        raw = String(args)
+      }
+    }
+    if (!raw) return '—'
+    const maxLen = 240
+    return raw.length > maxLen ? `${raw.slice(0, maxLen)}…` : raw
+  }
+
   const retrievalSummary = useMemo(() => {
     if (!isRecord(retrievalSettings)) return null
 
@@ -232,6 +256,15 @@ export function NodePanel({
     if (retrieval === 'graph') return 'ctx: graph'
     return `ctx: ${String(retrieval)}`
   }, [fmtK, isRecord, retrieval, retrievalSettings])
+
+  const agenticTrace = useMemo(() => {
+    if (retrieval !== 'agentic' || !isRecord(retrievalSettings)) return []
+    const a = (retrievalSettings as any).agentic
+    if (!isRecord(a)) return []
+    const trace = (a as any).tool_trace
+    if (!Array.isArray(trace)) return []
+    return trace.filter((entry) => isRecord(entry))
+  }, [isRecord, retrieval, retrievalSettings])
 
   const inlineTokenRegex =
     /([A-Za-z0-9._-]*\/[A-Za-z0-9._/-]*\.[A-Za-z0-9]+|\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+\b|\b[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]*\b)/
@@ -1111,6 +1144,43 @@ export function NodePanel({
                 </div>
                 {retrievalSummary && (
                   <div className="text-[11px] text-neutral-500 whitespace-pre-wrap">{retrievalSummary}</div>
+                )}
+                {agenticTrace.length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-xs font-semibold text-neutral-200">Tool trace</div>
+                    <div className="mt-2 space-y-2">
+                      {agenticTrace.map((entry, idx) => {
+                        const status = String((entry as any).status || '—')
+                        const ok = status === 'ok'
+                        return (
+                          <div
+                            key={`${(entry as any).name ?? 'tool'}-${idx}`}
+                            className="rounded-md border border-neutral-800 bg-neutral-950/60 px-2 py-2 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="font-mono text-[11px] text-indigo-200">
+                                {(entry as any).name ?? '—'}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
+                                <span className={ok ? 'text-emerald-300' : 'text-red-300'}>
+                                  {status}
+                                </span>
+                                <span>{(entry as any).cache_hit ? 'cache hit' : 'cache miss'}</span>
+                                <span>{fmtDuration((entry as any).duration_ms)}</span>
+                                <span>{fmtK((entry as any).response_chars)} chars</span>
+                              </div>
+                            </div>
+                            <div className="mt-1 text-[11px] text-neutral-500">
+                              args:{' '}
+                              <span className="font-mono text-neutral-300">
+                                {fmtTraceArgs((entry as any).args)}
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
                 )}
 
                 {runResult?.applied?.error && (

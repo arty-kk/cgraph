@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +38,7 @@ class AgenticMeta:
     tool_calls: int = 0
     total_tool_output_chars: int = 0
     cache_hits: int = 0
+    tool_trace: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _normalize_responses_json_schema(schema: dict) -> dict:
@@ -3032,21 +3034,56 @@ def _agentic_json_call(
             if meta.tool_calls > max_calls_budget:
                 raise RuntimeError(f"Agentic tool call limit exceeded: {max_calls_budget}")
             try:
-                args = json.loads(arguments)
-                if not isinstance(args, dict):
-                    args = {}
+                args_raw = json.loads(arguments)
+                if not isinstance(args_raw, dict):
+                    args_raw = {}
             except Exception:
-                args = {}
+                args_raw = {}
+
+            args: dict[str, Any] = dict(args_raw)
 
             cache_key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
-            if cache_key in tool_cache:
-                meta.cache_hits += 1
-                out = tool_cache[cache_key]
-            else:
-                out = _dispatch_tool(project_id, root, meta, name, args, max_file_chars=eff_file)
-                if isinstance(out, dict):
-                    tool_cache[cache_key] = out
+            cache_hit = cache_key in tool_cache
+            start = None if cache_hit else time.perf_counter()
+            try:
+                if cache_hit:
+                    meta.cache_hits += 1
+                    out = tool_cache[cache_key]
+                else:
+                    out = _dispatch_tool(project_id, root, meta, name, args, max_file_chars=eff_file)
+                    if isinstance(out, dict):
+                        tool_cache[cache_key] = out
+            except Exception:
+                duration_ms = 0.0
+                if start is not None:
+                    duration_ms = max(0.0, (time.perf_counter() - start) * 1000.0)
+                meta.tool_trace.append(
+                    {
+                        "name": name,
+                        "args": args,
+                        "cache_hit": cache_hit,
+                        "response_chars": 0,
+                        "duration_ms": duration_ms,
+                        "status": "error",
+                    }
+                )
+                raise
+
             out_str = json.dumps(out, ensure_ascii=False)
+            response_chars = len(out_str)
+            duration_ms = 0.0
+            if start is not None:
+                duration_ms = max(0.0, (time.perf_counter() - start) * 1000.0)
+            meta.tool_trace.append(
+                {
+                    "name": name,
+                    "args": args,
+                    "cache_hit": cache_hit,
+                    "response_chars": response_chars,
+                    "duration_ms": duration_ms,
+                    "status": "ok",
+                }
+            )
             meta.total_tool_output_chars += len(out_str)
             if meta.total_tool_output_chars > max_total_chars_budget:
                 raise RuntimeError(f"Agentic tool output char budget exceeded: {max_total_chars_budget}")
