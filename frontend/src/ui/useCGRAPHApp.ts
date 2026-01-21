@@ -1102,6 +1102,7 @@ export function useCGRAPHApp() {
           apply_patch: r.apply_patch ?? undefined,
           result: r.result,
           applied: r.applied ?? undefined,
+          warning: r.warning ?? undefined,
         })
         setFullPatch(null)
       } catch (e: any) {
