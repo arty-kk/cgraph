@@ -19,6 +19,7 @@ import {
   listProjectFiles,
   getProjectDocs,
   buildProjectDocs,
+  searchProjectSemantic,
   getFileContent,
   updateFileContent,
   type DepMode,
@@ -30,6 +31,7 @@ import {
   type NodeContract,
   type NodeInfo,
   type NodeSearchItem,
+  type SemanticSearchItem,
   type Project,
   type RunRecord,
   type RunTaskBody,
@@ -125,13 +127,26 @@ export function useCGRAPHApp() {
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<NodeSearchItem[]>([])
+  const [searchSemanticResults, setSearchSemanticResults] = useState<SemanticSearchItem[]>([])
   const [searchBusy, setSearchBusy] = useState(false)
+  const [semanticSearchEnabled, setSemanticSearchEnabled] = useState(false)
 
   useEffect(() => {
     if (searchQuery.trim()) return
     if (searchResults.length === 0) return
     setSearchResults([])
   }, [searchQuery, searchResults.length])
+
+  useEffect(() => {
+    if (searchQuery.trim()) return
+    if (searchSemanticResults.length === 0) return
+    setSearchSemanticResults([])
+  }, [searchQuery, searchSemanticResults.length])
+
+  useEffect(() => {
+    setSearchResults([])
+    setSearchSemanticResults([])
+  }, [semanticSearchEnabled])
 
   const selectedPathRef = useRef<string | null>(null)
   const backStackRef = useRef<string[]>([])
@@ -1165,19 +1180,27 @@ export function useCGRAPHApp() {
       setSearchQuery(query)
       if (!query.trim()) {
         setSearchResults([])
+        setSearchSemanticResults([])
         return
       }
       setSearchBusy(true)
       try {
-        const res = await searchNodes(activeProject.id, query, 30)
-        setSearchResults(res)
+        if (semanticSearchEnabled) {
+          const res = await searchProjectSemantic(activeProject.id, query, 30)
+          setSearchSemanticResults(res.results ?? [])
+          setSearchResults([])
+        } else {
+          const res = await searchNodes(activeProject.id, query, 30)
+          setSearchResults(res)
+          setSearchSemanticResults([])
+        }
       } catch (e: any) {
         setErrorMessage(extractError(e))
       } finally {
         setSearchBusy(false)
       }
     },
-    [activeProject]
+    [activeProject, semanticSearchEnabled]
   )
 
   const closeFileEditor = useCallback(() => {
@@ -1278,6 +1301,9 @@ export function useCGRAPHApp() {
     searchQuery,
     setSearchQuery,
     searchResults,
+    searchSemanticResults,
+    semanticSearchEnabled,
+    setSemanticSearchEnabled,
     searchBusy,
     onSearchNodes,
     setMode,

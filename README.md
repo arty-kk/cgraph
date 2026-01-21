@@ -82,6 +82,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - Для корректного контекста LLM/impact нужен полный Scan: если в индексе меньше 2 узлов или нет рёбер, backend считает граф не готов и возвращает предупреждение `warning: "graph not built"` в ответах `run`/`runs/{run_id}`.
 - Граф: `GET /api/projects/{id}/graph` или локальный `GET /api/projects/{id}/graph/local?path=...&hops=1&max_nodes=400`.
 - Поиск: `GET /api/projects/{id}/search?q=...`.
+- Семантический поиск: `GET /api/projects/{id}/search/semantic?q=...&limit=20&prefix=...` (требуются включённые эмбеддинги и `OPENAI_API_KEY`).
 - Метаданные узла: `GET /api/nodes/{id}/{path}/node`; контракт файла: `GET /api/nodes/{id}/{path}/contract`.
 - Запуск LLM‑задачи: `POST /api/tasks/{id}/run` с `target_path`, `prompt`, `mode` (опционально), `depth`, `dep_mode`, `apply_patch`, `agentic` и опциональными `agentic_*` (`max_calls`, `max_file_chars`, `max_total_tool_output_chars`, `temperature`).
 - История запусков и патчи: `GET /api/tasks/{id}/runs`, `GET /api/tasks/{id}/runs/{run_id}`, `GET /api/tasks/{id}/runs/{run_id}/patch`.

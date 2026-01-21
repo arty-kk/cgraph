@@ -10,7 +10,7 @@ from ..services.project_service import (
     get_project,
     list_projects as list_projects_service,
     load_graph, load_local_graph,
-    scan_with_background, search_project_nodes,
+    scan_with_background, search_project_nodes, search_project_semantic,
     list_project_files,
 )
 from ..services.docs_service import build_project_docs, get_latest_project_doc
@@ -73,6 +73,10 @@ def get_local_graph(
 @router.get("/{project_id}/search")
 def search(project_id: int, q: str, limit: int = 20):
     return search_project_nodes(project_id, q, limit=limit)
+
+@router.get("/{project_id}/search/semantic")
+def search_semantic(project_id: int, q: str, limit: int = 20, prefix: str | None = None):
+    return search_project_semantic(project_id, q, limit=limit, prefix=prefix)
 
 @router.get("/{project_id}/files")
 def files(project_id: int, prefix: str | None = None, limit: int = 50_000):

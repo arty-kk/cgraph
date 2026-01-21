@@ -2,7 +2,8 @@
 import { api } from './client'
 import type { 
   Project, ScanResult, TaskPollOptions,
-  TaskStatus, ProjectFilesResponse, ProjectDocs 
+  TaskStatus, ProjectFilesResponse, ProjectDocs,
+  SemanticSearchResult,
 } from './types'
 import { waitForTaskResult } from './tasks'
 
@@ -44,4 +45,16 @@ export async function buildProjectDocs(projectId: number, opts: TaskPollOptions 
   const background = opts.background ?? true
   const r = await api.post(`/api/projects/${projectId}/docs/build`, null, { params: { background } })
   return waitForTaskResult<ProjectDocs>(r.data, opts)
+}
+
+export async function searchProjectSemantic(
+  projectId: number,
+  q: string,
+  limit = 20,
+  prefix?: string,
+): Promise<SemanticSearchResult> {
+  const params: Record<string, any> = { q, limit }
+  if (typeof prefix === 'string' && prefix.trim()) params.prefix = prefix.trim()
+  const r = await api.get(`/api/projects/${projectId}/search/semantic`, { params })
+  return r.data
 }

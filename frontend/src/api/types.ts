@@ -121,6 +121,28 @@ export type NodeSearchItem = {
   fan_out?: number
 }
 
+export type SemanticSearchItem = {
+  path: string
+  score: number
+  snippet: string
+  meta?: Record<string, unknown>
+}
+
+export type SemanticSearchResult = {
+  query: string
+  prefix?: string
+  results: SemanticSearchItem[]
+  meta?: {
+    compared?: number
+    total_candidates?: number
+    max_candidates?: number
+    max_results?: number
+    returned?: number
+    truncated?: boolean
+    reason?: string
+  }
+}
+
 export type RunDetails = {
   id: number
   project_id: number

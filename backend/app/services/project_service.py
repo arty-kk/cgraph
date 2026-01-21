@@ -11,7 +11,7 @@ from sqlalchemy import func, text as sa_text
 from ..config import settings
 from ..db import get_session
 from ..errors import BadRequestError, NotFoundError
-from ..graph import compute_graph_metrics, graph_payload, local_subgraph, search_nodes
+from ..graph import compute_graph_metrics, graph_payload, local_subgraph, search_nodes, search_semantic
 from ..logging import get_logger
 from ..models import (
     Project, FileNode, FileEdge, ModuleContract,
@@ -213,3 +213,26 @@ def search_project_nodes(project_id: int, query: str, limit: int = 20) -> list[d
     if limit < 1 or limit > 200:
         raise BadRequestError("Лимит выдачи должен быть между 1 и 200")
     return search_nodes(project_id, query.strip(), limit=limit)
+
+
+def search_project_semantic(
+    project_id: int,
+    query: str,
+    *,
+    limit: int = 20,
+    prefix: str | None = None,
+) -> dict:
+    project = get_project(project_id)
+    if not isinstance(query, str) or not query.strip():
+        raise BadRequestError("Параметр q обязателен")
+    if limit < 1 or limit > 200:
+        raise BadRequestError("Лимит выдачи должен быть между 1 и 200")
+
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+    response = search_semantic(project_id, root, query.strip(), max_results=limit, prefix=prefix)
+    if isinstance(response, dict) and response.get("error"):
+        message = response.get("message")
+        if not isinstance(message, str) or not message:
+            message = "Ошибка семантического поиска"
+        raise BadRequestError(message)
+    return response
