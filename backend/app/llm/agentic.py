@@ -569,13 +569,10 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             continue
         props = params.get("properties")
         if not isinstance(props, dict):
-            params["required"] = []
             continue
-        req: list[str] = []
-        for k in props.keys():
-            if isinstance(k, str) and k:
-                req.append(k)
-        params["required"] = req
+        req = params.get("required")
+        if isinstance(req, list):
+            params["required"] = [k for k in req if isinstance(k, str) and k in props]
 
     return tools
 
