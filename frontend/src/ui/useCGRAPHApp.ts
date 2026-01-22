@@ -130,6 +130,7 @@ export function useCGRAPHApp() {
   const [searchSemanticResults, setSearchSemanticResults] = useState<SemanticSearchItem[]>([])
   const [searchBusy, setSearchBusy] = useState(false)
   const [semanticSearchEnabled, setSemanticSearchEnabled] = useState(false)
+  const [semanticSearchFallbackUsed, setSemanticSearchFallbackUsed] = useState(false)
   const [semanticSearchUnavailableReason, setSemanticSearchUnavailableReason] = useState<SemanticSearchErrorReason | null>(null)
 
   useEffect(() => {
@@ -147,6 +148,7 @@ export function useCGRAPHApp() {
   useEffect(() => {
     setSearchResults([])
     setSearchSemanticResults([])
+    setSemanticSearchFallbackUsed(false)
   }, [semanticSearchEnabled])
 
   const selectedPathRef = useRef<string | null>(null)
@@ -1179,6 +1181,7 @@ export function useCGRAPHApp() {
     async (query: string) => {
       if (!activeProject) return
       setSearchQuery(query)
+      setSemanticSearchFallbackUsed(false)
       if (!query.trim()) {
         setSearchResults([])
         setSearchSemanticResults([])
@@ -1188,8 +1191,17 @@ export function useCGRAPHApp() {
       try {
         if (semanticSearchEnabled) {
           const res = await searchProjectSemantic(activeProject.id, query, 30)
-          setSearchSemanticResults(res.results ?? [])
-          setSearchResults([])
+          const semanticResults = res.results ?? []
+          if (semanticResults.length === 0) {
+            const fallbackRes = await searchNodes(activeProject.id, query, 30)
+            setSearchResults(fallbackRes)
+            setSearchSemanticResults([])
+            setSemanticSearchFallbackUsed(true)
+            notifyInfo('Семантический поиск не дал результатов — показан поиск по пути.')
+          } else {
+            setSearchSemanticResults(semanticResults)
+            setSearchResults([])
+          }
           setSemanticSearchUnavailableReason(null)
         } else {
           const res = await searchNodes(activeProject.id, query, 30)
@@ -1318,6 +1330,7 @@ export function useCGRAPHApp() {
     setSearchQuery,
     searchResults,
     searchSemanticResults,
+    semanticSearchFallbackUsed,
     semanticSearchEnabled,
     setSemanticSearchEnabled,
     semanticSearchUnavailableReason,
