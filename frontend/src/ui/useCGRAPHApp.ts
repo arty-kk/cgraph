@@ -1213,6 +1213,9 @@ export function useCGRAPHApp() {
         if (semanticSearchEnabled && reason) {
           setSemanticSearchEnabled(false)
           setSemanticSearchUnavailableReason(reason)
+          if (reason === 'no_embeddings') {
+            notifyInfo('Эмбеддинги для проекта отсутствуют — запустите Scan с включёнными embeddings.')
+          }
           try {
             const res = await searchNodes(activeProject.id, query, 30)
             setSearchResults(res)

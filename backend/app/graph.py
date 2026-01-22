@@ -503,6 +503,16 @@ def search_semantic(
             except Exception:
                 total_candidates = _as_int(total_candidates_row, 0)
 
+        if total_candidates == 0:
+            return {
+                "error": "embeddings_empty",
+                "message": (
+                    "No embeddings found for this project. "
+                    "Please rescan the project with embeddings enabled."
+                ),
+                "meta": {"reason": "no_embeddings"},
+            }
+
         rows = s.exec(
             select(
                 FileChunkEmbedding.path,
