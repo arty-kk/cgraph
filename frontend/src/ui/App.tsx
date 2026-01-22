@@ -100,6 +100,7 @@ export function App() {
             setSearchQuery={app.setSearchQuery}
             searchResults={app.searchResults}
             searchSemanticResults={app.searchSemanticResults}
+            semanticSearchFallbackUsed={app.semanticSearchFallbackUsed}
             semanticSearchEnabled={app.semanticSearchEnabled}
             semanticSearchUnavailableReason={app.semanticSearchUnavailableReason}
             setSemanticSearchEnabled={app.setSemanticSearchEnabled}

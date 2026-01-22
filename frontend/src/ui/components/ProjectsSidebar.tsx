@@ -34,6 +34,7 @@ type Props = {
   searchQuery: string
   searchResults: NodeSearchItem[]
   searchSemanticResults: SemanticSearchItem[]
+  semanticSearchFallbackUsed: boolean
   semanticSearchEnabled: boolean
   semanticSearchUnavailableReason: SemanticSearchErrorReason | null
   searchBusy: boolean
@@ -78,6 +79,7 @@ export function ProjectsSidebar({
   searchQuery,
   searchResults,
   searchSemanticResults,
+  semanticSearchFallbackUsed,
   semanticSearchEnabled,
   semanticSearchUnavailableReason,
   searchBusy,
@@ -1000,6 +1002,27 @@ export function ProjectsSidebar({
 
           {!semanticSearchEnabled && searchResults.length > 0 && (
             <div className="mt-2 flex flex-col gap-1 max-h-40 overflow-auto">
+              {searchResults.map((r) => (
+                <button
+                  key={r.path}
+                  className={searchResultRowClass}
+                  onClick={() => onSelectPath(r.path)}
+                  onMouseDown={(e) => e.preventDefault()}
+                  disabled={!activeProject || busy}
+                  title="Выбрать файл (и открыть его в правой панели / Local-графе)"
+                >
+                  <div className="text-neutral-200 font-semibold">{r.path}</div>
+                  <div className="text-neutral-500">{r.language ?? '—'} · In:{r.fan_in ?? 0} · Out:{r.fan_out ?? 0}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {semanticSearchEnabled && semanticSearchFallbackUsed && searchResults.length > 0 && (
+            <div className="mt-2 flex flex-col gap-1 max-h-40 overflow-auto">
+              <div className="text-[11px] text-neutral-500">
+                Показан fallback‑поиск по пути
+              </div>
               {searchResults.map((r) => (
                 <button
                   key={r.path}
