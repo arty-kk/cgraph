@@ -165,6 +165,8 @@ export type RunDetails = {
   created_at: string
   result: unknown
   warning?: string | null
+  graph_scan_task_id?: string | null
+  graph_scan_status?: 'pending' | 'running' | 'succeeded' | 'failed' | null
 }
 
 export type RunTaskResult = {
@@ -184,6 +186,8 @@ export type RunTaskResult = {
     error?: string
   }
   warning?: string | null
+  graph_scan_task_id?: string | null
+  graph_scan_status?: 'pending' | 'running' | 'succeeded' | 'failed' | null
 }
 
 export type TaskStatus = {

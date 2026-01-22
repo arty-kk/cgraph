@@ -29,7 +29,7 @@ from ..scan import scan_files
 from ..utils import normalize_project_root, project_lock, resolve_under_root, sha256_text
 from ..db import get_session
 from ..logging import get_logger
-from .project_service import get_project
+from .project_service import get_project, scan_with_background
 from .task_queue import TaskState, task_queue
 
 MAX_PATCH_STORE_CHARS = 50_000
@@ -232,6 +232,11 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
 
     _ensure_node_exists(project_id, target, root)
     warning = _graph_warning(project_id)
+    graph_scan_task: dict | None = None
+    if warning == GRAPH_NOT_READY_WARNING:
+        graph_scan_task = scan_with_background(project_id, background=True)
+    graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
+    graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 
     mode = request.mode
     depth = request.depth
@@ -666,6 +671,8 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         "result": result_for_response,
         "applied": applied,
         "warning": warning,
+        "graph_scan_task_id": graph_scan_task_id,
+        "graph_scan_status": graph_scan_status,
     }
 
 
@@ -727,6 +734,11 @@ def get_run(project_id: int, run_id: int) -> dict:
         applied = None
 
     warning = _graph_warning(project_id)
+    graph_scan_task: dict | None = None
+    if warning == GRAPH_NOT_READY_WARNING:
+        graph_scan_task = scan_with_background(project_id, background=True)
+    graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
+    graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 
     return {
         "id": run.id,
@@ -744,6 +756,8 @@ def get_run(project_id: int, run_id: int) -> dict:
         "created_at": run.created_at.isoformat(),
         "result": result,
         "warning": warning,
+        "graph_scan_task_id": graph_scan_task_id,
+        "graph_scan_status": graph_scan_status,
     }
 
 
