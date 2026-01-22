@@ -3,6 +3,7 @@ import React, { useMemo } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { DepMode, Mode, NodeContract, NodeInfo, Project, RunRecord, RunTaskResult } from '../../api'
+import { getTaskStatus } from '../../api'
 import { clampInt } from '../../lib/number'
 import { formatResult } from '../../lib/formatResult'
 import { Modal } from './Modal'
@@ -125,6 +126,8 @@ export function NodePanel({
   const [activeRunId, setActiveRunId] = React.useState<number | null>(null)
   const [openedRunId, setOpenedRunId] = React.useState<number | null>(null)
   const [newRunId, setNewRunId] = React.useState<number | null>(null)
+  const [graphScanStatus, setGraphScanStatus] = React.useState<string | null>(null)
+  const [graphScanBusy, setGraphScanBusy] = React.useState(false)
   const handleCopy = React.useCallback(
     async (value: string, message: string) => {
       if (!value.trim()) return
@@ -166,6 +169,45 @@ export function NodePanel({
   const isAgentic = retrievalMode === 'agentic'
   const patchAllowed = isAuto || mode === 'fix'
   const isRecord = (val: unknown): val is Record<string, unknown> => typeof val === 'object' && val !== null
+  const graphScanTaskId = runResult?.graph_scan_task_id ?? null
+  const graphScanWarning = runResult?.warning === 'graph not built'
+
+  React.useEffect(() => {
+    setGraphScanStatus(runResult?.graph_scan_status ?? null)
+  }, [runResult?.graph_scan_status, runResult?.graph_scan_task_id])
+
+  const refreshGraphScanStatus = React.useCallback(async () => {
+    if (!graphScanTaskId) return
+    setGraphScanBusy(true)
+    try {
+      const status = await getTaskStatus(graphScanTaskId)
+      setGraphScanStatus(status.status ?? null)
+    } catch {
+      notifyInfo('Не удалось обновить статус скана')
+    } finally {
+      setGraphScanBusy(false)
+    }
+  }, [graphScanTaskId, notifyInfo])
+
+  React.useEffect(() => {
+    if (!resultOpen || !graphScanTaskId || !graphScanWarning) return
+    if (graphScanStatus !== 'pending' && graphScanStatus !== 'running') return
+
+    let active = true
+    const intervalId = window.setInterval(async () => {
+      if (!active) return
+      try {
+        const status = await getTaskStatus(graphScanTaskId)
+        if (!active) return
+        setGraphScanStatus(status.status ?? null)
+      } catch {}
+    }, 3000)
+
+    return () => {
+      active = false
+      window.clearInterval(intervalId)
+    }
+  }, [graphScanStatus, graphScanTaskId, graphScanWarning, resultOpen])
   React.useEffect(() => {
     if (applyPatch && !patchAllowed) setApplyPatch(false)
   }, [applyPatch, patchAllowed, setApplyPatch])
@@ -1144,6 +1186,35 @@ export function NodePanel({
                 </div>
                 {retrievalSummary && (
                   <div className="text-[11px] text-neutral-500 whitespace-pre-wrap">{retrievalSummary}</div>
+                )}
+                {graphScanWarning && (
+                  <div className="text-xs bg-amber-950/40 border border-amber-800 rounded-md p-2 text-amber-200 space-y-2">
+                    <div>
+                      Запущен фоновый Scan для построения графа. Пока он не завершится, результаты могут быть неполными.
+                    </div>
+                    <div className="text-[11px] text-amber-300">
+                      Статус: {graphScanStatus ?? '—'}
+                      {graphScanTaskId ? ` · task_id: ${graphScanTaskId}` : ''}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md bg-amber-900/40 hover:bg-amber-900/60 border border-amber-800 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
+                        onClick={refreshGraphScanStatus}
+                        disabled={!graphScanTaskId || graphScanBusy}
+                      >
+                        {graphScanBusy ? 'Обновление…' : 'Обновить статус'}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md bg-amber-900/40 hover:bg-amber-900/60 border border-amber-800 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
+                        onClick={() => onScan()}
+                        disabled={!activeProject || busy}
+                      >
+                        Перейти к скану
+                      </button>
+                    </div>
+                  </div>
                 )}
                 {agenticTrace.length > 0 && (
                   <div className="mt-3">

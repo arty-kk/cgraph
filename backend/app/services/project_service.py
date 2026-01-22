@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Lock
 
 from fastapi import BackgroundTasks
 from sqlmodel import select, delete
@@ -24,6 +25,28 @@ from .task_queue import task_queue
 
 PATCH_BLOB_DIRNAME = "patches"
 logger = get_logger("cgraph.api")
+
+_scan_tasks: dict[int, str] = {}
+_scan_tasks_lock = Lock()
+
+
+def _get_active_scan_task(project_id: int) -> tuple[str | None, str | None]:
+    with _scan_tasks_lock:
+        task_id = _scan_tasks.get(project_id)
+    if not task_id:
+        return None, None
+    state = task_queue.get(task_id)
+    if not state:
+        with _scan_tasks_lock:
+            if _scan_tasks.get(project_id) == task_id:
+                _scan_tasks.pop(project_id, None)
+        return None, None
+    if state.status in ("pending", "running"):
+        return task_id, state.status
+    with _scan_tasks_lock:
+        if _scan_tasks.get(project_id) == task_id:
+            _scan_tasks.pop(project_id, None)
+    return task_id, state.status
 
 
 def _delete_patch_blob_for_sha(sha: str) -> None:
@@ -176,7 +199,13 @@ def _scan_and_update_graph(project_id: int) -> dict:
 
 def scan_with_background(project_id: int, background: bool = False, background_tasks: BackgroundTasks | None = None) -> dict:
     if background:
+        task_id, status = _get_active_scan_task(project_id)
+        if task_id and status in ("pending", "running"):
+            return {"task_id": task_id, "status": status}
+
         task_id = task_queue.submit(lambda: _scan_and_update_graph(project_id))
+        with _scan_tasks_lock:
+            _scan_tasks[project_id] = task_id
         if background_tasks is not None:
             background_tasks.add_task(lambda: None)
         return {"task_id": task_id, "status": "pending"}
