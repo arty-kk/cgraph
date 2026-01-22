@@ -1014,9 +1014,9 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
     max_matches = _clamp_int(args.get("max_matches"), 50, 1, 500)
     context_chars = _clamp_int(args.get("context_chars"), 160, 40, 400)
 
-    # Cap per-file read for search to avoid heavy IO (still bounded by server ceiling).
+    # Cap per-file read for search to avoid heavy IO (second pass limited by max_file_chars/SEARCH_INDEX_MAX_CHARS).
     scan_max_chars = max(200, min(int(max_file_chars), 50_000))
-    index_scan_max_chars = max(scan_max_chars, SEARCH_INDEX_MAX_CHARS)
+    index_scan_max_chars = min(SEARCH_INDEX_MAX_CHARS, scan_max_chars)
 
     paths: list[str] = []
 
