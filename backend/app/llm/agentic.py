@@ -1188,12 +1188,12 @@ def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_c
                 reason = str(meta.get("reason") or "")
             if not reason:
                 reason = str(semantic.get("error") or "no_results")
-        text_out = _tool_search_text(
-            project_id,
-            root,
-            {"query": query, "prefix": prefix_norm},
-            max_file_chars=max_file_chars,
-        )
+        fallback_args: dict[str, Any] = {"query": query, "prefix": prefix_norm}
+        if args.get("max_matches") is not None:
+            fallback_args["max_matches"] = args.get("max_matches")
+        if args.get("context_chars") is not None:
+            fallback_args["context_chars"] = args.get("context_chars")
+        text_out = _tool_search_text(project_id, root, fallback_args, max_file_chars=max_file_chars)
         meta = text_out.get("meta")
         if not isinstance(meta, dict):
             meta = {}
@@ -3221,6 +3221,86 @@ def _agentic_json_call(
     max_calls_budget = eff_calls
     max_total_chars_budget = eff_total
 
+    def _apply_search_budget(
+        args: dict[str, Any],
+        *,
+        remaining_budget: int,
+        max_total_budget: int,
+        adjust_text: bool,
+        adjust_semantic: bool,
+    ) -> None:
+        if max_total_budget <= 0:
+            return
+        ratio = min(1.0, max(0.0, remaining_budget / max_total_budget))
+        if adjust_text:
+            base_max_matches = _clamp_int(args.get("max_matches"), 50, 1, 500)
+            base_context_chars = _clamp_int(args.get("context_chars"), 160, 40, 400)
+            min_matches = 5
+            min_context_chars = 60
+            args["max_matches"] = max(min_matches, int(round(base_max_matches * ratio)))
+            args["context_chars"] = max(min_context_chars, int(round(base_context_chars * ratio)))
+        if adjust_semantic:
+            base_max_results = _clamp_int(
+                args.get("max_results"),
+                int(settings.embeddings_search_max_results),
+                1,
+                int(settings.embeddings_search_max_results),
+            )
+            min_results = 3
+            args["max_results"] = max(min_results, int(round(base_max_results * ratio)))
+
+    def _truncate_tool_output(name: str, out: dict, *, remaining_budget: int) -> tuple[dict, bool]:
+        if not isinstance(out, dict):
+            return {"truncated_due_to_budget": True}, True
+
+        def mark_truncated(payload: dict) -> None:
+            payload["truncated_due_to_budget"] = True
+            meta = payload.get("meta")
+            if isinstance(meta, dict):
+                meta["truncated_due_to_budget"] = True
+
+        def shrink_snippets(items: list[dict], max_len: int) -> bool:
+            changed = False
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("snippet", "text", "content"):
+                    val = item.get(key)
+                    if isinstance(val, str) and len(val) > max_len:
+                        item[key] = val[:max_len]
+                        changed = True
+            return changed
+
+        truncated = False
+        attempts = 0
+        while True:
+            out_str = json.dumps(out, ensure_ascii=False)
+            if len(out_str) <= remaining_budget:
+                if truncated:
+                    mark_truncated(out)
+                return out, truncated
+            if attempts >= 6:
+                break
+            attempts += 1
+            changed = False
+            if isinstance(out.get("matches"), list):
+                changed = shrink_snippets(out["matches"], max(40, 160 // (attempts + 1))) or changed
+                if len(out["matches"]) > 5:
+                    out["matches"] = out["matches"][: max(5, len(out["matches"]) // 2)]
+                    changed = True
+            if isinstance(out.get("results"), list):
+                changed = shrink_snippets(out["results"], max(60, 200 // (attempts + 1))) or changed
+                if len(out["results"]) > 3:
+                    out["results"] = out["results"][: max(3, len(out["results"]) // 2)]
+                    changed = True
+            if not changed:
+                break
+            truncated = True
+
+        minimized = {"truncated_due_to_budget": True}
+        mark_truncated(minimized)
+        return minimized, True
+
     while True:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -3291,6 +3371,24 @@ def _agentic_json_call(
 
             args: dict[str, Any] = dict(args_raw)
 
+            remaining_budget = max(0, max_total_chars_budget - meta.total_tool_output_chars)
+            if name == "search_text":
+                _apply_search_budget(
+                    args,
+                    remaining_budget=remaining_budget,
+                    max_total_budget=max_total_chars_budget,
+                    adjust_text=True,
+                    adjust_semantic=False,
+                )
+            elif name == "search_semantic":
+                _apply_search_budget(
+                    args,
+                    remaining_budget=remaining_budget,
+                    max_total_budget=max_total_chars_budget,
+                    adjust_text=True,
+                    adjust_semantic=True,
+                )
+
             cache_key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
             cache_hit = cache_key in tool_cache
             start = None if cache_hit else time.perf_counter()
@@ -3314,11 +3412,18 @@ def _agentic_json_call(
                         "response_chars": 0,
                         "duration_ms": duration_ms,
                         "status": "error",
+                        "truncated_due_to_budget": False,
                     }
                 )
                 raise
 
             out_str = json.dumps(out, ensure_ascii=False)
+            truncated_due_to_budget = False
+            if remaining_budget >= 0 and len(out_str) > remaining_budget:
+                out, truncated_due_to_budget = _truncate_tool_output(
+                    name, out, remaining_budget=remaining_budget
+                )
+                out_str = json.dumps(out, ensure_ascii=False)
             response_chars = len(out_str)
             duration_ms = 0.0
             if start is not None:
@@ -3331,11 +3436,10 @@ def _agentic_json_call(
                     "response_chars": response_chars,
                     "duration_ms": duration_ms,
                     "status": "ok",
+                    "truncated_due_to_budget": truncated_due_to_budget,
                 }
             )
-            meta.total_tool_output_chars += len(out_str)
-            if meta.total_tool_output_chars > max_total_chars_budget:
-                raise RuntimeError(f"Agentic tool output char budget exceeded: {max_total_chars_budget}")
+            meta.total_tool_output_chars += response_chars
             input_list.append(
                 {"type": "function_call_output", "call_id": call_id, "output": out_str}
             )
