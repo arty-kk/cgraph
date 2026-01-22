@@ -101,6 +101,7 @@ export function App() {
             searchResults={app.searchResults}
             searchSemanticResults={app.searchSemanticResults}
             semanticSearchEnabled={app.semanticSearchEnabled}
+            semanticSearchUnavailableReason={app.semanticSearchUnavailableReason}
             setSemanticSearchEnabled={app.setSemanticSearchEnabled}
             searchBusy={app.searchBusy}
             onSearchNodes={app.onSearchNodes}

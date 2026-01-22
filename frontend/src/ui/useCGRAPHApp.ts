@@ -39,7 +39,7 @@ import {
   type ProjectFileItem,
   type ProjectDocs,
 } from '../api'
-import { extractError } from '../lib/errors'
+import { extractError, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '../lib/errors'
 
 type AutoOrMode = 'auto' | Mode
 type GraphMode = 'local' | 'full' | 'limit'
@@ -130,6 +130,7 @@ export function useCGRAPHApp() {
   const [searchSemanticResults, setSearchSemanticResults] = useState<SemanticSearchItem[]>([])
   const [searchBusy, setSearchBusy] = useState(false)
   const [semanticSearchEnabled, setSemanticSearchEnabled] = useState(false)
+  const [semanticSearchUnavailableReason, setSemanticSearchUnavailableReason] = useState<SemanticSearchErrorReason | null>(null)
 
   useEffect(() => {
     if (searchQuery.trim()) return
@@ -1189,18 +1190,33 @@ export function useCGRAPHApp() {
           const res = await searchProjectSemantic(activeProject.id, query, 30)
           setSearchSemanticResults(res.results ?? [])
           setSearchResults([])
+          setSemanticSearchUnavailableReason(null)
         } else {
           const res = await searchNodes(activeProject.id, query, 30)
           setSearchResults(res)
           setSearchSemanticResults([])
         }
       } catch (e: any) {
-        setErrorMessage(extractError(e))
+        const reason = semanticSearchEnabled ? getSemanticSearchErrorReason(e) : null
+        if (semanticSearchEnabled && reason) {
+          setSemanticSearchEnabled(false)
+          setSemanticSearchUnavailableReason(reason)
+          try {
+            const res = await searchNodes(activeProject.id, query, 30)
+            setSearchResults(res)
+            setSearchSemanticResults([])
+            notifyInfo('Семантический поиск недоступен — выполнен обычный поиск.')
+          } catch (fallbackError: any) {
+            setErrorMessage(extractError(fallbackError))
+          }
+        } else {
+          setErrorMessage(extractError(e))
+        }
       } finally {
         setSearchBusy(false)
       }
     },
-    [activeProject, semanticSearchEnabled]
+    [activeProject, notifyInfo, semanticSearchEnabled, setErrorMessage]
   )
 
   const closeFileEditor = useCallback(() => {
@@ -1304,6 +1320,7 @@ export function useCGRAPHApp() {
     searchSemanticResults,
     semanticSearchEnabled,
     setSemanticSearchEnabled,
+    semanticSearchUnavailableReason,
     searchBusy,
     onSearchNodes,
     setMode,
