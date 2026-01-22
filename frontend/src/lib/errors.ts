@@ -7,11 +7,12 @@ export type AppErrorInfo = {
   context?: Record<string, unknown>
 }
 
-export type SemanticSearchErrorReason = 'embeddings_disabled' | 'missing_api_key'
+export type SemanticSearchErrorReason = 'embeddings_disabled' | 'missing_api_key' | 'no_embeddings'
 
 const SEMANTIC_ERROR_MESSAGES: Record<SemanticSearchErrorReason, string> = {
   embeddings_disabled: 'Embeddings are disabled in settings.',
   missing_api_key: 'OPENAI_API_KEY is not configured.',
+  no_embeddings: 'No embeddings found for this project. Please rescan the project with embeddings enabled.',
 }
 
 function safeJson(value: unknown): string {
@@ -77,12 +78,15 @@ export function getAppErrorInfo(e: unknown): AppErrorInfo | null {
 export function getSemanticSearchErrorReason(e: unknown): SemanticSearchErrorReason | null {
   const info = getAppErrorInfo(e)
   if (!info) return null
+  const contextReason = typeof info.context?.reason === 'string' ? info.context.reason : null
 
   if (info.code === 'embeddings_disabled' || info.code === 'missing_api_key') return info.code
+  if (contextReason === 'no_embeddings') return 'no_embeddings'
   if (!info.message) return null
 
   if (info.message === SEMANTIC_ERROR_MESSAGES.embeddings_disabled) return 'embeddings_disabled'
   if (info.message === SEMANTIC_ERROR_MESSAGES.missing_api_key) return 'missing_api_key'
+  if (info.message === SEMANTIC_ERROR_MESSAGES.no_embeddings) return 'no_embeddings'
 
   return null
 }

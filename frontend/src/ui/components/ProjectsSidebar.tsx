@@ -136,6 +136,8 @@ export function ProjectsSidebar({
     ? 'нужен OPENAI_API_KEY'
     : semanticSearchUnavailableReason === 'embeddings_disabled'
       ? 'эмбеддинги отключены'
+      : semanticSearchUnavailableReason === 'no_embeddings'
+        ? 'нет эмбеддингов'
       : ''
 
   const HelpButton = ({
@@ -978,6 +980,11 @@ export function ProjectsSidebar({
               <span className="text-[11px] text-neutral-500">{semanticUnavailableText}</span>
             ) : null}
           </label>
+          {semanticSearchUnavailableReason === 'no_embeddings' ? (
+            <div className="mt-1 text-[11px] text-neutral-500">
+              Включите embeddings и нажмите Scan, чтобы восстановить поиск.
+            </div>
+          ) : null}
           <div className="flex gap-2">
             <input
               className={inputSmFlexClass}

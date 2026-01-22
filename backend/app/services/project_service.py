@@ -234,5 +234,8 @@ def search_project_semantic(
         message = response.get("message")
         if not isinstance(message, str) or not message:
             message = "Ошибка семантического поиска"
-        raise BadRequestError(message)
+        meta = response.get("meta")
+        reason = meta.get("reason") if isinstance(meta, dict) else None
+        context = {"reason": reason} if isinstance(reason, str) and reason else None
+        raise BadRequestError(message, context=context)
     return response
