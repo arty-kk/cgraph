@@ -224,6 +224,23 @@ def update_graph_metrics_incremental(project_id: int, modified_paths: list[str])
                 if isinstance(p, str) and p:
                     outdeg[p] = _as_int(c, 0)
 
+        normalized_list = sorted(normalized)
+        if normalized_list:
+            previous_rows = s.exec(
+                select(FileNode.path, FileNode.fan_in, FileNode.fan_out).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path.in_(normalized_list),
+                )
+            ).all()
+            for path, fan_in, fan_out in previous_rows:
+                if not isinstance(path, str) or not path:
+                    continue
+                new_in = _as_int(indeg.get(path, 0), 0)
+                new_out = _as_int(outdeg.get(path, 0), 0)
+                if new_in < _as_int(fan_in, 0) or new_out < _as_int(fan_out, 0):
+                    compute_graph_metrics(project_id)
+                    return
+
         node_rows = s.exec(
             select(FileNode.id, FileNode.path).where(
                 FileNode.project_id == project_id,
