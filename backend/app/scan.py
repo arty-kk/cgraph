@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Iterable, Tuple
 from sqlmodel import delete, select
-from sqlalchemy import text as sa_text, bindparam
+from sqlalchemy import text as sa_text, bindparam, or_
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from .config import settings
@@ -586,7 +586,25 @@ def scan_files(
                     raw=raw,
                 )
 
+    removed_edge_neighbors: set[str] = set()
+
     with get_session() as s:
+        if present or removed:
+            rows = s.exec(
+                select(FileEdge.src_path, FileEdge.dst_path).where(
+                    FileEdge.project_id == project_id,
+                    or_(
+                        FileEdge.src_path.in_(present),
+                        FileEdge.src_path.in_(removed),
+                        FileEdge.dst_path.in_(removed),
+                    ),
+                )
+            ).all()
+            for src, dst in rows:
+                if isinstance(src, str) and src:
+                    removed_edge_neighbors.add(src)
+                if isinstance(dst, str) and dst:
+                    removed_edge_neighbors.add(dst)
         try:
             to_del = sorted(set((present or []) + (removed or [])))
             if to_del:
@@ -729,4 +747,9 @@ def scan_files(
 
         s.commit()
 
-    return {"updated_nodes": len(node_rows), "updated_edges": len(edge_map), "removed": len(removed)}
+    return {
+        "updated_nodes": len(node_rows),
+        "updated_edges": len(edge_map),
+        "removed": len(removed),
+        "removed_edge_neighbors": sorted(removed_edge_neighbors),
+    }

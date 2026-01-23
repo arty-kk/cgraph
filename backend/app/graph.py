@@ -7,7 +7,7 @@ import json
 import logging
 import math
 from sqlmodel import select
-from sqlalchemy import text, func
+from sqlalchemy import text, func, or_
 from .db import get_session
 from .models import FileNode, FileEdge, FileChunkEmbedding
 from .config import settings
@@ -118,6 +118,198 @@ def compute_graph_metrics(project_id: int) -> None:
                 params,
             )
             s.commit()
+
+def update_graph_metrics_incremental(
+    project_id: int,
+    modified_paths: list[str],
+    removed_edge_neighbors: list[str] | None = None,
+) -> None:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for p in modified_paths:
+        if not isinstance(p, str) or not p:
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        normalized.append(p)
+
+    if not normalized:
+        return
+
+    max_paths = _as_int(getattr(settings, "graph_metrics_incremental_max_paths", 200), 200)
+    if len(normalized) > max_paths:
+        compute_graph_metrics(project_id)
+        return
+
+    max_component_nodes = _as_int(
+        getattr(settings, "graph_metrics_incremental_max_component_nodes", 2000), 2000
+    )
+    max_component_edges = _as_int(
+        getattr(settings, "graph_metrics_incremental_max_component_edges", 5000), 5000
+    )
+    compute_scc = bool(getattr(settings, "compute_scc", True))
+
+    SQLITE_IN_CHUNK = 400
+
+    def _iter_chunks(seq: list[str], size: int):
+        for i in range(0, len(seq), size):
+            yield seq[i : i + size]
+
+    def _fetch_edges_for_paths(session, paths: list[str]) -> list[tuple[str, str]]:
+        if not paths:
+            return []
+        edges: list[tuple[str, str]] = []
+        for chunk in _iter_chunks(paths, SQLITE_IN_CHUNK):
+            rows = session.exec(
+                select(FileEdge.src_path, FileEdge.dst_path).where(
+                    FileEdge.project_id == project_id,
+                    or_(FileEdge.src_path.in_(chunk), FileEdge.dst_path.in_(chunk)),
+                )
+            ).all()
+            edges.extend(rows)
+        return edges
+
+    with get_session() as s:
+        component_paths = set(normalized)
+        component_edges: set[tuple[str, str]] = set()
+        frontier = set(normalized)
+        too_large = False
+
+        while frontier:
+            rows = _fetch_edges_for_paths(s, list(frontier))
+            next_frontier: set[str] = set()
+            for src, dst in rows:
+                if not (isinstance(src, str) and src and isinstance(dst, str) and dst):
+                    continue
+                component_edges.add((src, dst))
+                if src not in component_paths:
+                    component_paths.add(src)
+                    next_frontier.add(src)
+                if dst not in component_paths:
+                    component_paths.add(dst)
+                    next_frontier.add(dst)
+            if len(component_paths) > max_component_nodes or len(component_edges) > max_component_edges:
+                too_large = True
+                break
+            frontier = next_frontier
+
+        if too_large:
+            compute_graph_metrics(project_id)
+            return
+
+        affected_paths = set(normalized)
+        if removed_edge_neighbors:
+            for path in removed_edge_neighbors:
+                if isinstance(path, str) and path:
+                    affected_paths.add(path)
+        for src, dst in _fetch_edges_for_paths(s, normalized):
+            if isinstance(src, str) and src:
+                affected_paths.add(src)
+            if isinstance(dst, str) and dst:
+                affected_paths.add(dst)
+
+        indeg: dict[str, int] = {}
+        outdeg: dict[str, int] = {}
+
+        affected_list = sorted(affected_paths)
+        for chunk in _iter_chunks(affected_list, SQLITE_IN_CHUNK):
+            indeg_rows = s.exec(
+                select(FileEdge.dst_path, func.count())
+                .where(FileEdge.project_id == project_id, FileEdge.dst_path.in_(chunk))
+                .group_by(FileEdge.dst_path)
+            ).all()
+            for p, c in indeg_rows:
+                if isinstance(p, str) and p:
+                    indeg[p] = _as_int(c, 0)
+
+            outdeg_rows = s.exec(
+                select(FileEdge.src_path, func.count())
+                .where(FileEdge.project_id == project_id, FileEdge.src_path.in_(chunk))
+                .group_by(FileEdge.src_path)
+            ).all()
+            for p, c in outdeg_rows:
+                if isinstance(p, str) and p:
+                    outdeg[p] = _as_int(c, 0)
+
+        normalized_list = sorted(normalized)
+        if normalized_list:
+            previous_rows = s.exec(
+                select(FileNode.path, FileNode.fan_in, FileNode.fan_out).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path.in_(normalized_list),
+                )
+            ).all()
+            existing_paths = {
+                path for path, _, _ in previous_rows if isinstance(path, str) and path
+            }
+            if set(normalized_list) - existing_paths:
+                compute_graph_metrics(project_id)
+                return
+            for path, fan_in, fan_out in previous_rows:
+                if not isinstance(path, str) or not path:
+                    continue
+                new_in = _as_int(indeg.get(path, 0), 0)
+                new_out = _as_int(outdeg.get(path, 0), 0)
+                if new_in < _as_int(fan_in, 0) or new_out < _as_int(fan_out, 0):
+                    compute_graph_metrics(project_id)
+                    return
+
+        node_rows = s.exec(
+            select(FileNode.id, FileNode.path).where(
+                FileNode.project_id == project_id,
+                FileNode.path.in_(affected_list),
+            )
+        ).all()
+        fan_params: list[dict[str, int]] = []
+        for nid, path in node_rows:
+            if nid is None or not isinstance(path, str) or not path:
+                continue
+            fan_params.append({
+                "id": int(nid),
+                "fan_in": _as_int(indeg.get(path, 0), 0),
+                "fan_out": _as_int(outdeg.get(path, 0), 0),
+            })
+        if fan_params:
+            s.execute(
+                text("UPDATE filenode SET fan_in=:fan_in, fan_out=:fan_out WHERE id=:id"),
+                fan_params,
+            )
+
+        if compute_scc:
+            g = nx.DiGraph()
+            for path in component_paths:
+                if isinstance(path, str) and path:
+                    g.add_node(path)
+            for src, dst in component_edges:
+                if src in component_paths and dst in component_paths:
+                    g.add_edge(src, dst)
+
+            scc_map: dict[str, int] = {}
+            sccs = list(nx.strongly_connected_components(g))
+            for i, comp in enumerate(sccs):
+                for p in comp:
+                    scc_map[p] = i
+
+            component_list = sorted(component_paths)
+            component_nodes = s.exec(
+                select(FileNode.id, FileNode.path).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path.in_(component_list),
+                )
+            ).all()
+            scc_params: list[dict[str, int]] = []
+            for nid, path in component_nodes:
+                if nid is None or not isinstance(path, str) or not path:
+                    continue
+                scc_params.append({"id": int(nid), "scc_id": _as_int(scc_map.get(path, -1), -1)})
+            if scc_params:
+                s.execute(
+                    text("UPDATE filenode SET scc_id=:scc_id WHERE id=:id"),
+                    scc_params,
+                )
+
+        s.commit()
 
 def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
 

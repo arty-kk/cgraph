@@ -20,7 +20,7 @@ from ..errors import (
     NotFoundError,
     ServerError,
 )
-from ..graph import compute_graph_metrics
+from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.orchestrator import analyze, evolve, fix, triage
 from ..llm.agentic import analyze_agentic, evolve_agentic, fix_agentic, AgenticMeta
 from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract
@@ -603,7 +603,14 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
 
                 try:
                     applied["reindexed"] = scan_files(project_id, root, modified)
-                    compute_graph_metrics(project_id)
+                    removed_edge_neighbors = None
+                    if isinstance(applied.get("reindexed"), dict):
+                        removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
+                    update_graph_metrics_incremental(
+                        project_id,
+                        modified,
+                        removed_edge_neighbors=removed_edge_neighbors,
+                    )
 
                     updated_contracts: list[str] = []
                     removed_contracts: list[str] = []

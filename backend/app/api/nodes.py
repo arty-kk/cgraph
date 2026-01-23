@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from ..db import get_session
-from ..graph import compute_graph_metrics
+from ..graph import update_graph_metrics_incremental
 from ..models import Project, FileNode
 from ..scan import scan_files
 from ..contracts import get_or_build_contract
@@ -139,6 +139,10 @@ def update_file(project_id: int, path: str, body: FileUpdate):
     with project_lock(project_id):
         abs_path.write_text(content, encoding="utf-8")
         reindexed = scan_files(project_id, root, [rel_norm])
-        compute_graph_metrics(project_id)
+        update_graph_metrics_incremental(
+            project_id,
+            [rel_norm],
+            removed_edge_neighbors=reindexed.get("removed_edge_neighbors") if isinstance(reindexed, dict) else None,
+        )
 
     return {"path": rel_norm, "saved": True, "reindexed": reindexed}
