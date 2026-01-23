@@ -7,6 +7,7 @@ import { getTaskStatus } from '../../api'
 import { clampInt } from '../../lib/number'
 import { formatResult } from '../../lib/formatResult'
 import { Modal } from './Modal'
+import { LanguageIcon } from './LanguageIcon'
 
 type AutoOrMode = 'auto' | Mode
 type RetrievalMode = 'agentic' | 'pack'
@@ -616,7 +617,10 @@ export function NodePanel({
               
               {!detailsOpen && nodeInfo && (
                 <div className="mt-1 text-[11px] text-neutral-500">
-                  {String(nodeInfo.language || '—')} · loc {Number.isFinite(Number(nodeInfo.loc)) ? Number(nodeInfo.loc) : '—'} · in {Number(nodeInfo.fan_in ?? 0)} · out {Number(nodeInfo.fan_out ?? 0)}
+                  <span className="inline-flex items-center gap-1">
+                    <LanguageIcon language={nodeInfo.language} className="h-3 w-3" />
+                    <span>· loc {Number.isFinite(Number(nodeInfo.loc)) ? Number(nodeInfo.loc) : '—'} · in {Number(nodeInfo.fan_in ?? 0)} · out {Number(nodeInfo.fan_out ?? 0)}</span>
+                  </span>
                 </div>
               )}
 
@@ -650,7 +654,7 @@ export function NodePanel({
                 nodeInfo && (
                   <div className="mt-2 text-xs text-neutral-300 grid grid-cols-2 gap-2">
                     <div>
-                      LANG: <span className="text-neutral-100">{nodeInfo.language}</span>
+                      LANG: <LanguageIcon language={nodeInfo.language} className="h-3.5 w-3.5" />
                     </div>
                     <div>
                       LOC: <span className="text-neutral-100">{nodeInfo.loc}</span>

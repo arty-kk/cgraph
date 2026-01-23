@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { Project, NodeSearchItem } from '../../api'
 import { searchNodes } from '../../api'
 import { Modal } from './Modal'
+import { LanguageIcon } from './LanguageIcon'
 
 type CmdGroup = 'Project' | 'Graph' | 'UI' | 'Selection' | 'Navigation'
 
@@ -10,7 +11,8 @@ type Item = {
   key: string
   kind: 'command' | 'project' | 'file'
   title: string
-  subtitle?: string
+  subtitle?: React.ReactNode
+  subtitleText?: string
   group?: CmdGroup
   hint?: string
   disabled?: boolean
@@ -160,6 +162,7 @@ export function CommandPalette({
         group: 'Project',
         title: 'Open docs',
         subtitle: 'Открыть сгенерированную документацию проекта',
+        subtitleText: 'Открыть сгенерированную документацию проекта',
         disabled: !hasProject,
         onSelect: async () => {
           onClose()
@@ -173,6 +176,7 @@ export function CommandPalette({
         hint: 'Ctrl/⌘+Shift+M',
         title: compactMode ? 'Disable compact mode' : 'Enable compact mode',
         subtitle: 'Сократить подписи (tooltips остаются)',
+        subtitleText: 'Сократить подписи (tooltips остаются)',
         disabled: false,
         onSelect: () => {
           onClose()
@@ -185,6 +189,7 @@ export function CommandPalette({
         group: 'Graph',
         title: 'Scan',
         subtitle: 'Проиндексировать файлы и пересчитать зависимости',
+        subtitleText: 'Проиндексировать файлы и пересчитать зависимости',
         disabled: !hasProject,
         onSelect: async () => {
           onClose()
@@ -197,6 +202,7 @@ export function CommandPalette({
         group: 'Graph',
         title: 'Refresh',
         subtitle: 'Перезагрузить данные графа и панелей (без смены проекта)',
+        subtitleText: 'Перезагрузить данные графа и панелей (без смены проекта)',
         disabled: !hasProject,
         onSelect: async () => {
           onClose()
@@ -210,6 +216,7 @@ export function CommandPalette({
         hint: 'F',
         title: focusGraph ? 'Exit focus' : 'Enter focus',
         subtitle: 'Переключить режим фокуса на графе',
+        subtitleText: 'Переключить режим фокуса на графе',
         disabled: !hasProject,
         onSelect: () => {
           onClose()
@@ -222,6 +229,7 @@ export function CommandPalette({
         group: 'Selection',
         title: 'Toggle pin for selection',
         subtitle: 'Закрепить/открепить выбранный файл',
+        subtitleText: 'Закрепить/открепить выбранный файл',
         disabled: !hasSel,
         onSelect: async () => {
           if (!selectedPath) return
@@ -236,6 +244,7 @@ export function CommandPalette({
         hint: 'Esc',
         title: 'Clear selection',
         subtitle: 'Снять выделение (файл/узел)',
+        subtitleText: 'Снять выделение (файл/узел)',
         disabled: !hasSel,
         onSelect: () => {
           onClose()
@@ -249,6 +258,7 @@ export function CommandPalette({
         hint: 'Alt+← / ⌘[',
         title: 'Back',
         subtitle: 'Назад по истории выделений',
+        subtitleText: 'Назад по истории выделений',
         disabled: !canGoBack,
         onSelect: () => {
           onClose()
@@ -262,6 +272,7 @@ export function CommandPalette({
         hint: 'Alt+→ / ⌘]',
         title: 'Forward',
         subtitle: 'Вперёд по истории выделений',
+        subtitleText: 'Вперёд по истории выделений',
         disabled: !canGoForward,
         onSelect: () => {
           onClose()
@@ -297,6 +308,7 @@ export function CommandPalette({
         kind: 'project' as const,
         title: p.name,
         subtitle: p.root_path,
+        subtitleText: p.root_path,
         disabled: Boolean(activeProject && p.id === activeProject.id),
         onSelect: async () => {
           onClose()
@@ -305,7 +317,7 @@ export function CommandPalette({
       }))
 
     if (!qNorm) return list.slice(0, 10)
-    return list.filter((it) => norm(it.title + ' ' + (it.subtitle || '')).includes(qNorm)).slice(0, 10)
+    return list.filter((it) => norm(it.title + ' ' + (it.subtitleText || '')).includes(qNorm)).slice(0, 10)
   }, [activeProject, onClose, onPickProject, projects, qNorm])
 
   const fileItems: Item[] = useMemo(() => {
@@ -314,7 +326,13 @@ export function CommandPalette({
       key: `file.${f.path}`,
       kind: 'file' as const,
       title: f.path,
-      subtitle: `${f.language ?? '—'} · in:${f.fan_in ?? 0} · out:${f.fan_out ?? 0}`,
+      subtitle: (
+        <span className="inline-flex items-center gap-1">
+          <LanguageIcon language={f.language} className="h-3.5 w-3.5 text-neutral-400" />
+          <span>· in:{f.fan_in ?? 0} · out:{f.fan_out ?? 0}</span>
+        </span>
+      ),
+      subtitleText: `${f.language ?? '—'} · in:${f.fan_in ?? 0} · out:${f.fan_out ?? 0}`,
       disabled: false,
       onSelect: async () => {
         onClose()
@@ -325,7 +343,7 @@ export function CommandPalette({
 
   const filteredCommands = useMemo(() => {
     if (!qNorm) return commandItems
-    return commandItems.filter((it) => norm([it.group, it.title, it.subtitle, it.hint].filter(Boolean).join(' ')).includes(qNorm))
+    return commandItems.filter((it) => norm([it.group, it.title, it.subtitleText, it.hint].filter(Boolean).join(' ')).includes(qNorm))
   }, [commandItems, qNorm])
 
   type RenderSection = { key: string; title: string; items: Item[]; start: number; note?: string }
@@ -449,8 +467,8 @@ export function CommandPalette({
     const active = idx === activeIndex
     const tooltip =
       item.kind === 'file'
-        ? [item.title, item.subtitle || '', 'Enter — открыть', 'Shift+Enter — открыть + toggle pin'].filter(Boolean).join('\n')
-        : [item.title, item.subtitle || '', item.hint ? `Keys: ${item.hint}` : ''].filter(Boolean).join('\n')
+        ? [item.title, item.subtitleText || '', 'Enter — открыть', 'Shift+Enter — открыть + toggle pin'].filter(Boolean).join('\n')
+        : [item.title, item.subtitleText || '', item.hint ? `Keys: ${item.hint}` : ''].filter(Boolean).join('\n')
     return (
       <button
         type="button"
