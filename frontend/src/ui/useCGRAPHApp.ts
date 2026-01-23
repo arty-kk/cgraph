@@ -228,7 +228,8 @@ export function useCGRAPHApp() {
   const [fullPatch, setFullPatch] = useState<string | null>(null)
   const [patchBusy, setPatchBusy] = useState(false)
   const [runLoadBusy, setRunLoadBusy] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const [busyCount, setBusyCount] = useState(0)
+  const busy = busyCount > 0
   const [error, setError] = useState<string | null>(null)
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [focusGraph, setFocusGraph] = useState(false)
@@ -956,14 +957,14 @@ export function useCGRAPHApp() {
   }, [activeProject, fileEditorContent, fileEditorPath, notifyInfo, queryClient])
 
   const runOp = useCallback(async (fn: () => Promise<void>) => {
-    setBusy(true)
+    setBusyCount((count) => count + 1)
     setErrorMessage(null)
     try {
       await fn()
     } catch (e: any) {
       setErrorMessage(extractError(e))
     } finally {
-      setBusy(false)
+      setBusyCount((count) => Math.max(0, count - 1))
     }
   }, [])
 
