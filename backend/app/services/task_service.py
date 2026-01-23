@@ -603,7 +603,14 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
 
                 try:
                     applied["reindexed"] = scan_files(project_id, root, modified)
-                    update_graph_metrics_incremental(project_id, modified)
+                    removed_edge_neighbors = None
+                    if isinstance(applied.get("reindexed"), dict):
+                        removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
+                    update_graph_metrics_incremental(
+                        project_id,
+                        modified,
+                        removed_edge_neighbors=removed_edge_neighbors,
+                    )
 
                     updated_contracts: list[str] = []
                     removed_contracts: list[str] = []

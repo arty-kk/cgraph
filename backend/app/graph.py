@@ -119,7 +119,11 @@ def compute_graph_metrics(project_id: int) -> None:
             )
             s.commit()
 
-def update_graph_metrics_incremental(project_id: int, modified_paths: list[str]) -> None:
+def update_graph_metrics_incremental(
+    project_id: int,
+    modified_paths: list[str],
+    removed_edge_neighbors: list[str] | None = None,
+) -> None:
     normalized: list[str] = []
     seen: set[str] = set()
     for p in modified_paths:
@@ -195,6 +199,10 @@ def update_graph_metrics_incremental(project_id: int, modified_paths: list[str])
             return
 
         affected_paths = set(normalized)
+        if removed_edge_neighbors:
+            for path in removed_edge_neighbors:
+                if isinstance(path, str) and path:
+                    affected_paths.add(path)
         for src, dst in _fetch_edges_for_paths(s, normalized):
             if isinstance(src, str) and src:
                 affected_paths.add(src)
