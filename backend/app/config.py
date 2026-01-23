@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     go_include_unexported_symbols: bool = Field(
         default=False, alias="CGRAPH_GO_INCLUDE_UNEXPORTED_SYMBOLS"
     )
+    task_queue_completed_ttl_seconds: int | None = Field(
+        default=None, alias="CGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS"
+    )
+    task_queue_max_completed: int | None = Field(default=None, alias="CGRAPH_TASK_QUEUE_MAX_COMPLETED")
 
     def cors_origins(self) -> list[str]:
         raw = (self.cors_allow_origins or "").strip()
@@ -117,6 +121,10 @@ class Settings(BaseSettings):
             raise ValueError("CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS должен быть положительным")
         if self.llm_agentic_temperature < 0 or self.llm_agentic_temperature > 2:
             raise ValueError("CGRAPH_LLM_AGENTIC_TEMPERATURE должен быть в диапазоне 0..2")
+        if self.task_queue_completed_ttl_seconds is not None and self.task_queue_completed_ttl_seconds <= 0:
+            raise ValueError("CGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS должен быть положительным")
+        if self.task_queue_max_completed is not None and self.task_queue_max_completed <= 0:
+            raise ValueError("CGRAPH_TASK_QUEUE_MAX_COMPLETED должен быть положительным")
         return self
 
 settings = Settings()
