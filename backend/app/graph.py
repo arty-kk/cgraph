@@ -232,6 +232,12 @@ def update_graph_metrics_incremental(project_id: int, modified_paths: list[str])
                     FileNode.path.in_(normalized_list),
                 )
             ).all()
+            existing_paths = {
+                path for path, _, _ in previous_rows if isinstance(path, str) and path
+            }
+            if set(normalized_list) - existing_paths:
+                compute_graph_metrics(project_id)
+                return
             for path, fan_in, fan_out in previous_rows:
                 if not isinstance(path, str) or not path:
                     continue
