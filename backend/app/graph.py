@@ -518,6 +518,9 @@ def search_semantic(
                 FileChunkEmbedding.path,
                 FileChunkEmbedding.chunk_index,
                 FileChunkEmbedding.embedding_json,
+                FileChunkEmbedding.symbol_name,
+                FileChunkEmbedding.symbol_start_line,
+                FileChunkEmbedding.symbol_end_line,
             )
             .where(*filters)
             .order_by(FileChunkEmbedding.path.asc(), FileChunkEmbedding.chunk_index.asc())
@@ -535,11 +538,21 @@ def search_semantic(
 
     for row in rows:
         if isinstance(row, (tuple, list)):
-            path, chunk_index, embedding_json = row[0], row[1], row[2]
+            path, chunk_index, embedding_json, symbol_name, symbol_start_line, symbol_end_line = (
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                row[5],
+            )
         else:
             path = getattr(row, "path", "")
             chunk_index = getattr(row, "chunk_index", 0)
             embedding_json = getattr(row, "embedding_json", "")
+            symbol_name = getattr(row, "symbol_name", "")
+            symbol_start_line = getattr(row, "symbol_start_line", 0)
+            symbol_end_line = getattr(row, "symbol_end_line", 0)
         if not isinstance(path, str) or not path:
             continue
         try:
@@ -571,19 +584,33 @@ def search_semantic(
                     file_cache[path] = ""
         text = file_cache.get(path, "")
         if text:
-            try:
-                start = max(0, int(chunk_index) * step)
-            except Exception:
-                start = 0
-            end = start + chunk_size
-            if start < len(text):
-                snippet = text[start:end]
+            symbol_start = _as_int(symbol_start_line, 0)
+            symbol_end = _as_int(symbol_end_line, 0)
+            if symbol_start > 0 and symbol_end >= symbol_start:
+                lines = text.splitlines(keepends=True)
+                snippet = "".join(lines[symbol_start - 1:symbol_end])
             else:
-                chunks = _chunk_text(text, chunk_size, overlap)
-                if isinstance(chunk_index, int) and 0 <= chunk_index < len(chunks):
-                    snippet = chunks[chunk_index]
+                try:
+                    start = max(0, int(chunk_index) * step)
+                except Exception:
+                    start = 0
+                end = start + chunk_size
+                if start < len(text):
+                    snippet = text[start:end]
+                else:
+                    chunks = _chunk_text(text, chunk_size, overlap)
+                    if isinstance(chunk_index, int) and 0 <= chunk_index < len(chunks):
+                        snippet = chunks[chunk_index]
 
-        scored.append({"path": path, "score": float(score), "snippet": snippet})
+        scored.append(
+            {
+                "path": path,
+                "score": float(score),
+                "snippet": snippet,
+                "symbol_name": str(symbol_name or ""),
+                "symbol_line": _as_int(symbol_start_line, 0),
+            }
+        )
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     results = scored[: max_results_eff]

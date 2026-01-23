@@ -208,3 +208,6 @@ class FileChunkEmbedding(SQLModel, table=True):
     chunk_index: int
     file_hash: str = Field(index=True)
     embedding_json: str
+    symbol_name: str = Field(default="")
+    symbol_start_line: int = Field(default=0)
+    symbol_end_line: int = Field(default=0)

@@ -119,6 +119,25 @@ def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
             chunks.append(chunk)
     return chunks
 
+def _symbol_chunks(text: str, symbols: Iterable[object]) -> list[dict]:
+    lines = text.splitlines(keepends=True)
+    chunks: list[dict] = []
+    for sym in symbols:
+        start_line = int(getattr(sym, "start_line", 0) or 0)
+        end_line = int(getattr(sym, "end_line", 0) or 0)
+        chunk_text = ""
+        if start_line > 0 and end_line >= start_line:
+            chunk_text = "".join(lines[start_line - 1:end_line])
+        chunks.append(
+            {
+                "text": chunk_text,
+                "symbol_name": str(getattr(sym, "name", "") or ""),
+                "symbol_start_line": start_line,
+                "symbol_end_line": end_line,
+            }
+        )
+    return chunks
+
 def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
     if not paths:
         return
@@ -467,11 +486,39 @@ def scan_files(
             if should_embed and existing_hashes:
                 embedding_paths_to_delete.append(rel)
             if should_embed:
-                chunks = _chunk_text(
-                    text,
-                    settings.embeddings_chunk_size,
-                    settings.embeddings_chunk_overlap,
-                )
+                symbols: list[object] = []
+                if p.suffix.lower() in CODE_EXTS:
+                    try:
+                        symbols = idx.parse_symbols(p, text) or []
+                    except Exception:
+                        symbols = []
+
+                if symbols:
+                    symbol_chunks = _symbol_chunks(text, symbols)
+                    chunks = [chunk["text"] for chunk in symbol_chunks]
+                    symbol_meta = [
+                        {
+                            "symbol_name": chunk["symbol_name"],
+                            "symbol_start_line": chunk["symbol_start_line"],
+                            "symbol_end_line": chunk["symbol_end_line"],
+                        }
+                        for chunk in symbol_chunks
+                    ]
+                else:
+                    chunks = _chunk_text(
+                        text,
+                        settings.embeddings_chunk_size,
+                        settings.embeddings_chunk_overlap,
+                    )
+                    symbol_meta = [
+                        {
+                            "symbol_name": "",
+                            "symbol_start_line": 0,
+                            "symbol_end_line": 0,
+                        }
+                        for _ in range(len(chunks))
+                    ]
+
                 if chunks:
                     if not settings.openai_api_key:
                         if not embedding_warned_missing_key:
@@ -490,6 +537,7 @@ def scan_files(
                             embedding = getattr(item, "embedding", None)
                             if embedding is None:
                                 continue
+                            meta = symbol_meta[idx_chunk] if idx_chunk < len(symbol_meta) else {}
                             embedding_rows.append(
                                 {
                                     "project_id": project_id,
@@ -497,6 +545,9 @@ def scan_files(
                                     "chunk_index": idx_chunk,
                                     "file_hash": file_hash,
                                     "embedding_json": json.dumps(embedding),
+                                    "symbol_name": str(meta.get("symbol_name", "")),
+                                    "symbol_start_line": int(meta.get("symbol_start_line", 0) or 0),
+                                    "symbol_end_line": int(meta.get("symbol_end_line", 0) or 0),
                                 }
                             )
             elif embed_text_len > settings.embeddings_max_file_chars and existing_hashes:
