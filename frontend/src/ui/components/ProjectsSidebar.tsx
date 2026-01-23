@@ -4,6 +4,7 @@ import type { Project, ProjectFileItem, NodeSearchItem, SemanticSearchItem } fro
 import { clampInt } from '../../lib/number'
 import type { SemanticSearchErrorReason } from '../../lib/errors'
 import { Modal } from './Modal'
+import { LanguageIcon } from './LanguageIcon'
 
 type Props = {
   onHidePanel?: () => void
@@ -1019,7 +1020,10 @@ export function ProjectsSidebar({
                   title="Выбрать файл (и открыть его в правой панели / Local-графе)"
                 >
                   <div className="text-neutral-200 font-semibold">{r.path}</div>
-                  <div className="text-neutral-500">{r.language ?? '—'} · In:{r.fan_in ?? 0} · Out:{r.fan_out ?? 0}</div>
+                  <div className="text-neutral-500 inline-flex items-center gap-1">
+                    <LanguageIcon language={r.language} className="h-3.5 w-3.5 text-neutral-400" />
+                    <span>· In:{r.fan_in ?? 0} · Out:{r.fan_out ?? 0}</span>
+                  </div>
                 </button>
               ))}
             </div>
@@ -1040,7 +1044,10 @@ export function ProjectsSidebar({
                   title="Выбрать файл (и открыть его в правой панели / Local-графе)"
                 >
                   <div className="text-neutral-200 font-semibold">{r.path}</div>
-                  <div className="text-neutral-500">{r.language ?? '—'} · In:{r.fan_in ?? 0} · Out:{r.fan_out ?? 0}</div>
+                  <div className="text-neutral-500 inline-flex items-center gap-1">
+                    <LanguageIcon language={r.language} className="h-3.5 w-3.5 text-neutral-400" />
+                    <span>· In:{r.fan_in ?? 0} · Out:{r.fan_out ?? 0}</span>
+                  </div>
                 </button>
               ))}
             </div>
