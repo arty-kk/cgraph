@@ -6,8 +6,16 @@ import tempfile
 from pathlib import Path
 from unidiff import PatchSet
 
+from .config import settings
+from .logging import get_logger
+
+PATCH_BLOB_DIRNAME = "patches"
+logger = get_logger("cgraph.api")
+
+
 class PatchApplyError(RuntimeError):
     pass
+
 
 def apply_unified_diff(
     project_root: Path,
@@ -91,6 +99,22 @@ def apply_unified_diff(
             raise PatchApplyError(f"Failed to remove {abs_path}: {e}")
 
     return modified
+
+
+def delete_patch_blob_for_sha(sha: str) -> None:
+    if not isinstance(sha, str) or not sha:
+        return
+    base = Path(settings.db_dir).resolve()
+    fp = (base / PATCH_BLOB_DIRNAME / f"{sha}.diff").resolve()
+    if base not in fp.parents and fp != base:
+        logger.warning("Refusing to delete patch blob outside db_dir", extra={"sha": sha})
+        return
+    if fp.exists() and fp.is_file():
+        try:
+            fp.unlink()
+        except Exception as error:  # noqa: BLE001
+            logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
+
 
 def _apply_file_patch(original: list[str], file_patch) -> list[str]:
     out: list[str] = []
