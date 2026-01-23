@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     scc_max_nodes: int = Field(default=4000, alias="CGRAPH_SCC_MAX_NODES")
     scc_max_edges: int = Field(default=20000, alias="CGRAPH_SCC_MAX_EDGES")
 
+    graph_metrics_incremental_max_paths: int = Field(
+        default=200, alias="CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_PATHS"
+    )
+    graph_metrics_incremental_max_component_nodes: int = Field(
+        default=2000, alias="CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_NODES"
+    )
+    graph_metrics_incremental_max_component_edges: int = Field(
+        default=5000, alias="CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES"
+    )
+
     openai_timeout_seconds: float = Field(default=30.0, alias="CGRAPH_OPENAI_TIMEOUT_SECONDS")
     openai_max_retries: int = Field(default=3, alias="CGRAPH_OPENAI_MAX_RETRIES")
 
@@ -91,6 +101,12 @@ class Settings(BaseSettings):
             raise ValueError("Лимит длины промпта должен быть положительным")
         if self.scc_max_nodes < 0 or self.scc_max_edges < 0:
             raise ValueError("Параметры SCC должны быть неотрицательными")
+        if self.graph_metrics_incremental_max_paths <= 0:
+            raise ValueError("CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_PATHS должен быть положительным")
+        if self.graph_metrics_incremental_max_component_nodes <= 0:
+            raise ValueError("CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_NODES должен быть положительным")
+        if self.graph_metrics_incremental_max_component_edges <= 0:
+            raise ValueError("CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES должен быть положительным")
         if self.openai_timeout_seconds <= 0:
             raise ValueError("Таймаут OpenAI должен быть положительным")
         if self.openai_max_retries < 0:
