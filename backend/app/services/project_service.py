@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from threading import Lock
 
 from fastapi import BackgroundTasks
@@ -13,18 +12,15 @@ from ..config import settings
 from ..db import get_session
 from ..errors import BadRequestError, NotFoundError
 from ..graph import compute_graph_metrics, graph_payload, local_subgraph, search_nodes, search_semantic
-from ..logging import get_logger
 from ..models import (
     Project, FileNode, FileEdge, ModuleContract,
     AnalysisRun, ProjectDoc, ApiRoute, ApiCall,
     ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef, FileChunkEmbedding
 )
+from ..patches import delete_patch_blob_for_sha
 from ..scan import scan_project
 from ..utils import normalize_project_root, project_lock, resolve_under_root
 from .task_queue import task_queue
-
-PATCH_BLOB_DIRNAME = "patches"
-logger = get_logger("cgraph.api")
 
 _scan_tasks: dict[int, str] = {}
 _scan_tasks_lock = Lock()
@@ -47,21 +43,6 @@ def _get_active_scan_task(project_id: int) -> tuple[str | None, str | None]:
         if _scan_tasks.get(project_id) == task_id:
             _scan_tasks.pop(project_id, None)
     return task_id, state.status
-
-
-def _delete_patch_blob_for_sha(sha: str) -> None:
-    if not isinstance(sha, str) or not sha:
-        return
-    base = Path(settings.db_dir).resolve()
-    fp = (base / PATCH_BLOB_DIRNAME / f"{sha}.diff").resolve()
-    if base not in fp.parents and fp != base:
-        logger.warning("Refusing to delete patch blob outside db_dir", extra={"sha": sha})
-        return
-    if fp.exists() and fp.is_file():
-        try:
-            fp.unlink()
-        except Exception as error:  # noqa: BLE001
-            logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
 
 
 def create_project(name: str, root_path: str) -> Project:
@@ -111,7 +92,7 @@ def delete_project(project_id: int) -> None:
                     if isinstance(sha, str) and sha:
                         shas.add(sha)
             for sha in shas:
-                _delete_patch_blob_for_sha(sha)
+                delete_patch_blob_for_sha(sha)
             session.exec(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
             session.exec(delete(ProjectDoc).where(ProjectDoc.project_id == project_id))
             try:

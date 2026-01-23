@@ -24,7 +24,7 @@ from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.orchestrator import analyze, evolve, fix, triage
 from ..llm.agentic import analyze_agentic, evolve_agentic, fix_agentic, AgenticMeta
 from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract
-from ..patches import PatchApplyError, apply_unified_diff
+from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
 from ..scan import scan_files
 from ..utils import normalize_project_root, project_lock, resolve_under_root, sha256_text
 from ..db import get_session
@@ -104,21 +104,6 @@ def _store_patch_blob(patch_text: str) -> dict:
         "file": f"{PATCH_BLOB_DIRNAME}/{sha}.diff",
         "store_limit_chars": MAX_PATCH_STORE_CHARS,
     }
-
-
-def _delete_patch_blob_for_sha(sha: str) -> None:
-    if not isinstance(sha, str) or not sha:
-        return
-    base = Path(settings.db_dir).resolve()
-    fp = (base / PATCH_BLOB_DIRNAME / f"{sha}.diff").resolve()
-    if base not in fp.parents and fp != base:
-        logger.warning("Refusing to delete patch blob outside db_dir", extra={"sha": sha})
-        return
-    if fp.exists() and fp.is_file():
-        try:
-            fp.unlink()
-        except Exception as error:  # noqa: BLE001
-            logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
 
 
 def _llm_http_error(phase: str, error: Exception) -> None:
@@ -817,7 +802,7 @@ def delete_run(project_id: int, run_id: int) -> dict:
             if isinstance(meta, dict):
                 sha = meta.get("sha256")
                 if isinstance(sha, str) and sha:
-                    _delete_patch_blob_for_sha(sha)
+                    delete_patch_blob_for_sha(sha)
         session.delete(run)
         session.commit()
     return {"ok": True}
