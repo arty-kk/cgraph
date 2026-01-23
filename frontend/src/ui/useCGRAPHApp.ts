@@ -116,6 +116,7 @@ export function useCGRAPHApp() {
   const [activeProject, setActiveProject] = useState<Project | null>(null)
 
   const nodeSeqRef = useRef(0)
+  const searchSeqRef = useRef(0)
 
   const [newName, setNewName] = useState('my-project')
   const [newPath, setNewPath] = useState('')
@@ -1184,17 +1185,22 @@ export function useCGRAPHApp() {
       setSearchQuery(query)
       setSemanticSearchFallbackUsed(false)
       if (!query.trim()) {
+        searchSeqRef.current++
+        setSearchBusy(false)
         setSearchResults([])
         setSearchSemanticResults([])
         return
       }
+      const seq = ++searchSeqRef.current
       setSearchBusy(true)
       try {
         if (semanticSearchEnabled) {
           const res = await searchProjectSemantic(activeProject.id, query, 30)
+          if (searchSeqRef.current !== seq) return
           const semanticResults = res.results ?? []
           if (semanticResults.length === 0) {
             const fallbackRes = await searchNodes(activeProject.id, query, 30)
+            if (searchSeqRef.current !== seq) return
             setSearchResults(fallbackRes)
             setSearchSemanticResults([])
             setSemanticSearchFallbackUsed(true)
@@ -1203,13 +1209,16 @@ export function useCGRAPHApp() {
             setSearchSemanticResults(semanticResults)
             setSearchResults([])
           }
+          if (searchSeqRef.current !== seq) return
           setSemanticSearchUnavailableReason(null)
         } else {
           const res = await searchNodes(activeProject.id, query, 30)
+          if (searchSeqRef.current !== seq) return
           setSearchResults(res)
           setSearchSemanticResults([])
         }
       } catch (e: any) {
+        if (searchSeqRef.current !== seq) return
         const reason = semanticSearchEnabled ? getSemanticSearchErrorReason(e) : null
         if (semanticSearchEnabled && reason) {
           setSemanticSearchEnabled(false)
@@ -1219,6 +1228,7 @@ export function useCGRAPHApp() {
           }
           try {
             const res = await searchNodes(activeProject.id, query, 30)
+            if (searchSeqRef.current !== seq) return
             setSearchResults(res)
             setSearchSemanticResults([])
             notifyInfo('Семантический поиск недоступен — выполнен обычный поиск.')
@@ -1229,7 +1239,7 @@ export function useCGRAPHApp() {
           setErrorMessage(extractError(e))
         }
       } finally {
-        setSearchBusy(false)
+        if (searchSeqRef.current === seq) setSearchBusy(false)
       }
     },
     [activeProject, notifyInfo, semanticSearchEnabled, setErrorMessage]
