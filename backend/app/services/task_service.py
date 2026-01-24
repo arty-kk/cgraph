@@ -21,7 +21,7 @@ from ..errors import (
     ServerError,
 )
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
-from ..llm.orchestrator import analyze, evolve, fix, triage
+from ..llm.orchestrator import analyze, evolve, fix, triage, plan_task
 from ..llm.agentic import analyze_agentic, evolve_agentic, fix_agentic, AgenticMeta
 from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
@@ -44,6 +44,17 @@ MIN_GRAPH_EDGES_FOR_READY = 1
 GRAPH_NOT_READY_WARNING = "graph not built"
 
 logger = get_logger("cgraph.api")
+
+PLAN_TZ_EMPTY = {
+    "summary": "",
+    "requirements": [],
+    "constraints": [],
+    "sdlc_plan": [],
+    "acceptance_criteria": [],
+    "risks": [],
+    "open_questions": [],
+    "deliverables": [],
+}
 
 @dataclass
 class TaskRequest:
@@ -198,6 +209,77 @@ def _graph_warning(project_id: int) -> str | None:
     return None
 
 
+def _node_metrics_from_row(node: FileNode) -> dict[str, object]:
+    return {
+        "path": node.path,
+        "language": node.language,
+        "loc": node.loc,
+        "complexity": node.complexity,
+        "fan_in": node.fan_in,
+        "fan_out": node.fan_out,
+        "scc_id": node.scc_id,
+        "status": node.status,
+    }
+
+
+def _load_node_metrics(project_id: int, paths: list[str]) -> dict[str, dict[str, object]]:
+    node_metrics: dict[str, dict[str, object]] = {}
+    if not paths:
+        return node_metrics
+    with get_session() as session:
+        rows = session.exec(
+            select(FileNode).where(
+                FileNode.project_id == project_id,
+                FileNode.path.in_(paths),
+            )
+        ).all()
+    for n in rows:
+        if not isinstance(n.path, str) or not n.path:
+            continue
+        node_metrics[n.path] = _node_metrics_from_row(n)
+    return node_metrics
+
+
+def _load_contract_summary(project_id: int, target: str) -> dict[str, object] | None:
+    with get_session() as session:
+        contract = session.exec(
+            select(ModuleContract).where(
+                ModuleContract.project_id == project_id,
+                ModuleContract.path == target,
+            )
+        ).first()
+    if contract is None or not isinstance(contract.contract_json, str):
+        return None
+    try:
+        data = json.loads(contract.contract_json)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    summary: dict[str, object] = {
+        "path": data.get("path"),
+        "language": data.get("language"),
+    }
+    exports = data.get("exports")
+    if isinstance(exports, list):
+        summary["exports"] = exports
+    module_doc = data.get("module_doc")
+    if isinstance(module_doc, str) and module_doc.strip():
+        summary["module_doc"] = module_doc
+    notes = data.get("notes")
+    if isinstance(notes, str) and notes.strip():
+        summary["notes"] = notes
+    if len(summary) == 2 and not summary.get("exports") and not summary.get("module_doc"):
+        return None
+    return summary
+
+
+def _plan_tz_skipped(reason: str) -> dict:
+    skipped = dict(PLAN_TZ_EMPTY)
+    skipped["summary"] = reason
+    return skipped
+
+
 def run_task(project_id: int, request: TaskRequest) -> dict:
     project = get_project(project_id)
 
@@ -286,6 +368,8 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
     agentic_meta: AgenticMeta | None = None
     use_agentic = bool(request.agentic) and bool(getattr(settings, "llm_agentic_retrieval", True))
     evidence_mode = bool(request.agentic_evidence_mode)
+    plan_tz: dict | None = None
+    plan_source: str | None = None
 
     if mode == "impact":
         impacted = _impact(project_id, target)
@@ -293,6 +377,21 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         model_used = "graph"
         retrieval_used = "graph"
         retrieval_settings = {"graph": {}}
+        if settings.openai_api_key:
+            paths_for_metrics = sorted({target, *impacted})
+            knowledge = {
+                "target_path": target,
+                "impacted": impacted,
+                "nodes": _load_node_metrics(project_id, paths_for_metrics),
+            }
+            try:
+                plan_tz = plan_task(knowledge, request.prompt)
+            except Exception as error:  # noqa: BLE001
+                _llm_http_error("plan", error)
+            plan_source = "graph"
+        else:
+            plan_tz = _plan_tz_skipped("Планирование пропущено: OPENAI_API_KEY не задан.")
+            plan_source = "skipped"
     else:
         retrieval_used = "agentic" if use_agentic else "pack"
 
@@ -394,6 +493,18 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         )
 
         if use_agentic:
+            knowledge: dict[str, object] = {"target_path": target}
+            node_metrics = _load_node_metrics(project_id, [target])
+            if target in node_metrics:
+                knowledge["node"] = node_metrics[target]
+            contract_summary = _load_contract_summary(project_id, target)
+            if contract_summary is not None:
+                knowledge["contract"] = contract_summary
+            try:
+                plan_tz = plan_task(knowledge, request.prompt)
+            except Exception as error:  # noqa: BLE001
+                _llm_http_error("plan", error)
+            plan_source = "agentic"
             allowed_patch_paths = {target}
             try:
                 if mode == "analyze":
@@ -573,6 +684,11 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                 "context_omitted_paths_total": omitted_total,
                 "context_omitted_paths_truncated": omitted_total > len(omitted_sample),
             }
+            try:
+                plan_tz = plan_task(packed_dict, request.prompt)
+            except Exception as error:  # noqa: BLE001
+                _llm_http_error("plan", error)
+            plan_source = "pack"
             if mode == "analyze":
                 try:
                     result = analyze(packed_dict, request.prompt)
@@ -731,6 +847,8 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         "retrieval_settings": retrieval_settings,
         "apply_patch": bool(request.apply_patch),
         "result": result_for_response,
+        "plan_tz": plan_tz,
+        "plan_source": plan_source,
         "applied": applied,
         "warning": warning,
         "graph_scan_task_id": graph_scan_task_id,

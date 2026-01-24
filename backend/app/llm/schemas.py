@@ -33,6 +33,35 @@ ANALYZE_SCHEMA = {
   "strict": True
 }
 
+PLAN_TZ_SCHEMA = {
+  "name": "cgraph_plan_tz",
+  "schema": {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+      "summary": {"type": "string"},
+      "requirements": {"type": "array", "items": {"type": "string"}},
+      "constraints": {"type": "array", "items": {"type": "string"}},
+      "sdlc_plan": {"type": "array", "items": {"type": "string"}},
+      "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+      "risks": {"type": "array", "items": {"type": "string"}},
+      "open_questions": {"type": "array", "items": {"type": "string"}},
+      "deliverables": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+      "summary",
+      "requirements",
+      "constraints",
+      "sdlc_plan",
+      "acceptance_criteria",
+      "risks",
+      "open_questions",
+      "deliverables",
+    ],
+  },
+  "strict": True,
+}
+
 SELF_CHECK_SCHEMA = {
   "name": "cgraph_self_check",
   "schema": {

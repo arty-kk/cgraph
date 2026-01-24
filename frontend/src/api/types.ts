@@ -143,6 +143,17 @@ export type SemanticSearchResult = {
   }
 }
 
+export type PlanTz = {
+  summary: string
+  requirements: string[]
+  constraints: string[]
+  sdlc_plan: string[]
+  acceptance_criteria: string[]
+  risks: string[]
+  open_questions: string[]
+  deliverables: string[]
+}
+
 export type RunDetails = {
   id: number
   project_id: number
@@ -178,6 +189,8 @@ export type RunTaskResult = {
   retrieval_settings?: RetrievalSettings
   apply_patch?: boolean | null
   result: unknown
+  plan_tz?: PlanTz
+  plan_source?: 'pack' | 'agentic' | 'graph' | 'skipped' | string
   applied?: {
     modified?: string[] | string
     reindexed?: unknown
