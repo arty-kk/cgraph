@@ -3425,6 +3425,7 @@ def _agentic_json_call(
     seed: dict,
     user_prompt: str,
     reasoning_effort: str | None,
+    evidence_mode: bool,
     max_calls: int | None = None,
     max_total_tool_output_chars: int | None = None,
     max_file_chars: int | None = None,
@@ -3457,6 +3458,11 @@ def _agentic_json_call(
         "- Never assume missing code; fetch it.\n"
         "- Keep changes minimal; for fixes, only propose changes you can justify from retrieved context.\n"
     )
+    if evidence_mode:
+        tool_rules += (
+            "- In evidence mode, every output must cite concrete file paths and line ranges; "
+            "use get_file_lines when possible.\n"
+        )
 
     input_list: list[Any] = [
         {"role": "user", "content": f"{tool_rules}\nUser prompt:\n{user_prompt}\n\nSeed context (JSON):\n{json.dumps(seed, ensure_ascii=False)}"}
@@ -3604,6 +3610,33 @@ def _agentic_json_call(
 
         if not function_calls:
             result = _parse_model_json(resp)
+            if evidence_mode:
+                sources = result.get("sources") if isinstance(result, dict) else None
+                missing_sources = not isinstance(sources, list) or len(sources) == 0
+                if missing_sources:
+                    if allow_self_check_retry:
+                        retry_prompt = (
+                            f"{user_prompt}\n\n"
+                            "Evidence mode requires sources with file paths and line ranges. "
+                            "Include non-empty sources and use get_file_lines when possible."
+                        )
+                        return _agentic_json_call(
+                            model=model,
+                            self_check_model=self_check_model,
+                            schema=schema,
+                            project_id=project_id,
+                            root=root,
+                            seed=seed,
+                            user_prompt=retry_prompt,
+                            reasoning_effort=reasoning_effort,
+                            evidence_mode=evidence_mode,
+                            max_calls=max_calls,
+                            max_total_tool_output_chars=max_total_tool_output_chars,
+                            max_file_chars=max_file_chars,
+                            temperature=temperature,
+                            allow_self_check_retry=False,
+                        )
+                    raise RuntimeError("Evidence mode requires non-empty sources in the response")
             check_model = self_check_model or model
             try:
                 self_check = _run_self_check(
@@ -3651,6 +3684,7 @@ def _agentic_json_call(
                     seed=seed,
                     user_prompt=retry_prompt,
                     reasoning_effort=reasoning_effort,
+                    evidence_mode=evidence_mode,
                     max_calls=max_calls,
                     max_total_tool_output_chars=max_total_tool_output_chars,
                     max_file_chars=max_file_chars,
@@ -3788,6 +3822,7 @@ def analyze_agentic(
     max_total_tool_output_chars: int | None = None,
     max_file_chars: int | None = None,
     temperature: float | None = None,
+    evidence_mode: bool,
 ) -> tuple[dict, AgenticMeta]:
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
     return _agentic_json_call(
@@ -3799,6 +3834,7 @@ def analyze_agentic(
         seed=seed,
         user_prompt=f"Task: ANALYZE\n{user_prompt}",
         reasoning_effort=policy.analysis_effort,
+        evidence_mode=evidence_mode,
         max_calls=max_calls,
         max_total_tool_output_chars=max_total_tool_output_chars,
         max_file_chars=max_file_chars,
@@ -3818,6 +3854,7 @@ def evolve_agentic(
     max_total_tool_output_chars: int | None = None,
     max_file_chars: int | None = None,
     temperature: float | None = None,
+    evidence_mode: bool,
 ) -> tuple[dict, AgenticMeta]:
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
     return _agentic_json_call(
@@ -3832,6 +3869,7 @@ def evolve_agentic(
             + user_prompt
         ),
         reasoning_effort=policy.analysis_effort,
+        evidence_mode=evidence_mode,
         max_calls=max_calls,
         max_total_tool_output_chars=max_total_tool_output_chars,
         max_file_chars=max_file_chars,
@@ -3851,6 +3889,7 @@ def fix_agentic(
     max_total_tool_output_chars: int | None = None,
     max_file_chars: int | None = None,
     temperature: float | None = None,
+    evidence_mode: bool,
 ) -> tuple[dict, AgenticMeta]:
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
     return _agentic_json_call(
@@ -3865,6 +3904,7 @@ def fix_agentic(
             + user_prompt
         ),
         reasoning_effort=policy.patch_effort,
+        evidence_mode=evidence_mode,
         max_calls=max_calls,
         max_total_tool_output_chars=max_total_tool_output_chars,
         max_file_chars=max_file_chars,

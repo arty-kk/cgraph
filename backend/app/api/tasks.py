@@ -24,6 +24,10 @@ class RunTask(BaseModel):
         default=True,
         description="Context strategy: true=agentic tool-based retrieval, false=pack_context",
     )
+    agentic_evidence_mode: bool | None = Field(
+        default=False,
+        description="Require evidence with file/line references in agentic outputs",
+    )
 
     pack_max_files: int | None = Field(default=None, ge=1, le=80, description="Max files in pack_context")
     pack_max_chars_per_file: int | None = Field(default=None, ge=200, le=50_000, description="Max chars per file in pack_context")
@@ -45,6 +49,7 @@ def run_task(project_id: int, body: RunTask, background_tasks: BackgroundTasks, 
         dep_mode=body.dep_mode,
         apply_patch=body.apply_patch,
         agentic=body.agentic,
+        agentic_evidence_mode=body.agentic_evidence_mode,
         pack_max_files=body.pack_max_files,
         pack_max_chars_per_file=body.pack_max_chars_per_file,
         pack_max_total_chars=body.pack_max_total_chars,

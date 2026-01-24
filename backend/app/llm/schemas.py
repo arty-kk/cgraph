@@ -12,6 +12,21 @@ ANALYZE_SCHEMA = {
       "evolution_points": {"type": "array", "items": {"type": "string"}},
       "notable_symbols": {"type": "array", "items": {"type": "string"}},
       "suggestions": {"type": "array", "items": {"type": "string"}},
+      "sources": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": False,
+          "properties": {
+            "path": {"type": "string"},
+            "start_line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
+            "note": {"type": "string"},
+            "used_in": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["path", "start_line", "end_line", "used_in"]
+        }
+      },
     },
     "required": ["summary", "risks", "evolution_points", "notable_symbols", "suggestions"]
   },
@@ -60,7 +75,22 @@ FIX_SCHEMA = {
       "plan": {"type": "array", "items": {"type": "string"}},
       "patch_unified_diff": {"type": "string"},
       "tests": {"type": "array", "items": {"type": "string"}},
-      "notes": {"type": "string"}
+      "notes": {"type": "string"},
+      "sources": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": False,
+          "properties": {
+            "path": {"type": "string"},
+            "start_line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
+            "note": {"type": "string"},
+            "used_in": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["path", "start_line", "end_line", "used_in"]
+        }
+      }
     },
     "required": ["diagnosis", "plan", "patch_unified_diff", "tests", "notes"]
   },

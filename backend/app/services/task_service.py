@@ -54,6 +54,7 @@ class TaskRequest:
     dep_mode: str
     apply_patch: bool
     agentic: bool
+    agentic_evidence_mode: bool | None = None
 
     provided_fields: set[str]
 
@@ -284,6 +285,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
     allowed_patch_paths: set[str] | None = None
     agentic_meta: AgenticMeta | None = None
     use_agentic = bool(request.agentic) and bool(getattr(settings, "llm_agentic_retrieval", True))
+    evidence_mode = bool(request.agentic_evidence_mode)
 
     if mode == "impact":
         impacted = _impact(project_id, target)
@@ -378,6 +380,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                     "max_file_chars": agentic_max_file_chars,
                     "max_total_tool_output_chars": agentic_max_total_tool_output_chars,
                     "temperature": agentic_temperature,
+                    "agentic_evidence_mode": evidence_mode,
                 }
             }
             if use_agentic
@@ -404,6 +407,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
                         temperature=agentic_temperature,
+                        evidence_mode=evidence_mode,
                     )
                     model_used = settings.analysis_model
                 elif mode == "evolve":
@@ -417,6 +421,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
                         temperature=agentic_temperature,
+                        evidence_mode=evidence_mode,
                     )
                     model_used = settings.analysis_model
                 elif mode == "fix":
@@ -430,6 +435,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
                         temperature=agentic_temperature,
+                        evidence_mode=evidence_mode,
                     )
                     model_used = settings.patch_model
                 else:
