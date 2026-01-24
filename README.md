@@ -109,6 +109,22 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 При наличии одновременно `//go:build` и `// +build` используется приоритет `go:build`. Если выражение `go:build` не парсится, применяется fallback на `+build`. Если оба выражения валидны, но дают разный результат, индексатор безопасно считает контекст активным, чтобы избежать ложного исключения файла из индексации.
 
+### Agentic‑режим: контракт ответа инструмента
+
+Каждый tool‑вызов возвращает единый формат:
+
+```json
+{"ok": true, "data": {"path": "...", "content": "..."}, "error": null}
+```
+
+или при ошибке:
+
+```json
+{"ok": false, "data": null, "error": {"code": "bad_args", "message": "path is required", "details": {"path": "..."}}}
+```
+
+Поля `error.code` и `error.message` обязательны; `details` опционально.
+
 ### Frontend
 
 - `VITE_API_BASE_URL` — базовый URL API (по умолчанию `http://localhost:8000`).
