@@ -3372,6 +3372,22 @@ def _agentic_json_call(
             args: dict[str, Any] = dict(args_raw)
 
             remaining_budget = max(0, max_total_chars_budget - meta.total_tool_output_chars)
+            if remaining_budget <= 0:
+                meta.tool_trace.append(
+                    {
+                        "name": name,
+                        "args": args,
+                        "cache_hit": False,
+                        "response_chars": 0,
+                        "duration_ms": 0,
+                        "status": "budget_exhausted",
+                        "truncated_due_to_budget": False,
+                    }
+                )
+                input_list.append(
+                    {"role": "system", "content": "Agentic tool output budget exhausted"}
+                )
+                break
             if name == "search_text":
                 _apply_search_budget(
                     args,
