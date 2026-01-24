@@ -269,8 +269,6 @@ def _load_contract_summary(project_id: int, target: str) -> dict[str, object] | 
     notes = data.get("notes")
     if isinstance(notes, str) and notes.strip():
         summary["notes"] = notes
-    if len(summary) == 2 and not summary.get("exports") and not summary.get("module_doc"):
-        return None
     return summary
 
 
