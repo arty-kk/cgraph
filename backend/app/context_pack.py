@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from sqlmodel import select
 from .db import get_session
@@ -150,7 +151,11 @@ def pack_context(
                 _add_file(d, "dep_full")
             else:
                 c = get_or_build_contract(project_id, project_root, d)
+                contract_size = len(json.dumps(c, ensure_ascii=False))
+                if total_chars + contract_size > max_total_chars:
+                    continue
                 files.append({"path": d, "kind": "dep_contract", "contract": c})
+                total_chars += contract_size
         except Exception:
             continue
 
