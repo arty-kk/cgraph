@@ -5,7 +5,7 @@ import json
 import openai
 from typing import Any
 from .client import get_openai_client
-from .schemas import TRIAGE_SCHEMA, ANALYZE_SCHEMA, FIX_SCHEMA, DOCS_SCHEMA
+from .schemas import TRIAGE_SCHEMA, ANALYZE_SCHEMA, FIX_SCHEMA, DOCS_SCHEMA, PLAN_TZ_SCHEMA
 from .policy import ModelPolicy, DEFAULT_POLICY
 from .model_caps import supports_reasoning
 from ..config import settings
@@ -179,6 +179,24 @@ def evolve(packed_context: dict, user_prompt: str, policy: ModelPolicy = DEFAULT
         {"role": "user", "content": f"Задача: EVOLUTION POINTS. Найди точки эволюции бизнес-логики/домена, узкие места API, места частых изменений.\nПользовательский запрос: {user_prompt}\n\nКонтекст (JSON):\n{ctx}"},
     ]
     return _json_call(policy.analysis_model, ANALYZE_SCHEMA, items, reasoning_effort=policy.analysis_effort)
+
+def plan_task(knowledge: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
+    ctx = json.dumps(knowledge, ensure_ascii=False)
+    items = [
+        {
+            "role": "user",
+            "content": (
+                "Задача: PLAN + ТЗ. Сформируй план реализации и оптимальное техническое задание.\n"
+                "Требования:\n"
+                "- Используй ТОЛЬКО предоставленные факты.\n"
+                "- Если данных недостаточно — явно укажи допущения/открытые вопросы.\n"
+                "- План должен быть практичным и проверяемым.\n\n"
+                f"Пользовательский запрос: {user_prompt}\n\n"
+                f"Факты (JSON):\n{ctx}"
+            ),
+        },
+    ]
+    return _json_call(policy.analysis_model, PLAN_TZ_SCHEMA, items, reasoning_effort=policy.analysis_effort)
 
 def fix(packed_context: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
     ctx = json.dumps(packed_context, ensure_ascii=False)
