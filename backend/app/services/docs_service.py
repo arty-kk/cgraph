@@ -14,7 +14,7 @@ from sqlmodel import select
 from ..config import settings
 from ..contracts import get_or_build_contract
 from ..db import get_session
-from ..errors import BadRequestError, NotFoundError
+from ..errors import BadRequestError, ExternalServiceError, NotFoundError
 from ..llm.orchestrator import generate_docs
 from ..models import (
     ApiCall, ApiInclude,
@@ -959,23 +959,18 @@ def build_project_docs(project_id: int) -> dict:
         "module_map_table_md": "\n".join(module_table),
     }
 
-    llm_error: str | None = None
     md = ""
     try:
         llm = generate_docs(facts)
         md = str(llm.get("markdown") or "").strip()
     except Exception as e:
-        llm_error = str(e)
+        raise ExternalServiceError(
+            "Таймаут генерации документации через LLM",
+            context={"reason": "timeout", "detail": str(e)},
+        ) from e
 
     if not md:
-        if llm_error:
-            md = (
-                "## Overview\n\n"
-                "> Автогенерация документации через LLM недоступна.\n"
-                f"> Причина: {llm_error}\n"
-            )
-        else:
-            md = "## Overview\n\n> Дополнительные разделы не сформированы.\n"
+        md = "## Overview\n\n> Дополнительные разделы не сформированы.\n"
 
     tree_md = "\n".join(outline["lines"])
     if outline["truncated"]:

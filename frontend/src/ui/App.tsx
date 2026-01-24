@@ -272,6 +272,11 @@ export function App() {
           </div>
 
           <div className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-3 overflow-auto max-h-[70vh]">
+            {app.docsBuildError && app.docs?.markdown && (
+              <div className="text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-md p-2 mb-3">
+                Docs не обновились из-за ошибки — показана предыдущая версия.
+              </div>
+            )}
             {!app.docs?.markdown ? (
               <div className="text-neutral-500">—</div>
             ) : (
