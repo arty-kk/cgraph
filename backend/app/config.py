@@ -54,7 +54,7 @@ class Settings(BaseSettings):
         default=5000, alias="CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES"
     )
 
-    openai_timeout_seconds: float = Field(default=30.0, alias="CGRAPH_OPENAI_TIMEOUT_SECONDS")
+    openai_timeout_seconds: float = Field(default=900.0, alias="CGRAPH_OPENAI_TIMEOUT_SECONDS")
     openai_max_retries: int = Field(default=3, alias="CGRAPH_OPENAI_MAX_RETRIES")
 
     embeddings_enabled: bool = Field(default=False, alias="CGRAPH_EMBEDDINGS_ENABLED")
