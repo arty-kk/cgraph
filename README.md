@@ -126,6 +126,8 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 Поля `error.code` и `error.message` обязательны; `details` опционально.
 
+В agentic‑режиме доступен инструмент `search_tests`, который ищет тестовые файлы по стандартным паттернам (`tests/`, `__tests__/`, `*.spec.*`, `*.test.*`, `test_*.py`, `*_test.*`) и возвращает пути с метаданными узлов (язык, fan‑in/fan‑out) согласно реализации в backend.
+
 ### Frontend
 
 - `VITE_API_BASE_URL` — базовый URL API (по умолчанию `http://localhost:8000`).
