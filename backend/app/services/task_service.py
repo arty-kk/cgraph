@@ -446,6 +446,13 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         retrieval_settings["agentic"]["tool_output_chars_used"] = int(agentic_meta.total_tool_output_chars)
                         retrieval_settings["agentic"]["cache_hits"] = int(getattr(agentic_meta, "cache_hits", 0))
                         retrieval_settings["agentic"]["files_read"] = int(len(agentic_meta.full_file_paths or []))
+                        retrieval_settings["agentic"]["self_check_ok"] = agentic_meta.self_check_ok
+                        retrieval_settings["agentic"]["self_check_notes"] = list(
+                            agentic_meta.self_check_notes or []
+                        )
+                        retrieval_settings["agentic"]["self_check_missing_context"] = list(
+                            agentic_meta.self_check_missing_context or []
+                        )
                         if settings.llm_agentic_trace_enabled:
                             retrieval_settings["agentic"]["tool_trace"] = list(
                                 agentic_meta.tool_trace or []

@@ -143,6 +143,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 ## Ручная проверка
 
 - Включить Semantic search без `OPENAI_API_KEY` → увидеть авто‑fallback на обычный поиск и информационное уведомление.
+- Запустить agentic‑задачу с промптом, который требует внешнего контекста, и проверить, что в `retrieval_settings.agentic` появились `self_check_ok`, `self_check_notes`, `self_check_missing_context`, а при `self_check_ok=false` выполняется один дополнительный заход модели с дозапросом контекста.
 
 ## Проверки (опционально)
 
