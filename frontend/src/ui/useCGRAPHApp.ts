@@ -206,13 +206,13 @@ export function useCGRAPHApp() {
     try { return Number(localStorage.getItem('cs.ui.agentic.temperature') || '0') || 0 } catch { return 0 }
   })
   const [packMaxFiles, setPackMaxFiles] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.pack.maxFiles') || '25') || 25 } catch { return 25 }
+    try { return asInt(localStorage.getItem('cs.ui.pack.maxFiles') || '25', 25, 1, 80) } catch { return 25 }
   })
   const [packMaxCharsPerFile, setPackMaxCharsPerFile] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.pack.maxCharsPerFile') || '12000') || 12000 } catch { return 12000 }
+    try { return asInt(localStorage.getItem('cs.ui.pack.maxCharsPerFile') || '12000', 12000, 200, 50000) } catch { return 12000 }
   })
   const [packMaxTotalChars, setPackMaxTotalChars] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.pack.maxTotalChars') || '120000') || 120000 } catch { return 120000 }
+    try { return asInt(localStorage.getItem('cs.ui.pack.maxTotalChars') || '120000', 120000, 1000, 500000) } catch { return 120000 }
   })
   useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxCalls', String(agenticMaxCalls)) } catch {} }, [agenticMaxCalls])
   useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxFileChars', String(agenticMaxFileChars)) } catch {} }, [agenticMaxFileChars])
