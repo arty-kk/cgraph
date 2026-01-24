@@ -40,6 +40,7 @@ import {
   type ProjectDocs,
 } from '../api'
 import { extractError, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '../lib/errors'
+import { clampInt } from '../lib/number'
 
 type AutoOrMode = 'auto' | Mode
 type GraphMode = 'local' | 'full' | 'limit'
@@ -1141,6 +1142,25 @@ export function useCGRAPHApp() {
       setRunResult(null)
       setFullPatch(null)
 
+      const clampedPackMaxFiles = clampInt(packMaxFiles, 1, 80)
+      const clampedPackMaxCharsPerFile = clampInt(packMaxCharsPerFile, 200, 50_000)
+      let clampedPackMaxTotalChars = clampInt(packMaxTotalChars, 1_000, 500_000)
+      if (clampedPackMaxTotalChars < clampedPackMaxCharsPerFile) {
+        clampedPackMaxTotalChars = clampedPackMaxCharsPerFile
+      }
+      if (clampedPackMaxFiles !== packMaxFiles) setPackMaxFiles(clampedPackMaxFiles)
+      if (clampedPackMaxCharsPerFile !== packMaxCharsPerFile) setPackMaxCharsPerFile(clampedPackMaxCharsPerFile)
+      if (clampedPackMaxTotalChars !== packMaxTotalChars) setPackMaxTotalChars(clampedPackMaxTotalChars)
+
+      const clampedAgenticMaxCalls = clampInt(agenticMaxCalls, 1, 100)
+      const clampedAgenticMaxFileChars = clampInt(agenticMaxFileChars, 200, 50_000)
+      const clampedAgenticMaxTotalToolOutputChars = clampInt(agenticMaxTotalToolOutputChars, 2_000, 1_000_000)
+      if (clampedAgenticMaxCalls !== agenticMaxCalls) setAgenticMaxCalls(clampedAgenticMaxCalls)
+      if (clampedAgenticMaxFileChars !== agenticMaxFileChars) setAgenticMaxFileChars(clampedAgenticMaxFileChars)
+      if (clampedAgenticMaxTotalToolOutputChars !== agenticMaxTotalToolOutputChars) {
+        setAgenticMaxTotalToolOutputChars(clampedAgenticMaxTotalToolOutputChars)
+      }
+
       const body: RunTaskBody = {
         target_path: selectedPath,
         prompt,
@@ -1148,14 +1168,14 @@ export function useCGRAPHApp() {
         agentic: retrievalMode === 'agentic',
       }
       if (retrievalMode === 'agentic') {
-        body.agentic_max_calls = agenticMaxCalls
-        body.agentic_max_file_chars = agenticMaxFileChars
-        body.agentic_max_total_tool_output_chars = agenticMaxTotalToolOutputChars
+        body.agentic_max_calls = clampedAgenticMaxCalls
+        body.agentic_max_file_chars = clampedAgenticMaxFileChars
+        body.agentic_max_total_tool_output_chars = clampedAgenticMaxTotalToolOutputChars
         body.agentic_temperature = agenticTemperature
       } else {
-        body.pack_max_files = packMaxFiles
-        body.pack_max_chars_per_file = packMaxCharsPerFile
-        body.pack_max_total_chars = packMaxTotalChars
+        body.pack_max_files = clampedPackMaxFiles
+        body.pack_max_chars_per_file = clampedPackMaxCharsPerFile
+        body.pack_max_total_chars = clampedPackMaxTotalChars
       }
       if (mode !== 'auto') {
         body.mode = mode
