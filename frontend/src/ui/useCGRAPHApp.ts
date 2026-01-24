@@ -839,6 +839,7 @@ export function useCGRAPHApp() {
   const [docs, setDocs] = useState<ProjectDocs | null>(null)
   const [docsBusy, setDocsBusy] = useState(false)
   const [docsBuildBusy, setDocsBuildBusy] = useState(false)
+  const [docsBuildError, setDocsBuildError] = useState<string | null>(null)
 
   const [fileEditorOpen, setFileEditorOpen] = useState(false)
   const [fileEditorPath, setFileEditorPath] = useState<string | null>(null)
@@ -852,6 +853,7 @@ export function useCGRAPHApp() {
 
   useEffect(() => {
     setDocs(null)
+    setDocsBuildError(null)
   }, [activeProject?.id])
 
   useEffect(() => {
@@ -866,6 +868,7 @@ export function useCGRAPHApp() {
   const loadDocs = useCallback(async () => {
     if (!activeProject) return
     setDocsBusy(true)
+    setDocsBuildError(null)
     setErrorMessage(null)
     try {
       const d = await getProjectDocs(activeProject.id)
@@ -881,12 +884,15 @@ export function useCGRAPHApp() {
   const buildDocs = useCallback(async () => {
     if (!activeProject) return
     setDocsBuildBusy(true)
+    setDocsBuildError(null)
     setErrorMessage(null)
     try {
       const d = await buildProjectDocs(activeProject.id, { background: true, pollIntervalMs: 1200, maxAttempts: 300 })
       setDocs(d)
+      setDocsBuildError(null)
       notifyInfo('Docs built')
     } catch (e: any) {
+      setDocsBuildError(extractError(e))
       setErrorMessage(extractError(e))
     } finally {
       setDocsBuildBusy(false)
@@ -1303,6 +1309,7 @@ export function useCGRAPHApp() {
     docs,
     docsBusy,
     docsBuildBusy,
+    docsBuildError,
     loadDocs,
     buildDocs,
     fileEditorOpen,
