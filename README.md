@@ -103,6 +103,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - `CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS` — лимит общего объёма вывода инструментов в agentic‑режиме.
 - `CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS` — лимит символов при чтении файла в agentic‑режиме.
 - `CGRAPH_LLM_AGENTIC_TEMPERATURE` — температура для agentic‑режима (0..2).
+- `CGRAPH_LLM_AGENTIC_TRACE_ENABLED` — включает выдачу `tool_trace` в `retrieval_settings` agentic‑ответов (по умолчанию включено).
 - В agentic‑режиме фактические лимиты могут динамически увеличиваться (в пределах серверных caps), учитывая глубину (`depth`), `mode`, длину промпта и размер проекта (количество `FileNode`). Итоговые значения возвращаются в `retrieval_settings` ответа.
 - `CGRAPH_GO_BUILD_TAGS` — список build‑tag значений Go (через запятую или пробел) для фильтрации импорта/символов.
 - `GOFLAGS` — стандартные Go‑флаги; поддержка `-tags` и `-tags=` влияет на набор build‑tag при индексации Go‑файлов (можно дополнить через `CGRAPH_GO_BUILD_TAGS`).
@@ -125,6 +126,8 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 ```
 
 Поля `error.code` и `error.message` обязательны; `details` опционально.
+
+Если `CGRAPH_LLM_AGENTIC_TRACE_ENABLED=true`, в `retrieval_settings.agentic.tool_trace` возвращается список объектов со следующими полями: `name`, `args`, `duration_ms`, `cache_hit`, `response_chars`, `response_bytes`, `status`, `error_code`, `error_message`, а также `truncated_due_to_budget` при усечении.
 
 В agentic‑режиме доступен инструмент `search_tests`, который ищет тестовые файлы по стандартным паттернам (`tests/`, `__tests__/`, `*.spec.*`, `*.test.*`, `test_*.py`, `*_test.*`) и возвращает пути с метаданными узлов (язык, fan‑in/fan‑out) согласно реализации в backend.
 
