@@ -28,7 +28,7 @@ from ..scan import SEARCH_INDEX_MAX_CHARS
 from .client import get_openai_client
 from .model_caps import supports_reasoning, supports_temperature
 from .policy import ModelPolicy, DEFAULT_POLICY
-from .schemas import ANALYZE_SCHEMA, FIX_SCHEMA
+from .schemas import ANALYZE_SCHEMA, FIX_SCHEMA, SELF_CHECK_SCHEMA
 from .orchestrator import SYSTEM_INSTRUCTIONS
 
 
@@ -39,6 +39,9 @@ class AgenticMeta:
     total_tool_output_chars: int = 0
     cache_hits: int = 0
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    self_check_ok: bool | None = None
+    self_check_notes: list[str] = field(default_factory=list)
+    self_check_missing_context: list[str] = field(default_factory=list)
 
 
 def _normalize_responses_json_schema(schema: dict) -> dict:
@@ -110,6 +113,52 @@ def _parse_model_json(resp: Any) -> dict:
         if refusal:
             raise RuntimeError(f"Model refusal: {refusal}") from e
         raise RuntimeError(f"Failed to parse model JSON output: {e}\nRaw: {txt[:4000]}") from e
+
+
+def _run_self_check(
+    *,
+    client: openai.Client,
+    model: str,
+    user_prompt: str,
+    seed: dict,
+    response_payload: dict,
+) -> dict:
+    fmt = _normalize_responses_json_schema(SELF_CHECK_SCHEMA)
+    input_list = [
+        {
+            "role": "user",
+            "content": (
+                "Проверь, соответствует ли ответ задаче и контексту. "
+                "Если контекста недостаточно — перечисли, что запросить.\n\n"
+                f"User prompt:\n{user_prompt}\n\n"
+                f"Seed context (JSON):\n{json.dumps(seed, ensure_ascii=False)}\n\n"
+                f"Model response (JSON):\n{json.dumps(response_payload, ensure_ascii=False)}"
+            ),
+        }
+    ]
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "instructions": "You are a strict reviewer. Reply with JSON only.",
+        "input": input_list,
+        "text": {"format": fmt},
+        "store": bool(settings.openai_store),
+        "parallel_tool_calls": False,
+    }
+    if supports_temperature(model):
+        kwargs["temperature"] = 0.0
+    if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
+        kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
+        if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
+            kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
+    try:
+        resp = client.responses.create(**kwargs)
+    except TypeError as e:
+        msg = str(e)
+        for k in ("prompt_cache_key", "prompt_cache_retention", "store", "temperature", "parallel_tool_calls"):
+            if k in msg:
+                kwargs.pop(k, None)
+        resp = client.responses.create(**kwargs)
+    return _parse_model_json(resp)
 
 
 def _neighbors_limited(
@@ -3369,6 +3418,7 @@ def _seed_context(project_id: int, root: Path, target_rel: str, depth: int, *, m
 def _agentic_json_call(
     *,
     model: str,
+    self_check_model: str | None,
     schema: dict,
     project_id: int,
     root: Path,
@@ -3379,6 +3429,7 @@ def _agentic_json_call(
     max_total_tool_output_chars: int | None = None,
     max_file_chars: int | None = None,
     temperature: float | None = None,
+    allow_self_check_retry: bool = True,
 ) -> tuple[dict, AgenticMeta]:
     client = get_openai_client()
     fmt = _normalize_responses_json_schema(schema)
@@ -3552,7 +3603,62 @@ def _agentic_json_call(
                 function_calls.append((name, call_id, arguments))
 
         if not function_calls:
-            return (_parse_model_json(resp), meta)
+            result = _parse_model_json(resp)
+            check_model = self_check_model or model
+            try:
+                self_check = _run_self_check(
+                    client=client,
+                    model=check_model,
+                    user_prompt=user_prompt,
+                    seed=seed,
+                    response_payload=result,
+                )
+            except Exception as exc:
+                meta.self_check_ok = None
+                meta.self_check_notes = [f"self_check_error: {exc}"]
+                meta.self_check_missing_context = []
+                return (result, meta)
+
+            ok = bool(self_check.get("ok") is True)
+            issues = self_check.get("issues")
+            missing_context = self_check.get("missing_context")
+            meta.self_check_ok = ok
+            meta.self_check_notes = list(issues) if isinstance(issues, list) else []
+            meta.self_check_missing_context = (
+                list(missing_context) if isinstance(missing_context, list) else []
+            )
+
+            if not ok and allow_self_check_retry:
+                extra_sections: list[str] = []
+                if meta.self_check_missing_context:
+                    extra_sections.append(
+                        "Missing context:\n- " + "\n- ".join(meta.self_check_missing_context)
+                    )
+                if meta.self_check_notes:
+                    extra_sections.append(
+                        "Issues:\n- " + "\n- ".join(meta.self_check_notes)
+                    )
+                extra_prompt = "Self-check обнаружил проблемы. Используй инструменты, чтобы собрать недостающий контекст."
+                if extra_sections:
+                    extra_prompt = f"{extra_prompt}\n\n" + "\n\n".join(extra_sections)
+                retry_prompt = f"{user_prompt}\n\n{extra_prompt}"
+                return _agentic_json_call(
+                    model=model,
+                    self_check_model=self_check_model,
+                    schema=schema,
+                    project_id=project_id,
+                    root=root,
+                    seed=seed,
+                    user_prompt=retry_prompt,
+                    reasoning_effort=reasoning_effort,
+                    max_calls=max_calls,
+                    max_total_tool_output_chars=max_total_tool_output_chars,
+                    max_file_chars=max_file_chars,
+                    temperature=temperature,
+                    allow_self_check_retry=False,
+                )
+
+            return (result, meta)
 
         for name, call_id, arguments in function_calls:
             meta.tool_calls += 1
@@ -3686,6 +3792,7 @@ def analyze_agentic(
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
     return _agentic_json_call(
         model=policy.analysis_model,
+        self_check_model=policy.analysis_model,
         schema=ANALYZE_SCHEMA,
         project_id=project_id,
         root=root,
@@ -3715,6 +3822,7 @@ def evolve_agentic(
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
     return _agentic_json_call(
         model=policy.analysis_model,
+        self_check_model=policy.analysis_model,
         schema=ANALYZE_SCHEMA,
         project_id=project_id,
         root=root,
@@ -3747,6 +3855,7 @@ def fix_agentic(
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
     return _agentic_json_call(
         model=policy.patch_model,
+        self_check_model=policy.analysis_model,
         schema=FIX_SCHEMA,
         project_id=project_id,
         root=root,

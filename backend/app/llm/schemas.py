@@ -18,6 +18,21 @@ ANALYZE_SCHEMA = {
   "strict": True
 }
 
+SELF_CHECK_SCHEMA = {
+  "name": "cgraph_self_check",
+  "schema": {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+      "ok": {"type": "boolean"},
+      "issues": {"type": "array", "items": {"type": "string"}},
+      "missing_context": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["ok", "issues", "missing_context"]
+  },
+  "strict": True
+}
+
 TRIAGE_SCHEMA = {
   "name": "cgraph_triage",
   "schema": {
