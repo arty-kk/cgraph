@@ -634,58 +634,71 @@ def _clamp_float(v: Any, default: float, lo: float, hi: float) -> float:
         x = float(default)
     return max(lo, min(hi, x))
 
+def _tool_ok(data: dict) -> dict:
+    if not isinstance(data, dict):
+        raise TypeError("tool data must be a dict")
+    return {"ok": True, "data": data, "error": None}
+
+def _tool_error(code: str, message: str, details: dict | None = None) -> dict:
+    details_out = details if isinstance(details, dict) and details else None
+    return {
+        "ok": False,
+        "data": None,
+        "error": {"code": str(code), "message": str(message), "details": details_out},
+    }
+
 def _tool_get_file(project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     max_file_chars = max(200, min(int(max_file_chars), 50_000))
     max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 200, 50_000)
     max_chars = min(max_chars, max_file_chars)
     try:
         abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
-        return {"error": "invalid_path", "message": str(e)}
+        return _tool_error("invalid_path", str(e))
     if not abs_path.exists():
-        return {"error": "not_found", "path": rel_norm}
+        return _tool_error("not_found", "path not found", {"path": rel_norm})
     if not abs_path.is_file():
-        return {"error": "not_a_file", "path": rel_norm}
+        return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
     try:
         text = abs_path.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
-        return {"error": "read_failed", "path": rel_norm, "message": str(e)}
+        return _tool_error("read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)})
     truncated = len(text) > max_chars
     text = text[:max_chars]
     meta.full_file_paths.add(rel_norm)
-    return {"path": rel_norm, "content": text, "truncated": truncated, "max_chars": max_chars}
+    return _tool_ok({"path": rel_norm, "content": text, "truncated": truncated, "max_chars": max_chars})
 
 def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int) -> dict:
     path = args.get("path")
     start_line = args.get("start_line")
     end_line = args.get("end_line")
     if not isinstance(path, str) or not path.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     try:
         s_ln = int(start_line)
         e_ln = int(end_line)
     except Exception:
-        return {"error": "bad_args", "message": "start_line/end_line must be integers"}
+        return _tool_error("bad_args", "start_line/end_line must be integers")
     if s_ln < 1 or e_ln < 1 or e_ln < s_ln:
-        return {"error": "bad_args", "message": "invalid line range"}
+        return _tool_error("bad_args", "invalid line range")
     max_file_chars = max(200, min(int(max_file_chars), 50_000))
     max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 200, 50_000)
     max_chars = min(max_chars, max_file_chars)
     try:
         abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
-        return {"error": "invalid_path", "message": str(e)}
+        return _tool_error("invalid_path", str(e))
     if not abs_path.exists():
-        return {"error": "not_found", "path": rel_norm}
+        return _tool_error("not_found", "path not found", {"path": rel_norm})
     if not abs_path.is_file():
-        return {"error": "not_a_file", "path": rel_norm}
+        return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
     try:
         text = abs_path.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
-        return {"error": "read_failed", "path": rel_norm, "message": str(e)}
+        return _tool_error("read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)})
     lines = text.splitlines(keepends=True)
     s0 = max(0, s_ln - 1)
     e0 = min(len(lines), e_ln)
@@ -694,74 +707,87 @@ def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: d
     if truncated:
         snippet = snippet[:max_chars]
     meta.full_file_paths.add(rel_norm)
-    return {"path": rel_norm, "start_line": s_ln, "end_line": e_ln, "content": snippet, "truncated": truncated, "max_chars": max_chars}
+    return _tool_ok(
+        {
+            "path": rel_norm,
+            "start_line": s_ln,
+            "end_line": e_ln,
+            "content": snippet,
+            "truncated": truncated,
+            "max_chars": max_chars,
+        }
+    )
 
 def _tool_get_contract(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     try:
         _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
-        return {"error": "invalid_path", "message": str(e)}
+        return _tool_error("invalid_path", str(e))
     try:
         contract = get_or_build_contract(project_id, root, rel_norm)
     except Exception as e:
-        return {"error": "contract_failed", "path": rel_norm, "message": str(e)}
+        return _tool_error("contract_failed", "failed to build contract", {"path": rel_norm, "reason": str(e)})
     meta.full_file_paths.add(rel_norm)
-    return contract
+    if not isinstance(contract, dict):
+        return _tool_error("contract_failed", "contract is not a dict", {"path": rel_norm})
+    return _tool_ok(contract)
 
 def _tool_get_symbol(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     path = args.get("path")
     name = args.get("name")
     if not isinstance(path, str) or not path.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     if not isinstance(name, str) or not name.strip():
-        return {"error": "bad_args", "message": "name is required"}
+        return _tool_error("bad_args", "name is required")
     try:
         _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
-        return {"error": "invalid_path", "message": str(e)}
+        return _tool_error("invalid_path", str(e))
     try:
         c = get_or_build_contract(project_id, root, rel_norm)
     except Exception as e:
-        return {"error": "contract_failed", "path": rel_norm, "message": str(e)}
+        return _tool_error("contract_failed", "failed to build contract", {"path": rel_norm, "reason": str(e)})
     meta.full_file_paths.add(rel_norm)
     if not isinstance(c, dict):
-        return {"error": "contract_failed", "path": rel_norm}
+        return _tool_error("contract_failed", "contract is not a dict", {"path": rel_norm})
     syms = c.get("symbols")
     if not isinstance(syms, list):
-        return {"error": "no_symbols", "message": "contract has no symbols (need contract v2)", "path": rel_norm}
+        return _tool_error("no_symbols", "contract has no symbols (need contract v2)", {"path": rel_norm})
     needle = name.strip()
     for item in syms:
         if isinstance(item, dict) and str(item.get("name") or "") == needle:
-            return {"path": rel_norm, "symbol": item}
-    return {"error": "not_found", "path": rel_norm, "name": needle}
+            return _tool_ok({"path": rel_norm, "symbol": item})
+    return _tool_error("not_found", "symbol not found", {"path": rel_norm, "name": needle})
 
 def _tool_get_node(project_id: int, root: Path, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     try:
         _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
-        return {"error": "invalid_path", "message": str(e)}
+        return _tool_error("invalid_path", str(e))
     with get_session() as s:
         n = s.exec(
             select(FileNode).where(FileNode.project_id == project_id, FileNode.path == rel_norm)
         ).first()
     if not n:
-        return {"error": "not_found", "path": rel_norm}
-    return {
-        "path": n.path,
-        "language": n.language,
-        "loc": n.loc,
-        "complexity": n.complexity,
-        "fan_in": n.fan_in,
-        "fan_out": n.fan_out,
-        "scc_id": n.scc_id,
-        "status": n.status,
-    }
+        return _tool_error("not_found", "node not found", {"path": rel_norm})
+    return _tool_ok(
+        {
+            "path": n.path,
+            "language": n.language,
+            "loc": n.loc,
+            "complexity": n.complexity,
+            "fan_in": n.fan_in,
+            "fan_out": n.fan_out,
+            "scc_id": n.scc_id,
+            "status": n.status,
+        }
+    )
 
 
 def _tool_get_neighbors(project_id: int, root: Path, args: dict) -> dict:
@@ -770,30 +796,32 @@ def _tool_get_neighbors(project_id: int, root: Path, args: dict) -> dict:
     depth = _clamp_int(args.get("depth"), 1, 0, 6)
     limit = _clamp_int(args.get("limit"), 200, 1, 2000)
     if not isinstance(path, str) or not path.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     if direction not in ("in", "out"):
-        return {"error": "bad_args", "message": "direction must be 'in' or 'out'"}
+        return _tool_error("bad_args", "direction must be 'in' or 'out'")
     try:
         _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
-        return {"error": "invalid_path", "message": str(e)}
+        return _tool_error("invalid_path", str(e))
     neigh = _neighbors_limited(project_id, rel_norm, direction=direction, depth=depth, limit=limit)
-    return {"path": rel_norm, "direction": direction, "depth": depth, "neighbors": neigh, "count": len(neigh)}
+    return _tool_ok(
+        {"path": rel_norm, "direction": direction, "depth": depth, "neighbors": neigh, "count": len(neigh)}
+    )
 
 
 def _tool_search_paths(project_id: int, args: dict) -> dict:
     query = args.get("query")
     limit = _clamp_int(args.get("limit"), 20, 1, 100)
     if not isinstance(query, str) or not query.strip():
-        return {"error": "bad_args", "message": "query is required"}
+        return _tool_error("bad_args", "query is required")
     rows = search_nodes(project_id, query.strip(), limit=limit)
-    return {"query": query.strip(), "limit": limit, "results": rows}
+    return _tool_ok({"query": query.strip(), "limit": limit, "results": rows})
 
 
 def _tool_search_symbols(project_id: int, args: dict) -> dict:
     query = args.get("query")
     if not isinstance(query, str) or not query.strip():
-        return {"error": "bad_args", "message": "query is required"}
+        return _tool_error("bad_args", "query is required")
     needle = query.strip()
     match = args.get("match")
     match_mode = match if isinstance(match, str) and match in ("exact", "prefix", "contains") else None
@@ -923,15 +951,17 @@ def _tool_search_symbols(project_id: int, args: dict) -> dict:
     for item in results:
         item.pop("_match", None)
 
-    return {
-        "query": needle,
-        "match": match_mode,
-        "case_sensitive": bool(case_sensitive),
-        "exported_only": bool(exported_only),
-        "limit": int(limit),
-        "count": len(results),
-        "results": results,
-    }
+    return _tool_ok(
+        {
+            "query": needle,
+            "match": match_mode,
+            "case_sensitive": bool(case_sensitive),
+            "exported_only": bool(exported_only),
+            "limit": int(limit),
+            "count": len(results),
+            "results": results,
+        }
+    )
 
 
 def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
@@ -964,11 +994,13 @@ def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
         paths.append(p)
 
     outline = _tree_outline(paths, max_lines=max_lines)
-    return {
-        "lines": outline.get("lines", []),
-        "truncated": bool(outline.get("truncated")),
-        "max_lines": int(outline.get("max_lines", max_lines)),
-    }
+    return _tool_ok(
+        {
+            "lines": outline.get("lines", []),
+            "truncated": bool(outline.get("truncated")),
+            "max_lines": int(outline.get("max_lines", max_lines)),
+        }
+    )
 
 
 def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
@@ -979,25 +1011,27 @@ def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
             .order_by(FileNode.path)
         ).all()
     if not nodes:
-        return {"error": "not_indexed", "message": "Project is not indexed. Run scan first."}
+        return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
     summary = _compute_project_summary_facts(nodes)
-    return {
-        "counts": summary["counts"],
-        "hotspots": summary["hotspots"],
-        "hubs_by_fan_in": summary["hubs_by_fan_in"],
-        "module_map": summary["module_map"],
-        "truncation": {
-            "hotspots": bool(summary["hotspots_truncated"]),
-            "hubs_by_fan_in": bool(summary["hubs_by_fan_in_truncated"]),
-            "module_map": bool(summary["module_map_truncated"]),
-        },
-    }
+    return _tool_ok(
+        {
+            "counts": summary["counts"],
+            "hotspots": summary["hotspots"],
+            "hubs_by_fan_in": summary["hubs_by_fan_in"],
+            "module_map": summary["module_map"],
+            "truncation": {
+                "hotspots": bool(summary["hotspots_truncated"]),
+                "hubs_by_fan_in": bool(summary["hubs_by_fan_in_truncated"]),
+                "module_map": bool(summary["module_map_truncated"]),
+            },
+        }
+    )
 
 
 def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
     query = args.get("query")
     if not isinstance(query, str) or not query.strip():
-        return {"error": "bad_args", "message": "query is required"}
+        return _tool_error("bad_args", "query is required")
     needle = query.strip()
 
     prefix = args.get("prefix")
@@ -1136,25 +1170,27 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
         if truncated:
             truncated_files += 1
 
-    return {
-        "query": needle,
-        "prefix": prefix_norm or "",
-        "case_sensitive": bool(case_sensitive),
-        "max_files": int(max_files),
-        "max_matches": int(max_matches),
-        "context_chars": int(context_chars),
-        "scan_max_chars_per_file": int(scan_max_chars),
-        "scanned_files": int(scanned),
-        "matched_files": int(len(matched_files)),
-        "truncated_files": int(truncated_files),
-        "matches": matches,
-    }
+    return _tool_ok(
+        {
+            "query": needle,
+            "prefix": prefix_norm or "",
+            "case_sensitive": bool(case_sensitive),
+            "max_files": int(max_files),
+            "max_matches": int(max_matches),
+            "context_chars": int(context_chars),
+            "scan_max_chars_per_file": int(scan_max_chars),
+            "scanned_files": int(scanned),
+            "matched_files": int(len(matched_files)),
+            "truncated_files": int(truncated_files),
+            "matches": matches,
+        }
+    )
 
 
 def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
     query = args.get("query")
     if not isinstance(query, str) or not query.strip():
-        return {"error": "bad_args", "message": "query is required"}
+        return _tool_error("bad_args", "query is required")
 
     prefix = args.get("prefix")
     prefix_norm: str | None = None
@@ -1193,21 +1229,26 @@ def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_c
             fallback_args["max_matches"] = args.get("max_matches")
         if args.get("context_chars") is not None:
             fallback_args["context_chars"] = args.get("context_chars")
-        text_out = _tool_search_text(project_id, root, fallback_args, max_file_chars=max_file_chars)
+        text_result = _tool_search_text(project_id, root, fallback_args, max_file_chars=max_file_chars)
+        if not text_result.get("ok"):
+            return text_result
+        text_out = text_result["data"]
         meta = text_out.get("meta")
         if not isinstance(meta, dict):
             meta = {}
         meta["fallback_used"] = True
         meta["reason"] = reason
         text_out["meta"] = meta
-        return text_out
+        return _tool_ok(text_out)
 
     meta = semantic.get("meta")
     if not isinstance(meta, dict):
         meta = {}
     meta["fallback_used"] = False
     semantic["meta"] = meta
-    return semantic
+    if not isinstance(semantic, dict):
+        return _tool_error("semantic_failed", "semantic search returned invalid response")
+    return _tool_ok(semantic)
 
 
 def _tool_search_routes(project_id: int, args: dict) -> dict:
@@ -1230,7 +1271,7 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
             q = q.order_by(ApiRoute.path.asc(), ApiRoute.method.asc()).limit(int(limit))
             rows = s.exec(q).all()
     except Exception as e:
-        return {"error": "db_error", "message": str(e)}
+        return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
 
     out = [
         {
@@ -1243,7 +1284,7 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
         }
         for r in rows
     ]
-    return {"query": query, "method": method_norm, "limit": int(limit), "count": len(out), "routes": out}
+    return _tool_ok({"query": query, "method": method_norm, "limit": int(limit), "count": len(out), "routes": out})
 
 
 def _tool_search_api_calls(project_id: int, args: dict) -> dict:
@@ -1266,7 +1307,7 @@ def _tool_search_api_calls(project_id: int, args: dict) -> dict:
             q = q.order_by(ApiCall.path.asc(), ApiCall.method.asc()).limit(int(limit))
             rows = s.exec(q).all()
     except Exception as e:
-        return {"error": "db_error", "message": str(e)}
+        return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
 
     out = [
         {
@@ -1278,13 +1319,13 @@ def _tool_search_api_calls(project_id: int, args: dict) -> dict:
         }
         for c in rows
     ]
-    return {"query": query, "method": method_norm, "limit": int(limit), "count": len(out), "calls": out}
+    return _tool_ok({"query": query, "method": method_norm, "limit": int(limit), "count": len(out), "calls": out})
 
 
 def _tool_route_usages(project_id: int, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     path_q = path_q.strip()
     method = args.get("method")
     method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
@@ -1304,10 +1345,10 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
                 like = f"%{path_q}%"
                 routes = s.exec(q.where(ApiRoute.path.like(like)).order_by(ApiRoute.path.asc()).limit(int(route_limit))).all()
     except Exception as e:
-        return {"error": "db_error", "message": str(e)}
+        return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
 
     if not routes:
-        return {"path": path_q, "method": method_norm, "routes_found": 0, "routes": []}
+        return _tool_ok({"path": path_q, "method": method_norm, "routes_found": 0, "routes": []})
 
     prefix_map = _compute_prefix_map(project_id)
     results: list[dict] = []
@@ -1445,14 +1486,16 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
             }
         )
 
-    return {
-        "path": path_q,
-        "method": method_norm,
-        "routes_found": len(results),
-        "route_limit": int(route_limit),
-        "call_limit": int(call_limit),
-        "routes": results,
-    }
+    return _tool_ok(
+        {
+            "path": path_q,
+            "method": method_norm,
+            "routes_found": len(results),
+            "route_limit": int(route_limit),
+            "call_limit": int(call_limit),
+            "routes": results,
+        }
+    )
 
 
 def _normalize_http_path(p: str) -> str:
@@ -1773,27 +1816,29 @@ def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
             if len(examples_calls) >= limit_examples:
                 break
 
-    return {
-        "prefix": prefix,
-        "method_filter": method_filter,
-        "counts": {
-            "routes_total": total_routes,
-            "calls_total": total_calls,
-            "routes_matched": int(len(matched_routes)),
-            "routes_unmatched": int(len(unmatched_routes_ids)),
-            "calls_matched": int(len(matched_calls)),
-            "calls_unmatched": int(len(unmatched_calls_ids)),
-        },
-        "examples": {
-            "unmatched_routes": examples_routes,
-            "unmatched_calls": examples_calls,
-            "examples_limit": int(limit_examples),
-        },
-        "notes": (
-            "Matching is template-based. For backend routes, include_router resolution is best-effort. "
-            "Routes may be legitimately server-only; unmatched does not always mean a bug."
-        ),
-    }
+    return _tool_ok(
+        {
+            "prefix": prefix,
+            "method_filter": method_filter,
+            "counts": {
+                "routes_total": total_routes,
+                "calls_total": total_calls,
+                "routes_matched": int(len(matched_routes)),
+                "routes_unmatched": int(len(unmatched_routes_ids)),
+                "calls_matched": int(len(matched_calls)),
+                "calls_unmatched": int(len(unmatched_calls_ids)),
+            },
+            "examples": {
+                "unmatched_routes": examples_routes,
+                "unmatched_calls": examples_calls,
+                "examples_limit": int(limit_examples),
+            },
+            "notes": (
+                "Matching is template-based. For backend routes, include_router resolution is best-effort. "
+                "Routes may be legitimately server-only; unmatched does not always mean a bug."
+            ),
+        }
+    )
 
 def _tool_unmatched_routes(project_id: int, args: dict) -> dict:
     prefix = _prefix_norm(args.get("prefix"), default="/api")
@@ -1843,7 +1888,9 @@ def _tool_unmatched_routes(project_id: int, args: dict) -> dict:
         if len(out) >= limit:
             break
 
-    return {"prefix": prefix, "method_filter": method_filter, "count": len(out), "limit": int(limit), "routes": out}
+    return _tool_ok(
+        {"prefix": prefix, "method_filter": method_filter, "count": len(out), "limit": int(limit), "routes": out}
+    )
 
 def _tool_unmatched_calls(project_id: int, args: dict) -> dict:
     prefix = _prefix_norm(args.get("prefix"), default="/api")
@@ -1872,7 +1919,9 @@ def _tool_unmatched_calls(project_id: int, args: dict) -> dict:
         if len(out) >= limit:
             break
 
-    return {"prefix": prefix, "method_filter": method_filter, "count": len(out), "limit": int(limit), "calls": out}
+    return _tool_ok(
+        {"prefix": prefix, "method_filter": method_filter, "count": len(out), "limit": int(limit), "calls": out}
+    )
 
 
 def _join(prefix: str, path: str) -> str:
@@ -1948,7 +1997,7 @@ def _compute_prefix_map(project_id: int) -> dict[tuple[str, str], list[str]]:
 def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     path = path.strip()
     if not path.startswith("/"):
         path = "/" + path
@@ -2027,13 +2076,13 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
             }
         )
 
-    return {"path": path, "method": method_norm, "candidates": candidates, "count": len(candidates)}
+    return _tool_ok({"path": path, "method": method_norm, "candidates": candidates, "count": len(candidates)})
 
 
 def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     path_q = path_q.strip()
     if not path_q.startswith("/"):
         path_q = "/" + path_q
@@ -2054,7 +2103,14 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
         routes = s.exec(q).all()
 
     if not routes:
-        return {"path": path_q, "method": method_norm, "matched": None, "note": "No matching backend routes found. Run Scan or adjust query."}
+        return _tool_ok(
+            {
+                "path": path_q,
+                "method": method_norm,
+                "matched": None,
+                "note": "No matching backend routes found. Run Scan or adjust query.",
+            }
+        )
 
     prefix_map = _compute_prefix_map(project_id)
     query_tokens = split_skeleton(backend_path_skeleton(path_q))
@@ -2095,38 +2151,40 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
     except Exception:
         file_exists = False
 
-    return {
-        "input": {"path": path_q, "method": method_norm},
-        "matched_route": {
-            "method": method_eff,
-            "path": str(best.path or ""),
-            "source_path": str(best.source_path or ""),
-            "handler_name": handler_name,
-            "lineno": int(best.lineno or 0),
-            "decorator": str(best.decorator or ""),
-        },
-        "resolved_full_path": best_full,
-        "frontend": {
-            "suggested_file": suggested_file,
-            "file_exists": bool(file_exists),
-            "function_name": snippet_info.get("function_name"),
-            "uses_encodePath": bool(snippet_info.get("uses_encodePath")),
-            "path_template": snippet_info.get("path_template"),
-            "path_params": snippet_info.get("path_params"),
-            "snippet": snippet_info.get("snippet"),
-            "note": (
-                "Snippet is a scaffold. To apply, modify the suggested file and export it from frontend/src/api/index.ts if needed."
-            ),
-        },
-    }
+    return _tool_ok(
+        {
+            "input": {"path": path_q, "method": method_norm},
+            "matched_route": {
+                "method": method_eff,
+                "path": str(best.path or ""),
+                "source_path": str(best.source_path or ""),
+                "handler_name": handler_name,
+                "lineno": int(best.lineno or 0),
+                "decorator": str(best.decorator or ""),
+            },
+            "resolved_full_path": best_full,
+            "frontend": {
+                "suggested_file": suggested_file,
+                "file_exists": bool(file_exists),
+                "function_name": snippet_info.get("function_name"),
+                "uses_encodePath": bool(snippet_info.get("uses_encodePath")),
+                "path_template": snippet_info.get("path_template"),
+                "path_params": snippet_info.get("path_params"),
+                "snippet": snippet_info.get("snippet"),
+                "note": (
+                    "Snippet is a scaffold. To apply, modify the suggested file and export it from frontend/src/api/index.ts if needed."
+                ),
+            },
+        }
+    )
 
 def _tool_impact_route_change(project_id: int, args: dict) -> dict:
     old_path = args.get("old_path")
     new_path = args.get("new_path")
     if not isinstance(old_path, str) or not old_path.strip():
-        return {"error": "bad_args", "message": "old_path is required"}
+        return _tool_error("bad_args", "old_path is required")
     if not isinstance(new_path, str) or not new_path.strip():
-        return {"error": "bad_args", "message": "new_path is required"}
+        return _tool_error("bad_args", "new_path is required")
     old_path = old_path.strip()
     new_path = new_path.strip()
     if not old_path.startswith("/"):
@@ -2163,7 +2221,7 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
                 q = q.where(ApiCall.path.like(prefix_str + "%"))
             calls = s.exec(q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(candidate_limit))).all()
     except Exception as e:
-        return {"error": "db_error", "message": str(e)}
+        return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
 
     impacted: list[dict] = []
     matched_old = 0
@@ -2244,74 +2302,102 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
     except Exception:
         tpl_hint = {}
 
-    return {
-        "input": {"old_path": old_path, "new_path": new_path, "old_method": old_m, "new_method": new_m},
-        "skeletons": {"old": old_skel, "new": new_skel},
-        "counts": {
-            "candidate_calls_scanned": int(len(calls)),
-            "calls_matching_old": int(matched_old),
-            "still_ok": int(still_ok),
-            "needs_path_update": int(needs_path),
-            "needs_method_update": int(needs_method),
-            "needs_path_and_method_update": int(needs_both),
-            "returned": int(len(impacted_out)),
-            "truncated": bool(truncated),
-            "limit": int(limit),
-        },
-        "new_frontend_template_hint": tpl_hint,
-        "impacted_calls": impacted_out,
-    }
+    return _tool_ok(
+        {
+            "input": {"old_path": old_path, "new_path": new_path, "old_method": old_m, "new_method": new_m},
+            "skeletons": {"old": old_skel, "new": new_skel},
+            "counts": {
+                "candidate_calls_scanned": int(len(calls)),
+                "calls_matching_old": int(matched_old),
+                "still_ok": int(still_ok),
+                "needs_path_update": int(needs_path),
+                "needs_method_update": int(needs_method),
+                "needs_path_and_method_update": int(needs_both),
+                "returned": int(len(impacted_out)),
+                "truncated": bool(truncated),
+                "limit": int(limit),
+            },
+            "new_frontend_template_hint": tpl_hint,
+            "impacted_calls": impacted_out,
+        }
+    )
+
+def _validate_tool_result(name: str, result: Any) -> dict:
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Tool {name} returned non-dict result")
+    for key in ("ok", "data", "error"):
+        if key not in result:
+            raise RuntimeError(f"Tool {name} result missing key '{key}'")
+    ok = result.get("ok")
+    if not isinstance(ok, bool):
+        raise RuntimeError(f"Tool {name} result has non-bool ok")
+    if ok:
+        if not isinstance(result.get("data"), dict):
+            raise RuntimeError(f"Tool {name} ok result missing data dict")
+        if result.get("error") is not None:
+            raise RuntimeError(f"Tool {name} ok result must have error=None")
+        return result
+    if result.get("data") is not None:
+        raise RuntimeError(f"Tool {name} error result must have data=None")
+    err = result.get("error")
+    if not isinstance(err, dict):
+        raise RuntimeError(f"Tool {name} error result missing error dict")
+    if not isinstance(err.get("code"), str) or not err.get("code"):
+        raise RuntimeError(f"Tool {name} error result missing error.code")
+    if not isinstance(err.get("message"), str) or not err.get("message"):
+        raise RuntimeError(f"Tool {name} error result missing error.message")
+    return result
 
 def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int) -> dict:
     if name == "get_file":
-        return _tool_get_file(project_id, root, meta, args, max_file_chars=max_file_chars)
+        return _validate_tool_result(name, _tool_get_file(project_id, root, meta, args, max_file_chars=max_file_chars))
     if name == "get_file_lines":
-        return _tool_get_file_lines(project_id, root, meta, args, max_file_chars=max_file_chars)
+        return _validate_tool_result(name, _tool_get_file_lines(project_id, root, meta, args, max_file_chars=max_file_chars))
     if name == "get_contract":
-        return _tool_get_contract(project_id, root, meta, args)
+        return _validate_tool_result(name, _tool_get_contract(project_id, root, meta, args))
     if name == "get_symbol":
-        return _tool_get_symbol(project_id, root, meta, args)
+        return _validate_tool_result(name, _tool_get_symbol(project_id, root, meta, args))
     if name == "get_node":
-        return _tool_get_node(project_id, root, args)
+        return _validate_tool_result(name, _tool_get_node(project_id, root, args))
     if name == "get_neighbors":
-        return _tool_get_neighbors(project_id, root, args)
+        return _validate_tool_result(name, _tool_get_neighbors(project_id, root, args))
     if name == "search_paths":
-        return _tool_search_paths(project_id, args)
+        return _validate_tool_result(name, _tool_search_paths(project_id, args))
     if name == "search_symbols":
-        return _tool_search_symbols(project_id, args)
+        return _validate_tool_result(name, _tool_search_symbols(project_id, args))
     if name == "get_tree_outline":
-        return _tool_get_tree_outline(project_id, args)
+        return _validate_tool_result(name, _tool_get_tree_outline(project_id, args))
     if name == "project_summary":
-        return _tool_project_summary(project_id, root, args)
+        return _validate_tool_result(name, _tool_project_summary(project_id, root, args))
     if name == "search_text":
-        return _tool_search_text(project_id, root, args, max_file_chars=max_file_chars)
+        return _validate_tool_result(name, _tool_search_text(project_id, root, args, max_file_chars=max_file_chars))
     if name == "search_semantic":
-        return _tool_search_semantic(project_id, root, args, max_file_chars=max_file_chars)
+        return _validate_tool_result(name, _tool_search_semantic(project_id, root, args, max_file_chars=max_file_chars))
     if name == "search_routes":
-        return _tool_search_routes(project_id, args)
+        return _validate_tool_result(name, _tool_search_routes(project_id, args))
     if name == "search_api_calls":
-        return _tool_search_api_calls(project_id, args)
+        return _validate_tool_result(name, _tool_search_api_calls(project_id, args))
     if name == "route_usages":
-        return _tool_route_usages(project_id, args)
+        return _validate_tool_result(name, _tool_route_usages(project_id, args))
     if name == "suggest_endpoint_location":
-        return _tool_suggest_endpoint_location(project_id, args)
+        return _validate_tool_result(name, _tool_suggest_endpoint_location(project_id, args))
     if name == "suggest_frontend_client":
-        return _tool_suggest_frontend_client(project_id, root, args)
+        return _validate_tool_result(name, _tool_suggest_frontend_client(project_id, root, args))
     if name == "impact_route_change":
-        return _tool_impact_route_change(project_id, args)
+        return _validate_tool_result(name, _tool_impact_route_change(project_id, args))
     if name == "api_coverage_summary":
-        return _tool_api_coverage_summary(project_id, args)
+        return _validate_tool_result(name, _tool_api_coverage_summary(project_id, args))
     if name == "unmatched_routes":
-        return _tool_unmatched_routes(project_id, args)
+        return _validate_tool_result(name, _tool_unmatched_routes(project_id, args))
     if name == "unmatched_calls":
-        return _tool_unmatched_calls(project_id, args)
+        return _validate_tool_result(name, _tool_unmatched_calls(project_id, args))
     if name == "compare_api_contract":
-        return _tool_compare_api_contract(project_id, root, args)
+        return _validate_tool_result(name, _tool_compare_api_contract(project_id, root, args))
     if name == "suggest_contract_fix":
-        return _tool_suggest_contract_fix(project_id, root, meta, args)
+        return _validate_tool_result(name, _tool_suggest_contract_fix(project_id, root, meta, args))
     if name == "suggest_api_fix":
-        return _tool_suggest_api_fix(project_id, root, meta, args)
-    return {"error": "unknown_tool", "message": f"Unknown tool: {name}"}
+        return _validate_tool_result(name, _tool_suggest_api_fix(project_id, root, meta, args))
+    return _validate_tool_result(name, _tool_error("unknown_tool", f"Unknown tool: {name}"))
 
 
 def _ts_type_to_py_literal(ts_type: str) -> str:
@@ -2339,7 +2425,7 @@ def _ts_type_to_py_literal(ts_type: str) -> str:
 def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     method = args.get("method")
     method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
     route_limit = _clamp_int(args.get("route_limit"), 1, 1, 3)
@@ -2347,11 +2433,16 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
     include_backend = bool(args.get("include_backend_response")) if args.get("include_backend_response") is not None else True
     max_files = _clamp_int(args.get("max_files"), 12, 1, 20)
 
-    report = _tool_compare_api_contract(
+    report_result = _tool_compare_api_contract(
         project_id, root, {"path": path_q, "method": method_norm or None, "route_limit": route_limit, "call_limit": call_limit}
     )
-    if not isinstance(report, dict) or not isinstance(report.get("routes"), list) or not report["routes"]:
-        return {"input": {"path": path_q, "method": method_norm}, "patch_unified_diff": "", "files": [], "notes": ["no_routes_or_calls_found"]}
+    if not report_result.get("ok"):
+        return report_result
+    report = report_result["data"]
+    if not isinstance(report.get("routes"), list) or not report["routes"]:
+        return _tool_ok(
+            {"input": {"path": path_q, "method": method_norm}, "patch_unified_diff": "", "files": [], "notes": ["no_routes_or_calls_found"]}
+        )
 
     # In-memory file edit buffers
     orig: dict[str, str] = {}
@@ -2575,19 +2666,21 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
 
     patch_text = "\n".join([d.rstrip("\n") for d in diffs]).strip() + ("\n" if diffs else "")
 
-    return {
-        "input": {
-            "path": path_q,
-            "method": method_norm,
-            "route_limit": int(route_limit),
-            "call_limit": int(call_limit),
-            "include_backend_response": bool(include_backend),
-            "max_files": int(max_files),
-        },
-        "files_modified": files,
-        "patch_unified_diff": patch_text,
-        "notes": notes[:200],
-    }
+    return _tool_ok(
+        {
+            "input": {
+                "path": path_q,
+                "method": method_norm,
+                "route_limit": int(route_limit),
+                "call_limit": int(call_limit),
+                "include_backend_response": bool(include_backend),
+                "max_files": int(max_files),
+            },
+            "files_modified": files,
+            "patch_unified_diff": patch_text,
+            "notes": notes[:200],
+        }
+    )
 
 def _read_text_under_root(root: Path, rel_path: str) -> tuple[str, str, str] | None:
     try:
@@ -2607,18 +2700,21 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
     # 1) Get compare report
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     method = args.get("method")
     method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
     route_limit = _clamp_int(args.get("route_limit"), 1, 1, 5)
     call_limit = _clamp_int(args.get("call_limit"), 3, 1, 10)
     max_patches = _clamp_int(args.get("max_patches"), 10, 1, 20)
 
-    report = _tool_compare_api_contract(
+    report_result = _tool_compare_api_contract(
         project_id, root, {"path": path_q, "method": method_norm or None, "route_limit": route_limit, "call_limit": call_limit}
     )
-    if not isinstance(report, dict) or not isinstance(report.get("routes"), list) or not report["routes"]:
-        return {"input": {"path": path_q, "method": method_norm}, "patches": [], "notes": ["no_routes_or_calls_found"]}
+    if not report_result.get("ok"):
+        return report_result
+    report = report_result["data"]
+    if not isinstance(report.get("routes"), list) or not report["routes"]:
+        return _tool_ok({"input": {"path": path_q, "method": method_norm}, "patches": [], "notes": ["no_routes_or_calls_found"]})
 
     patches: list[dict] = []
     notes: list[str] = []
@@ -2791,12 +2887,20 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
     truncated = len(patches) > max_patches
     patches = patches[:max_patches]
 
-    return {
-        "input": {"path": path_q, "method": method_norm, "route_limit": route_limit, "call_limit": call_limit, "max_patches": max_patches},
-        "patches": patches,
-        "notes": notes[:100],
-        "truncated": bool(truncated),
-    }
+    return _tool_ok(
+        {
+            "input": {
+                "path": path_q,
+                "method": method_norm,
+                "route_limit": route_limit,
+                "call_limit": call_limit,
+                "max_patches": max_patches,
+            },
+            "patches": patches,
+            "notes": notes[:100],
+            "truncated": bool(truncated),
+        }
+    )
 
 def _load_ts_typedefs_by_name(project_id: int, names: list[str]) -> dict[str, dict]:
     wanted = [n for n in (names or []) if isinstance(n, str) and n.strip()]
@@ -2828,7 +2932,7 @@ def _load_ts_typedefs_by_name(project_id: int, names: list[str]) -> dict[str, di
 def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
-        return {"error": "bad_args", "message": "path is required"}
+        return _tool_error("bad_args", "path is required")
     path_q = path_q.strip()
     method = args.get("method")
     method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
@@ -2836,13 +2940,18 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
     call_limit = _clamp_int(args.get("call_limit"), 10, 1, 50)
 
     # Reuse route_usages logic to find best matching routes + frontend calls
-    ru = _tool_route_usages(
+    ru_result = _tool_route_usages(
         project_id,
         {"path": path_q, "method": method_norm or None, "route_limit": route_limit, "call_limit": call_limit},
     )
+    if not ru_result.get("ok"):
+        return ru_result
+    ru = ru_result["data"]
     routes = ru.get("routes") if isinstance(ru, dict) else None
     if not isinstance(routes, list) or not routes:
-        return {"input": {"path": path_q, "method": method_norm}, "routes": [], "note": "No routes found. Ensure Scan ran and path query is correct."}
+        return _tool_ok(
+            {"input": {"path": path_q, "method": method_norm}, "routes": [], "note": "No routes found. Ensure Scan ran and path query is correct."}
+        )
 
     result_routes: list[dict] = []
 
@@ -3075,14 +3184,16 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
             }
         )
 
-    return {
-        "input": {"path": path_q, "method": method_norm, "route_limit": int(route_limit), "call_limit": int(call_limit)},
-        "routes": result_routes,
-        "notes": (
-            "This is a best-effort static comparison. It does not execute code, and it cannot fully infer dynamic bodies/responses. "
-            "Run Scan after changes to refresh indexes."
-        ),
-    }
+    return _tool_ok(
+        {
+            "input": {"path": path_q, "method": method_norm, "route_limit": int(route_limit), "call_limit": int(call_limit)},
+            "routes": result_routes,
+            "notes": (
+                "This is a best-effort static comparison. It does not execute code, and it cannot fully infer dynamic bodies/responses. "
+                "Run Scan after changes to refresh indexes."
+            ),
+        }
+    )
 
 
 def _seed_context(project_id: int, root: Path, target_rel: str, depth: int, *, max_file_chars: int) -> dict:
@@ -3252,6 +3363,9 @@ def _agentic_json_call(
     def _truncate_tool_output(name: str, out: dict, *, remaining_budget: int) -> tuple[dict, bool]:
         if not isinstance(out, dict):
             return {"truncated_due_to_budget": True}, True
+        payload = out
+        if out.get("ok") is True and isinstance(out.get("data"), dict):
+            payload = out["data"]
 
         def mark_truncated(payload: dict) -> None:
             payload["truncated_due_to_budget"] = True
@@ -3277,21 +3391,21 @@ def _agentic_json_call(
             out_str = json.dumps(out, ensure_ascii=False)
             if len(out_str) <= remaining_budget:
                 if truncated:
-                    mark_truncated(out)
+                    mark_truncated(payload)
                 return out, truncated
             if attempts >= 6:
                 break
             attempts += 1
             changed = False
-            if isinstance(out.get("matches"), list):
-                changed = shrink_snippets(out["matches"], max(40, 160 // (attempts + 1))) or changed
-                if len(out["matches"]) > 5:
-                    out["matches"] = out["matches"][: max(5, len(out["matches"]) // 2)]
+            if isinstance(payload.get("matches"), list):
+                changed = shrink_snippets(payload["matches"], max(40, 160 // (attempts + 1))) or changed
+                if len(payload["matches"]) > 5:
+                    payload["matches"] = payload["matches"][: max(5, len(payload["matches"]) // 2)]
                     changed = True
-            if isinstance(out.get("results"), list):
-                changed = shrink_snippets(out["results"], max(60, 200 // (attempts + 1))) or changed
-                if len(out["results"]) > 3:
-                    out["results"] = out["results"][: max(3, len(out["results"]) // 2)]
+            if isinstance(payload.get("results"), list):
+                changed = shrink_snippets(payload["results"], max(60, 200 // (attempts + 1))) or changed
+                if len(payload["results"]) > 3:
+                    payload["results"] = payload["results"][: max(3, len(payload["results"]) // 2)]
                     changed = True
             if not changed:
                 break
@@ -3444,6 +3558,11 @@ def _agentic_json_call(
             duration_ms = 0.0
             if start is not None:
                 duration_ms = max(0.0, (time.perf_counter() - start) * 1000.0)
+            ok_result = bool(out.get("ok") is True)
+            status = "ok" if ok_result else "error"
+            err_info = out.get("error") if isinstance(out, dict) else None
+            err_code = err_info.get("code") if isinstance(err_info, dict) else None
+            err_message = err_info.get("message") if isinstance(err_info, dict) else None
             meta.tool_trace.append(
                 {
                     "name": name,
@@ -3451,11 +3570,14 @@ def _agentic_json_call(
                     "cache_hit": cache_hit,
                     "response_chars": response_chars,
                     "duration_ms": duration_ms,
-                    "status": "ok",
+                    "status": status,
                     "truncated_due_to_budget": truncated_due_to_budget,
+                    "error_code": err_code,
+                    "error_message": err_message,
                 }
             )
-            meta.total_tool_output_chars += response_chars
+            if ok_result:
+                meta.total_tool_output_chars += response_chars
             input_list.append(
                 {"type": "function_call_output", "call_id": call_id, "output": out_str}
             )
