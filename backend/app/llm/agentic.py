@@ -3575,6 +3575,7 @@ def _agentic_json_call(
                         "args": args,
                         "cache_hit": False,
                         "response_chars": 0,
+                        "response_bytes": 0,
                         "duration_ms": 0,
                         "status": "budget_exhausted",
                         "truncated_due_to_budget": False,
@@ -3622,6 +3623,7 @@ def _agentic_json_call(
                         "args": args,
                         "cache_hit": cache_hit,
                         "response_chars": 0,
+                        "response_bytes": 0,
                         "duration_ms": duration_ms,
                         "status": "error",
                         "truncated_due_to_budget": False,
@@ -3630,12 +3632,14 @@ def _agentic_json_call(
                 raise
 
             out_str = json.dumps(out, ensure_ascii=False)
+            response_bytes = len(out_str.encode("utf-8"))
             truncated_due_to_budget = False
             if remaining_budget >= 0 and len(out_str) > remaining_budget:
                 out, truncated_due_to_budget = _truncate_tool_output(
                     name, out, remaining_budget=remaining_budget
                 )
                 out_str = json.dumps(out, ensure_ascii=False)
+                response_bytes = len(out_str.encode("utf-8"))
             response_chars = len(out_str)
             duration_ms = 0.0
             if start is not None:
@@ -3651,6 +3655,7 @@ def _agentic_json_call(
                     "args": args,
                     "cache_hit": cache_hit,
                     "response_chars": response_chars,
+                    "response_bytes": response_bytes,
                     "duration_ms": duration_ms,
                     "status": status,
                     "truncated_due_to_budget": truncated_due_to_budget,

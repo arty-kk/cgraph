@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     )
     llm_agentic_max_file_chars: int = Field(default=24_000, alias="CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS")
     llm_agentic_temperature: float = Field(default=0.0, alias="CGRAPH_LLM_AGENTIC_TEMPERATURE")
+    llm_agentic_trace_enabled: bool = Field(
+        default=True, alias="CGRAPH_LLM_AGENTIC_TRACE_ENABLED"
+    )
 
     go_build_tags: str = Field(default="", alias="CGRAPH_GO_BUILD_TAGS")
     go_include_unexported_symbols: bool = Field(
