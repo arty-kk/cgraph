@@ -307,10 +307,64 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         srv_total = int(getattr(settings, "llm_agentic_max_total_tool_output_chars", 180_000))
         srv_temp = float(getattr(settings, "llm_agentic_temperature", 0.0))
 
-        agentic_max_calls = min(_clamp_int(request.agentic_max_calls, srv_calls, 1, 100), srv_calls)
-        agentic_max_file_chars = min(_clamp_int(request.agentic_max_file_chars, srv_file, 200, 50_000), srv_file)
+        complexity_coeff = 1.0
+        complexity_inputs: dict[str, object] | None = None
+        if use_agentic:
+            mode_weights = {
+                "analyze": 0.0,
+                "evolve": 0.1,
+                "fix": 0.2,
+                "impact": 0.0,
+            }
+            depth_norm = max(0.0, min(1.0, depth / 6.0))
+            prompt_len = len(request.prompt)
+            prompt_norm = min(
+                1.0,
+                prompt_len / max(1, int(settings.max_prompt_chars)),
+            )
+            with get_session() as session:
+                nodes_row = session.exec(
+                    select(func.count())
+                    .select_from(FileNode)
+                    .where(FileNode.project_id == project_id)
+                ).one()
+            project_nodes = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
+            project_norm = min(1.0, project_nodes / 1_000.0)
+            complexity_coeff = _clamp_float(
+                1.0
+                + depth_norm
+                + float(mode_weights.get(mode, 0.0))
+                + prompt_norm
+                + project_norm,
+                1.0,
+                1.0,
+                2.0,
+            )
+            complexity_inputs = {
+                "depth": depth,
+                "prompt_len": prompt_len,
+                "project_nodes": project_nodes,
+                "mode": mode,
+            }
+
+        base_agentic_max_calls = _clamp_int(request.agentic_max_calls, srv_calls, 1, 100)
+        base_agentic_max_file_chars = _clamp_int(
+            request.agentic_max_file_chars, srv_file, 200, 50_000
+        )
+        base_agentic_max_total_tool_output_chars = _clamp_int(
+            request.agentic_max_total_tool_output_chars, srv_total, 2_000, 1_000_000
+        )
+
+        agentic_max_calls = min(
+            int(round(base_agentic_max_calls * complexity_coeff)),
+            srv_calls,
+        )
+        agentic_max_file_chars = min(
+            int(round(base_agentic_max_file_chars * complexity_coeff)),
+            srv_file,
+        )
         agentic_max_total_tool_output_chars = min(
-            _clamp_int(request.agentic_max_total_tool_output_chars, srv_total, 2_000, 1_000_000),
+            int(round(base_agentic_max_total_tool_output_chars * complexity_coeff)),
             srv_total,
         )
         agentic_temperature = _clamp_float(request.agentic_temperature, srv_temp, 0.0, 2.0)
@@ -318,6 +372,8 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         retrieval_settings = (
             {
                 "agentic": {
+                    "complexity_coeff": complexity_coeff,
+                    "complexity_inputs": complexity_inputs,
                     "max_calls": agentic_max_calls,
                     "max_file_chars": agentic_max_file_chars,
                     "max_total_tool_output_chars": agentic_max_total_tool_output_chars,

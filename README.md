@@ -103,6 +103,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - `CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS` — лимит общего объёма вывода инструментов в agentic‑режиме.
 - `CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS` — лимит символов при чтении файла в agentic‑режиме.
 - `CGRAPH_LLM_AGENTIC_TEMPERATURE` — температура для agentic‑режима (0..2).
+- В agentic‑режиме фактические лимиты могут динамически увеличиваться (в пределах серверных caps), учитывая глубину (`depth`), `mode`, длину промпта и размер проекта (количество `FileNode`). Итоговые значения возвращаются в `retrieval_settings` ответа.
 - `CGRAPH_GO_BUILD_TAGS` — список build‑tag значений Go (через запятую или пробел) для фильтрации импорта/символов.
 - `GOFLAGS` — стандартные Go‑флаги; поддержка `-tags` и `-tags=` влияет на набор build‑tag при индексации Go‑файлов (можно дополнить через `CGRAPH_GO_BUILD_TAGS`).
 - `CGRAPH_GO_INCLUDE_UNEXPORTED_SYMBOLS` — включать неэкспортируемые Go‑символы в индексации.
