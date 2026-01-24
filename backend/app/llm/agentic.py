@@ -296,6 +296,21 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         },
         {
             "type": "function",
+            "name": "search_tests",
+            "description": "Search test files by standard patterns (tests/, __tests__/, *.spec.*, *.test.*, test_*.py, *_test.*).",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "query": {"type": ["string", "null"]},
+                    "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
+                },
+                "required": ["query", "limit"],
+            },
+            "strict": True,
+        },
+        {
+            "type": "function",
             "name": "get_tree_outline",
             "description": (
                 "Return a tree outline of the project structure without reading file contents. "
@@ -816,6 +831,70 @@ def _tool_search_paths(project_id: int, args: dict) -> dict:
         return _tool_error("bad_args", "query is required")
     rows = search_nodes(project_id, query.strip(), limit=limit)
     return _tool_ok({"query": query.strip(), "limit": limit, "results": rows})
+
+def _tool_search_tests(project_id: int, args: dict) -> dict:
+    query = args.get("query")
+    query_norm = ""
+    if isinstance(query, str) and query.strip():
+        query_norm = query.strip()
+    limit = _clamp_int(args.get("limit"), 50, 1, 500)
+
+    patterns = [
+        "tests/%",
+        "%/tests/%",
+        "__tests__/%",
+        "%/__tests__/%",
+        "%.spec.%",
+        "%.test.%",
+        "test\\_%.py",
+        "%/test\\_%.py",
+        "%\\_test.%",
+    ]
+    cond = None
+    for pattern in patterns:
+        clause = FileNode.path.like(pattern, escape="\\")
+        cond = clause if cond is None else (cond | clause)
+    if query_norm:
+        like = f"%{query_norm}%"
+        cond = cond & FileNode.path.like(like)
+
+    with get_session() as s:
+        rows = s.exec(
+            select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
+            .where(FileNode.project_id == project_id, cond)
+            .order_by(FileNode.path.asc())
+            .limit(int(limit))
+        ).all()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, (tuple, list)):
+            path, lang, fi, fo = row[0], row[1], row[2], row[3]
+        else:
+            path = getattr(row, "path", "")
+            lang = getattr(row, "language", "")
+            fi = getattr(row, "fan_in", 0)
+            fo = getattr(row, "fan_out", 0)
+        if not isinstance(path, str) or not path:
+            continue
+        try:
+            fi_val = int(fi or 0)
+        except Exception:
+            fi_val = 0
+        try:
+            fo_val = int(fo or 0)
+        except Exception:
+            fo_val = 0
+        results.append(
+            {
+                "path": path,
+                "language": lang,
+                "fan_in": fi_val,
+                "fan_out": fo_val,
+            }
+        )
+
+    return _tool_ok({"query": query_norm, "limit": int(limit), "results": results})
 
 
 def _tool_search_symbols(project_id: int, args: dict) -> dict:
@@ -2363,6 +2442,8 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
         return _validate_tool_result(name, _tool_get_neighbors(project_id, root, args))
     if name == "search_paths":
         return _validate_tool_result(name, _tool_search_paths(project_id, args))
+    if name == "search_tests":
+        return _validate_tool_result(name, _tool_search_tests(project_id, args))
     if name == "search_symbols":
         return _validate_tool_result(name, _tool_search_symbols(project_id, args))
     if name == "get_tree_outline":
@@ -3321,6 +3402,7 @@ def _agentic_json_call(
         "- For definition/export lookups, use search_symbols first (faster and more precise). If no results, fall back to search_text.\n"
         "- Prefer search_semantic for conceptual queries; if no results, use search_text.\n"
         "- Prefer search_text to locate occurrences before fetching many files.\n"
+        "- When locating or updating relevant tests, use search_tests to find test files by standard patterns.\n"
         "- Never assume missing code; fetch it.\n"
         "- Keep changes minimal; for fixes, only propose changes you can justify from retrieved context.\n"
     )
