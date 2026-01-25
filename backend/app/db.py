@@ -103,6 +103,7 @@ def _ensure_analysisrun_columns_sqlite(conn) -> None:
         "retrieval_settings_json": "TEXT",
         "apply_patch": "INTEGER",
         "applied_json": "TEXT",
+        "allowed_patch_paths_json": "TEXT",
     }
     for column, col_type in desired.items():
         if column in existing:

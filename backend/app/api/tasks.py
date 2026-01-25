@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from ..llm.policy import ProfileName
 from ..services.task_service import (
     TaskRequest, describe_task,
-    delete_run, get_run, get_run_patch,
+    apply_run_patch, delete_run, get_run, get_run_patch,
     list_runs, run_task_with_background,
 )
 
@@ -86,6 +86,11 @@ def get_run_endpoint(project_id: int, run_id: int):
 @router.get("/{project_id}/runs/{run_id}/patch")
 def get_run_patch_endpoint(project_id: int, run_id: int):
     return get_run_patch(project_id, run_id)
+
+
+@router.post("/{project_id}/runs/{run_id}/apply")
+def apply_run_patch_endpoint(project_id: int, run_id: int):
+    return apply_run_patch(project_id, run_id)
 
 
 @router.delete("/{project_id}/runs/{run_id}")

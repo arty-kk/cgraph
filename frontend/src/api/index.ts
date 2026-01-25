@@ -38,4 +38,13 @@ export {
 } from './projects'
 export { getGraph, getLocalGraph, searchNodes } from './graph'
 export { getNode, getContract, getFileContent, updateFileContent } from './nodes'
-export { runTask, listRuns, getRun, getRunPatch, deleteRun, getTaskStatus, waitForTaskResult } from './tasks'
+export {
+  runTask,
+  listRuns,
+  getRun,
+  getRunPatch,
+  applyRunPatch,
+  deleteRun,
+  getTaskStatus,
+  waitForTaskResult,
+} from './tasks'

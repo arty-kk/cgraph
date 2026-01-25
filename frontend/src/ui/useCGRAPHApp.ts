@@ -10,6 +10,7 @@ import {
   getNode,
   getRun,
   getRunPatch,
+  applyRunPatch,
   listProjects,
   listRuns,
   deleteRun,
@@ -1140,6 +1141,29 @@ export function useCGRAPHApp() {
     }
   }, [activeProject, runResult])
 
+  const onApplyRunPatch = useCallback(async () => {
+    if (!activeProject) return
+    const runId = Number(runResult?.run_id)
+    if (!Number.isFinite(runId) || runId <= 0) return
+
+    await runOp(async () => {
+      const res = await applyRunPatch(activeProject.id, runId)
+      setRunResult((prev) => {
+        if (!prev || prev.run_id !== runId) return prev
+        return {
+          ...prev,
+          applied: res.applied ?? undefined,
+        }
+      })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
+      ])
+    })
+  }, [activeProject, queryClient, runOp, runResult?.run_id])
+
   const onLoadRun = useCallback(
     async (runId: number) => {
       if (!activeProject) return
@@ -1552,6 +1576,7 @@ export function useCGRAPHApp() {
     onRunWithExpandedContext,
     onDeleteRun,
     onLoadFullPatch,
+    onApplyRunPatch,
     onLoadRun,
 
     // derived

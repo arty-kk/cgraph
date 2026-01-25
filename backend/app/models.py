@@ -71,6 +71,7 @@ class AnalysisRun(SQLModel, table=True):
     retrieval_settings_json: Optional[str] = Field(default=None)
     apply_patch: Optional[bool] = Field(default=None)
     applied_json: Optional[str] = Field(default=None)
+    allowed_patch_paths_json: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     result_json: str
 

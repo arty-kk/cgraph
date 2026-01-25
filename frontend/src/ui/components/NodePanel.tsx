@@ -64,6 +64,7 @@ type Props = {
   patchBusy: boolean
   runLoadBusy: boolean
   onLoadFullPatch: () => void | Promise<void>
+  onApplyRunPatch: () => void | Promise<void>
   onLoadRun: (runId: number) => void | Promise<void>
   onDeleteRun: (runId: number) => void | Promise<void>
   runs: RunRecord[]
@@ -116,6 +117,7 @@ export function NodePanel({
   patchBusy,
   runLoadBusy,
   onLoadFullPatch,
+  onApplyRunPatch,
   onLoadRun,
   onDeleteRun,
   runs,
@@ -1342,6 +1344,7 @@ export function NodePanel({
                   const patchStr = typeof patchText === 'string' ? patchText : ''
                   const hasPatch = !!patchStr.trim()
                   const hasMeta = patchMeta && typeof patchMeta === 'object'
+                  const canApplyPatch = Boolean(runResult?.run_id && (hasPatch || hasMeta))
 
                   if (!hasPatch && !hasMeta) {
                     return (
@@ -1360,18 +1363,33 @@ export function NodePanel({
                     <>
                       <div className="flex items-center justify-between gap-2 text-xs font-semibold text-neutral-200">
                         <div>Patch (Unified Diff)</div>
-                        <button
-                          type="button"
-                          className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-                          onClick={async () => {
-                            if (!patchStr) return
-                            await handleCopy(patchStr, 'Patch copied')
-                          }}
-                          disabled={!patchStr}
-                          title={patchStr ? 'Copy patch' : 'No patch to copy'}
-                        >
-                          Copy
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+                            onClick={async () => {
+                              if (!patchStr) return
+                              await handleCopy(patchStr, 'Patch copied')
+                            }}
+                            disabled={!patchStr}
+                            title={patchStr ? 'Copy patch' : 'No patch to copy'}
+                          >
+                            Copy
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-md bg-emerald-900/70 hover:bg-emerald-900/90 border border-emerald-700 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+                            onClick={async () => {
+                              if (!canApplyPatch) return
+                              if (!window.confirm('Apply this patch to the project now?')) return
+                              await onApplyRunPatch()
+                            }}
+                            disabled={!canApplyPatch || busy || patchBusy}
+                            title={canApplyPatch ? 'Apply patch now' : 'No patch to apply'}
+                          >
+                            Apply patch now
+                          </button>
+                        </div>
                       </div>
 
                       {hasPatch ? (

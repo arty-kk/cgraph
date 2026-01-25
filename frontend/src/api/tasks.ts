@@ -82,6 +82,14 @@ export async function getRunPatch(projectId: number, runId: number): Promise<{ p
   return r.data
 }
 
+export async function applyRunPatch(
+  projectId: number,
+  runId: number
+): Promise<{ applied: RunTaskResult['applied'] }> {
+  const r = await api.post(`/api/tasks/${projectId}/runs/${runId}/apply`)
+  return r.data
+}
+
 export async function getRun(projectId: number, runId: number): Promise<RunDetails> {
   const r = await api.get(`/api/tasks/${projectId}/runs/${runId}`)
   return r.data
