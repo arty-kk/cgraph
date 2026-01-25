@@ -3878,8 +3878,7 @@ def _agentic_json_call(
                     "error_message": err_message,
                 }
             )
-            if ok_result:
-                meta.total_tool_output_chars += response_chars
+            meta.total_tool_output_chars += response_chars
             input_list.append(
                 {"type": "function_call_output", "call_id": call_id, "output": out_str}
             )
