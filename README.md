@@ -96,7 +96,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - Поиск: `GET /api/projects/{id}/search?q=...`.
 - Семантический поиск: `GET /api/projects/{id}/search/semantic?q=...&limit=20&prefix=...` (требуются включённые эмбеддинги и `OPENAI_API_KEY`).
 - Метаданные узла: `GET /api/nodes/{id}/{path}/node`; контракт файла: `GET /api/nodes/{id}/{path}/contract`.
-- Запуск LLM‑задачи: `POST /api/tasks/{id}/run` с `target_path`, `prompt`, `mode` (опционально), `depth`, `dep_mode`, `apply_patch`, `agentic` и опциональными `agentic_*` (`max_calls`, `max_file_chars`, `max_total_tool_output_chars`, `temperature`).
+- Запуск LLM‑задачи: `POST /api/tasks/{id}/run` с `target_path`, `prompt`, `mode` (опционально), `profile` (опционально), `depth`, `dep_mode`, `apply_patch`, `agentic` и опциональными `agentic_*` (`max_calls`, `max_file_chars`, `max_total_tool_output_chars`, `temperature`).
 - История запусков и патчи: `GET /api/tasks/{id}/runs`, `GET /api/tasks/{id}/runs/{run_id}`, `GET /api/tasks/{id}/runs/{run_id}/patch`.
 - Статус фоновой задачи: `GET /api/tasks/status/{task_id}`.
 
@@ -117,6 +117,18 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - `CGRAPH_LLM_AGENTIC_TEMPERATURE` — температура для agentic‑режима (0..2).
 - `CGRAPH_LLM_AGENTIC_TRACE_ENABLED` — включает выдачу `tool_trace` в `retrieval_settings` agentic‑ответов (по умолчанию включено).
 - В agentic‑режиме фактические лимиты могут динамически увеличиваться (в пределах серверных caps), учитывая глубину (`depth`), `mode`, длину промпта и размер проекта (количество `FileNode`). Итоговые значения возвращаются в `retrieval_settings` ответа.
+
+### LLM‑профили (agentic/pack)
+
+Доступные профили: `surgical`, `architect`, `incident`. Если поле `profile` не передано, используется `architect`.
+
+Профиль задаётся через `profile` в `POST /api/tasks/{id}/run`. Для agentic‑режима профиль определяет базовые лимиты (`max_calls`, `max_total_tool_output_chars`, `max_file_chars`) и `temperature`. Для pack‑режима влияет на `depth` и `SYSTEM_INSTRUCTIONS`. Явные `agentic_*` в запросе всегда имеют приоритет над значениями профиля.
+
+| Профиль | Назначение | Instructions (суть) | Temperature | Max calls | Max total tool output chars | Max file chars | Depth (min..max, default) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `architect` | Основной режим | Используются текущие `SYSTEM_INSTRUCTIONS` сервера | По умолчанию из `CGRAPH_LLM_AGENTIC_TEMPERATURE` | По умолчанию из `CGRAPH_LLM_AGENTIC_MAX_CALLS` | По умолчанию из `CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS` | По умолчанию из `CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS` | 0..6, default из `CGRAPH_DEFAULT_DEPTH` |
+| `surgical` | Минимальные точечные изменения | Хирургический режим: минимальный радиус правок | `0.0` | `12` | `60000` | `8000` | 0..2, default `1` |
+| `incident` | Быстрый отклик на инциденты | Быстрое восстановление с безопасными правками | `0.2` | `40` | `140000` | `16000` | 0..4, default `2` |
 - `CGRAPH_GO_BUILD_TAGS` — список build‑tag значений Go (через запятую или пробел) для фильтрации импорта/символов.
 - `GOFLAGS` — стандартные Go‑флаги; поддержка `-tags` и `-tags=` влияет на набор build‑tag при индексации Go‑файлов (можно дополнить через `CGRAPH_GO_BUILD_TAGS`).
 - `CGRAPH_GO_INCLUDE_UNEXPORTED_SYMBOLS` — включать неэкспортируемые Go‑символы в индексации.

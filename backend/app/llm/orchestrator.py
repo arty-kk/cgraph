@@ -7,7 +7,7 @@ from typing import Any
 from .client import get_openai_client
 from .schemas import TRIAGE_SCHEMA, ANALYZE_SCHEMA, FIX_SCHEMA, DOCS_SCHEMA, PLAN_TZ_SCHEMA
 from .policy import ModelPolicy, DEFAULT_POLICY
-from .model_caps import supports_reasoning
+from .model_caps import supports_reasoning, supports_temperature
 from ..config import settings
 
 SYSTEM_INSTRUCTIONS = """Ты — CGRAPH: сверхточный кодовый архитектор. Твоя цель — давать полезный, проверяемый результат с минимальным радиусом изменений.
@@ -91,16 +91,25 @@ def _extract_output_text(resp: Any) -> str:
                     return inner_text.strip()
     return ""
 
-def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reasoning_effort: str | None = None) -> dict:
+def _json_call(
+    model: str,
+    schema: dict,
+    input_items: list[dict[str, Any]],
+    reasoning_effort: str | None = None,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> dict:
     client = get_openai_client()
     fmt = _normalize_responses_json_schema(schema)
     kwargs: dict[str, Any] = {
         "model": model,
-        "instructions": SYSTEM_INSTRUCTIONS,
+        "instructions": instructions if instructions is not None else SYSTEM_INSTRUCTIONS,
         "input": input_items,
         "text": {"format": fmt},
     }
     kwargs["store"] = bool(settings.openai_store)
+    if temperature is not None and supports_temperature(model):
+        kwargs["temperature"] = float(temperature)
     if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
         kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
         if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
@@ -121,6 +130,9 @@ def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reas
             removed = True
         if "store" in msg:
             kwargs.pop("store", None)
+            removed = True
+        if "temperature" in msg:
+            kwargs.pop("temperature", None)
             removed = True
         if removed:
             resp = client.responses.create(**kwargs)
@@ -160,27 +172,75 @@ def _json_call(model: str, schema: dict, input_items: list[dict[str, Any]], reas
             raise RuntimeError(f"Model refusal: {refusal}") from e
         raise RuntimeError(f"Failed to parse model JSON output: {e}\nRaw: {txt[:4000]}") from e
 
-def triage(user_prompt: str, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
+def triage(
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> dict:
     items = [
         {"role": "user", "content": f"Сконфигурируй задачу по запросу пользователя. Запрос: {user_prompt!r}\n\nВерни: task_kind, depth, dep_mode, needs_patch, notes."},
     ]
-    return _json_call(policy.triage_model, TRIAGE_SCHEMA, items, reasoning_effort=policy.triage_effort)
+    return _json_call(
+        policy.triage_model,
+        TRIAGE_SCHEMA,
+        items,
+        reasoning_effort=policy.triage_effort,
+        instructions=instructions,
+        temperature=temperature,
+    )
 
-def analyze(packed_context: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
+def analyze(
+    packed_context: dict,
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> dict:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
         {"role": "user", "content": f"Задача: ANALYZE. Пользовательский запрос: {user_prompt}\n\nКонтекст (JSON):\n{ctx}"},
     ]
-    return _json_call(policy.analysis_model, ANALYZE_SCHEMA, items, reasoning_effort=policy.analysis_effort)
+    return _json_call(
+        policy.analysis_model,
+        ANALYZE_SCHEMA,
+        items,
+        reasoning_effort=policy.analysis_effort,
+        instructions=instructions,
+        temperature=temperature,
+    )
 
-def evolve(packed_context: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
+def evolve(
+    packed_context: dict,
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> dict:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
         {"role": "user", "content": f"Задача: EVOLUTION POINTS. Найди точки эволюции бизнес-логики/домена, узкие места API, места частых изменений.\nПользовательский запрос: {user_prompt}\n\nКонтекст (JSON):\n{ctx}"},
     ]
-    return _json_call(policy.analysis_model, ANALYZE_SCHEMA, items, reasoning_effort=policy.analysis_effort)
+    return _json_call(
+        policy.analysis_model,
+        ANALYZE_SCHEMA,
+        items,
+        reasoning_effort=policy.analysis_effort,
+        instructions=instructions,
+        temperature=temperature,
+    )
 
-def plan_task(knowledge: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
+def plan_task(
+    knowledge: dict,
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> dict:
     ctx = json.dumps(knowledge, ensure_ascii=False)
     items = [
         {
@@ -196,9 +256,23 @@ def plan_task(knowledge: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_P
             ),
         },
     ]
-    return _json_call(policy.analysis_model, PLAN_TZ_SCHEMA, items, reasoning_effort=policy.analysis_effort)
+    return _json_call(
+        policy.analysis_model,
+        PLAN_TZ_SCHEMA,
+        items,
+        reasoning_effort=policy.analysis_effort,
+        instructions=instructions,
+        temperature=temperature,
+    )
 
-def fix(packed_context: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
+def fix(
+    packed_context: dict,
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> dict:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
         {"role": "user", "content": (
@@ -208,9 +282,22 @@ def fix(packed_context: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_PO
             f"Контекст (JSON):\n{ctx}"
         )},
     ]
-    return _json_call(policy.patch_model, FIX_SCHEMA, items, reasoning_effort=policy.patch_effort)
+    return _json_call(
+        policy.patch_model,
+        FIX_SCHEMA,
+        items,
+        reasoning_effort=policy.patch_effort,
+        instructions=instructions,
+        temperature=temperature,
+    )
 
-def generate_docs(facts: dict, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
+def generate_docs(
+    facts: dict,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> dict:
     ctx = json.dumps(facts, ensure_ascii=False)
     items = [
         {"role": "user", "content": (
@@ -226,4 +313,11 @@ def generate_docs(facts: dict, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
             f"Факты (JSON):\n{ctx}"
         )},
     ]
-    return _json_call(policy.analysis_model, DOCS_SCHEMA, items, reasoning_effort=policy.analysis_effort)
+    return _json_call(
+        policy.analysis_model,
+        DOCS_SCHEMA,
+        items,
+        reasoning_effort=policy.analysis_effort,
+        instructions=instructions,
+        temperature=temperature,
+    )

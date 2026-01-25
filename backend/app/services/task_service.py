@@ -23,6 +23,7 @@ from ..errors import (
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.orchestrator import analyze, evolve, fix, triage, plan_task
 from ..llm.agentic import analyze_agentic, evolve_agentic, fix_agentic, AgenticMeta
+from ..llm.policy import ProfileName, ProfileParams, resolve_profile
 from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
 from ..scan import scan_files
@@ -61,6 +62,7 @@ class TaskRequest:
     target_path: str
     prompt: str
     mode: str | None
+    profile: ProfileName | None
     depth: int | None
     dep_mode: str
     apply_patch: bool
@@ -127,6 +129,17 @@ def _llm_http_error(phase: str, error: Exception) -> None:
 def _validate_depth(depth: int) -> int:
     if depth < 0 or depth > 6:
         raise BadRequestError("depth должно быть в диапазоне 0..6")
+    return depth
+
+
+def _validate_depth_for_profile(depth: int, profile: ProfileParams) -> int:
+    min_depth = profile.depth_min if profile.depth_min is not None else 0
+    max_depth = profile.depth_max if profile.depth_max is not None else 6
+    if depth < min_depth or depth > max_depth:
+        raise BadRequestError(
+            "depth должно быть в диапазоне профиля",
+            context={"depth": depth, "min": min_depth, "max": max_depth},
+        )
     return depth
 
 
@@ -307,6 +320,9 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
     mode = request.mode
     depth = request.depth
     dep_mode = request.dep_mode
+    profile_params = resolve_profile(request.profile)
+    profile_instructions = profile_params.instructions
+    profile_temperature = profile_params.temperature
 
     if mode is not None and mode not in ("analyze", "evolve", "fix", "impact"):
         raise BadRequestError("Неизвестный режим")
@@ -322,7 +338,11 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
 
     if mode is None:
         try:
-            triage_result = triage(request.prompt)
+            triage_result = triage(
+                request.prompt,
+                instructions=profile_instructions,
+                temperature=profile_temperature,
+            )
         except Exception as error:  # noqa: BLE001
             _llm_http_error("triage", error)
 
@@ -354,13 +374,17 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             dep_mode = triage_dep_mode
 
     if depth is None:
-        depth = int(settings.default_depth)
-        if depth < 0 or depth > 6:
-            raise BadRequestError(
-                "Неверная конфигурация сервера: DEFAULT_DEPTH должен быть от 0 до 6",
-                context={"default_depth": settings.default_depth},
-            )
+        if profile_params.default_depth is not None:
+            depth = int(profile_params.default_depth)
+        else:
+            depth = int(settings.default_depth)
+            if depth < 0 or depth > 6:
+                raise BadRequestError(
+                    "Неверная конфигурация сервера: DEFAULT_DEPTH должен быть от 0 до 6",
+                    context={"default_depth": settings.default_depth},
+                )
     depth = _validate_depth(depth)
+    depth = _validate_depth_for_profile(depth, profile_params)
 
     allowed_patch_paths: set[str] | None = None
     agentic_meta: AgenticMeta | None = None
@@ -383,7 +407,12 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                 "nodes": _load_node_metrics(project_id, paths_for_metrics),
             }
             try:
-                plan_tz = plan_task(knowledge, request.prompt)
+                plan_tz = plan_task(
+                    knowledge,
+                    request.prompt,
+                    instructions=profile_instructions,
+                    temperature=profile_temperature,
+                )
             except Exception as error:  # noqa: BLE001
                 _llm_http_error("plan", error)
             plan_source = "graph"
@@ -405,6 +434,18 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         srv_file = int(getattr(settings, "llm_agentic_max_file_chars", 24_000))
         srv_total = int(getattr(settings, "llm_agentic_max_total_tool_output_chars", 180_000))
         srv_temp = float(getattr(settings, "llm_agentic_temperature", 0.0))
+
+        def _pick_agentic_value(
+            field: str,
+            request_value: int | float | None,
+            profile_value: int | float | None,
+            server_default: int | float,
+        ) -> int | float:
+            if field in request.provided_fields and request_value is not None:
+                return request_value
+            if profile_value is not None:
+                return profile_value
+            return server_default
 
         complexity_coeff = 1.0
         complexity_inputs: dict[str, object] | None = None
@@ -446,12 +487,38 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                 "mode": mode,
             }
 
-        base_agentic_max_calls = _clamp_int(request.agentic_max_calls, srv_calls, 1, 100)
+        base_agentic_max_calls = _clamp_int(
+            _pick_agentic_value(
+                "agentic_max_calls",
+                request.agentic_max_calls,
+                profile_params.max_calls,
+                srv_calls,
+            ),
+            srv_calls,
+            1,
+            100,
+        )
         base_agentic_max_file_chars = _clamp_int(
-            request.agentic_max_file_chars, srv_file, 200, 50_000
+            _pick_agentic_value(
+                "agentic_max_file_chars",
+                request.agentic_max_file_chars,
+                profile_params.max_file_chars,
+                srv_file,
+            ),
+            srv_file,
+            200,
+            50_000,
         )
         base_agentic_max_total_tool_output_chars = _clamp_int(
-            request.agentic_max_total_tool_output_chars, srv_total, 2_000, 1_000_000
+            _pick_agentic_value(
+                "agentic_max_total_tool_output_chars",
+                request.agentic_max_total_tool_output_chars,
+                profile_params.max_total_tool_output_chars,
+                srv_total,
+            ),
+            srv_total,
+            2_000,
+            1_000_000,
         )
 
         agentic_max_calls = min(
@@ -466,7 +533,17 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             int(round(base_agentic_max_total_tool_output_chars * complexity_coeff)),
             srv_total,
         )
-        agentic_temperature = _clamp_float(request.agentic_temperature, srv_temp, 0.0, 2.0)
+        agentic_temperature = _clamp_float(
+            _pick_agentic_value(
+                "agentic_temperature",
+                request.agentic_temperature,
+                profile_temperature,
+                srv_temp,
+            ),
+            srv_temp,
+            0.0,
+            2.0,
+        )
 
         retrieval_settings = (
             {
@@ -499,7 +576,12 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             if contract_summary is not None:
                 knowledge["contract"] = contract_summary
             try:
-                plan_tz = plan_task(knowledge, request.prompt)
+                plan_tz = plan_task(
+                    knowledge,
+                    request.prompt,
+                    instructions=profile_instructions,
+                    temperature=profile_temperature,
+                )
             except Exception as error:  # noqa: BLE001
                 _llm_http_error("plan", error)
             plan_source = "agentic"
@@ -512,6 +594,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         target,
                         depth=depth,
                         user_prompt=request.prompt,
+                        instructions=profile_instructions,
                         max_calls=agentic_max_calls,
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
@@ -526,6 +609,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         target,
                         depth=depth,
                         user_prompt=request.prompt,
+                        instructions=profile_instructions,
                         max_calls=agentic_max_calls,
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
@@ -540,6 +624,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         target,
                         depth=depth,
                         user_prompt=request.prompt,
+                        instructions=profile_instructions,
                         max_calls=agentic_max_calls,
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
@@ -683,25 +768,45 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                 "context_omitted_paths_truncated": omitted_total > len(omitted_sample),
             }
             try:
-                plan_tz = plan_task(packed_dict, request.prompt)
+                plan_tz = plan_task(
+                    packed_dict,
+                    request.prompt,
+                    instructions=profile_instructions,
+                    temperature=profile_temperature,
+                )
             except Exception as error:  # noqa: BLE001
                 _llm_http_error("plan", error)
             plan_source = "pack"
             if mode == "analyze":
                 try:
-                    result = analyze(packed_dict, request.prompt)
+                    result = analyze(
+                        packed_dict,
+                        request.prompt,
+                        instructions=profile_instructions,
+                        temperature=profile_temperature,
+                    )
                 except Exception as error:  # noqa: BLE001
                     _llm_http_error("analyze", error)
                 model_used = settings.analysis_model
             elif mode == "evolve":
                 try:
-                    result = evolve(packed_dict, request.prompt)
+                    result = evolve(
+                        packed_dict,
+                        request.prompt,
+                        instructions=profile_instructions,
+                        temperature=profile_temperature,
+                    )
                 except Exception as error:  # noqa: BLE001
                     _llm_http_error("evolve", error)
                 model_used = settings.analysis_model
             elif mode == "fix":
                 try:
-                    result = fix(packed_dict, request.prompt)
+                    result = fix(
+                        packed_dict,
+                        request.prompt,
+                        instructions=profile_instructions,
+                        temperature=profile_temperature,
+                    )
                 except Exception as error:  # noqa: BLE001
                     _llm_http_error("fix", error)
                 model_used = settings.patch_model

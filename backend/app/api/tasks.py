@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel, Field
 
+from ..llm.policy import ProfileName
 from ..services.task_service import (
     TaskRequest, describe_task,
     delete_run, get_run, get_run_patch,
@@ -17,6 +18,10 @@ class RunTask(BaseModel):
     target_path: str = Field(..., description="Path relative to project root")
     prompt: str = Field(..., description="Any natural language request")
     mode: str | None = Field(default=None, description="analyze|evolve|fix|impact (if omitted: auto-triage)")
+    profile: ProfileName | None = Field(
+        default=None,
+        description="LLM profile: architect|surgical|incident (if omitted: architect)",
+    )
     depth: int | None = Field(default=None, description="Dependency depth for context pack")
     dep_mode: str = Field(default="contracts", description="contracts|full")
     apply_patch: bool = Field(default=False, description="Apply patch for fix tasks")
@@ -45,6 +50,7 @@ def run_task(project_id: int, body: RunTask, background_tasks: BackgroundTasks, 
         target_path=body.target_path,
         prompt=body.prompt,
         mode=body.mode,
+        profile=body.profile,
         depth=body.depth,
         dep_mode=body.dep_mode,
         apply_patch=body.apply_patch,
