@@ -69,9 +69,8 @@ class TaskRequest:
     apply_patch: bool
     allow_out_of_context_patch: bool
     agentic: bool
-    agentic_evidence_mode: bool | None = None
-
     provided_fields: set[str]
+    agentic_evidence_mode: bool | None = None
 
     # pack_context advanced
     pack_max_files: int | None = None
