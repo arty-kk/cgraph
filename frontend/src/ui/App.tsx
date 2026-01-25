@@ -6,7 +6,7 @@ import { ProjectsSidebar } from './components/ProjectsSidebar'
 import { GraphCanvas } from './components/GraphCanvas'
 import { NodePanel } from './components/NodePanel'
 import { Notifications } from './components/Notifications'
-import { FileEditorModal } from './components/FileEditorModal'
+import { FileEditorPane } from './components/FileEditorPane'
 import { useCGRAPHApp } from './useCGRAPHApp'
 import { CommandPalette } from './components/CommandPalette'
 import { Modal } from './components/Modal'
@@ -70,7 +70,7 @@ export function App() {
     <div className="h-screen w-screen overflow-hidden relative bg-neutral-950 text-neutral-100">
       <div className="h-screen w-screen overflow-x-hidden grid min-w-0" style={{ gridTemplateColumns, gridTemplateRows: '1fr' }}>
 
-      {!app.focusGraph && app.leftPanelOpen && (
+      {app.workspaceView === 'graph' && !app.focusGraph && app.leftPanelOpen && (
           <ProjectsSidebar
             onHidePanel={app.toggleLeftPanel}
             projects={app.projects}
@@ -115,43 +115,68 @@ export function App() {
         )}
 
         <div className="min-w-0 min-h-0">
-          <GraphCanvas
-            graph={app.graph}
-            activeProject={app.activeProject}
-            busy={app.busy || app.graphBusy}
-            graphMode={app.graphMode}
-            selectedPath={app.selectedPath}
-            onBackgroundTap={app.onGraphBackgroundTap}
-            onNodeTap={app.onGraphNodeTap}
-            onScan={app.onScan}
-            onRefresh={app.onRefresh}
-            onOpenPalette={() => app.setPaletteOpen(true)}
-            notifyInfo={app.notifyInfo}
-            compactMode={app.compactMode}
-            focusGraph={app.focusGraph}
-            setFocusGraph={app.setFocusGraph}
-            leftPanelOpen={app.leftPanelOpen}
-            rightPanelOpen={app.rightPanelOpen}
-            onToggleLeftPanel={app.toggleLeftPanel}
-            onToggleRightPanel={app.toggleRightPanel}
-            onClearSelection={app.onClearSelection}
-            canGoBack={app.canGoBack}
-            canGoForward={app.canGoForward}
-            onBack={app.goBack}
-            onForward={app.goForward}
-            selectionTrail={app.selectionTrail}
-            onNavigatePath={app.onSelectNodePath}
-            pinnedPaths={app.pinnedPaths}
-            isSelectedPinned={app.isSelectedPinned}
-            onTogglePinSelected={app.togglePinSelected}
-            onTogglePinPath={app.togglePinPath}
-            onUnpin={app.unpinPath}
-            onClearPins={app.clearPins}
-            onOpenFileEditor={app.openFileEditor}
-          />
+          {app.workspaceView === 'graph' ? (
+            <GraphCanvas
+              graph={app.graph}
+              activeProject={app.activeProject}
+              busy={app.busy || app.graphBusy}
+              graphMode={app.graphMode}
+              selectedPath={app.selectedPath}
+              workspaceView={app.workspaceView}
+              onBackgroundTap={app.onGraphBackgroundTap}
+              onNodeTap={app.onGraphNodeTap}
+              onScan={app.onScan}
+              onRefresh={app.onRefresh}
+              onOpenPalette={() => app.setPaletteOpen(true)}
+              notifyInfo={app.notifyInfo}
+              compactMode={app.compactMode}
+              focusGraph={app.focusGraph}
+              setFocusGraph={app.setFocusGraph}
+              leftPanelOpen={app.leftPanelOpen}
+              rightPanelOpen={app.rightPanelOpen}
+              onToggleLeftPanel={app.toggleLeftPanel}
+              onToggleRightPanel={app.toggleRightPanel}
+              onClearSelection={app.onClearSelection}
+              canGoBack={app.canGoBack}
+              canGoForward={app.canGoForward}
+              onBack={app.goBack}
+              onForward={app.goForward}
+              selectionTrail={app.selectionTrail}
+              onNavigatePath={app.onSelectNodePath}
+              pinnedPaths={app.pinnedPaths}
+              isSelectedPinned={app.isSelectedPinned}
+              onTogglePinSelected={app.togglePinSelected}
+              onTogglePinPath={app.togglePinPath}
+              onUnpin={app.unpinPath}
+              onClearPins={app.clearPins}
+              onOpenFileEditor={(path) => {
+                app.setWorkspaceView('editor')
+                void Promise.resolve(app.openFileEditor(path))
+              }}
+              onToggleWorkspaceView={app.toggleWorkspaceView}
+            />
+          ) : (
+            <div className="h-full w-full overflow-auto p-4">
+              <FileEditorPane
+                open={app.fileEditorOpen}
+                path={app.fileEditorPath}
+                original={app.fileEditorOriginal}
+                content={app.fileEditorContent}
+                busy={app.fileEditorBusy}
+                saving={app.fileEditorSaving}
+                dirty={app.fileEditorDirty}
+                truncated={app.fileEditorTruncated}
+                error={app.fileEditorError}
+                onChange={app.setFileEditorContent}
+                onReload={app.reloadFileEditor}
+                onSave={app.saveFileEditor}
+                onClose={() => app.setWorkspaceView('graph')}
+              />
+            </div>
+          )}
         </div>
 
-        {!app.focusGraph && app.rightPanelOpen && (
+        {app.workspaceView === 'graph' && !app.focusGraph && app.rightPanelOpen && (
           <NodePanel
             onHidePanel={app.toggleRightPanel}
             activeProject={app.activeProject}
@@ -228,22 +253,6 @@ export function App() {
         onForward={app.goForward}
         compactMode={app.compactMode}
         onToggleCompactMode={app.toggleCompactMode}
-      />
-
-      <FileEditorModal
-        open={app.fileEditorOpen}
-        path={app.fileEditorPath}
-        original={app.fileEditorOriginal}
-        content={app.fileEditorContent}
-        busy={app.fileEditorBusy}
-        saving={app.fileEditorSaving}
-        dirty={app.fileEditorDirty}
-        truncated={app.fileEditorTruncated}
-        error={app.fileEditorError}
-        onChange={app.setFileEditorContent}
-        onReload={app.reloadFileEditor}
-        onSave={app.saveFileEditor}
-        onClose={app.closeFileEditor}
       />
 
       <Modal open={docsOpen && !!app.activeProject} title="Project docs" onClose={() => setDocsOpen(false)}>
@@ -469,7 +478,7 @@ export function App() {
         </div>
       </Modal>
       
-      {!app.focusGraph && !app.leftPanelOpen && (
+      {app.workspaceView === 'graph' && !app.focusGraph && !app.leftPanelOpen && (
         <button
           type="button"
           className="fixed left-2 top-1/2 -translate-y-1/2 z-[95] rounded-r-md bg-neutral-950/90 border border-neutral-700 px-1 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-900 shadow-lg"
@@ -482,7 +491,7 @@ export function App() {
         </button>
       )}
 
-      {!app.focusGraph && !app.rightPanelOpen && (
+      {app.workspaceView === 'graph' && !app.focusGraph && !app.rightPanelOpen && (
         <button
           type="button"
           className="fixed right-2 top-1/2 -translate-y-1/2 z-[95] rounded-l-md bg-neutral-950/90 border border-neutral-700 px-1 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-900 shadow-lg"

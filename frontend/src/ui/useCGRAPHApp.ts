@@ -45,6 +45,7 @@ import { clampInt } from '../lib/number'
 type AutoOrMode = 'auto' | Mode
 type GraphMode = 'local' | 'full' | 'limit'
 type RetrievalMode = 'agentic' | 'pack'
+type WorkspaceView = 'graph' | 'editor'
 
 type WorkspaceStateV1 = {
   version: 1
@@ -59,10 +60,29 @@ type WorkspaceStateV1 = {
   graphLocalMax: number
 }
 
-const WORKSPACE_KEY_PREFIX = 'cs.workspace.v1.'
+type WorkspaceStateV2 = {
+  version: 2
+  selectedPath: string | null
+  pinnedPaths: string[]
+  selectionTrail: string[]
+  backStack: string[]
+  forwardStack: string[]
+  graphMode: GraphMode
+  graphLimitN: number
+  graphHops: number
+  graphLocalMax: number
+  workspaceView: WorkspaceView
+}
+
+const WORKSPACE_KEY_PREFIX = 'cs.workspace.v2.'
+const LEGACY_WORKSPACE_KEY_PREFIX = 'cs.workspace.v1.'
 
 function wsKey(projectId: number): string {
   return `${WORKSPACE_KEY_PREFIX}${projectId}`
+}
+
+function legacyWsKey(projectId: number): string {
+  return `${LEGACY_WORKSPACE_KEY_PREFIX}${projectId}`
 }
 
 function isAnyModalOpen(): boolean {
@@ -256,9 +276,11 @@ export function useCGRAPHApp() {
   const toggleLeftPanel = useCallback(() => setLeftPanelOpen((v) => !v), [])
   const toggleRightPanel = useCallback(() => setRightPanelOpen((v) => !v), [])
   
-  const buildWorkspaceState = useCallback((): WorkspaceStateV1 => {
+  const [workspaceView, setWorkspaceViewState] = useState<WorkspaceView>('graph')
+
+  const buildWorkspaceState = useCallback((): WorkspaceStateV2 => {
     return {
-      version: 1,
+      version: 2,
       selectedPath,
       pinnedPaths: (pinnedPaths || []).slice(0, PIN_LIMIT),
       selectionTrail: (selectionTrail || []).slice(-10),
@@ -268,6 +290,7 @@ export function useCGRAPHApp() {
       graphLimitN,
       graphHops,
       graphLocalMax,
+      workspaceView,
     }
   }, [
     selectedPath,
@@ -279,6 +302,7 @@ export function useCGRAPHApp() {
     graphLimitN,
     graphHops,
     graphLocalMax,
+    workspaceView,
   ])
 
   const persistWorkspace = useCallback(
@@ -363,13 +387,19 @@ export function useCGRAPHApp() {
 
     try {
       const raw = localStorage.getItem(wsKey(pid))
-      if (raw) {
-        const parsed = JSON.parse(raw) as Partial<WorkspaceStateV1>
+      const legacyRaw = raw ? null : localStorage.getItem(legacyWsKey(pid))
+      const parsedRaw = raw || legacyRaw
+      if (parsedRaw) {
+        const parsed = JSON.parse(parsedRaw) as Partial<WorkspaceStateV2> | Partial<WorkspaceStateV1>
         const nextSelected = asStr(parsed.selectedPath) || null
         const nextPinned = asStrArr(parsed.pinnedPaths, 20).slice(0, PIN_LIMIT)
         const nextTrail = asStrArr(parsed.selectionTrail, 20).slice(-10)
         const nextBack = asStrArr(parsed.backStack, 300).slice(-200)
         const nextFwd = asStrArr(parsed.forwardStack, 300).slice(-200)
+        const nextWorkspaceView =
+          'workspaceView' in parsed && (parsed.workspaceView === 'editor' || parsed.workspaceView === 'graph')
+            ? parsed.workspaceView
+            : 'graph'
 
         setGraphMode(asGraphMode(parsed.graphMode, 'limit'))
         setGraphLimitN(asInt(parsed.graphLimitN, 2000, 100, 20000))
@@ -381,6 +411,7 @@ export function useCGRAPHApp() {
         setBackStack(nextBack)
         setForwardStack(nextFwd)
         setSelectedPath(nextSelected)
+        setWorkspaceViewState(nextWorkspaceView)
         selectedPathRef.current = nextSelected; selectionTrailRef.current = nextTrail; backStackRef.current = nextBack; forwardStackRef.current = nextFwd
       }
     } catch {}
@@ -423,6 +454,7 @@ export function useCGRAPHApp() {
     graphLimitN,
     graphHops,
     graphLocalMax,
+    workspaceView,
     persistWorkspace,
   ])
 
@@ -788,6 +820,7 @@ export function useCGRAPHApp() {
     setGraphLimitN(2000)
     setGraphHops(2)
     setGraphLocalMax(400)
+    setWorkspaceViewState('graph')
     setPrompt('')
     setSearchQuery('')
     setSearchResults([])
@@ -819,6 +852,7 @@ export function useCGRAPHApp() {
     setForwardStack([])
     setSelectionTrail([])
     setPinnedPaths([])
+    setWorkspaceViewState('graph')
   }, [activeProject?.id, persistWorkspace, setErrorMessage])
 
   const projects = projectsQuery.data ?? []
@@ -1275,6 +1309,32 @@ export function useCGRAPHApp() {
     setFileEditorOpen(false)
   }, [])
 
+  const setWorkspaceView = useCallback(
+    (nextView: WorkspaceView) => {
+      if (workspaceView === nextView) return
+      setWorkspaceViewState(nextView)
+      if (nextView === 'graph') {
+        closeFileEditor()
+        return
+      }
+      const nextPath = selectedPathRef.current
+      if (nextView === 'editor' && nextPath) {
+        void openFileEditor(nextPath)
+      }
+    },
+    [closeFileEditor, openFileEditor, workspaceView],
+  )
+
+  const toggleWorkspaceView = useCallback(() => {
+    setWorkspaceView(workspaceView === 'graph' ? 'editor' : 'graph')
+  }, [setWorkspaceView, workspaceView])
+
+  useEffect(() => {
+    if (workspaceView !== 'editor') return
+    if (!selectedPath) return
+    void openFileEditor(selectedPath)
+  }, [openFileEditor, selectedPath, workspaceView])
+
   const selectedInGraph = useMemo(() => {
     if (!selectedPath || !graph?.nodes?.length) return false
     return graph.nodes.some((n: GraphNode) => n.path === selectedPath || n.id === selectedPath)
@@ -1399,6 +1459,9 @@ export function useCGRAPHApp() {
     compactMode,
     setCompactMode,
     toggleCompactMode,
+    workspaceView,
+    setWorkspaceView,
+    toggleWorkspaceView,
     leftPanelOpen,
     rightPanelOpen,
     setLeftPanelOpen,

@@ -121,12 +121,35 @@ const EyeIcon = () => (
   </svg>
 )
 
+const PencilIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path
+      d="M4 20h4l10.5-10.5a2.5 2.5 0 0 0-4-3L4 17v3Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+    <path d="M13.5 6.5l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+  </svg>
+)
+
+const GraphIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <circle cx="6" cy="6" r="2.5" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="18" cy="6" r="2.5" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="12" cy="18" r="2.5" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M8.5 7.5l5 2.5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+    <path d="M15.5 7.5l-3 8" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+  </svg>
+)
+
 type Props = {
   graph: GraphData | null
   activeProject: Project | null
   busy: boolean
   graphMode: 'local' | 'full' | 'limit'
   selectedPath: string | null
+  workspaceView: 'graph' | 'editor'
   onBackgroundTap: () => void
   onNodeTap: (path: string) => void | Promise<void>
   onScan: () => void | Promise<void>
@@ -156,6 +179,7 @@ type Props = {
   onUnpin: (path: string) => void | Promise<void>
   onClearPins: () => void | Promise<void>
   onOpenFileEditor: (path: string) => void | Promise<void>
+  onToggleWorkspaceView: () => void
 }
 
 export function GraphCanvas({ 
@@ -164,6 +188,7 @@ export function GraphCanvas({
   busy,
   graphMode,
   selectedPath,
+  workspaceView,
   onBackgroundTap,
   onNodeTap,
   onScan,
@@ -193,6 +218,7 @@ export function GraphCanvas({
   onUnpin,
   onClearPins,
   onOpenFileEditor,
+  onToggleWorkspaceView,
 }: Props) {
 
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -208,6 +234,8 @@ export function GraphCanvas({
   )
   const btnClass =
     'shrink-0 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50'
+  const toggleBtnClass =
+    'flex h-8 w-8 items-center justify-center rounded-md border border-indigo-500/50 bg-indigo-950/60 text-indigo-100 hover:bg-indigo-900/60 disabled:opacity-50'
   const hoverRevealBlock = compactMode ? 'hidden group-hover:block' : ''
   const hoverRevealFlex = compactMode ? 'hidden group-hover:flex' : 'flex'
 
@@ -762,57 +790,59 @@ export function GraphCanvas({
   return (
     <div ref={rootRef} className="relative w-full h-full">
       <div ref={panelRef} className="absolute top-3 left-3 z-10">
-              {focusGraph ? (
-          <div className="flex items-center gap-1 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
-            <button
-              type="button"
-              className={btnClass}
-              onClick={() => setFocusGraph(false)}
-              disabled={!activeProject}
-              title="Exit focus (Panels)"
-            >
-              {label('Panels', 'P')}
-            </button>
-            <button
-              type="button"
-              className={btnClass}
-              onClick={doUndo}
-              disabled={!activeProject || undoStackRef.current.length === 0}
-              title="Undo (Ctrl/⌘+Z)"
-            >
-              {label('Undo', 'Z')}
-            </button>
-            <button
-              type="button"
-              className={btnClass}
-              onClick={doRedo}
-              disabled={!activeProject || redoStackRef.current.length === 0}
-              title="Redo (Ctrl/⌘+Shift+Z)"
-            >
-              {label('Redo', 'Y')}
-            </button>
-            <button type="button" className={btnClass} onClick={() => actions.fit()} disabled={!activeProject || !graph} title="Fit">
-              {label('Fit', '⤢')}
-            </button>
-            <button
-              type="button"
-              className={btnClass}
-              onClick={() => { if (selectedPath) actions.centerPath(selectedPath) }}
-              disabled={!activeProject || !graph || !selectedPath}
-              title="Center selected"
-            >
-              {label('Center', '⌖')}
-            </button>
-            <button type="button" className={btnClass} onClick={() => actions.relayoutVisible()} disabled={!activeProject || !graph} title="Relayout visible">
-              {label('Relayout', '↻')}
-            </button>
-            <button type="button" className={btnClass} onClick={saveLayout} disabled={!activeProject || !graph} title="Save layout">
-              {label('Save', 'S')}
-            </button>
-            <button type="button" className={btnClass} onClick={resetLayout} disabled={!activeProject || !graph} title="Reset layout">
-              {label('Reset', 'R')}
-            </button>
-          </div>
+        {focusGraph ? (
+          <>
+            <div className="flex items-center gap-2 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
+              <button
+                type="button"
+                className={btnClass}
+                onClick={() => setFocusGraph(false)}
+                disabled={!activeProject}
+                title="Exit focus (Panels)"
+              >
+                {label('Panels', 'P')}
+              </button>
+              <button
+                type="button"
+                className={btnClass}
+                onClick={doUndo}
+                disabled={!activeProject || undoStackRef.current.length === 0}
+                title="Undo (Ctrl/⌘+Z)"
+              >
+                {label('Undo', 'Z')}
+              </button>
+              <button
+                type="button"
+                className={btnClass}
+                onClick={doRedo}
+                disabled={!activeProject || redoStackRef.current.length === 0}
+                title="Redo (Ctrl/⌘+Shift+Z)"
+              >
+                {label('Redo', 'Y')}
+              </button>
+              <button type="button" className={btnClass} onClick={() => actions.fit()} disabled={!activeProject || !graph} title="Fit">
+                {label('Fit', '⤢')}
+              </button>
+              <button
+                type="button"
+                className={btnClass}
+                onClick={() => { if (selectedPath) actions.centerPath(selectedPath) }}
+                disabled={!activeProject || !graph || !selectedPath}
+                title="Center selected"
+              >
+                {label('Center', '⌖')}
+              </button>
+              <button type="button" className={btnClass} onClick={() => actions.relayoutVisible()} disabled={!activeProject || !graph} title="Relayout visible">
+                {label('Relayout', '↻')}
+              </button>
+              <button type="button" className={btnClass} onClick={saveLayout} disabled={!activeProject || !graph} title="Save layout">
+                {label('Save', 'S')}
+              </button>
+              <button type="button" className={btnClass} onClick={resetLayout} disabled={!activeProject || !graph} title="Reset layout">
+                {label('Reset', 'R')}
+              </button>
+            </div>
+          </>
         ) : !panelOpen ? (
           <div className="flex flex-col gap-1 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
             <div className="flex items-center gap-2 flex-wrap">
@@ -833,6 +863,16 @@ export function GraphCanvas({
                     'Выбери проект'
                   )}
                 </div>
+              </button>
+              <button
+                type="button"
+                className={toggleBtnClass}
+                onClick={onToggleWorkspaceView}
+                disabled={!activeProject}
+                title={workspaceView === 'graph' ? 'Switch to editor' : 'Switch to graph'}
+                aria-label={workspaceView === 'graph' ? 'Switch to editor' : 'Switch to graph'}
+              >
+                {workspaceView === 'graph' ? <PencilIcon /> : <GraphIcon />}
               </button>
               <button
                 type="button"
@@ -995,7 +1035,7 @@ export function GraphCanvas({
           </div>
         ) : (
           <div className="flex flex-col gap-2 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
               <div className="text-xs text-neutral-300">
                 {activeProject ? (
                   <>
@@ -1006,15 +1046,27 @@ export function GraphCanvas({
                   'Выбери проект'
                 )}
               </div>
-              <button
-                type="button"
-                className="text-xs text-neutral-300 hover:text-white"
-                onClick={() => setPanelOpen(false)}
-                aria-label="Свернуть панель"
-                title="Свернуть"
-              >
-                ×
-              </button>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  className={toggleBtnClass}
+                  onClick={onToggleWorkspaceView}
+                  disabled={!activeProject}
+                  title={workspaceView === 'graph' ? 'Switch to editor' : 'Switch to graph'}
+                  aria-label={workspaceView === 'graph' ? 'Switch to editor' : 'Switch to graph'}
+                >
+                  {workspaceView === 'graph' ? <PencilIcon /> : <GraphIcon />}
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-neutral-300 hover:text-white"
+                  onClick={() => setPanelOpen(false)}
+                  aria-label="Свернуть панель"
+                  title="Свернуть"
+                >
+                  ×
+                </button>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs text-neutral-200">
               <label className="flex items-center gap-2 col-span-2">
@@ -1102,10 +1154,10 @@ export function GraphCanvas({
               {selectedPath && !selectedInGraph && ' (нет в графе)'}
             </span>
           </label>
-          <div className="flex items-center gap-2 col-span-2">
-            <button
-              className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
-              onClick={resetFilters}
+            <div className="flex items-center gap-2 col-span-2">
+              <button
+                className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
+                onClick={resetFilters}
               disabled={!activeProject}
             >
               Reset
