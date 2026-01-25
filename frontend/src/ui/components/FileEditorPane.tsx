@@ -172,6 +172,14 @@ export function FileEditorPane({
           <span className="rounded-full border border-neutral-700 bg-neutral-900/80 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-neutral-400">
             Editor
           </span>
+          <button
+            type="button"
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            onClick={onClose}
+            disabled={saving}
+          >
+            Back to graph
+          </button>
           {path && (
             <span className="max-w-[52vw] truncate text-neutral-100">{path}</span>
           )}
