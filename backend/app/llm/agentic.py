@@ -3811,7 +3811,8 @@ def _agentic_json_call(
                     adjust_semantic=True,
                 )
 
-            cache_key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
+            args_for_cache = {k: v for k, v in args.items() if k != "reason"}
+            cache_key = f"{name}:{json.dumps(args_for_cache, sort_keys=True, ensure_ascii=False)}"
             cache_hit = cache_key in tool_cache
             start = None if cache_hit else time.perf_counter()
             try:
