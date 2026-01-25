@@ -93,6 +93,7 @@ export type RunTaskBody = {
   depth?: number
   dep_mode?: DepMode
   apply_patch?: boolean
+  allow_out_of_context_patch?: boolean
   agentic: boolean
 
   pack_max_files?: number
@@ -172,6 +173,8 @@ export type RunDetails = {
     contracts_updated?: string[]
     contracts_removed?: string[]
     error?: string
+    blocked_paths?: string[]
+    blocked_reason?: 'out_of_context'
   } | null
   created_at: string
   result: unknown
@@ -197,6 +200,8 @@ export type RunTaskResult = {
     contracts_updated?: string[]
     contracts_removed?: string[]
     error?: string
+    blocked_paths?: string[]
+    blocked_reason?: 'out_of_context'
   }
   warning?: string | null
   graph_scan_task_id?: string | null

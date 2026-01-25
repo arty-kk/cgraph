@@ -1175,13 +1175,9 @@ export function useCGRAPHApp() {
     [activeProject, setSelection]
   )
 
-  const onRun = useCallback(async () => {
-    if (!activeProject || !selectedPath) return
-
-    await runOp(async () => {
-      setRunResult(null)
-      setFullPatch(null)
-
+  const buildRunBody = useCallback(
+    (extra?: Partial<RunTaskBody>): RunTaskBody | null => {
+      if (!selectedPath) return null
       const clampedPackMaxFiles = clampInt(packMaxFiles, 1, 80)
       const clampedPackMaxCharsPerFile = clampInt(packMaxCharsPerFile, 200, 50_000)
       let clampedPackMaxTotalChars = clampInt(packMaxTotalChars, 1_000, 500_000)
@@ -1223,6 +1219,41 @@ export function useCGRAPHApp() {
         if (retrievalMode === 'pack') body.dep_mode = depMode
       }
 
+      return extra ? { ...body, ...extra } : body
+    },
+    [
+      agenticMaxCalls,
+      agenticMaxFileChars,
+      agenticMaxTotalToolOutputChars,
+      agenticTemperature,
+      applyPatch,
+      depth,
+      depMode,
+      mode,
+      packMaxCharsPerFile,
+      packMaxFiles,
+      packMaxTotalChars,
+      prompt,
+      retrievalMode,
+      selectedPath,
+      setAgenticMaxCalls,
+      setAgenticMaxFileChars,
+      setAgenticMaxTotalToolOutputChars,
+      setPackMaxCharsPerFile,
+      setPackMaxFiles,
+      setPackMaxTotalChars,
+    ]
+  )
+
+  const onRun = useCallback(async () => {
+    if (!activeProject || !selectedPath) return
+
+    await runOp(async () => {
+      setRunResult(null)
+      setFullPatch(null)
+
+      const body = buildRunBody()
+      if (!body) return
       const res = await runTask(activeProject.id, body)
       setRunResult(res)
 
@@ -1233,11 +1264,32 @@ export function useCGRAPHApp() {
       ])
     })
   }, [
-    activeProject, selectedPath, runOp, prompt, applyPatch,
-    mode, depth, depMode, retrievalMode, queryClient,
-    agenticMaxCalls, agenticMaxFileChars, agenticMaxTotalToolOutputChars, agenticTemperature,
-    packMaxFiles, packMaxCharsPerFile, packMaxTotalChars
+    activeProject,
+    selectedPath,
+    runOp,
+    buildRunBody,
+    queryClient,
   ])
+
+  const onRunWithExpandedContext = useCallback(async () => {
+    if (!activeProject || !selectedPath) return
+
+    await runOp(async () => {
+      setRunResult(null)
+      setFullPatch(null)
+
+      const body = buildRunBody({ allow_out_of_context_patch: true })
+      if (!body) return
+      const res = await runTask(activeProject.id, body)
+      setRunResult(res)
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+      ])
+    })
+  }, [activeProject, selectedPath, runOp, buildRunBody, queryClient])
 
   const onSearchNodes = useCallback(
     async (query: string) => {
@@ -1497,6 +1549,7 @@ export function useCGRAPHApp() {
     onSelectNodePath,
     onGraphNodeTap,
     onRun,
+    onRunWithExpandedContext,
     onDeleteRun,
     onLoadFullPatch,
     onLoadRun,
