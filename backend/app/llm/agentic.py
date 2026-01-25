@@ -762,7 +762,8 @@ def _tool_get_file(project_id: int, root: Path, meta: AgenticMeta, args: dict, *
     if not abs_path.is_file():
         return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
     try:
-        text = abs_path.read_text(encoding="utf-8", errors="replace")
+        with abs_path.open(encoding="utf-8", errors="replace") as f:
+            text = f.read(max_chars + 1)
     except Exception as e:
         return _tool_error("read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)})
     truncated = len(text) > max_chars
@@ -795,13 +796,17 @@ def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: d
     if not abs_path.is_file():
         return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
     try:
-        text = abs_path.read_text(encoding="utf-8", errors="replace")
+        with abs_path.open(encoding="utf-8", errors="replace") as f:
+            buffer: list[str] = []
+            for line_num, line in enumerate(f, start=1):
+                if line_num < s_ln:
+                    continue
+                buffer.append(line)
+                if line_num >= e_ln:
+                    break
     except Exception as e:
         return _tool_error("read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)})
-    lines = text.splitlines(keepends=True)
-    s0 = max(0, s_ln - 1)
-    e0 = min(len(lines), e_ln)
-    snippet = "".join(lines[s0:e0])
+    snippet = "".join(buffer)
     truncated = len(snippet) > max_chars
     if truncated:
         snippet = snippet[:max_chars]
