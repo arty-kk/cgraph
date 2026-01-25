@@ -24,6 +24,18 @@ class RunTask(BaseModel):
     )
     depth: int | None = Field(default=None, description="Dependency depth for context pack")
     dep_mode: str = Field(default="contracts", description="contracts|full")
+    impact_max_nodes: int | None = Field(
+        default=None,
+        ge=1,
+        le=10_000,
+        description="Impact mode: max nodes to return (null for unlimited)",
+    )
+    impact_max_depth: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Impact mode: max BFS depth (null for unlimited)",
+    )
     apply_patch: bool = Field(default=False, description="Apply patch for fix tasks")
     agentic: bool = Field(
         default=True,
@@ -57,6 +69,8 @@ def run_task(project_id: int, body: RunTask, background_tasks: BackgroundTasks, 
         profile=body.profile,
         depth=body.depth,
         dep_mode=body.dep_mode,
+        impact_max_nodes=body.impact_max_nodes,
+        impact_max_depth=body.impact_max_depth,
         apply_patch=body.apply_patch,
         allow_out_of_context_patch=body.allow_out_of_context_patch,
         agentic=body.agentic,

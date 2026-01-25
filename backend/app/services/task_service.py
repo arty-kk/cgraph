@@ -66,6 +66,8 @@ class TaskRequest:
     profile: ProfileName | None
     depth: int | None
     dep_mode: str
+    impact_max_nodes: int | None
+    impact_max_depth: int | None
     apply_patch: bool
     allow_out_of_context_patch: bool
     agentic: bool
@@ -281,19 +283,35 @@ def _validate_depth_for_profile(depth: int, profile: ProfileParams) -> int:
     return depth
 
 
-def _impact(project_id: int, target: str) -> list[str]:
+def _impact(
+    project_id: int,
+    target: str,
+    max_nodes: int | None,
+    max_depth: int | None,
+) -> tuple[list[str], bool]:
+    from collections import deque
+
     visited: set[str] = set()
-    frontier: list[str] = [target]
+    queue: deque[tuple[str, int]] = deque([(target, 0)])
     SQLITE_IN_CHUNK = 400
+    truncated = False
 
     def _chunks(seq: list[str], size: int) -> list[list[str]]:
         return [seq[i : i + size] for i in range(0, len(seq), size)]
 
     with get_session() as session:
-        while frontier:
-            frontier = [p for p in list(dict.fromkeys(frontier)) if isinstance(p, str) and p]
-            nxt: list[str] = []
-            for chunk in _chunks(frontier, SQLITE_IN_CHUNK):
+        while queue:
+            current_depth = queue[0][1]
+            current_paths: list[str] = []
+            while queue and queue[0][1] == current_depth:
+                path, depth = queue.popleft()
+                if isinstance(path, str) and path:
+                    current_paths.append(path)
+            current_paths = [p for p in list(dict.fromkeys(current_paths)) if p]
+            if not current_paths:
+                continue
+
+            for chunk in _chunks(current_paths, SQLITE_IN_CHUNK):
                 rows = session.exec(
                     select(FileEdge.src_path).where(
                         FileEdge.project_id == project_id,
@@ -306,10 +324,21 @@ def _impact(project_id: int, target: str) -> list[str]:
                         continue
                     if src in visited:
                         continue
+                    if max_depth is not None and current_depth >= max_depth:
+                        truncated = True
+                        continue
+                    if max_nodes is not None and len(visited) >= max_nodes:
+                        truncated = True
+                        break
                     visited.add(src)
-                    nxt.append(src)
-            frontier = nxt
-    return sorted(visited)
+                    queue.append((src, current_depth + 1))
+                if max_nodes is not None and len(visited) >= max_nodes:
+                    truncated = True
+                    break
+            if max_nodes is not None and len(visited) >= max_nodes:
+                truncated = True
+                break
+    return sorted(visited), truncated
 
 
 def _ensure_node_exists(project_id: int, target: str, root: Path) -> None:
@@ -532,11 +561,38 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
     plan_source: str | None = None
 
     if mode == "impact":
-        impacted = _impact(project_id, target)
-        result = {"impacted": impacted, "count": len(impacted)}
+        max_nodes = (
+            request.impact_max_nodes
+            if "impact_max_nodes" in request.provided_fields
+            else getattr(settings, "impact_max_nodes", None)
+        )
+        max_depth = (
+            request.impact_max_depth
+            if "impact_max_depth" in request.provided_fields
+            else getattr(settings, "impact_max_depth", None)
+        )
+        if max_nodes is not None:
+            max_nodes = int(max_nodes)
+        if max_depth is not None:
+            max_depth = int(max_depth)
+
+        impacted, truncated = _impact(project_id, target, max_nodes, max_depth)
+        result = {
+            "impacted": impacted,
+            "count": len(impacted),
+            "truncated": truncated,
+            "max_nodes": max_nodes,
+            "max_depth": max_depth,
+        }
         model_used = "graph"
         retrieval_used = "graph"
-        retrieval_settings = {"graph": {}}
+        retrieval_settings = {
+            "graph": {
+                "max_nodes": max_nodes,
+                "max_depth": max_depth,
+                "truncated": truncated,
+            }
+        }
         if settings.openai_api_key:
             paths_for_metrics = sorted({target, *impacted})
             knowledge = {
