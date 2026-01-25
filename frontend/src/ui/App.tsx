@@ -218,6 +218,7 @@ export function App() {
             setPrompt={app.setPrompt}
             canRun={app.canRun}
             onRun={app.onRun}
+            onRunWithExpandedContext={app.onRunWithExpandedContext}
             runResult={app.runResult}
             fullPatch={app.fullPatch}
             patchBusy={app.patchBusy}

@@ -57,6 +57,7 @@ type Props = {
 
   canRun: boolean
   onRun: () => void | Promise<void>
+  onRunWithExpandedContext: () => void | Promise<void>
 
   runResult: RunTaskResult | null
   fullPatch: string | null
@@ -109,6 +110,7 @@ export function NodePanel({
   setPrompt,
   canRun,
   onRun,
+  onRunWithExpandedContext,
   runResult,
   fullPatch,
   patchBusy,
@@ -236,6 +238,13 @@ export function NodePanel({
               : 'Опиши задачу.'
 
   const runPayload = runResult ? (isRecord(runResult.result) ? runResult.result : { raw: runResult.result }) : null
+  const blockedPaths = useMemo(() => {
+    const raw = runResult?.applied?.blocked_paths
+    if (!Array.isArray(raw)) return []
+    return raw.map((p) => (typeof p === 'string' ? p.trim() : '')).filter(Boolean)
+  }, [runResult?.applied?.blocked_paths])
+  const blockedReason = runResult?.applied?.blocked_reason
+  const showBlockedWarning = blockedPaths.length > 0 || blockedReason === 'out_of_context'
 
   const retrieval = (runResult as any)?.retrieval ?? runResult?.retrieval ?? '—'
   const retrievalSettings = (runResult as any)?.retrieval_settings ?? runResult?.retrieval_settings
@@ -1261,6 +1270,32 @@ export function NodePanel({
                 {runResult?.applied?.error && (
                   <div className="text-xs text-red-300 whitespace-pre-wrap">
                     Patch Apply Error: {runResult.applied.error}
+                  </div>
+                )}
+                {showBlockedWarning && (
+                  <div className="rounded-md border border-amber-800 bg-amber-950/40 p-3 text-xs text-amber-200">
+                    <div className="font-semibold">Patch вне контекста</div>
+                    {blockedPaths.length > 0 ? (
+                      <ul className="mt-2 list-disc space-y-1 pl-4 text-amber-100">
+                        {blockedPaths.map((path) => (
+                          <li key={path} className="font-mono">
+                            {path}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="mt-2 text-amber-100">
+                        Patch затрагивает файлы вне текущего контекста.
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      className="mt-3 rounded-md bg-amber-900/60 hover:bg-amber-900/80 border border-amber-700 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
+                      onClick={onRunWithExpandedContext}
+                      disabled={!canRun || busy}
+                    >
+                      Повторить с расширением контекста
+                    </button>
                   </div>
                 )}
                 {runResult?.applied?.modified && (

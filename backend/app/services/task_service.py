@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import BackgroundTasks
 from sqlmodel import delete, select
 from sqlalchemy import func
+from unidiff import PatchSet
 
 from ..config import settings
 from ..context_pack import pack_context
@@ -66,6 +67,7 @@ class TaskRequest:
     depth: int | None
     dep_mode: str
     apply_patch: bool
+    allow_out_of_context_patch: bool
     agentic: bool
     agentic_evidence_mode: bool | None = None
 
@@ -118,6 +120,30 @@ def _store_patch_blob(patch_text: str) -> dict:
         "file": f"{PATCH_BLOB_DIRNAME}/{sha}.diff",
         "store_limit_chars": MAX_PATCH_STORE_CHARS,
     }
+
+
+def _parse_diff_paths(root: Path, diff_text: str) -> list[str]:
+    try:
+        patch = PatchSet(diff_text.splitlines(keepends=True))
+    except Exception as error:
+        raise PatchApplyError(f"Invalid unified diff: {error}")
+
+    root_resolved = root.resolve()
+    rel_paths: list[str] = []
+    for file_patch in patch:
+        path = file_patch.path
+        if path.startswith("a/") or path.startswith("b/"):
+            path = path[2:]
+        rel = Path(path)
+        abs_path = (root / rel).resolve()
+        if root_resolved not in abs_path.parents and abs_path != root_resolved:
+            raise PatchApplyError(f"Refusing to write outside project root: {rel}")
+        if abs_path == root_resolved:
+            raise PatchApplyError(f"Invalid patch path: {rel}")
+        rel_norm = abs_path.relative_to(root_resolved).as_posix()
+        if rel_norm not in rel_paths:
+            rel_paths.append(rel_norm)
+    return rel_paths
 
 
 def _llm_http_error(phase: str, error: Exception) -> None:
@@ -863,73 +889,91 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                 raise PatchApplyError("Empty or missing patch_unified_diff")
 
             with project_lock(project_id):
+                diff_paths = _parse_diff_paths(root, patch_text)
+                require_in_context = bool(getattr(settings, "patch_require_in_context", True))
                 allowed = None
-                if bool(getattr(settings, "patch_require_in_context", True)):
-                    allowed = allowed_patch_paths
-                modified = apply_unified_diff(
-                    root,
-                    patch_text,
-                    allowed_rel_paths=allowed,
-                    allow_new_files=bool(getattr(settings, "patch_allow_new_files", False)),
-                )
-                modified = sorted(set(modified))
-                applied = {"modified": modified}
+                blocked_paths: list[str] = []
+                if require_in_context:
+                    allowed = set(allowed_patch_paths or [])
+                    if request.allow_out_of_context_patch:
+                        allowed |= set(diff_paths)
+                    blocked_paths = sorted({p for p in diff_paths if p not in allowed})
 
-                try:
-                    applied["reindexed"] = scan_files(project_id, root, modified)
-                    removed_edge_neighbors = None
-                    if isinstance(applied.get("reindexed"), dict):
-                        removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
-                    update_graph_metrics_incremental(
-                        project_id,
-                        modified,
-                        removed_edge_neighbors=removed_edge_neighbors,
+                if blocked_paths:
+                    applied = {
+                        "error": (
+                            "Patch затрагивает файлы вне контекста: "
+                            + ", ".join(blocked_paths)
+                        ),
+                        "blocked_paths": blocked_paths,
+                        "blocked_reason": "out_of_context",
+                    }
+                else:
+                    modified = apply_unified_diff(
+                        root,
+                        patch_text,
+                        allowed_rel_paths=allowed,
+                        allow_new_files=bool(getattr(settings, "patch_allow_new_files", False)),
                     )
+                    modified = sorted(set(modified))
+                    applied = {"modified": modified}
 
-                    updated_contracts: list[str] = []
-                    removed_contracts: list[str] = []
-                    for rel_path in modified:
-                        try:
-                            abs_path, rel_norm = resolve_under_root(
-                                root, rel_path, max_length=settings.max_rel_path_chars
-                            )
-                            if not abs_path.exists():
-                                removed_contracts.append(rel_norm)
-                                continue
-                            if not abs_path.is_file():
-                                continue
-                            contract = get_or_build_contract(project_id, root, rel_norm)
-                            if isinstance(contract, dict) and contract.get("path"):
-                                updated_contracts.append(str(contract["path"]))
-                        except Exception:  # noqa: BLE001
-                            continue
-                    applied["contracts_updated"] = sorted(set(updated_contracts))
-
-                    removed_contracts = sorted(set(removed_contracts))
-                    if removed_contracts:
-                        with get_session() as session:
-                            session.exec(
-                                delete(ModuleContract).where(
-                                    ModuleContract.project_id == project_id,
-                                    ModuleContract.path.in_(removed_contracts),
-                                )
-                            )
-                            session.commit()
-                        applied["contracts_removed"] = removed_contracts
-                except Exception as error:  # noqa: BLE001
-                    applied["reindex_error"] = str(error)
-
-                with get_session() as session:
-                    patched_nodes = session.exec(
-                        select(FileNode).where(
-                            FileNode.project_id == project_id,
-                            FileNode.path.in_(modified),
+                if applied and "modified" in applied:
+                    try:
+                        applied["reindexed"] = scan_files(project_id, root, modified)
+                        removed_edge_neighbors = None
+                        if isinstance(applied.get("reindexed"), dict):
+                            removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
+                        update_graph_metrics_incremental(
+                            project_id,
+                            modified,
+                            removed_edge_neighbors=removed_edge_neighbors,
                         )
-                    ).all()
-                    for node in patched_nodes:
-                        node.status = "patched"
-                        session.add(node)
-                    session.commit()
+
+                        updated_contracts: list[str] = []
+                        removed_contracts: list[str] = []
+                        for rel_path in modified:
+                            try:
+                                abs_path, rel_norm = resolve_under_root(
+                                    root, rel_path, max_length=settings.max_rel_path_chars
+                                )
+                                if not abs_path.exists():
+                                    removed_contracts.append(rel_norm)
+                                    continue
+                                if not abs_path.is_file():
+                                    continue
+                                contract = get_or_build_contract(project_id, root, rel_norm)
+                                if isinstance(contract, dict) and contract.get("path"):
+                                    updated_contracts.append(str(contract["path"]))
+                            except Exception:  # noqa: BLE001
+                                continue
+                        applied["contracts_updated"] = sorted(set(updated_contracts))
+
+                        removed_contracts = sorted(set(removed_contracts))
+                        if removed_contracts:
+                            with get_session() as session:
+                                session.exec(
+                                    delete(ModuleContract).where(
+                                        ModuleContract.project_id == project_id,
+                                        ModuleContract.path.in_(removed_contracts),
+                                    )
+                                )
+                                session.commit()
+                            applied["contracts_removed"] = removed_contracts
+                    except Exception as error:  # noqa: BLE001
+                        applied["reindex_error"] = str(error)
+
+                    with get_session() as session:
+                        patched_nodes = session.exec(
+                            select(FileNode).where(
+                                FileNode.project_id == project_id,
+                                FileNode.path.in_(modified),
+                            )
+                        ).all()
+                        for node in patched_nodes:
+                            node.status = "patched"
+                            session.add(node)
+                        session.commit()
         except PatchApplyError as error:
             applied = {"error": str(error)}
 
