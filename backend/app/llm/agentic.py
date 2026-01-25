@@ -2527,14 +2527,18 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
         )
     if name == "get_file":
         allowed = any(
-            entry.get("name") in ("search_symbols", "search_text") and entry.get("status") == "ok"
+            entry.get("name") in ("search_paths", "search_symbols", "search_text", "search_semantic")
+            and entry.get("status") == "ok"
             for entry in meta.tool_trace
             if isinstance(entry, dict)
         )
         if not allowed:
             return _validate_tool_result(
                 name,
-                _tool_error("policy_violation", "Перед get_file нужно выполнить search_symbols или search_text."),
+                _tool_error(
+                    "policy_violation",
+                    "Перед get_file нужно выполнить search_paths, search_symbols, search_text или search_semantic.",
+                ),
             )
         return _validate_tool_result(name, _tool_get_file(project_id, root, meta, args, max_file_chars=max_file_chars))
     if name == "get_file_lines":
@@ -3515,7 +3519,7 @@ def _agentic_json_call(
         "- Prefer search_semantic for conceptual queries; if no results, use search_text.\n"
         "- Prefer search_text to locate occurrences before fetching many files.\n"
         "- When locating or updating relevant tests, use search_tests to find test files by standard patterns.\n"
-        "- Use get_file only after search_symbols or search_text for the current task.\n"
+        "- Use get_file only after search_paths, search_symbols, search_text, or search_semantic for the current task.\n"
         "- Never assume missing code; fetch it.\n"
         "- Keep changes minimal; for fixes, only propose changes you can justify from retrieved context.\n"
         "- For FIX responses, tests must be a non-empty list of concrete tests or manual verification steps; missing tests are not allowed.\n"
