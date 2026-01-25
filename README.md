@@ -96,7 +96,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - Поиск: `GET /api/projects/{id}/search?q=...`.
 - Семантический поиск: `GET /api/projects/{id}/search/semantic?q=...&limit=20&prefix=...` (требуются включённые эмбеддинги и `OPENAI_API_KEY`).
 - Метаданные узла: `GET /api/nodes/{id}/{path}/node`; контракт файла: `GET /api/nodes/{id}/{path}/contract`.
-- Запуск LLM‑задачи: `POST /api/tasks/{id}/run` с `target_path`, `prompt`, `mode` (опционально), `profile` (опционально), `depth`, `dep_mode`, `apply_patch`, `agentic` и опциональными `agentic_*` (`max_calls`, `max_file_chars`, `max_total_tool_output_chars`, `temperature`).
+- Запуск LLM‑задачи: `POST /api/tasks/{id}/run` с `target_path`, `prompt`, `mode` (опционально), `profile` (опционально), `depth`, `dep_mode`, `apply_patch`, `agentic` и опциональными `agentic_*` (`max_calls`, `max_file_chars`, `max_total_tool_output_chars`, `temperature`). Для `mode=impact` доступны лимиты `impact_max_nodes` и `impact_max_depth`; в ответе добавляются поля `truncated`, `max_nodes`, `max_depth`.
 - История запусков и патчи: `GET /api/tasks/{id}/runs`, `GET /api/tasks/{id}/runs/{run_id}`, `GET /api/tasks/{id}/runs/{run_id}/patch`.
 - Статус фоновой задачи: `GET /api/tasks/status/{task_id}`.
 
@@ -107,6 +107,8 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - `OPENAI_API_KEY` — ключ для LLM‑функций.
 - `CGRAPH_DB_DIR` — каталог для SQLite и файлов патчей (по умолчанию `~/.CGRAPH`).
 - `CGRAPH_DEFAULT_DEPTH` — глубина обхода зависимостей (0..6).
+- `CGRAPH_IMPACT_MAX_NODES` — лимит числа узлов в impact (если не задан, лимита нет).
+- `CGRAPH_IMPACT_MAX_DEPTH` — лимит глубины impact (если не задан, лимита нет).
 - `CGRAPH_CORS_ALLOW_ORIGINS` — разрешённые origin‑ы для фронтенда.
 - `CGRAPH_MODEL_TRIAGE`, `CGRAPH_MODEL_ANALYSIS`, `CGRAPH_MODEL_PATCH` — модели для LLM‑режимов.
 - `CGRAPH_OPENAI_TIMEOUT_SECONDS`, `CGRAPH_OPENAI_MAX_RETRIES` — таймаут и ретраи запросов к OpenAI.

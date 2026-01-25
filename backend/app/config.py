@@ -54,6 +54,9 @@ class Settings(BaseSettings):
         default=5000, alias="CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES"
     )
 
+    impact_max_nodes: int | None = Field(default=None, alias="CGRAPH_IMPACT_MAX_NODES")
+    impact_max_depth: int | None = Field(default=None, alias="CGRAPH_IMPACT_MAX_DEPTH")
+
     openai_timeout_seconds: float = Field(default=900.0, alias="CGRAPH_OPENAI_TIMEOUT_SECONDS")
     openai_max_retries: int = Field(default=3, alias="CGRAPH_OPENAI_MAX_RETRIES")
 
@@ -114,6 +117,10 @@ class Settings(BaseSettings):
             raise ValueError("CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_NODES должен быть положительным")
         if self.graph_metrics_incremental_max_component_edges <= 0:
             raise ValueError("CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES должен быть положительным")
+        if self.impact_max_nodes is not None and self.impact_max_nodes <= 0:
+            raise ValueError("CGRAPH_IMPACT_MAX_NODES должен быть положительным")
+        if self.impact_max_depth is not None and self.impact_max_depth < 0:
+            raise ValueError("CGRAPH_IMPACT_MAX_DEPTH должен быть неотрицательным")
         if self.openai_timeout_seconds <= 0:
             raise ValueError("Таймаут OpenAI должен быть положительным")
         if self.openai_max_retries < 0:
