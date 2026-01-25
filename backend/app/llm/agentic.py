@@ -39,6 +39,7 @@ class AgenticMeta:
     total_tool_output_chars: int = 0
     cache_hits: int = 0
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    retrieval_plan: dict | None = None
     self_check_ok: bool | None = None
     self_check_notes: list[str] = field(default_factory=list)
     self_check_missing_context: list[str] = field(default_factory=list)
@@ -236,6 +237,38 @@ def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
 def _tool_definitions(max_file_chars: int) -> list[dict]:
     max_file_chars = max(200, min(int(max_file_chars), 50_000))
     tools = [
+        {
+            "type": "function",
+            "name": "plan_retrieval",
+            "description": "Provide a structured retrieval plan before using other tools.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "goal": {"type": "string"},
+                    "hypotheses": {"type": "array", "items": {"type": "string"}},
+                    "search_steps": {"type": "array", "items": {"type": "string"}},
+                    "read_steps": {"type": "array", "items": {"type": "string"}},
+                    "candidate_ranking": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "item": {"type": "string"},
+                                "reason": {"type": "string"},
+                                "score": {"type": "number"},
+                                "rank": {"type": "integer"},
+                            },
+                            "required": ["item", "reason"],
+                            "anyOf": [{"required": ["score"]}, {"required": ["rank"]}],
+                        },
+                    },
+                },
+                "required": ["goal", "hypotheses", "search_steps", "read_steps", "candidate_ranking"],
+            },
+            "strict": True,
+        },
         {
             "type": "function",
             "name": "get_file",
@@ -676,6 +709,8 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         props = params.get("properties")
         if not isinstance(props, dict):
             continue
+        if "reason" not in props:
+            props["reason"] = {"type": ["string", "null"], "description": "Optional reason for tool call"}
         req = params.get("required")
         if isinstance(req, list):
             params["required"] = [k for k in req if isinstance(k, str) and k in props]
@@ -2477,6 +2512,19 @@ def _validate_tool_result(name: str, result: Any) -> dict:
     return result
 
 def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int) -> dict:
+    if name == "plan_retrieval":
+        meta.retrieval_plan = dict(args) if isinstance(args, dict) else None
+        return _validate_tool_result(name, _tool_ok({"stored": True}))
+    plan_ready = bool(meta.retrieval_plan) or any(
+        entry.get("name") == "plan_retrieval" and entry.get("status") == "ok"
+        for entry in meta.tool_trace
+        if isinstance(entry, dict)
+    )
+    if not plan_ready:
+        return _validate_tool_result(
+            name,
+            _tool_error("policy_violation", "Перед использованием инструментов нужно вызвать plan_retrieval."),
+        )
     if name == "get_file":
         allowed = any(
             entry.get("name") in ("search_symbols", "search_text") and entry.get("status") == "ok"
@@ -3461,6 +3509,7 @@ def _agentic_json_call(
 
     tool_rules = (
         "Tooling rules:\n"
+        "- First call plan_retrieval before using any other tool.\n"
         "- Use tools sparingly. Prefer get_contract before get_file.\n"
         "- For definition/export lookups, use search_symbols first (faster and more precise). If no results, fall back to search_text.\n"
         "- Prefer search_semantic for conceptual queries; if no results, use search_text.\n"
@@ -3728,6 +3777,7 @@ def _agentic_json_call(
                     {
                         "name": name,
                         "args": args,
+                        "reason": args.get("reason"),
                         "cache_hit": False,
                         "response_chars": 0,
                         "response_bytes": 0,
@@ -3767,7 +3817,10 @@ def _agentic_json_call(
                 else:
                     out = _dispatch_tool(project_id, root, meta, name, args, max_file_chars=eff_file)
                     if isinstance(out, dict):
-                        tool_cache[cache_key] = out
+                        err = out.get("error") if isinstance(out, dict) else None
+                        err_code = err.get("code") if isinstance(err, dict) else None
+                        if err_code != "policy_violation":
+                            tool_cache[cache_key] = out
             except Exception:
                 duration_ms = 0.0
                 if start is not None:
@@ -3776,6 +3829,7 @@ def _agentic_json_call(
                     {
                         "name": name,
                         "args": args,
+                        "reason": args.get("reason"),
                         "cache_hit": cache_hit,
                         "response_chars": 0,
                         "response_bytes": 0,
@@ -3808,6 +3862,7 @@ def _agentic_json_call(
                 {
                     "name": name,
                     "args": args,
+                    "reason": args.get("reason"),
                     "cache_hit": cache_hit,
                     "response_chars": response_chars,
                     "response_bytes": response_bytes,
