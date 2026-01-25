@@ -224,6 +224,7 @@ export function App() {
             patchBusy={app.patchBusy}
             runLoadBusy={app.runLoadBusy}
             onLoadFullPatch={app.onLoadFullPatch}
+            onApplyRunPatch={app.onApplyRunPatch}
             onLoadRun={app.onLoadRun}
             onDeleteRun={app.onDeleteRun}
             runs={app.runs}
