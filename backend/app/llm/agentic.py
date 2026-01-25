@@ -3457,6 +3457,7 @@ def _agentic_json_call(
         "- When locating or updating relevant tests, use search_tests to find test files by standard patterns.\n"
         "- Never assume missing code; fetch it.\n"
         "- Keep changes minimal; for fixes, only propose changes you can justify from retrieved context.\n"
+        "- For FIX responses, tests must be a non-empty list of concrete tests or manual verification steps; missing tests are not allowed.\n"
     )
     if evidence_mode:
         tool_rules += (

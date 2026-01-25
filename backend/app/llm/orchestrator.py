@@ -201,7 +201,12 @@ def plan_task(knowledge: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_P
 def fix(packed_context: dict, user_prompt: str, policy: ModelPolicy = DEFAULT_POLICY) -> dict:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
-        {"role": "user", "content": f"Задача: FIX. Требование пользователя: {user_prompt}\n\nСгенерируй минимальный безопасный unified diff (patch_unified_diff). Если нужно изменить поведение — делай это ровно по ТЗ.\n\nКонтекст (JSON):\n{ctx}"},
+        {"role": "user", "content": (
+            f"Задача: FIX. Требование пользователя: {user_prompt}\n\n"
+            "Сгенерируй минимальный безопасный unified diff (patch_unified_diff). Если нужно изменить поведение — делай это ровно по ТЗ.\n"
+            "Поле tests обязательно: верни непустой список конкретных тестов или ручных шагов проверки. Отсутствие проверок недопустимо.\n\n"
+            f"Контекст (JSON):\n{ctx}"
+        )},
     ]
     return _json_call(policy.patch_model, FIX_SCHEMA, items, reasoning_effort=policy.patch_effort)
 

@@ -103,7 +103,7 @@ FIX_SCHEMA = {
       "diagnosis": {"type": "string"},
       "plan": {"type": "array", "items": {"type": "string"}},
       "patch_unified_diff": {"type": "string"},
-      "tests": {"type": "array", "items": {"type": "string"}},
+      "tests": {"type": "array", "items": {"type": "string"}, "minItems": 1},
       "notes": {"type": "string"},
       "sources": {
         "type": "array",
