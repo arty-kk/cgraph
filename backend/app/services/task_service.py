@@ -679,6 +679,10 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         retrieval_settings["agentic"]["self_check_missing_context"] = list(
                             agentic_meta.self_check_missing_context or []
                         )
+                        if agentic_meta.retrieval_plan is not None:
+                            retrieval_settings["agentic"]["retrieval_plan"] = dict(
+                                agentic_meta.retrieval_plan
+                            )
                         if settings.llm_agentic_trace_enabled:
                             retrieval_settings["agentic"]["tool_trace"] = list(
                                 agentic_meta.tool_trace or []

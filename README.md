@@ -151,7 +151,9 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 Поля `error.code` и `error.message` обязательны; `details` опционально.
 
-Если `CGRAPH_LLM_AGENTIC_TRACE_ENABLED=true`, в `retrieval_settings.agentic.tool_trace` возвращается список объектов со следующими полями: `name`, `args`, `duration_ms`, `cache_hit`, `response_chars`, `response_bytes`, `status`, `error_code`, `error_message`, а также `truncated_due_to_budget` при усечении.
+В agentic‑режиме `retrieval_settings.agentic.retrieval_plan` содержит план извлечения контекста, зафиксированный через инструмент `plan_retrieval`.
+
+Если `CGRAPH_LLM_AGENTIC_TRACE_ENABLED=true`, в `retrieval_settings.agentic.tool_trace` возвращается список объектов со следующими полями: `name`, `args`, `reason`, `duration_ms`, `cache_hit`, `response_chars`, `response_bytes`, `status`, `error_code`, `error_message`, а также `truncated_due_to_budget` при усечении.
 
 В agentic‑режиме доступен инструмент `search_tests`, который ищет тестовые файлы по стандартным паттернам (`tests/`, `__tests__/`, `*.spec.*`, `*.test.*`, `test_*.py`, `*_test.*`) и возвращает пути с метаданными узлов (язык, fan‑in/fan‑out) согласно реализации в backend.
 
