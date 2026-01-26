@@ -920,9 +920,9 @@ export function NodePanel({
                                       type="number"
                                       className={controlClass + ' mt-1'}
                                       value={agenticMaxFileChars}
-                                      min={200}
-                                      max={50000}
-                                      onChange={(e) => setAgenticMaxFileChars(clampInt(Number(e.target.value || 0), 200, 50000))}
+                                      min={1}
+                                      max={200000}
+                                      onChange={(e) => setAgenticMaxFileChars(clampInt(Number(e.target.value || 0), 1, 200000))}
                                       disabled={busy}
                                     />
                                   </label>
@@ -934,9 +934,9 @@ export function NodePanel({
                                       type="number"
                                       className={controlClass + ' mt-1'}
                                       value={agenticMaxTotalToolOutputChars}
-                                      min={2000}
-                                      max={1000000}
-                                      onChange={(e) => setAgenticMaxTotalToolOutputChars(clampInt(Number(e.target.value || 0), 2000, 1000000))}
+                                      min={1}
+                                      max={2000000}
+                                      onChange={(e) => setAgenticMaxTotalToolOutputChars(clampInt(Number(e.target.value || 0), 1, 2000000))}
                                       disabled={busy}
                                     />
                                   </label>
@@ -980,9 +980,9 @@ export function NodePanel({
                                       type="number"
                                       className={controlClass + ' mt-1'}
                                       value={packMaxCharsPerFile}
-                                      min={200}
-                                      max={50000}
-                                      onChange={(e) => setPackMaxCharsPerFile(clampInt(Number(e.target.value || 0), 200, 50000))}
+                                      min={1}
+                                      max={200000}
+                                      onChange={(e) => setPackMaxCharsPerFile(clampInt(Number(e.target.value || 0), 1, 200000))}
                                       disabled={busy}
                                     />
                                   </label>
@@ -994,9 +994,9 @@ export function NodePanel({
                                       type="number"
                                       className={controlClass + ' mt-1'}
                                       value={packMaxTotalChars}
-                                      min={1000}
-                                      max={500000}
-                                      onChange={(e) => setPackMaxTotalChars(clampInt(Number(e.target.value || 0), 1000, 500000))}
+                                      min={1}
+                                      max={2000000}
+                                      onChange={(e) => setPackMaxTotalChars(clampInt(Number(e.target.value || 0), 1, 2000000))}
                                       disabled={busy}
                                     />
                                   </label>

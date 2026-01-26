@@ -219,10 +219,10 @@ export function useCGRAPHApp() {
     try { return Number(localStorage.getItem('cs.ui.agentic.maxCalls') || '24') || 24 } catch { return 24 }
   })
   const [agenticMaxFileChars, setAgenticMaxFileChars] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.agentic.maxFileChars') || '24000') || 24000 } catch { return 24000 }
+    try { return Number(localStorage.getItem('cs.ui.agentic.maxFileChars') || '200000') || 200000 } catch { return 200000 }
   })
   const [agenticMaxTotalToolOutputChars, setAgenticMaxTotalToolOutputChars] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.agentic.maxToolChars') || '180000') || 180000 } catch { return 180000 }
+    try { return Number(localStorage.getItem('cs.ui.agentic.maxToolChars') || '2000000') || 2000000 } catch { return 2000000 }
   })
   const [agenticTemperature, setAgenticTemperature] = useState<number>(() => {
     try { return Number(localStorage.getItem('cs.ui.agentic.temperature') || '0') || 0 } catch { return 0 }
@@ -231,10 +231,10 @@ export function useCGRAPHApp() {
     try { return Number(localStorage.getItem('cs.ui.pack.maxFiles') || '25') || 25 } catch { return 25 }
   })
   const [packMaxCharsPerFile, setPackMaxCharsPerFile] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.pack.maxCharsPerFile') || '12000') || 12000 } catch { return 12000 }
+    try { return Number(localStorage.getItem('cs.ui.pack.maxCharsPerFile') || '200000') || 200000 } catch { return 200000 }
   })
   const [packMaxTotalChars, setPackMaxTotalChars] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.pack.maxTotalChars') || '120000') || 120000 } catch { return 120000 }
+    try { return Number(localStorage.getItem('cs.ui.pack.maxTotalChars') || '2000000') || 2000000 } catch { return 2000000 }
   })
   useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxCalls', String(agenticMaxCalls)) } catch {} }, [agenticMaxCalls])
   useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxFileChars', String(agenticMaxFileChars)) } catch {} }, [agenticMaxFileChars])
@@ -1203,8 +1203,8 @@ export function useCGRAPHApp() {
     (extra?: Partial<RunTaskBody>): RunTaskBody | null => {
       if (!selectedPath) return null
       const clampedPackMaxFiles = clampInt(packMaxFiles, 1, 80)
-      const clampedPackMaxCharsPerFile = clampInt(packMaxCharsPerFile, 200, 50_000)
-      let clampedPackMaxTotalChars = clampInt(packMaxTotalChars, 1_000, 500_000)
+      const clampedPackMaxCharsPerFile = clampInt(packMaxCharsPerFile, 1, 200_000)
+      let clampedPackMaxTotalChars = clampInt(packMaxTotalChars, 1, 2_000_000)
       if (clampedPackMaxTotalChars < clampedPackMaxCharsPerFile) {
         clampedPackMaxTotalChars = clampedPackMaxCharsPerFile
       }
@@ -1213,8 +1213,8 @@ export function useCGRAPHApp() {
       if (clampedPackMaxTotalChars !== packMaxTotalChars) setPackMaxTotalChars(clampedPackMaxTotalChars)
 
       const clampedAgenticMaxCalls = clampInt(agenticMaxCalls, 1, 100)
-      const clampedAgenticMaxFileChars = clampInt(agenticMaxFileChars, 200, 50_000)
-      const clampedAgenticMaxTotalToolOutputChars = clampInt(agenticMaxTotalToolOutputChars, 2_000, 1_000_000)
+      const clampedAgenticMaxFileChars = clampInt(agenticMaxFileChars, 1, 200_000)
+      const clampedAgenticMaxTotalToolOutputChars = clampInt(agenticMaxTotalToolOutputChars, 1, 2_000_000)
       if (clampedAgenticMaxCalls !== agenticMaxCalls) setAgenticMaxCalls(clampedAgenticMaxCalls)
       if (clampedAgenticMaxFileChars !== agenticMaxFileChars) setAgenticMaxFileChars(clampedAgenticMaxFileChars)
       if (clampedAgenticMaxTotalToolOutputChars !== agenticMaxTotalToolOutputChars) {
