@@ -1,237 +1,29 @@
-#backend/app/llm/agentic.py
 from __future__ import annotations
 
 import json
-import time
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import openai
 from sqlmodel import select
 from sqlalchemy import text as sa_text
 
-from ..config import settings
-from ..contracts import get_or_build_contract
-from ..db import get_session
-from ..graph import search_nodes, search_semantic
-from ..models import FileEdge, FileNode, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef, ModuleContract
-from ..utils import resolve_under_root
-from ..api_map import split_skeleton, patterns_compatible, static_match_score, backend_path_skeleton
-from ..api_scaffold import suggest_frontend_module_file, build_frontend_snippet
-from ..api_contracts import build_backend_contract_for_route
-from ..services.docs_service import _compute_project_summary_facts, _tree_outline
-from ..ts_edits import unified_diff as _unified_diff, ts_add_fields_to_typedef, ts_patch_wrapper_function
-from ..py_edits import py_add_keys_to_function_return_dicts
-from ..scan import SEARCH_INDEX_MAX_CHARS
-from .client import get_openai_client
-from .model_caps import supports_reasoning, supports_temperature
-from .policy import ModelPolicy, DEFAULT_POLICY
-from .schemas import ANALYZE_SCHEMA, FIX_SCHEMA, SELF_CHECK_SCHEMA
-from .orchestrator import SYSTEM_INSTRUCTIONS
-
-
-@dataclass
-class AgenticMeta:
-    full_file_paths: set[str] = field(default_factory=set)
-    tool_calls: int = 0
-    total_tool_output_chars: int = 0
-    cache_hits: int = 0
-    tool_trace: list[dict[str, Any]] = field(default_factory=list)
-    retrieval_plan: dict | None = None
-    self_check_ok: bool | None = None
-    self_check_notes: list[str] = field(default_factory=list)
-    self_check_missing_context: list[str] = field(default_factory=list)
-
-
-def _normalize_responses_json_schema(schema: dict) -> dict:
-    if not isinstance(schema, dict):
-        raise TypeError("schema must be a dict")
-    name = schema.get("name")
-    inner = schema.get("schema")
-    strict = schema.get("strict", True)
-    if not isinstance(name, str) or not name:
-        raise ValueError("schema.name must be a non-empty string")
-    if not isinstance(inner, dict):
-        raise ValueError("schema.schema must be a dict (JSON Schema)")
-    if not isinstance(strict, bool):
-        raise ValueError("schema.strict must be a bool")
-    return {"type": "json_schema", "name": name, "schema": inner, "strict": strict}
-
-
-def _extract_refusal(resp: Any) -> str | None:
-    out = getattr(resp, "output", None)
-    if not isinstance(out, list):
-        return None
-    for item in out:
-        content = getattr(item, "content", None)
-        if content is None and isinstance(item, dict):
-            content = item.get("content")
-        if not isinstance(content, list):
-            continue
-        for c in content:
-            refusal = getattr(c, "refusal", None)
-            if refusal is None and isinstance(c, dict):
-                refusal = c.get("refusal")
-            if isinstance(refusal, str) and refusal.strip():
-                return refusal.strip()
-            c_type = getattr(c, "type", None)
-            if c_type is None and isinstance(c, dict):
-                c_type = c.get("type")
-            if c_type == "refusal":
-                txt = getattr(c, "text", None)
-                if txt is None and isinstance(c, dict):
-                    txt = c.get("text")
-                if isinstance(txt, str) and txt.strip():
-                    return txt.strip()
-    return None
-
-
-def _parse_model_json(resp: Any) -> dict:
-    txt = (getattr(resp, "output_text", None) or "").strip()
-    if not txt:
-        refusal = _extract_refusal(resp)
-        if refusal:
-            raise RuntimeError(f"Model refusal: {refusal}")
-        raise RuntimeError("Empty model output_text")
-    try:
-        data = json.loads(txt)
-        if not isinstance(data, dict):
-            raise RuntimeError("Model returned JSON, but not an object")
-        return data
-    except Exception as e:
-        start = txt.find("{")
-        end = txt.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                data = json.loads(txt[start : end + 1])
-                if isinstance(data, dict):
-                    return data
-            except Exception:
-                pass
-        refusal = _extract_refusal(resp)
-        if refusal:
-            raise RuntimeError(f"Model refusal: {refusal}") from e
-        raise RuntimeError(f"Failed to parse model JSON output: {e}\nRaw: {txt[:4000]}") from e
-
-
-def _run_self_check(
-    *,
-    client: openai.Client,
-    model: str,
-    user_prompt: str,
-    seed: dict,
-    response_payload: dict,
-) -> dict:
-    fmt = _normalize_responses_json_schema(SELF_CHECK_SCHEMA)
-    input_list = [
-        {
-            "role": "user",
-            "content": (
-                "Проверь, соответствует ли ответ задаче и контексту. "
-                "Если контекста недостаточно — перечисли, что запросить.\n\n"
-                f"User prompt:\n{user_prompt}\n\n"
-                f"Seed context (JSON):\n{json.dumps(seed, ensure_ascii=False)}\n\n"
-                f"Model response (JSON):\n{json.dumps(response_payload, ensure_ascii=False)}"
-            ),
-        }
-    ]
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "instructions": "You are a strict reviewer. Reply with JSON only.",
-        "input": input_list,
-        "text": {"format": fmt},
-        "store": bool(settings.openai_store),
-        "parallel_tool_calls": False,
-    }
-    if supports_temperature(model):
-        kwargs["temperature"] = 0.0
-    if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
-        kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
-        if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
-            kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
-    try:
-        resp = client.responses.create(**kwargs)
-    except TypeError as e:
-        msg = str(e)
-        for k in ("prompt_cache_key", "prompt_cache_retention", "store", "temperature", "parallel_tool_calls"):
-            if k in msg:
-                kwargs.pop(k, None)
-        resp = client.responses.create(**kwargs)
-    return _parse_model_json(resp)
-
-
-def _neighbors_limited(
-    project_id: int,
-    start: str,
-    *,
-    direction: str,
-    depth: int,
-    limit: int,
-) -> list[str]:
-    if depth <= 0 or limit <= 0:
-        return []
-    depth = max(0, min(depth, 6))
-    limit = max(1, min(limit, 2000))
-    visited: set[str] = {start}
-    ordered: list[str] = []
-    frontier: list[str] = [start]
-
-    def _chunks(seq: list[str], size: int) -> list[list[str]]:
-        return [seq[i:i+size] for i in range(0, len(seq), size)]
-
-    SQLITE_IN_CHUNK = 400
-
-    with get_session() as s:
-        for _ in range(depth):
-            if not frontier or len(ordered) >= limit:
-                break
-            frontier = list(dict.fromkeys(frontier))
-            nxt: list[str] = []
-            stop = False
-            for chunk in _chunks(frontier, SQLITE_IN_CHUNK):
-                if direction == "in":
-                    rows = s.exec(
-                        select(FileEdge.src_path)
-                        .where(FileEdge.project_id == project_id, FileEdge.dst_path.in_(chunk))
-                        .order_by(FileEdge.src_path)
-                    ).all()
-                else:
-                    rows = s.exec(
-                        select(FileEdge.dst_path)
-                        .where(FileEdge.project_id == project_id, FileEdge.src_path.in_(chunk))
-                        .order_by(FileEdge.dst_path)
-                    ).all()
-                for row in rows:
-                    val = row[0] if isinstance(row, (tuple, list)) else row
-                    if not isinstance(val, str) or not val:
-                        continue
-                    if val in visited:
-                        continue
-                    visited.add(val)
-                    ordered.append(val)
-                    nxt.append(val)
-                    if len(ordered) >= limit:
-                        stop = True
-                        break
-                if stop:
-                    break
-            frontier = nxt
-    return ordered[:limit]
-
-
-_FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
-
-def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
-    tokens = [t for t in _FTS_TOKEN_RE.findall(q or "") if t]
-    if not tokens:
-        return None
-    tokens = tokens[: max(1, int(max_tokens))]
-    esc = []
-    for t in tokens:
-        esc.append(t.replace('"', '""'))
-    return " AND ".join([f'"{t}"' for t in esc if t])
+from ...api_contracts import build_backend_contract_for_route
+from ...api_map import split_skeleton, patterns_compatible, static_match_score, backend_path_skeleton
+from ...api_scaffold import suggest_frontend_module_file, build_frontend_snippet
+from ...config import settings
+from ...contracts import get_or_build_contract
+from ...db import get_session
+from ...graph import search_nodes, search_semantic
+from ...models import FileNode, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef, ModuleContract
+from ...py_edits import py_add_keys_to_function_return_dicts
+from ...scan import SEARCH_INDEX_MAX_CHARS
+from ...services.docs_service import _compute_project_summary_facts, _tree_outline
+from ...ts_edits import unified_diff as _unified_diff, ts_add_fields_to_typedef, ts_patch_wrapper_function
+from ...utils import resolve_under_root
+from .context import _neighbors_limited, _fts_query_from_substring
+from .dispatch import _clamp_int, _tool_error, _tool_ok
+from .types import AgenticMeta
 
 
 def _tool_definitions(max_file_chars: int) -> list[dict]:
@@ -717,34 +509,6 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
 
     return tools
 
-def _clamp_int(v: Any, default: int, lo: int, hi: int) -> int:
-    try:
-        x = int(v)
-    except Exception:
-        x = int(default)
-    return max(lo, min(hi, x))
-
-def _clamp_float(v: Any, default: float, lo: float, hi: float) -> float:
-    try:
-        x = float(v)
-    except Exception:
-        x = float(default)
-    if x != x:
-        x = float(default)
-    return max(lo, min(hi, x))
-
-def _tool_ok(data: dict) -> dict:
-    if not isinstance(data, dict):
-        raise TypeError("tool data must be a dict")
-    return {"ok": True, "data": data, "error": None}
-
-def _tool_error(code: str, message: str, details: dict | None = None) -> dict:
-    details_out = details if isinstance(details, dict) and details else None
-    return {
-        "ok": False,
-        "data": None,
-        "error": {"code": str(code), "message": str(message), "details": details_out},
-    }
 
 def _tool_get_file(project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int) -> dict:
     path = args.get("path")
@@ -770,6 +534,7 @@ def _tool_get_file(project_id: int, root: Path, meta: AgenticMeta, args: dict, *
     text = text[:max_chars]
     meta.full_file_paths.add(rel_norm)
     return _tool_ok({"path": rel_norm, "content": text, "truncated": truncated, "max_chars": max_chars})
+
 
 def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int) -> dict:
     path = args.get("path")
@@ -822,6 +587,7 @@ def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: d
         }
     )
 
+
 def _tool_get_contract(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
@@ -838,6 +604,7 @@ def _tool_get_contract(project_id: int, root: Path, meta: AgenticMeta, args: dic
     if not isinstance(contract, dict):
         return _tool_error("contract_failed", "contract is not a dict", {"path": rel_norm})
     return _tool_ok(contract)
+
 
 def _tool_get_symbol(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     path = args.get("path")
@@ -865,6 +632,7 @@ def _tool_get_symbol(project_id: int, root: Path, meta: AgenticMeta, args: dict)
         if isinstance(item, dict) and str(item.get("name") or "") == needle:
             return _tool_ok({"path": rel_norm, "symbol": item})
     return _tool_error("not_found", "symbol not found", {"path": rel_norm, "name": needle})
+
 
 def _tool_get_node(project_id: int, root: Path, args: dict) -> dict:
     path = args.get("path")
@@ -920,6 +688,7 @@ def _tool_search_paths(project_id: int, args: dict) -> dict:
         return _tool_error("bad_args", "query is required")
     rows = search_nodes(project_id, query.strip(), limit=limit)
     return _tool_ok({"query": query.strip(), "limit": limit, "results": rows})
+
 
 def _tool_search_tests(project_id: int, args: dict) -> dict:
     query = args.get("query")
@@ -1678,6 +1447,7 @@ def _normalize_http_path(p: str) -> str:
         s = "/" + s
     return s
 
+
 def _prefix_norm(prefix: str | None, default: str = "/api") -> str:
     p = (prefix or "").strip()
     if not p:
@@ -1688,16 +1458,19 @@ def _prefix_norm(prefix: str | None, default: str = "/api") -> str:
         p = p.rstrip("/")
     return p
 
+
 def _method_norm(m: str | None) -> str:
     if isinstance(m, str) and m.strip():
         return m.strip().upper()
     return ""
+
 
 def _prefix_key_from_segments(segs: list[str], k: int = 3) -> str:
     if not segs:
         return ""
     kk = max(1, min(int(k), 6))
     return "/".join(segs[:kk])
+
 
 def _static_prefix_segs_from_tokens(tokens: list[str]) -> list[str]:
     out: list[str] = []
@@ -1708,6 +1481,7 @@ def _static_prefix_segs_from_tokens(tokens: list[str]) -> list[str]:
             out.append(t)
     return out
 
+
 def _candidate_keys_from_path(path_norm: str) -> list[str]:
     parts = [x for x in (path_norm or "").split("/") if x]
     keys: list[str] = []
@@ -1717,6 +1491,7 @@ def _candidate_keys_from_path(path_norm: str) -> list[str]:
             keys.append(key)
     return keys
 
+
 def _candidate_keys_from_static_prefix(tokens: list[str]) -> list[str]:
     segs = _static_prefix_segs_from_tokens(tokens)
     keys: list[str] = []
@@ -1725,6 +1500,7 @@ def _candidate_keys_from_static_prefix(tokens: list[str]) -> list[str]:
         if key and key not in keys:
             keys.append(key)
     return keys
+
 
 def _build_call_index(project_id: int, *, prefix: str, method_filter: str = "") -> tuple[list[ApiCall], dict[str, dict[str, list[dict]]]]:
     # returns (calls, index[method][key] = list of {id, tokens, path_norm, source_path, lineno, path})
@@ -1766,6 +1542,7 @@ def _build_call_index(project_id: int, *, prefix: str, method_filter: str = "") 
                 }
             )
     return filtered, idx
+
 
 def _build_route_patterns(
     project_id: int,
@@ -1858,6 +1635,7 @@ def _build_route_patterns(
 
     return routes, patterns_by_route, pindex
 
+
 def _call_matches_any_pattern(call_tokens: list[str], candidates: list[dict]) -> bool:
     for p in candidates:
         rtoks = p.get("tokens") or []
@@ -1865,12 +1643,14 @@ def _call_matches_any_pattern(call_tokens: list[str], candidates: list[dict]) ->
             return True
     return False
 
+
 def _pattern_matches_any_call(pattern_tokens: list[str], candidates: list[dict]) -> bool:
     for c in candidates:
         ctoks = c.get("tokens") or []
         if isinstance(ctoks, list) and patterns_compatible(pattern_tokens, ctoks):
             return True
     return False
+
 
 def _compute_api_coverage(project_id: int, *, prefix: str, method_filter: str = "") -> dict:
     calls, call_index = _build_call_index(project_id, prefix=prefix, method_filter=method_filter)
@@ -1927,6 +1707,7 @@ def _compute_api_coverage(project_id: int, *, prefix: str, method_filter: str = 
         "matched_call_ids": matched_call_ids,
         "patterns_by_route": patterns_by_route,
     }
+
 
 def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
     prefix = _prefix_norm(args.get("prefix"), default="/api")
@@ -2008,6 +1789,7 @@ def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
         }
     )
 
+
 def _tool_unmatched_routes(project_id: int, args: dict) -> dict:
     prefix = _prefix_norm(args.get("prefix"), default="/api")
     method_filter = _method_norm(args.get("method"))
@@ -2059,6 +1841,7 @@ def _tool_unmatched_routes(project_id: int, args: dict) -> dict:
     return _tool_ok(
         {"prefix": prefix, "method_filter": method_filter, "count": len(out), "limit": int(limit), "routes": out}
     )
+
 
 def _tool_unmatched_calls(project_id: int, args: dict) -> dict:
     prefix = _prefix_norm(args.get("prefix"), default="/api")
@@ -2346,6 +2129,7 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
         }
     )
 
+
 def _tool_impact_route_change(project_id: int, args: dict) -> dict:
     old_path = args.get("old_path")
     new_path = args.get("new_path")
@@ -2489,112 +2273,6 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
             "impacted_calls": impacted_out,
         }
     )
-
-def _validate_tool_result(name: str, result: Any) -> dict:
-    if not isinstance(result, dict):
-        raise RuntimeError(f"Tool {name} returned non-dict result")
-    for key in ("ok", "data", "error"):
-        if key not in result:
-            raise RuntimeError(f"Tool {name} result missing key '{key}'")
-    ok = result.get("ok")
-    if not isinstance(ok, bool):
-        raise RuntimeError(f"Tool {name} result has non-bool ok")
-    if ok:
-        if not isinstance(result.get("data"), dict):
-            raise RuntimeError(f"Tool {name} ok result missing data dict")
-        if result.get("error") is not None:
-            raise RuntimeError(f"Tool {name} ok result must have error=None")
-        return result
-    if result.get("data") is not None:
-        raise RuntimeError(f"Tool {name} error result must have data=None")
-    err = result.get("error")
-    if not isinstance(err, dict):
-        raise RuntimeError(f"Tool {name} error result missing error dict")
-    if not isinstance(err.get("code"), str) or not err.get("code"):
-        raise RuntimeError(f"Tool {name} error result missing error.code")
-    if not isinstance(err.get("message"), str) or not err.get("message"):
-        raise RuntimeError(f"Tool {name} error result missing error.message")
-    return result
-
-def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int) -> dict:
-    if name == "plan_retrieval":
-        meta.retrieval_plan = dict(args) if isinstance(args, dict) else None
-        return _validate_tool_result(name, _tool_ok({"stored": True}))
-    plan_ready = bool(meta.retrieval_plan) or any(
-        entry.get("name") == "plan_retrieval" and entry.get("status") == "ok"
-        for entry in meta.tool_trace
-        if isinstance(entry, dict)
-    )
-    if not plan_ready:
-        return _validate_tool_result(
-            name,
-            _tool_error("policy_violation", "Перед использованием инструментов нужно вызвать plan_retrieval."),
-        )
-    if name == "get_file":
-        allowed = any(
-            entry.get("name") in ("search_paths", "search_symbols", "search_text", "search_semantic")
-            and entry.get("status") == "ok"
-            for entry in meta.tool_trace
-            if isinstance(entry, dict)
-        )
-        if not allowed:
-            return _validate_tool_result(
-                name,
-                _tool_error(
-                    "policy_violation",
-                    "Перед get_file нужно выполнить search_paths, search_symbols, search_text или search_semantic.",
-                ),
-            )
-        return _validate_tool_result(name, _tool_get_file(project_id, root, meta, args, max_file_chars=max_file_chars))
-    if name == "get_file_lines":
-        return _validate_tool_result(name, _tool_get_file_lines(project_id, root, meta, args, max_file_chars=max_file_chars))
-    if name == "get_contract":
-        return _validate_tool_result(name, _tool_get_contract(project_id, root, meta, args))
-    if name == "get_symbol":
-        return _validate_tool_result(name, _tool_get_symbol(project_id, root, meta, args))
-    if name == "get_node":
-        return _validate_tool_result(name, _tool_get_node(project_id, root, args))
-    if name == "get_neighbors":
-        return _validate_tool_result(name, _tool_get_neighbors(project_id, root, args))
-    if name == "search_paths":
-        return _validate_tool_result(name, _tool_search_paths(project_id, args))
-    if name == "search_tests":
-        return _validate_tool_result(name, _tool_search_tests(project_id, args))
-    if name == "search_symbols":
-        return _validate_tool_result(name, _tool_search_symbols(project_id, args))
-    if name == "get_tree_outline":
-        return _validate_tool_result(name, _tool_get_tree_outline(project_id, args))
-    if name == "project_summary":
-        return _validate_tool_result(name, _tool_project_summary(project_id, root, args))
-    if name == "search_text":
-        return _validate_tool_result(name, _tool_search_text(project_id, root, args, max_file_chars=max_file_chars))
-    if name == "search_semantic":
-        return _validate_tool_result(name, _tool_search_semantic(project_id, root, args, max_file_chars=max_file_chars))
-    if name == "search_routes":
-        return _validate_tool_result(name, _tool_search_routes(project_id, args))
-    if name == "search_api_calls":
-        return _validate_tool_result(name, _tool_search_api_calls(project_id, args))
-    if name == "route_usages":
-        return _validate_tool_result(name, _tool_route_usages(project_id, args))
-    if name == "suggest_endpoint_location":
-        return _validate_tool_result(name, _tool_suggest_endpoint_location(project_id, args))
-    if name == "suggest_frontend_client":
-        return _validate_tool_result(name, _tool_suggest_frontend_client(project_id, root, args))
-    if name == "impact_route_change":
-        return _validate_tool_result(name, _tool_impact_route_change(project_id, args))
-    if name == "api_coverage_summary":
-        return _validate_tool_result(name, _tool_api_coverage_summary(project_id, args))
-    if name == "unmatched_routes":
-        return _validate_tool_result(name, _tool_unmatched_routes(project_id, args))
-    if name == "unmatched_calls":
-        return _validate_tool_result(name, _tool_unmatched_calls(project_id, args))
-    if name == "compare_api_contract":
-        return _validate_tool_result(name, _tool_compare_api_contract(project_id, root, args))
-    if name == "suggest_contract_fix":
-        return _validate_tool_result(name, _tool_suggest_contract_fix(project_id, root, meta, args))
-    if name == "suggest_api_fix":
-        return _validate_tool_result(name, _tool_suggest_api_fix(project_id, root, meta, args))
-    return _validate_tool_result(name, _tool_error("unknown_tool", f"Unknown tool: {name}"))
 
 
 def _ts_type_to_py_literal(ts_type: str) -> str:
@@ -2879,6 +2557,7 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
         }
     )
 
+
 def _read_text_under_root(root: Path, rel_path: str) -> tuple[str, str, str] | None:
     try:
         abs_p, rel_norm = resolve_under_root(root, rel_path, max_length=settings.max_rel_path_chars)
@@ -3098,6 +2777,7 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
             "truncated": bool(truncated),
         }
     )
+
 
 def _load_ts_typedefs_by_name(project_id: int, names: list[str]) -> dict[str, dict]:
     wanted = [n for n in (names or []) if isinstance(n, str) and n.strip()]
@@ -3390,629 +3070,4 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
                 "Run Scan after changes to refresh indexes."
             ),
         }
-    )
-
-
-def _seed_context(project_id: int, root: Path, target_rel: str, depth: int, *, max_file_chars: int) -> dict:
-    abs_target, target_norm = resolve_under_root(root, target_rel, max_length=settings.max_rel_path_chars)
-    target_text = ""
-    try:
-        target_text = abs_target.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        target_text = ""
-    max_file_chars = max(1, min(int(max_file_chars), 200_000))
-    if len(target_text) > max_file_chars:
-        target_text = target_text[:max_file_chars]
-
-    contract = {}
-    try:
-        contract = get_or_build_contract(project_id, root, target_norm)
-    except Exception:
-        contract = {}
-
-    node = None
-    with get_session() as s:
-        node = s.exec(
-            select(FileNode).where(FileNode.project_id == project_id, FileNode.path == target_norm)
-        ).first()
-    node_metrics = (
-        {
-            "path": node.path,
-            "language": node.language,
-            "loc": node.loc,
-            "complexity": node.complexity,
-            "fan_in": node.fan_in,
-            "fan_out": node.fan_out,
-            "scc_id": node.scc_id,
-            "status": node.status,
-        }
-        if node
-        else {}
-    )
-
-    routes_in_file: list[dict] = []
-    calls_in_file: list[dict] = []
-    try:
-        with get_session() as s:
-            rr = s.exec(
-                select(ApiRoute.method, ApiRoute.path, ApiRoute.handler_name, ApiRoute.lineno)
-                .where(ApiRoute.project_id == project_id, ApiRoute.source_path == target_norm)
-                .order_by(ApiRoute.path.asc())
-                .limit(20)
-            ).all()
-            for row in rr:
-                if isinstance(row, (tuple, list)) and len(row) >= 4:
-                    routes_in_file.append({"method": row[0], "path": row[1], "handler_name": row[2], "lineno": int(row[3] or 0)})
-
-            cc = s.exec(
-                select(ApiCall.method, ApiCall.path, ApiCall.client, ApiCall.lineno)
-                .where(ApiCall.project_id == project_id, ApiCall.source_path == target_norm)
-                .order_by(ApiCall.path.asc())
-                .limit(20)
-            ).all()
-            for row in cc:
-                if isinstance(row, (tuple, list)) and len(row) >= 4:
-                    calls_in_file.append({"method": row[0], "path": row[1], "client": row[2], "lineno": int(row[3] or 0)})
-    except Exception:
-        routes_in_file = []
-        calls_in_file = []
-
-    out_depth = max(0, min(depth, 6))
-    in_depth = max(0, min(depth, 2))
-    outbound = _neighbors_limited(project_id, target_norm, direction="out", depth=out_depth, limit=200)
-    inbound = _neighbors_limited(project_id, target_norm, direction="in", depth=in_depth, limit=200)
-
-    return {
-        "target_path": target_norm,
-        "target_file": {"path": target_norm, "content": target_text, "max_chars": max_file_chars},
-        "target_contract": contract,
-        "target_node": node_metrics,
-        "api_hint": {
-            "routes_in_file": routes_in_file,
-            "calls_in_file": calls_in_file,
-            "note": "Use search_routes/search_api_calls/route_usages for project-wide API mapping.",
-        },
-        "graph_hint": {
-            "inbound": inbound,
-            "outbound": outbound,
-            "in_depth": in_depth,
-            "out_depth": out_depth,
-            "note": "Lists are truncated hints. Use get_neighbors() to expand.",
-        },
-    }
-
-
-def _agentic_json_call(
-    *,
-    model: str,
-    self_check_model: str | None,
-    schema: dict,
-    project_id: int,
-    root: Path,
-    seed: dict,
-    user_prompt: str,
-    reasoning_effort: str | None,
-    evidence_mode: bool,
-    instructions: str | None = None,
-    max_calls: int | None = None,
-    max_total_tool_output_chars: int | None = None,
-    max_file_chars: int | None = None,
-    temperature: float | None = None,
-    allow_self_check_retry: bool = True,
-    allow_evidence_retry: bool = True,
-) -> tuple[dict, AgenticMeta]:
-    client = get_openai_client()
-    fmt = _normalize_responses_json_schema(schema)
-    srv_calls = int(settings.llm_agentic_max_calls)
-    srv_total = int(settings.llm_agentic_max_total_tool_output_chars)
-    srv_file = int(settings.llm_agentic_max_file_chars)
-    srv_temp = float(settings.llm_agentic_temperature)
-
-    eff_calls = min(_clamp_int(max_calls, srv_calls, 1, 100), srv_calls)
-    eff_total = min(_clamp_int(max_total_tool_output_chars, srv_total, 1, 2_000_000), srv_total)
-    eff_file = min(_clamp_int(max_file_chars, srv_file, 1, 200_000), srv_file)
-    eff_temp = _clamp_int(int(10 * _clamp_float(temperature, srv_temp, 0.0, 2.0)), int(10 * srv_temp), 0, 20) / 10.0
-
-    tools = _tool_definitions(eff_file)
-    meta = AgenticMeta()
-    tool_cache: dict[str, dict] = {}
-
-    tool_rules = (
-        "Tooling rules:\n"
-        "- First call plan_retrieval before using any other tool.\n"
-        "- Use tools sparingly. Prefer get_contract before get_file.\n"
-        "- For definition/export lookups, use search_symbols first (faster and more precise). If no results, fall back to search_text.\n"
-        "- Prefer search_semantic for conceptual queries; if no results, use search_text.\n"
-        "- Prefer search_text to locate occurrences before fetching many files.\n"
-        "- When locating or updating relevant tests, use search_tests to find test files by standard patterns.\n"
-        "- Use get_file only after search_paths, search_symbols, search_text, or search_semantic for the current task.\n"
-        "- Never assume missing code; fetch it.\n"
-        "- Keep changes minimal; for fixes, only propose changes you can justify from retrieved context.\n"
-        "- For FIX responses, tests must be a non-empty list of concrete tests or manual verification steps; missing tests are not allowed.\n"
-    )
-    if evidence_mode:
-        tool_rules += (
-            "- In evidence mode, every output must cite concrete file paths and line ranges; "
-            "use get_file_lines when possible.\n"
-        )
-
-    input_list: list[Any] = [
-        {"role": "user", "content": f"{tool_rules}\nUser prompt:\n{user_prompt}\n\nSeed context (JSON):\n{json.dumps(seed, ensure_ascii=False)}"}
-    ]
-
-    max_calls_budget = eff_calls
-    max_total_chars_budget = eff_total
-
-    def _apply_search_budget(
-        args: dict[str, Any],
-        *,
-        remaining_budget: int,
-        max_total_budget: int,
-        adjust_text: bool,
-        adjust_semantic: bool,
-    ) -> None:
-        if max_total_budget <= 0:
-            return
-        ratio = min(1.0, max(0.0, remaining_budget / max_total_budget))
-        if adjust_text:
-            base_max_matches = _clamp_int(args.get("max_matches"), 50, 1, 500)
-            base_context_chars = _clamp_int(args.get("context_chars"), 160, 40, 400)
-            min_matches = 5
-            min_context_chars = 60
-            args["max_matches"] = max(min_matches, int(round(base_max_matches * ratio)))
-            args["context_chars"] = max(min_context_chars, int(round(base_context_chars * ratio)))
-        if adjust_semantic:
-            base_max_results = _clamp_int(
-                args.get("max_results"),
-                int(settings.embeddings_search_max_results),
-                1,
-                int(settings.embeddings_search_max_results),
-            )
-            min_results = 3
-            args["max_results"] = max(min_results, int(round(base_max_results * ratio)))
-
-    def _truncate_tool_output(name: str, out: dict, *, remaining_budget: int) -> tuple[dict, bool]:
-        if not isinstance(out, dict):
-            return {"truncated_due_to_budget": True}, True
-        payload = out
-        if out.get("ok") is True and isinstance(out.get("data"), dict):
-            payload = out["data"]
-
-        def mark_truncated(payload: dict) -> None:
-            payload["truncated_due_to_budget"] = True
-            meta = payload.get("meta")
-            if isinstance(meta, dict):
-                meta["truncated_due_to_budget"] = True
-
-        def shrink_snippets(items: list[dict], max_len: int) -> bool:
-            changed = False
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                for key in ("snippet", "text", "content"):
-                    val = item.get(key)
-                    if isinstance(val, str) and len(val) > max_len:
-                        item[key] = val[:max_len]
-                        changed = True
-            return changed
-
-        truncated = False
-        attempts = 0
-        while True:
-            out_str = json.dumps(out, ensure_ascii=False)
-            if len(out_str) <= remaining_budget:
-                if truncated:
-                    mark_truncated(payload)
-                return out, truncated
-            if attempts >= 6:
-                break
-            attempts += 1
-            changed = False
-            if isinstance(payload.get("matches"), list):
-                changed = shrink_snippets(payload["matches"], max(40, 160 // (attempts + 1))) or changed
-                if len(payload["matches"]) > 5:
-                    payload["matches"] = payload["matches"][: max(5, len(payload["matches"]) // 2)]
-                    changed = True
-            if isinstance(payload.get("results"), list):
-                changed = shrink_snippets(payload["results"], max(60, 200 // (attempts + 1))) or changed
-                if len(payload["results"]) > 3:
-                    payload["results"] = payload["results"][: max(3, len(payload["results"]) // 2)]
-                    changed = True
-            if not changed:
-                break
-            truncated = True
-
-        minimized = {"truncated_due_to_budget": True}
-        mark_truncated(minimized)
-        return minimized, True
-
-    while True:
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "instructions": instructions if instructions is not None else SYSTEM_INSTRUCTIONS,
-            "input": input_list,
-            "tools": tools,
-            "text": {"format": fmt},
-            "store": bool(settings.openai_store),
-            "parallel_tool_calls": False,
-        }
-        if supports_temperature(model):
-            kwargs["temperature"] = float(eff_temp)
-        if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
-            kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
-            if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
-                kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
-        if reasoning_effort and supports_reasoning(model):
-            kwargs["reasoning"] = {"effort": reasoning_effort}
-
-        try:
-            resp = client.responses.create(**kwargs)
-        except TypeError as e:
-            msg = str(e)
-            for k in ("prompt_cache_key", "prompt_cache_retention", "store", "temperature", "parallel_tool_calls"):
-                if k in msg:
-                    kwargs.pop(k, None)
-            resp = client.responses.create(**kwargs)
-        except openai.APIError as e:
-            status = getattr(e, "status_code", None)
-            if status is not None:
-                raise RuntimeError(f"OpenAI API error (HTTP {status}): {e}") from e
-            raise RuntimeError(f"OpenAI API error: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"OpenAI request failed: {e}") from e
-
-        out_items = getattr(resp, "output", None)
-        if isinstance(out_items, list) and out_items:
-            input_list += out_items
-
-        function_calls: list[tuple[str, str, str]] = []
-        if isinstance(out_items, list):
-            for item in out_items:
-                item_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
-                if item_type != "function_call":
-                    continue
-                name = getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
-                call_id = getattr(item, "call_id", None) if not isinstance(item, dict) else item.get("call_id")
-                arguments = getattr(item, "arguments", None) if not isinstance(item, dict) else item.get("arguments")
-                if not isinstance(name, str) or not isinstance(call_id, str):
-                    continue
-                if not isinstance(arguments, str) or not arguments.strip():
-                    arguments = "{}"
-                function_calls.append((name, call_id, arguments))
-
-        if not function_calls:
-            result = _parse_model_json(resp)
-            if evidence_mode:
-                sources = result.get("sources") if isinstance(result, dict) else None
-                missing_sources = not isinstance(sources, list) or len(sources) == 0
-                if missing_sources:
-                    if allow_evidence_retry:
-                        retry_prompt = (
-                            f"{user_prompt}\n\n"
-                            "Evidence mode requires sources with file paths and line ranges. "
-                            "Include non-empty sources and use get_file_lines when possible."
-                        )
-                        return _agentic_json_call(
-                            model=model,
-                            self_check_model=self_check_model,
-                            schema=schema,
-                            project_id=project_id,
-                            root=root,
-                            seed=seed,
-                            user_prompt=retry_prompt,
-                            reasoning_effort=reasoning_effort,
-                            evidence_mode=evidence_mode,
-                            instructions=instructions,
-                            max_calls=max_calls,
-                            max_total_tool_output_chars=max_total_tool_output_chars,
-                            max_file_chars=max_file_chars,
-                            temperature=temperature,
-                            allow_self_check_retry=False,
-                            allow_evidence_retry=False,
-                        )
-                    raise RuntimeError("Evidence mode requires non-empty sources in the response")
-            check_model = self_check_model or model
-            try:
-                self_check = _run_self_check(
-                    client=client,
-                    model=check_model,
-                    user_prompt=user_prompt,
-                    seed=seed,
-                    response_payload=result,
-                )
-            except Exception as exc:
-                meta.self_check_ok = None
-                meta.self_check_notes = [f"self_check_error: {exc}"]
-                meta.self_check_missing_context = []
-                return (result, meta)
-
-            ok = bool(self_check.get("ok") is True)
-            issues = self_check.get("issues")
-            missing_context = self_check.get("missing_context")
-            meta.self_check_ok = ok
-            meta.self_check_notes = list(issues) if isinstance(issues, list) else []
-            meta.self_check_missing_context = (
-                list(missing_context) if isinstance(missing_context, list) else []
-            )
-
-            if not ok and allow_self_check_retry:
-                extra_sections: list[str] = []
-                if meta.self_check_missing_context:
-                    extra_sections.append(
-                        "Missing context:\n- " + "\n- ".join(meta.self_check_missing_context)
-                    )
-                if meta.self_check_notes:
-                    extra_sections.append(
-                        "Issues:\n- " + "\n- ".join(meta.self_check_notes)
-                    )
-                extra_prompt = "Self-check обнаружил проблемы. Используй инструменты, чтобы собрать недостающий контекст."
-                if extra_sections:
-                    extra_prompt = f"{extra_prompt}\n\n" + "\n\n".join(extra_sections)
-                retry_prompt = f"{user_prompt}\n\n{extra_prompt}"
-                return _agentic_json_call(
-                    model=model,
-                    self_check_model=self_check_model,
-                    schema=schema,
-                    project_id=project_id,
-                    root=root,
-                    seed=seed,
-                    user_prompt=retry_prompt,
-                    reasoning_effort=reasoning_effort,
-                    evidence_mode=evidence_mode,
-                    instructions=instructions,
-                    max_calls=max_calls,
-                    max_total_tool_output_chars=max_total_tool_output_chars,
-                    max_file_chars=max_file_chars,
-                    temperature=temperature,
-                    allow_self_check_retry=False,
-                    allow_evidence_retry=allow_evidence_retry,
-                )
-
-            return (result, meta)
-
-        for name, call_id, arguments in function_calls:
-            meta.tool_calls += 1
-            if meta.tool_calls > max_calls_budget:
-                raise RuntimeError(f"Agentic tool call limit exceeded: {max_calls_budget}")
-            try:
-                args_raw = json.loads(arguments)
-                if not isinstance(args_raw, dict):
-                    args_raw = {}
-            except Exception:
-                args_raw = {}
-
-            args: dict[str, Any] = dict(args_raw)
-
-            remaining_budget = max(0, max_total_chars_budget - meta.total_tool_output_chars)
-            if remaining_budget <= 0:
-                meta.tool_trace.append(
-                    {
-                        "name": name,
-                        "args": args,
-                        "reason": args.get("reason"),
-                        "cache_hit": False,
-                        "response_chars": 0,
-                        "response_bytes": 0,
-                        "duration_ms": 0,
-                        "status": "budget_exhausted",
-                        "truncated_due_to_budget": False,
-                    }
-                )
-                input_list.append(
-                    {"role": "system", "content": "Agentic tool output budget exhausted"}
-                )
-                break
-            if name == "search_text":
-                _apply_search_budget(
-                    args,
-                    remaining_budget=remaining_budget,
-                    max_total_budget=max_total_chars_budget,
-                    adjust_text=True,
-                    adjust_semantic=False,
-                )
-            elif name == "search_semantic":
-                _apply_search_budget(
-                    args,
-                    remaining_budget=remaining_budget,
-                    max_total_budget=max_total_chars_budget,
-                    adjust_text=True,
-                    adjust_semantic=True,
-                )
-
-            args_for_cache = {k: v for k, v in args.items() if k != "reason"}
-            cache_key = f"{name}:{json.dumps(args_for_cache, sort_keys=True, ensure_ascii=False)}"
-            cache_hit = cache_key in tool_cache
-            start = None if cache_hit else time.perf_counter()
-            try:
-                if cache_hit:
-                    meta.cache_hits += 1
-                    out = tool_cache[cache_key]
-                else:
-                    out = _dispatch_tool(project_id, root, meta, name, args, max_file_chars=eff_file)
-                    if isinstance(out, dict):
-                        err = out.get("error") if isinstance(out, dict) else None
-                        err_code = err.get("code") if isinstance(err, dict) else None
-                        if err_code != "policy_violation":
-                            tool_cache[cache_key] = out
-            except Exception:
-                duration_ms = 0.0
-                if start is not None:
-                    duration_ms = max(0.0, (time.perf_counter() - start) * 1000.0)
-                meta.tool_trace.append(
-                    {
-                        "name": name,
-                        "args": args,
-                        "reason": args.get("reason"),
-                        "cache_hit": cache_hit,
-                        "response_chars": 0,
-                        "response_bytes": 0,
-                        "duration_ms": duration_ms,
-                        "status": "error",
-                        "truncated_due_to_budget": False,
-                    }
-                )
-                raise
-
-            out_str = json.dumps(out, ensure_ascii=False)
-            response_bytes = len(out_str.encode("utf-8"))
-            truncated_due_to_budget = False
-            if remaining_budget >= 0 and len(out_str) > remaining_budget:
-                out, truncated_due_to_budget = _truncate_tool_output(
-                    name, out, remaining_budget=remaining_budget
-                )
-                out_str = json.dumps(out, ensure_ascii=False)
-                response_bytes = len(out_str.encode("utf-8"))
-            response_chars = len(out_str)
-            duration_ms = 0.0
-            if start is not None:
-                duration_ms = max(0.0, (time.perf_counter() - start) * 1000.0)
-            ok_result = bool(out.get("ok") is True)
-            status = "ok" if ok_result else "error"
-            err_info = out.get("error") if isinstance(out, dict) else None
-            err_code = err_info.get("code") if isinstance(err_info, dict) else None
-            err_message = err_info.get("message") if isinstance(err_info, dict) else None
-            meta.tool_trace.append(
-                {
-                    "name": name,
-                    "args": args,
-                    "reason": args.get("reason"),
-                    "cache_hit": cache_hit,
-                    "response_chars": response_chars,
-                    "response_bytes": response_bytes,
-                    "duration_ms": duration_ms,
-                    "status": status,
-                    "truncated_due_to_budget": truncated_due_to_budget,
-                    "error_code": err_code,
-                    "error_message": err_message,
-                }
-            )
-            meta.total_tool_output_chars += response_chars
-            input_list.append(
-                {"type": "function_call_output", "call_id": call_id, "output": out_str}
-            )
-
-
-def analyze_agentic(
-    project_id: int,
-    root: Path,
-    target_rel: str,
-    *,
-    depth: int,
-    user_prompt: str,
-    policy: ModelPolicy = DEFAULT_POLICY,
-    instructions: str | None = None,
-    max_calls: int | None = None,
-    max_total_tool_output_chars: int | None = None,
-    max_file_chars: int | None = None,
-    temperature: float | None = None,
-    reasoning_effort: str | None = None,
-    evidence_mode: bool,
-    allow_self_check_retry: bool = True,
-    allow_evidence_retry: bool = True,
-) -> tuple[dict, AgenticMeta]:
-    seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
-    eff_reasoning_effort = reasoning_effort if reasoning_effort is not None else policy.analysis_effort
-    return _agentic_json_call(
-        model=policy.analysis_model,
-        self_check_model=policy.analysis_model,
-        schema=ANALYZE_SCHEMA,
-        project_id=project_id,
-        root=root,
-        seed=seed,
-        user_prompt=f"Task: ANALYZE\n{user_prompt}",
-        reasoning_effort=eff_reasoning_effort,
-        evidence_mode=evidence_mode,
-        instructions=instructions,
-        max_calls=max_calls,
-        max_total_tool_output_chars=max_total_tool_output_chars,
-        max_file_chars=max_file_chars,
-        temperature=temperature,
-        allow_self_check_retry=allow_self_check_retry,
-        allow_evidence_retry=allow_evidence_retry,
-    )
-
-
-def evolve_agentic(
-    project_id: int,
-    root: Path,
-    target_rel: str,
-    *,
-    depth: int,
-    user_prompt: str,
-    policy: ModelPolicy = DEFAULT_POLICY,
-    instructions: str | None = None,
-    max_calls: int | None = None,
-    max_total_tool_output_chars: int | None = None,
-    max_file_chars: int | None = None,
-    temperature: float | None = None,
-    reasoning_effort: str | None = None,
-    evidence_mode: bool,
-    allow_self_check_retry: bool = True,
-    allow_evidence_retry: bool = True,
-) -> tuple[dict, AgenticMeta]:
-    seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
-    eff_reasoning_effort = reasoning_effort if reasoning_effort is not None else policy.analysis_effort
-    return _agentic_json_call(
-        model=policy.analysis_model,
-        self_check_model=policy.analysis_model,
-        schema=ANALYZE_SCHEMA,
-        project_id=project_id,
-        root=root,
-        seed=seed,
-        user_prompt=(
-            "Task: EVOLVE\nFind evolution points (domain/business logic), API bottlenecks, change hotspots.\n"
-            + user_prompt
-        ),
-        reasoning_effort=eff_reasoning_effort,
-        evidence_mode=evidence_mode,
-        instructions=instructions,
-        max_calls=max_calls,
-        max_total_tool_output_chars=max_total_tool_output_chars,
-        max_file_chars=max_file_chars,
-        temperature=temperature,
-        allow_self_check_retry=allow_self_check_retry,
-        allow_evidence_retry=allow_evidence_retry,
-    )
-
-
-def fix_agentic(
-    project_id: int,
-    root: Path,
-    target_rel: str,
-    *,
-    depth: int,
-    user_prompt: str,
-    policy: ModelPolicy = DEFAULT_POLICY,
-    instructions: str | None = None,
-    max_calls: int | None = None,
-    max_total_tool_output_chars: int | None = None,
-    max_file_chars: int | None = None,
-    temperature: float | None = None,
-    reasoning_effort: str | None = None,
-    evidence_mode: bool,
-    allow_self_check_retry: bool = True,
-    allow_evidence_retry: bool = True,
-) -> tuple[dict, AgenticMeta]:
-    seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
-    eff_reasoning_effort = reasoning_effort if reasoning_effort is not None else policy.patch_effort
-    return _agentic_json_call(
-        model=policy.patch_model,
-        self_check_model=policy.analysis_model,
-        schema=FIX_SCHEMA,
-        project_id=project_id,
-        root=root,
-        seed=seed,
-        user_prompt=(
-            "Task: FIX\nReturn minimal safe unified diff in patch_unified_diff.\n"
-            + user_prompt
-        ),
-        reasoning_effort=eff_reasoning_effort,
-        evidence_mode=evidence_mode,
-        instructions=instructions,
-        max_calls=max_calls,
-        max_total_tool_output_chars=max_total_tool_output_chars,
-        max_file_chars=max_file_chars,
-        temperature=temperature,
-        allow_self_check_retry=allow_self_check_retry,
-        allow_evidence_retry=allow_evidence_retry,
     )
