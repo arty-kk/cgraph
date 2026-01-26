@@ -623,15 +623,15 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
 
     # pack_context budgets (effective)
     pack_max_files = _clamp_int(request.pack_max_files, 25, 1, 80)
-    pack_max_chars_per_file = _clamp_int(request.pack_max_chars_per_file, 12_000, 200, 50_000)
-    pack_max_total_chars = _clamp_int(request.pack_max_total_chars, 120_000, 1_000, 500_000)
+    pack_max_chars_per_file = _clamp_int(request.pack_max_chars_per_file, 200_000, 1, 200_000)
+    pack_max_total_chars = _clamp_int(request.pack_max_total_chars, 2_000_000, 1, 2_000_000)
     if pack_max_total_chars < pack_max_chars_per_file:
         pack_max_total_chars = pack_max_chars_per_file
 
     # agentic budgets (effective, cannot exceed server ceilings)
     srv_calls = int(getattr(settings, "llm_agentic_max_calls", 24))
-    srv_file = int(getattr(settings, "llm_agentic_max_file_chars", 24_000))
-    srv_total = int(getattr(settings, "llm_agentic_max_total_tool_output_chars", 180_000))
+    srv_file = int(getattr(settings, "llm_agentic_max_file_chars", 200_000))
+    srv_total = int(getattr(settings, "llm_agentic_max_total_tool_output_chars", 2_000_000))
     srv_temp = float(getattr(settings, "llm_agentic_temperature", 0.0))
 
     def _pick_agentic_value(
@@ -708,8 +708,8 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             srv_file,
         ),
         srv_file,
-        200,
-        50_000,
+        1,
+        200_000,
     )
     base_agentic_max_total_tool_output_chars = _clamp_int(
         _pick_agentic_value(
@@ -719,8 +719,8 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             srv_total,
         ),
         srv_total,
-        2_000,
-        1_000_000,
+        1,
+        2_000_000,
     )
 
     agentic_max_calls = min(

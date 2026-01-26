@@ -235,7 +235,7 @@ def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
 
 
 def _tool_definitions(max_file_chars: int) -> list[dict]:
-    max_file_chars = max(200, min(int(max_file_chars), 50_000))
+    max_file_chars = max(1, min(int(max_file_chars), 200_000))
     tools = [
         {
             "type": "function",
@@ -278,7 +278,7 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                 "additionalProperties": False,
                 "properties": {
                     "path": {"type": "string", "description": "Path relative to project root"},
-                    "max_chars": {"type": ["integer", "null"], "minimum": 200, "maximum": max_file_chars},
+                    "max_chars": {"type": ["integer", "null"], "minimum": 1, "maximum": max_file_chars},
                 },
                 "required": ["path", "max_chars"],
             },
@@ -295,7 +295,7 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                     "path": {"type": "string", "description": "Path relative to project root"},
                     "start_line": {"type": "integer", "minimum": 1, "description": "1-based start line"},
                     "end_line": {"type": "integer", "minimum": 1, "description": "1-based end line (inclusive)"},
-                    "max_chars": {"type": ["integer", "null"], "minimum": 200, "maximum": max_file_chars},
+                    "max_chars": {"type": ["integer", "null"], "minimum": 1, "maximum": max_file_chars},
                 },
                 "required": ["path", "start_line", "end_line", "max_chars"],
             },
@@ -750,8 +750,8 @@ def _tool_get_file(project_id: int, root: Path, meta: AgenticMeta, args: dict, *
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return _tool_error("bad_args", "path is required")
-    max_file_chars = max(200, min(int(max_file_chars), 50_000))
-    max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 200, 50_000)
+    max_file_chars = max(1, min(int(max_file_chars), 200_000))
+    max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
     max_chars = min(max_chars, max_file_chars)
     try:
         abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
@@ -784,8 +784,8 @@ def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: d
         return _tool_error("bad_args", "start_line/end_line must be integers")
     if s_ln < 1 or e_ln < 1 or e_ln < s_ln:
         return _tool_error("bad_args", "invalid line range")
-    max_file_chars = max(200, min(int(max_file_chars), 50_000))
-    max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 200, 50_000)
+    max_file_chars = max(1, min(int(max_file_chars), 200_000))
+    max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
     max_chars = min(max_chars, max_file_chars)
     try:
         abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
@@ -1217,7 +1217,7 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
     context_chars = _clamp_int(args.get("context_chars"), 160, 40, 400)
 
     # Cap per-file read for search to avoid heavy IO (second pass limited by max_file_chars/SEARCH_INDEX_MAX_CHARS).
-    scan_max_chars = max(200, min(int(max_file_chars), 50_000))
+    scan_max_chars = max(1, min(int(max_file_chars), 200_000))
     index_scan_max_chars = min(SEARCH_INDEX_MAX_CHARS, scan_max_chars)
 
     paths: list[str] = []
@@ -3400,7 +3400,7 @@ def _seed_context(project_id: int, root: Path, target_rel: str, depth: int, *, m
         target_text = abs_target.read_text(encoding="utf-8", errors="replace")
     except Exception:
         target_text = ""
-    max_file_chars = max(200, min(int(max_file_chars), 50_000))
+    max_file_chars = max(1, min(int(max_file_chars), 200_000))
     if len(target_text) > max_file_chars:
         target_text = target_text[:max_file_chars]
 
@@ -3509,8 +3509,8 @@ def _agentic_json_call(
     srv_temp = float(settings.llm_agentic_temperature)
 
     eff_calls = min(_clamp_int(max_calls, srv_calls, 1, 100), srv_calls)
-    eff_total = min(_clamp_int(max_total_tool_output_chars, srv_total, 2_000, 1_000_000), srv_total)
-    eff_file = min(_clamp_int(max_file_chars, srv_file, 200, 50_000), srv_file)
+    eff_total = min(_clamp_int(max_total_tool_output_chars, srv_total, 1, 2_000_000), srv_total)
+    eff_file = min(_clamp_int(max_file_chars, srv_file, 1, 200_000), srv_file)
     eff_temp = _clamp_int(int(10 * _clamp_float(temperature, srv_temp, 0.0, 2.0)), int(10 * srv_temp), 0, 20) / 10.0
 
     tools = _tool_definitions(eff_file)

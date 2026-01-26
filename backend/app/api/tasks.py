@@ -51,12 +51,12 @@ class RunTask(BaseModel):
     )
 
     pack_max_files: int | None = Field(default=None, ge=1, le=80, description="Max files in pack_context")
-    pack_max_chars_per_file: int | None = Field(default=None, ge=200, le=50_000, description="Max chars per file in pack_context")
-    pack_max_total_chars: int | None = Field(default=None, ge=1_000, le=500_000, description="Max total chars in pack_context")
+    pack_max_chars_per_file: int | None = Field(default=None, ge=1, le=200_000, description="Max chars per file in pack_context")
+    pack_max_total_chars: int | None = Field(default=None, ge=1, le=2_000_000, description="Max total chars in pack_context")
 
     agentic_max_calls: int | None = Field(default=None, ge=1, le=100, description="Max tool calls in agentic mode")
-    agentic_max_file_chars: int | None = Field(default=None, ge=200, le=50_000, description="Max chars per get_file in agentic mode")
-    agentic_max_total_tool_output_chars: int | None = Field(default=None, ge=2_000, le=1_000_000, description="Total tool output char budget in agentic mode")
+    agentic_max_file_chars: int | None = Field(default=None, ge=1, le=200_000, description="Max chars per get_file in agentic mode")
+    agentic_max_total_tool_output_chars: int | None = Field(default=None, ge=1, le=2_000_000, description="Total tool output char budget in agentic mode")
     agentic_temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Temperature override for agentic mode")
     agentic_reasoning_effort: str | None = Field(
         default=None,

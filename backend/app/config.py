@@ -76,9 +76,9 @@ class Settings(BaseSettings):
     llm_agentic_retrieval: bool = Field(default=True, alias="CGRAPH_LLM_AGENTIC_RETRIEVAL")
     llm_agentic_max_calls: int = Field(default=100, alias="CGRAPH_LLM_AGENTIC_MAX_CALLS")
     llm_agentic_max_total_tool_output_chars: int = Field(
-        default=180_000, alias="CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS"
+        default=2_000_000, alias="CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS"
     )
-    llm_agentic_max_file_chars: int = Field(default=24_000, alias="CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS")
+    llm_agentic_max_file_chars: int = Field(default=200_000, alias="CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS")
     llm_agentic_temperature: float = Field(default=0.0, alias="CGRAPH_LLM_AGENTIC_TEMPERATURE")
     llm_agentic_trace_enabled: bool = Field(
         default=True, alias="CGRAPH_LLM_AGENTIC_TRACE_ENABLED"
