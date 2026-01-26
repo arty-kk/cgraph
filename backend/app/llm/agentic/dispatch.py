@@ -117,6 +117,20 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
         tool_fn = _resolve_tool_func("_tool_get_file")
         return _validate_tool_result(name, tool_fn(project_id, root, meta, args, max_file_chars=max_file_chars))
     if name == "get_file_lines":
+        allowed = any(
+            entry.get("name") in ("search_paths", "search_symbols", "search_text", "search_semantic")
+            and entry.get("status") == "ok"
+            for entry in meta.tool_trace
+            if isinstance(entry, dict)
+        )
+        if not allowed:
+            return _validate_tool_result(
+                name,
+                _tool_error(
+                    "policy_violation",
+                    "Перед get_file_lines нужно выполнить search_paths, search_symbols, search_text или search_semantic.",
+                ),
+            )
         tool_fn = _resolve_tool_func("_tool_get_file_lines")
         return _validate_tool_result(name, tool_fn(project_id, root, meta, args, max_file_chars=max_file_chars))
     if name == "get_contract":
