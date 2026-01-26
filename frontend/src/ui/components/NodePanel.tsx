@@ -311,6 +311,27 @@ export function NodePanel({
     return `ctx: ${String(retrieval)}`
   }, [fmtK, isRecord, retrieval, retrievalSettings])
 
+  const agenticSettings = useMemo(() => {
+    if (!isRecord(retrievalSettings)) return null
+    const a = (retrievalSettings as any).agentic
+    if (!isRecord(a)) return null
+    return a as Record<string, unknown>
+  }, [isRecord, retrievalSettings])
+
+  const packSettings = useMemo(() => {
+    if (!isRecord(retrievalSettings)) return null
+    const p = (retrievalSettings as any).pack
+    if (!isRecord(p)) return null
+    return p as Record<string, unknown>
+  }, [isRecord, retrievalSettings])
+
+  const graphSettings = useMemo(() => {
+    if (!isRecord(retrievalSettings)) return null
+    const g = (retrievalSettings as any).graph
+    if (!isRecord(g)) return null
+    return g as Record<string, unknown>
+  }, [isRecord, retrievalSettings])
+
   const agenticTrace = useMemo(() => {
     if (retrieval !== 'agentic' || !isRecord(retrievalSettings)) return []
     const a = (retrievalSettings as any).agentic
@@ -319,6 +340,13 @@ export function NodePanel({
     if (!Array.isArray(trace)) return []
     return trace.filter((entry) => isRecord(entry))
   }, [isRecord, retrieval, retrievalSettings])
+
+  const asStringList = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return []
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean)
+  }
 
   const inlineTokenRegex =
     /([A-Za-z0-9._-]*\/[A-Za-z0-9._/-]*\.[A-Za-z0-9]+|\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+\b|\b[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]*\b)/
@@ -1202,6 +1230,81 @@ export function NodePanel({
                 {retrievalSummary && (
                   <div className="text-[11px] text-neutral-500 whitespace-pre-wrap">{retrievalSummary}</div>
                 )}
+                <div className="rounded-md border border-neutral-800 bg-neutral-950/50 px-3 py-2 text-[11px] text-neutral-400 space-y-1">
+                  <div className="text-xs font-semibold text-neutral-200">Quality / Context</div>
+                  <div>
+                    Agentic limits:{' '}
+                    {agenticSettings ? (
+                      <>
+                        calls {fmtK(agenticSettings.tool_calls_used)}/{fmtK(agenticSettings.max_calls)} · tool chars{' '}
+                        {fmtK(agenticSettings.tool_output_chars_used)}/{fmtK(agenticSettings.max_total_tool_output_chars)} · file chars{' '}
+                        {fmtK(agenticSettings.max_file_chars)} · temp {agenticSettings.temperature ?? '—'} · effort{' '}
+                        {agenticSettings.reasoning_effort ?? '—'}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </div>
+                  <div>
+                    Pack limits:{' '}
+                    {packSettings ? (
+                      <>
+                        max_files {packSettings.max_files ?? '—'} · chars/file {fmtK(packSettings.max_chars_per_file)} · total{' '}
+                        {fmtK(packSettings.max_total_chars)}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </div>
+                  <div>
+                    Graph limits:{' '}
+                    {graphSettings ? (
+                      <>
+                        max_nodes {graphSettings.max_nodes ?? '—'} · max_depth {graphSettings.max_depth ?? '—'}
+                        {typeof graphSettings.truncated === 'boolean' ? ` · truncated ${graphSettings.truncated ? 'yes' : 'no'}` : ''}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </div>
+                  <div>
+                    Budget reason:{' '}
+                    {agenticSettings ? (
+                      asStringList(agenticSettings.budget_reason).join(', ') || '—'
+                    ) : (
+                      '—'
+                    )}
+                  </div>
+                  <div>
+                    Self-check missing context:{' '}
+                    {agenticSettings ? (
+                      asStringList(agenticSettings.self_check_missing_context).join('; ') || '—'
+                    ) : (
+                      '—'
+                    )}
+                  </div>
+                  <div>
+                    Self-check retry:{' '}
+                    {agenticSettings ? (
+                      agenticSettings.self_check_retry ? (
+                        <>
+                          yes
+                          {isRecord(agenticSettings.self_check_retry_multiplier)
+                            ? ` · calls x${agenticSettings.self_check_retry_multiplier.max_calls ?? '—'} · tool chars x${agenticSettings.self_check_retry_multiplier.max_total_tool_output_chars ?? '—'} · file chars x${agenticSettings.self_check_retry_multiplier.max_file_chars ?? '—'}`
+                            : ''}
+                        </>
+                      ) : (
+                        'no'
+                      )
+                    ) : (
+                      '—'
+                    )}
+                  </div>
+                  <div className="text-[10px] text-neutral-500">
+                    Effective limits reflect server caps, complexity-based scaling (depth, prompt size, project size, mode),
+                    and an optional single retry when self-check reports missing context.
+                  </div>
+                </div>
                 {graphScanWarning && (
                   <div className="text-xs bg-amber-950/40 border border-amber-800 rounded-md p-2 text-amber-200 space-y-2">
                     <div>

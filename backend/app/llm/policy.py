@@ -28,6 +28,7 @@ class ProfileName(str, Enum):
 class ProfileParams:
     instructions: str | None
     temperature: float | None
+    reasoning_effort: str | None
     max_calls: int | None
     max_total_tool_output_chars: int | None
     max_file_chars: int | None
@@ -57,6 +58,7 @@ PROFILE_PARAMS: dict[ProfileName, ProfileParams] = {
     ProfileName.ARCHITECT: ProfileParams(
         instructions=None,
         temperature=None,
+        reasoning_effort=None,
         max_calls=None,
         max_total_tool_output_chars=None,
         max_file_chars=None,
@@ -67,6 +69,7 @@ PROFILE_PARAMS: dict[ProfileName, ProfileParams] = {
     ProfileName.SURGICAL: ProfileParams(
         instructions=SURGICAL_INSTRUCTIONS,
         temperature=0.0,
+        reasoning_effort=None,
         max_calls=12,
         max_total_tool_output_chars=60_000,
         max_file_chars=8_000,
@@ -77,6 +80,7 @@ PROFILE_PARAMS: dict[ProfileName, ProfileParams] = {
     ProfileName.INCIDENT: ProfileParams(
         instructions=INCIDENT_INSTRUCTIONS,
         temperature=0.2,
+        reasoning_effort=None,
         max_calls=40,
         max_total_tool_output_chars=140_000,
         max_file_chars=16_000,
