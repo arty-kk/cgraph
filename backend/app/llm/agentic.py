@@ -3499,6 +3499,7 @@ def _agentic_json_call(
     max_file_chars: int | None = None,
     temperature: float | None = None,
     allow_self_check_retry: bool = True,
+    allow_evidence_retry: bool = True,
 ) -> tuple[dict, AgenticMeta]:
     client = get_openai_client()
     fmt = _normalize_responses_json_schema(schema)
@@ -3685,7 +3686,7 @@ def _agentic_json_call(
                 sources = result.get("sources") if isinstance(result, dict) else None
                 missing_sources = not isinstance(sources, list) or len(sources) == 0
                 if missing_sources:
-                    if allow_self_check_retry:
+                    if allow_evidence_retry:
                         retry_prompt = (
                             f"{user_prompt}\n\n"
                             "Evidence mode requires sources with file paths and line ranges. "
@@ -3707,6 +3708,7 @@ def _agentic_json_call(
                             max_file_chars=max_file_chars,
                             temperature=temperature,
                             allow_self_check_retry=False,
+                            allow_evidence_retry=False,
                         )
                     raise RuntimeError("Evidence mode requires non-empty sources in the response")
             check_model = self_check_model or model
@@ -3763,6 +3765,7 @@ def _agentic_json_call(
                     max_file_chars=max_file_chars,
                     temperature=temperature,
                     allow_self_check_retry=False,
+                    allow_evidence_retry=allow_evidence_retry,
                 )
 
             return (result, meta)
@@ -3902,9 +3905,13 @@ def analyze_agentic(
     max_total_tool_output_chars: int | None = None,
     max_file_chars: int | None = None,
     temperature: float | None = None,
+    reasoning_effort: str | None = None,
     evidence_mode: bool,
+    allow_self_check_retry: bool = True,
+    allow_evidence_retry: bool = True,
 ) -> tuple[dict, AgenticMeta]:
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
+    eff_reasoning_effort = reasoning_effort if reasoning_effort is not None else policy.analysis_effort
     return _agentic_json_call(
         model=policy.analysis_model,
         self_check_model=policy.analysis_model,
@@ -3913,13 +3920,15 @@ def analyze_agentic(
         root=root,
         seed=seed,
         user_prompt=f"Task: ANALYZE\n{user_prompt}",
-        reasoning_effort=policy.analysis_effort,
+        reasoning_effort=eff_reasoning_effort,
         evidence_mode=evidence_mode,
         instructions=instructions,
         max_calls=max_calls,
         max_total_tool_output_chars=max_total_tool_output_chars,
         max_file_chars=max_file_chars,
         temperature=temperature,
+        allow_self_check_retry=allow_self_check_retry,
+        allow_evidence_retry=allow_evidence_retry,
     )
 
 
@@ -3936,9 +3945,13 @@ def evolve_agentic(
     max_total_tool_output_chars: int | None = None,
     max_file_chars: int | None = None,
     temperature: float | None = None,
+    reasoning_effort: str | None = None,
     evidence_mode: bool,
+    allow_self_check_retry: bool = True,
+    allow_evidence_retry: bool = True,
 ) -> tuple[dict, AgenticMeta]:
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
+    eff_reasoning_effort = reasoning_effort if reasoning_effort is not None else policy.analysis_effort
     return _agentic_json_call(
         model=policy.analysis_model,
         self_check_model=policy.analysis_model,
@@ -3950,13 +3963,15 @@ def evolve_agentic(
             "Task: EVOLVE\nFind evolution points (domain/business logic), API bottlenecks, change hotspots.\n"
             + user_prompt
         ),
-        reasoning_effort=policy.analysis_effort,
+        reasoning_effort=eff_reasoning_effort,
         evidence_mode=evidence_mode,
         instructions=instructions,
         max_calls=max_calls,
         max_total_tool_output_chars=max_total_tool_output_chars,
         max_file_chars=max_file_chars,
         temperature=temperature,
+        allow_self_check_retry=allow_self_check_retry,
+        allow_evidence_retry=allow_evidence_retry,
     )
 
 
@@ -3973,9 +3988,13 @@ def fix_agentic(
     max_total_tool_output_chars: int | None = None,
     max_file_chars: int | None = None,
     temperature: float | None = None,
+    reasoning_effort: str | None = None,
     evidence_mode: bool,
+    allow_self_check_retry: bool = True,
+    allow_evidence_retry: bool = True,
 ) -> tuple[dict, AgenticMeta]:
     seed = _seed_context(project_id, root, target_rel, depth=depth, max_file_chars=max_file_chars or settings.llm_agentic_max_file_chars)
+    eff_reasoning_effort = reasoning_effort if reasoning_effort is not None else policy.patch_effort
     return _agentic_json_call(
         model=policy.patch_model,
         self_check_model=policy.analysis_model,
@@ -3987,11 +4006,13 @@ def fix_agentic(
             "Task: FIX\nReturn minimal safe unified diff in patch_unified_diff.\n"
             + user_prompt
         ),
-        reasoning_effort=policy.patch_effort,
+        reasoning_effort=eff_reasoning_effort,
         evidence_mode=evidence_mode,
         instructions=instructions,
         max_calls=max_calls,
         max_total_tool_output_chars=max_total_tool_output_chars,
         max_file_chars=max_file_chars,
         temperature=temperature,
+        allow_self_check_retry=allow_self_check_retry,
+        allow_evidence_retry=allow_evidence_retry,
     )

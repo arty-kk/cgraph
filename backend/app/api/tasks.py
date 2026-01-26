@@ -58,6 +58,10 @@ class RunTask(BaseModel):
     agentic_max_file_chars: int | None = Field(default=None, ge=200, le=50_000, description="Max chars per get_file in agentic mode")
     agentic_max_total_tool_output_chars: int | None = Field(default=None, ge=2_000, le=1_000_000, description="Total tool output char budget in agentic mode")
     agentic_temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Temperature override for agentic mode")
+    agentic_reasoning_effort: str | None = Field(
+        default=None,
+        description="Reasoning effort override for agentic mode (low|medium|high)",
+    )
 
 @router.post("/{project_id}/run")
 def run_task(project_id: int, body: RunTask, background_tasks: BackgroundTasks, background: bool = False):
@@ -82,6 +86,7 @@ def run_task(project_id: int, body: RunTask, background_tasks: BackgroundTasks, 
         agentic_max_file_chars=body.agentic_max_file_chars,
         agentic_max_total_tool_output_chars=body.agentic_max_total_tool_output_chars,
         agentic_temperature=body.agentic_temperature,
+        agentic_reasoning_effort=body.agentic_reasoning_effort,
         provided_fields=provided_fields,
     )
     return run_task_with_background(project_id, request, background=background, background_tasks=background_tasks)

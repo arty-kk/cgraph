@@ -24,7 +24,7 @@ from ..errors import (
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.orchestrator import analyze, evolve, fix, triage, plan_task
 from ..llm.agentic import analyze_agentic, evolve_agentic, fix_agentic, AgenticMeta
-from ..llm.policy import ProfileName, ProfileParams, resolve_profile
+from ..llm.policy import ProfileName, ProfileParams, resolve_profile, DEFAULT_POLICY
 from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
 from ..scan import scan_files
@@ -84,6 +84,7 @@ class TaskRequest:
     agentic_max_file_chars: int | None = None
     agentic_max_total_tool_output_chars: int | None = None
     agentic_temperature: float | None = None
+    agentic_reasoning_effort: str | None = None
 
 def _clamp_int(value: int | None, default: int, lo: int, hi: int) -> int:
     try:
@@ -98,6 +99,51 @@ def _clamp_float(value: float | None, default: float, lo: float, hi: float) -> f
     except Exception:
         v = float(default)
     return max(lo, min(hi, v))
+
+REASONING_EFFORT_LEVELS = ("low", "medium", "high")
+
+def _normalize_reasoning_effort(value: str | None, default: str) -> str:
+    if isinstance(value, str):
+        val = value.strip().lower()
+        if val in REASONING_EFFORT_LEVELS:
+            return val
+    return default
+
+def _bump_reasoning_effort(base: str, steps: int) -> str:
+    try:
+        idx = REASONING_EFFORT_LEVELS.index(base)
+    except ValueError:
+        idx = 1
+    idx = max(0, min(len(REASONING_EFFORT_LEVELS) - 1, idx + steps))
+    return REASONING_EFFORT_LEVELS[idx]
+
+def _scale_reasoning_effort(base: str, complexity_coeff: float) -> str:
+    steps = 0
+    if complexity_coeff >= 1.6:
+        steps = 2
+    elif complexity_coeff >= 1.3:
+        steps = 1
+    return _bump_reasoning_effort(base, steps)
+
+def _scale_temperature(base_temp: float, complexity_coeff: float) -> float:
+    if base_temp <= 0:
+        return base_temp
+    delta = 0.0
+    if complexity_coeff >= 1.75:
+        delta = 0.15
+    elif complexity_coeff >= 1.5:
+        delta = 0.1
+    elif complexity_coeff >= 1.25:
+        delta = 0.05
+    return base_temp + delta
+
+SELF_CHECK_RETRY_MULTIPLIERS = {
+    "max_calls": 1.5,
+    "max_total_tool_output_chars": 1.5,
+    "max_file_chars": 1.25,
+}
+SELF_CHECK_RETRY_TEMP_DELTA = 0.05
+SELF_CHECK_RETRY_REASONING_STEPS = 1
 
 def _store_patch_blob(patch_text: str) -> dict:
     sha = sha256_text(patch_text)
@@ -490,6 +536,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
     profile_params = resolve_profile(request.profile)
     profile_instructions = profile_params.instructions
     profile_temperature = profile_params.temperature
+    profile_reasoning_effort = profile_params.reasoning_effort
 
     if mode is not None and mode not in ("analyze", "evolve", "fix", "impact"):
         raise BadRequestError("Неизвестный режим")
@@ -559,23 +606,171 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
     evidence_mode = bool(request.agentic_evidence_mode)
     plan_tz: dict | None = None
     plan_source: str | None = None
+    max_nodes = (
+        request.impact_max_nodes
+        if "impact_max_nodes" in request.provided_fields
+        else getattr(settings, "impact_max_nodes", None)
+    )
+    max_depth = (
+        request.impact_max_depth
+        if "impact_max_depth" in request.provided_fields
+        else getattr(settings, "impact_max_depth", None)
+    )
+    if max_nodes is not None:
+        max_nodes = int(max_nodes)
+    if max_depth is not None:
+        max_depth = int(max_depth)
+
+    # pack_context budgets (effective)
+    pack_max_files = _clamp_int(request.pack_max_files, 25, 1, 80)
+    pack_max_chars_per_file = _clamp_int(request.pack_max_chars_per_file, 12_000, 200, 50_000)
+    pack_max_total_chars = _clamp_int(request.pack_max_total_chars, 120_000, 1_000, 500_000)
+    if pack_max_total_chars < pack_max_chars_per_file:
+        pack_max_total_chars = pack_max_chars_per_file
+
+    # agentic budgets (effective, cannot exceed server ceilings)
+    srv_calls = int(getattr(settings, "llm_agentic_max_calls", 24))
+    srv_file = int(getattr(settings, "llm_agentic_max_file_chars", 24_000))
+    srv_total = int(getattr(settings, "llm_agentic_max_total_tool_output_chars", 180_000))
+    srv_temp = float(getattr(settings, "llm_agentic_temperature", 0.0))
+
+    def _pick_agentic_value(
+        field: str,
+        request_value: int | float | None,
+        profile_value: int | float | None,
+        server_default: int | float,
+    ) -> int | float:
+        if field in request.provided_fields and request_value is not None:
+            return request_value
+        if profile_value is not None:
+            return profile_value
+        return server_default
+
+    mode_weights = {
+        "analyze": 0.0,
+        "evolve": 0.1,
+        "fix": 0.2,
+        "impact": 0.0,
+    }
+    depth_norm = max(0.0, min(1.0, depth / 6.0))
+    prompt_len = len(request.prompt)
+    prompt_norm = min(
+        1.0,
+        prompt_len / max(1, int(settings.max_prompt_chars)),
+    )
+    with get_session() as session:
+        nodes_row = session.exec(
+            select(func.count())
+            .select_from(FileNode)
+            .where(FileNode.project_id == project_id)
+        ).one()
+    project_nodes = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
+    project_norm = min(1.0, project_nodes / 1_000.0)
+    mode_weight = float(mode_weights.get(mode, 0.0))
+    complexity_coeff = _clamp_float(
+        1.0 + depth_norm + mode_weight + prompt_norm + project_norm,
+        1.0,
+        1.0,
+        2.0,
+    )
+    complexity_inputs = {
+        "depth": depth,
+        "prompt_len": prompt_len,
+        "project_nodes": project_nodes,
+        "mode": mode,
+    }
+    budget_reason = []
+    if depth_norm > 0:
+        budget_reason.append("depth")
+    if prompt_norm > 0:
+        budget_reason.append("prompt_size")
+    if project_norm > 0:
+        budget_reason.append("project_size")
+    if mode_weight > 0:
+        budget_reason.append("mode")
+
+    base_agentic_max_calls = _clamp_int(
+        _pick_agentic_value(
+            "agentic_max_calls",
+            request.agentic_max_calls,
+            profile_params.max_calls,
+            srv_calls,
+        ),
+        srv_calls,
+        1,
+        100,
+    )
+    base_agentic_max_file_chars = _clamp_int(
+        _pick_agentic_value(
+            "agentic_max_file_chars",
+            request.agentic_max_file_chars,
+            profile_params.max_file_chars,
+            srv_file,
+        ),
+        srv_file,
+        200,
+        50_000,
+    )
+    base_agentic_max_total_tool_output_chars = _clamp_int(
+        _pick_agentic_value(
+            "agentic_max_total_tool_output_chars",
+            request.agentic_max_total_tool_output_chars,
+            profile_params.max_total_tool_output_chars,
+            srv_total,
+        ),
+        srv_total,
+        2_000,
+        1_000_000,
+    )
+
+    agentic_max_calls = min(
+        int(round(base_agentic_max_calls * complexity_coeff)),
+        srv_calls,
+    )
+    agentic_max_file_chars = min(
+        int(round(base_agentic_max_file_chars * complexity_coeff)),
+        srv_file,
+    )
+    agentic_max_total_tool_output_chars = min(
+        int(round(base_agentic_max_total_tool_output_chars * complexity_coeff)),
+        srv_total,
+    )
+    base_agentic_temperature = _clamp_float(
+        _pick_agentic_value(
+            "agentic_temperature",
+            request.agentic_temperature,
+            profile_temperature,
+            srv_temp,
+        ),
+        srv_temp,
+        0.0,
+        2.0,
+    )
+    agentic_temperature = _clamp_float(
+        _scale_temperature(base_agentic_temperature, complexity_coeff),
+        base_agentic_temperature,
+        0.0,
+        2.0,
+    )
+    default_reasoning_effort = (
+        DEFAULT_POLICY.patch_effort if mode == "fix" else DEFAULT_POLICY.analysis_effort
+    )
+    if "agentic_reasoning_effort" in request.provided_fields and request.agentic_reasoning_effort:
+        base_reasoning_effort = request.agentic_reasoning_effort
+    elif profile_reasoning_effort:
+        base_reasoning_effort = profile_reasoning_effort
+    else:
+        base_reasoning_effort = default_reasoning_effort
+    base_reasoning_effort = _normalize_reasoning_effort(
+        base_reasoning_effort,
+        default_reasoning_effort,
+    )
+    agentic_reasoning_effort = _scale_reasoning_effort(
+        base_reasoning_effort,
+        complexity_coeff,
+    )
 
     if mode == "impact":
-        max_nodes = (
-            request.impact_max_nodes
-            if "impact_max_nodes" in request.provided_fields
-            else getattr(settings, "impact_max_nodes", None)
-        )
-        max_depth = (
-            request.impact_max_depth
-            if "impact_max_depth" in request.provided_fields
-            else getattr(settings, "impact_max_depth", None)
-        )
-        if max_nodes is not None:
-            max_nodes = int(max_nodes)
-        if max_depth is not None:
-            max_depth = int(max_depth)
-
         impacted, truncated = _impact(project_id, target, max_nodes, max_depth)
         result = {
             "impacted": impacted,
@@ -587,11 +782,31 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
         model_used = "graph"
         retrieval_used = "graph"
         retrieval_settings = {
+            "agentic": {
+                "complexity_coeff": complexity_coeff,
+                "complexity_inputs": complexity_inputs,
+                "budget_reason": budget_reason,
+                "max_calls": agentic_max_calls,
+                "max_file_chars": agentic_max_file_chars,
+                "max_total_tool_output_chars": agentic_max_total_tool_output_chars,
+                "temperature": agentic_temperature,
+                "reasoning_effort": agentic_reasoning_effort,
+                "agentic_evidence_mode": evidence_mode,
+                "self_check_retry": False,
+                "self_check_retry_reason": None,
+                "self_check_retry_missing_context": [],
+                "self_check_retry_multiplier": None,
+            },
+            "pack": {
+                "max_files": pack_max_files,
+                "max_chars_per_file": pack_max_chars_per_file,
+                "max_total_chars": pack_max_total_chars,
+            },
             "graph": {
                 "max_nodes": max_nodes,
                 "max_depth": max_depth,
                 "truncated": truncated,
-            }
+            },
         }
         if settings.openai_api_key:
             paths_for_metrics = sorted({target, *impacted})
@@ -615,151 +830,32 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             plan_source = "skipped"
     else:
         retrieval_used = "agentic" if use_agentic else "pack"
-
-        # pack_context budgets (effective)
-        pack_max_files = _clamp_int(request.pack_max_files, 25, 1, 80)
-        pack_max_chars_per_file = _clamp_int(request.pack_max_chars_per_file, 12_000, 200, 50_000)
-        pack_max_total_chars = _clamp_int(request.pack_max_total_chars, 120_000, 1_000, 500_000)
-        if pack_max_total_chars < pack_max_chars_per_file:
-            pack_max_total_chars = pack_max_chars_per_file
-
-        # agentic budgets (effective, cannot exceed server ceilings)
-        srv_calls = int(getattr(settings, "llm_agentic_max_calls", 24))
-        srv_file = int(getattr(settings, "llm_agentic_max_file_chars", 24_000))
-        srv_total = int(getattr(settings, "llm_agentic_max_total_tool_output_chars", 180_000))
-        srv_temp = float(getattr(settings, "llm_agentic_temperature", 0.0))
-
-        def _pick_agentic_value(
-            field: str,
-            request_value: int | float | None,
-            profile_value: int | float | None,
-            server_default: int | float,
-        ) -> int | float:
-            if field in request.provided_fields and request_value is not None:
-                return request_value
-            if profile_value is not None:
-                return profile_value
-            return server_default
-
-        complexity_coeff = 1.0
-        complexity_inputs: dict[str, object] | None = None
-        if use_agentic:
-            mode_weights = {
-                "analyze": 0.0,
-                "evolve": 0.1,
-                "fix": 0.2,
-                "impact": 0.0,
-            }
-            depth_norm = max(0.0, min(1.0, depth / 6.0))
-            prompt_len = len(request.prompt)
-            prompt_norm = min(
-                1.0,
-                prompt_len / max(1, int(settings.max_prompt_chars)),
-            )
-            with get_session() as session:
-                nodes_row = session.exec(
-                    select(func.count())
-                    .select_from(FileNode)
-                    .where(FileNode.project_id == project_id)
-                ).one()
-            project_nodes = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
-            project_norm = min(1.0, project_nodes / 1_000.0)
-            complexity_coeff = _clamp_float(
-                1.0
-                + depth_norm
-                + float(mode_weights.get(mode, 0.0))
-                + prompt_norm
-                + project_norm,
-                1.0,
-                1.0,
-                2.0,
-            )
-            complexity_inputs = {
-                "depth": depth,
-                "prompt_len": prompt_len,
-                "project_nodes": project_nodes,
-                "mode": mode,
-            }
-
-        base_agentic_max_calls = _clamp_int(
-            _pick_agentic_value(
-                "agentic_max_calls",
-                request.agentic_max_calls,
-                profile_params.max_calls,
-                srv_calls,
-            ),
-            srv_calls,
-            1,
-            100,
-        )
-        base_agentic_max_file_chars = _clamp_int(
-            _pick_agentic_value(
-                "agentic_max_file_chars",
-                request.agentic_max_file_chars,
-                profile_params.max_file_chars,
-                srv_file,
-            ),
-            srv_file,
-            200,
-            50_000,
-        )
-        base_agentic_max_total_tool_output_chars = _clamp_int(
-            _pick_agentic_value(
-                "agentic_max_total_tool_output_chars",
-                request.agentic_max_total_tool_output_chars,
-                profile_params.max_total_tool_output_chars,
-                srv_total,
-            ),
-            srv_total,
-            2_000,
-            1_000_000,
-        )
-
-        agentic_max_calls = min(
-            int(round(base_agentic_max_calls * complexity_coeff)),
-            srv_calls,
-        )
-        agentic_max_file_chars = min(
-            int(round(base_agentic_max_file_chars * complexity_coeff)),
-            srv_file,
-        )
-        agentic_max_total_tool_output_chars = min(
-            int(round(base_agentic_max_total_tool_output_chars * complexity_coeff)),
-            srv_total,
-        )
-        agentic_temperature = _clamp_float(
-            _pick_agentic_value(
-                "agentic_temperature",
-                request.agentic_temperature,
-                profile_temperature,
-                srv_temp,
-            ),
-            srv_temp,
-            0.0,
-            2.0,
-        )
-
-        retrieval_settings = (
-            {
-                "agentic": {
-                    "complexity_coeff": complexity_coeff,
-                    "complexity_inputs": complexity_inputs,
-                    "max_calls": agentic_max_calls,
-                    "max_file_chars": agentic_max_file_chars,
-                    "max_total_tool_output_chars": agentic_max_total_tool_output_chars,
-                    "temperature": agentic_temperature,
-                    "agentic_evidence_mode": evidence_mode,
-                }
-            }
-            if use_agentic
-            else {
-                "pack": {
-                    "max_files": pack_max_files,
-                    "max_chars_per_file": pack_max_chars_per_file,
-                    "max_total_chars": pack_max_total_chars,
-                }
-            }
-        )
+        retrieval_settings = {
+            "agentic": {
+                "complexity_coeff": complexity_coeff,
+                "complexity_inputs": complexity_inputs,
+                "budget_reason": budget_reason,
+                "max_calls": agentic_max_calls,
+                "max_file_chars": agentic_max_file_chars,
+                "max_total_tool_output_chars": agentic_max_total_tool_output_chars,
+                "temperature": agentic_temperature,
+                "reasoning_effort": agentic_reasoning_effort,
+                "agentic_evidence_mode": evidence_mode,
+                "self_check_retry": False,
+                "self_check_retry_reason": None,
+                "self_check_retry_missing_context": [],
+                "self_check_retry_multiplier": None,
+            },
+            "pack": {
+                "max_files": pack_max_files,
+                "max_chars_per_file": pack_max_chars_per_file,
+                "max_total_chars": pack_max_total_chars,
+            },
+            "graph": {
+                "max_nodes": max_nodes,
+                "max_depth": max_depth,
+            },
+        }
 
         if use_agentic:
             knowledge: dict[str, object] = {"target_path": target}
@@ -780,6 +876,9 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                 _llm_http_error("plan", error)
             plan_source = "agentic"
             allowed_patch_paths = {target}
+            self_check_retry = False
+            self_check_retry_missing_context: list[str] = []
+            self_check_retry_budget: dict[str, float] | None = None
             try:
                 if mode == "analyze":
                     result, agentic_meta = analyze_agentic(
@@ -793,7 +892,10 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
                         temperature=agentic_temperature,
+                        reasoning_effort=agentic_reasoning_effort,
                         evidence_mode=evidence_mode,
+                        allow_self_check_retry=False,
+                        allow_evidence_retry=True,
                     )
                     model_used = settings.analysis_model
                 elif mode == "evolve":
@@ -808,7 +910,10 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
                         temperature=agentic_temperature,
+                        reasoning_effort=agentic_reasoning_effort,
                         evidence_mode=evidence_mode,
+                        allow_self_check_retry=False,
+                        allow_evidence_retry=True,
                     )
                     model_used = settings.analysis_model
                 elif mode == "fix":
@@ -823,7 +928,10 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         max_file_chars=agentic_max_file_chars,
                         max_total_tool_output_chars=agentic_max_total_tool_output_chars,
                         temperature=agentic_temperature,
+                        reasoning_effort=agentic_reasoning_effort,
                         evidence_mode=evidence_mode,
+                        allow_self_check_retry=False,
+                        allow_evidence_retry=True,
                     )
                     model_used = settings.patch_model
                 else:
@@ -831,11 +939,113 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             except Exception as error:  # noqa: BLE001
                 _llm_http_error(mode or "agentic", error)
 
+            if agentic_meta is not None and agentic_meta.self_check_missing_context:
+                self_check_retry = True
+                self_check_retry_missing_context = list(agentic_meta.self_check_missing_context or [])
+                self_check_retry_budget = dict(SELF_CHECK_RETRY_MULTIPLIERS)
+                agentic_max_calls = min(
+                    int(round(agentic_max_calls * SELF_CHECK_RETRY_MULTIPLIERS["max_calls"])),
+                    srv_calls,
+                )
+                agentic_max_file_chars = min(
+                    int(round(agentic_max_file_chars * SELF_CHECK_RETRY_MULTIPLIERS["max_file_chars"])),
+                    srv_file,
+                )
+                agentic_max_total_tool_output_chars = min(
+                    int(round(agentic_max_total_tool_output_chars * SELF_CHECK_RETRY_MULTIPLIERS["max_total_tool_output_chars"])),
+                    srv_total,
+                )
+                agentic_temperature = _clamp_float(
+                    agentic_temperature + SELF_CHECK_RETRY_TEMP_DELTA,
+                    agentic_temperature,
+                    0.0,
+                    2.0,
+                )
+                agentic_reasoning_effort = _bump_reasoning_effort(
+                    agentic_reasoning_effort,
+                    SELF_CHECK_RETRY_REASONING_STEPS,
+                )
+                retry_budget_reason = list(budget_reason)
+                retry_budget_reason.append("self_check_retry")
+                retrieval_settings["agentic"]["budget_reason"] = retry_budget_reason
+                retrieval_settings["agentic"]["self_check_retry"] = True
+                retrieval_settings["agentic"]["self_check_retry_reason"] = "missing_context"
+                retrieval_settings["agentic"]["self_check_retry_missing_context"] = self_check_retry_missing_context
+                retrieval_settings["agentic"]["self_check_retry_multiplier"] = self_check_retry_budget
+                try:
+                    if mode == "analyze":
+                        result, agentic_meta = analyze_agentic(
+                            project_id,
+                            root,
+                            target,
+                            depth=depth,
+                            user_prompt=request.prompt,
+                            instructions=profile_instructions,
+                            max_calls=agentic_max_calls,
+                            max_file_chars=agentic_max_file_chars,
+                            max_total_tool_output_chars=agentic_max_total_tool_output_chars,
+                            temperature=agentic_temperature,
+                            reasoning_effort=agentic_reasoning_effort,
+                            evidence_mode=evidence_mode,
+                            allow_self_check_retry=False,
+                            allow_evidence_retry=True,
+                        )
+                        model_used = settings.analysis_model
+                    elif mode == "evolve":
+                        result, agentic_meta = evolve_agentic(
+                            project_id,
+                            root,
+                            target,
+                            depth=depth,
+                            user_prompt=request.prompt,
+                            instructions=profile_instructions,
+                            max_calls=agentic_max_calls,
+                            max_file_chars=agentic_max_file_chars,
+                            max_total_tool_output_chars=agentic_max_total_tool_output_chars,
+                            temperature=agentic_temperature,
+                            reasoning_effort=agentic_reasoning_effort,
+                            evidence_mode=evidence_mode,
+                            allow_self_check_retry=False,
+                            allow_evidence_retry=True,
+                        )
+                        model_used = settings.analysis_model
+                    elif mode == "fix":
+                        result, agentic_meta = fix_agentic(
+                            project_id,
+                            root,
+                            target,
+                            depth=depth,
+                            user_prompt=request.prompt,
+                            instructions=profile_instructions,
+                            max_calls=agentic_max_calls,
+                            max_file_chars=agentic_max_file_chars,
+                            max_total_tool_output_chars=agentic_max_total_tool_output_chars,
+                            temperature=agentic_temperature,
+                            reasoning_effort=agentic_reasoning_effort,
+                            evidence_mode=evidence_mode,
+                            allow_self_check_retry=False,
+                            allow_evidence_retry=True,
+                        )
+                        model_used = settings.patch_model
+                except Exception as error:  # noqa: BLE001
+                    _llm_http_error(mode or "agentic", error)
+
+            if not self_check_retry:
+                retrieval_settings["agentic"]["self_check_retry"] = False
+                retrieval_settings["agentic"]["self_check_retry_reason"] = None
+                retrieval_settings["agentic"]["self_check_retry_missing_context"] = []
+                retrieval_settings["agentic"]["self_check_retry_multiplier"] = None
+
             if agentic_meta is not None:
                 # Files read via get_contract/get_symbol are whitelisted for patching.
                 allowed_patch_paths = set(agentic_meta.full_file_paths) | {target}
                 try:
                     if isinstance(retrieval_settings, dict) and isinstance(retrieval_settings.get("agentic"), dict):
+                        retrieval_settings["agentic"]["max_calls"] = agentic_max_calls
+                        retrieval_settings["agentic"]["max_file_chars"] = agentic_max_file_chars
+                        retrieval_settings["agentic"]["max_total_tool_output_chars"] = agentic_max_total_tool_output_chars
+                        retrieval_settings["agentic"]["temperature"] = agentic_temperature
+                        retrieval_settings["agentic"]["reasoning_effort"] = agentic_reasoning_effort
                         retrieval_settings["agentic"]["tool_calls_used"] = int(agentic_meta.tool_calls)
                         retrieval_settings["agentic"]["tool_output_chars_used"] = int(agentic_meta.total_tool_output_chars)
                         retrieval_settings["agentic"]["cache_hits"] = int(getattr(agentic_meta, "cache_hits", 0))

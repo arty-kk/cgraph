@@ -2,10 +2,31 @@
 export type Project = { id: number; name: string; root_path: string }
 
 export type AgenticRetrievalSettings = {
+  complexity_coeff?: number
+  complexity_inputs?: {
+    depth?: number
+    prompt_len?: number
+    project_nodes?: number
+    mode?: string
+  }
+  budget_reason?: string[]
   max_calls?: number
   max_file_chars?: number
   max_total_tool_output_chars?: number
   temperature?: number
+  reasoning_effort?: string
+  agentic_evidence_mode?: boolean
+  self_check_ok?: boolean
+  self_check_notes?: string[]
+  self_check_missing_context?: string[]
+  self_check_retry?: boolean
+  self_check_retry_reason?: string | null
+  self_check_retry_missing_context?: string[]
+  self_check_retry_multiplier?: {
+    max_calls?: number
+    max_total_tool_output_chars?: number
+    max_file_chars?: number
+  }
 
   tool_calls_used?: number
   tool_output_chars_used?: number
@@ -27,10 +48,16 @@ export type PackRetrievalSettings = {
   max_total_chars?: number
 }
 
+export type GraphRetrievalSettings = {
+  max_nodes?: number | null
+  max_depth?: number | null
+  truncated?: boolean
+}
+
 export type RetrievalSettings = {
   agentic?: AgenticRetrievalSettings
   pack?: PackRetrievalSettings
-  graph?: Record<string, any>
+  graph?: GraphRetrievalSettings
 }
 
 export type GraphMeta = {
@@ -104,6 +131,7 @@ export type RunTaskBody = {
   agentic_max_file_chars?: number
   agentic_max_total_tool_output_chars?: number
   agentic_temperature?: number
+  agentic_reasoning_effort?: string
 }
 
 export type RunRecord = {
