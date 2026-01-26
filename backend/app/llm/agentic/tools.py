@@ -510,6 +510,14 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
     return tools
 
 
+def _check_indexed(project_id: int) -> dict | None:
+    with get_session() as s:
+        row = s.exec(select(FileNode.id).where(FileNode.project_id == project_id).limit(1)).first()
+    if not row:
+        return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
+    return None
+
+
 def _tool_get_file(project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
@@ -682,6 +690,9 @@ def _tool_get_neighbors(project_id: int, root: Path, args: dict) -> dict:
 
 
 def _tool_search_paths(project_id: int, args: dict) -> dict:
+    indexed_error = _check_indexed(project_id)
+    if indexed_error:
+        return indexed_error
     query = args.get("query")
     limit = _clamp_int(args.get("limit"), 20, 1, 100)
     if not isinstance(query, str) or not query.strip():
@@ -691,6 +702,9 @@ def _tool_search_paths(project_id: int, args: dict) -> dict:
 
 
 def _tool_search_tests(project_id: int, args: dict) -> dict:
+    indexed_error = _check_indexed(project_id)
+    if indexed_error:
+        return indexed_error
     query = args.get("query")
     query_norm = ""
     if isinstance(query, str) and query.strip():
@@ -756,6 +770,9 @@ def _tool_search_tests(project_id: int, args: dict) -> dict:
 
 
 def _tool_search_symbols(project_id: int, args: dict) -> dict:
+    indexed_error = _check_indexed(project_id)
+    if indexed_error:
+        return indexed_error
     query = args.get("query")
     if not isinstance(query, str) or not query.strip():
         return _tool_error("bad_args", "query is required")
@@ -902,6 +919,9 @@ def _tool_search_symbols(project_id: int, args: dict) -> dict:
 
 
 def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
+    indexed_error = _check_indexed(project_id)
+    if indexed_error:
+        return indexed_error
     prefix = args.get("prefix")
     prefix_norm = ""
     if isinstance(prefix, str) and prefix.strip():
@@ -966,6 +986,9 @@ def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
 
 
 def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
+    indexed_error = _check_indexed(project_id)
+    if indexed_error:
+        return indexed_error
     query = args.get("query")
     if not isinstance(query, str) or not query.strip():
         return _tool_error("bad_args", "query is required")
