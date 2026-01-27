@@ -56,6 +56,12 @@ export function App() {
     })
   }, [app.fileEditorsByPath, app.openFilePaths])
 
+  const confirmTitle = app.confirmReason === 'reload-file' ? 'Перезагрузить файл?' : 'Несохранённые изменения'
+  const confirmBody =
+    app.confirmReason === 'reload-file'
+      ? 'Перезагрузка файла приведёт к потере несохранённых изменений.'
+      : 'Есть несохранённые изменения.'
+
   const activeFileDirty = React.useMemo(() => {
     if (!app.activeFilePath) return false
     const entry = app.fileEditorsByPath?.[app.activeFilePath]
@@ -350,7 +356,7 @@ export function App() {
                   onSelectTab={(path) => void app.openFileEditor(path)}
                   onCloseTab={(path) => app.closeFileEditor(path)}
                   onChange={app.setFileEditorContent}
-                  onReload={app.reloadFileEditor}
+                  onReload={app.requestReloadFileEditor}
                   onSave={app.saveFileEditor}
                   onClose={() => app.setWorkspaceView('graph')}
                 />
@@ -455,11 +461,11 @@ export function App() {
 
       <Modal
         open={app.confirmOpen}
-        title="Несохранённые изменения"
+        title={confirmTitle}
         onClose={app.confirmCancel}
       >
         <div className="space-y-4">
-          <div className="text-sm text-neutral-200">Есть несохранённые изменения.</div>
+          <div className="text-sm text-neutral-200">{confirmBody}</div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               type="button"
