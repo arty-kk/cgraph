@@ -179,6 +179,7 @@ export function App() {
                       activeProject={app.activeProject}
                       busy={app.busy}
                       selectedPath={app.selectedPath}
+                      dirtyPath={app.fileEditorDirty ? app.fileEditorPath : null}
                       onSelectPath={app.onSelectNodePath}
                       projectFiles={app.projectFiles}
                       projectFilesMeta={app.projectFilesMeta}
@@ -190,6 +191,17 @@ export function App() {
               )}
 
               <div className="flex-1 min-w-0 h-full overflow-auto p-4">
+                {app.fileEditorOpen && app.fileEditorDirty && app.fileEditorPath && (
+                  <div className="mb-3 flex items-center justify-end">
+                    <span
+                      className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-200"
+                      aria-label="Unsaved changes"
+                      title={`Unsaved changes in ${app.fileEditorPath}`}
+                    >
+                      ● Unsaved
+                    </span>
+                  </div>
+                )}
                 <FileEditorPane
                   open={app.fileEditorOpen}
                   path={app.fileEditorPath}

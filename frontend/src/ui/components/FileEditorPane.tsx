@@ -181,7 +181,18 @@ export function FileEditorPane({
             Back to graph
           </button>
           {path && (
-            <span className="max-w-[52vw] truncate text-neutral-100">{path}</span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="max-w-[52vw] truncate text-neutral-100">{path}</span>
+              {dirty && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-200"
+                  aria-label="Unsaved changes"
+                  title="Unsaved changes"
+                >
+                  ● Unsaved
+                </span>
+              )}
+            </div>
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
