@@ -49,6 +49,9 @@ type Props = {
   onScan: () => void | Promise<void>
   onRefresh: () => void | Promise<void>
   onSelectPath: (path: string) => void | Promise<void>
+  onCreateFile: (path: string) => void | Promise<void>
+  onRenameFile: (path: string, newPath: string) => void | Promise<void>
+  onDeleteFile: (path: string) => void | Promise<void>
 
   projectFiles: ProjectFileItem[]
   projectFilesMeta: any
@@ -93,6 +96,9 @@ export function ProjectsSidebar({
   onScan,
   onRefresh,
   onSelectPath,
+  onCreateFile,
+  onRenameFile,
+  onDeleteFile,
   projectFiles,
   projectFilesMeta,
   projectFilesBusy,
@@ -267,6 +273,9 @@ export function ProjectsSidebar({
                 busy={busy}
                 selectedPath={selectedPath}
                 onSelectPath={onSelectPath}
+                onCreateFile={onCreateFile}
+                onRenameFile={onRenameFile}
+                onDeleteFile={onDeleteFile}
                 projectFiles={projectFiles}
                 projectFilesMeta={projectFilesMeta}
                 projectFilesBusy={projectFilesBusy}

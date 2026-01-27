@@ -8,6 +8,9 @@ type ExplorerTreeProps = {
   selectedPath: string | null
   dirtyPath?: string | null
   onSelectPath: (path: string) => void | Promise<void>
+  onCreateFile: (path: string) => void | Promise<void>
+  onRenameFile: (path: string, newPath: string) => void | Promise<void>
+  onDeleteFile: (path: string) => void | Promise<void>
   projectFiles: ProjectFileItem[]
   projectFilesMeta: any
   projectFilesBusy: boolean
@@ -20,6 +23,9 @@ export function ExplorerTree({
   selectedPath,
   dirtyPath = null,
   onSelectPath,
+  onCreateFile,
+  onRenameFile,
+  onDeleteFile,
   projectFiles,
   projectFilesMeta,
   projectFilesBusy,
@@ -43,6 +49,11 @@ export function ExplorerTree({
 
   const MAX_DIRS_PER_NODE = 120
   const MAX_FILES_PER_NODE = 160
+
+  const actionsDisabled = busy || projectFilesBusy || !activeProject
+  const selectedFilePath = String(selectedPath || '').trim()
+  const renameDisabled = actionsDisabled || !selectedFilePath
+  const deleteDisabled = actionsDisabled || !selectedFilePath
 
   type DirNode = {
     name: string
@@ -518,6 +529,53 @@ export function ExplorerTree({
         disabled={!activeProject || busy}
         title="Локальный фильтр по дереву файлов (по подстроке пути). Не делает запрос к backend."
       />
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+          disabled={actionsDisabled}
+          onClick={() => {
+            if (actionsDisabled) return
+            const nextPath = window.prompt('Новый файл (путь относительно корня проекта):', '')
+            if (!nextPath) return
+            void Promise.resolve(onCreateFile(nextPath.trim()))
+          }}
+          title="Создать новый файл"
+        >
+          Create
+        </button>
+        <button
+          type="button"
+          className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+          disabled={renameDisabled}
+          onClick={() => {
+            if (renameDisabled) return
+            const nextPath = window.prompt('Новое имя файла:', selectedFilePath)
+            if (!nextPath) return
+            void Promise.resolve(onRenameFile(selectedFilePath, nextPath.trim()))
+          }}
+          title="Переименовать выбранный файл"
+        >
+          Rename
+        </button>
+        <button
+          type="button"
+          className="rounded-md border border-rose-900/70 bg-rose-950/40 px-2 py-1 text-[11px] font-semibold text-rose-100 hover:bg-rose-900/40 disabled:opacity-50"
+          disabled={deleteDisabled}
+          onClick={() => {
+            if (deleteDisabled) return
+            const confirmed = window.confirm(
+              `Удалить файл "${selectedFilePath}"? Это действие нельзя отменить.`
+            )
+            if (!confirmed) return
+            void Promise.resolve(onDeleteFile(selectedFilePath))
+          }}
+          title="Удалить выбранный файл"
+        >
+          Delete
+        </button>
+      </div>
 
       {projectFilesBusy ? (
         <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-400">
