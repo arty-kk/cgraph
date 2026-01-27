@@ -4,16 +4,26 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel, Field
 
+from ..services.docs_service import build_project_docs, get_latest_project_doc
 from ..services.project_service import (
     create_project as create_project_service,
-    delete_project as delete_project_service,
-    get_project,
-    list_projects as list_projects_service,
-    load_graph, load_local_graph,
-    scan_with_background, search_project_nodes, search_project_semantic,
-    list_project_files,
 )
-from ..services.docs_service import build_project_docs, get_latest_project_doc
+from ..services.project_service import (
+    delete_project as delete_project_service,
+)
+from ..services.project_service import (
+    get_project,
+    list_project_files,
+    load_graph,
+    load_local_graph,
+    scan_with_background,
+    search_project_nodes,
+    search_project_semantic,
+    search_project_text,
+)
+from ..services.project_service import (
+    list_projects as list_projects_service,
+)
 from ..services.task_queue import task_queue
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -45,7 +55,11 @@ def list_projects():
 @router.post("/{project_id}/scan")
 def scan(project_id: int, background_tasks: BackgroundTasks, background: bool = False):
     get_project(project_id)
-    return scan_with_background(project_id, background=background, background_tasks=background_tasks)
+    return scan_with_background(
+        project_id,
+        background=background,
+        background_tasks=background_tasks,
+    )
 
 
 @router.get("/{project_id}/graph")
@@ -77,6 +91,26 @@ def search(project_id: int, q: str, limit: int = 20):
 @router.get("/{project_id}/search/semantic")
 def search_semantic(project_id: int, q: str, limit: int = 20, prefix: str | None = None):
     return search_project_semantic(project_id, q, limit=limit, prefix=prefix)
+
+@router.get("/{project_id}/search/text")
+def search_text(
+    project_id: int,
+    q: str,
+    limit_files: int = 200,
+    limit_matches: int = 50,
+    context_chars: int = 160,
+    prefix: str | None = None,
+    case_sensitive: bool = False,
+):
+    return search_project_text(
+        project_id,
+        q,
+        limit_files=limit_files,
+        limit_matches=limit_matches,
+        context_chars=context_chars,
+        prefix=prefix,
+        case_sensitive=case_sensitive,
+    )
 
 @router.get("/{project_id}/files")
 def files(project_id: int, prefix: str | None = None, limit: int = 50_000):

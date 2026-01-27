@@ -15,6 +15,8 @@ export type FileEditorPaneProps = {
   dirty: boolean
   truncated: boolean
   error: string | null
+  pendingJump?: { path: string; line: number; column: number } | null
+  onApplyPendingJump?: () => void
   onSelectTab: (path: string) => void
   onCloseTab: (path: string) => void
   onChange: (value: string) => void
@@ -35,6 +37,8 @@ export function FileEditorPane({
   dirty,
   truncated,
   error,
+  pendingJump,
+  onApplyPendingJump,
   onSelectTab,
   onCloseTab,
   onChange,
@@ -46,6 +50,9 @@ export function FileEditorPane({
   const [fontSize, setFontSize] = React.useState(13)
   const [showDiff, setShowDiff] = React.useState(false)
   const [cursorInfo, setCursorInfo] = React.useState({ line: 1, column: 1 })
+  const editorRef = React.useRef<editor.IStandaloneCodeEditor | null>(null)
+  const diffEditorRef = React.useRef<editor.IStandaloneDiffEditor | null>(null)
+  const [editorReadyTick, setEditorReadyTick] = React.useState(0)
   const lineCount = React.useMemo(() => content.split('\n').length || 1, [content])
   const language = React.useMemo(() => {
     if (!path) return 'plaintext'
@@ -115,6 +122,21 @@ export function FileEditorPane({
     setCursorInfo({ line: 1, column: 1 })
   }, [path, open])
 
+  React.useEffect(() => {
+    if (!pendingJump || !path || busy) return
+    if (pendingJump.path !== path) return
+    const target = showDiff ? diffEditorRef.current?.getModifiedEditor() : editorRef.current
+    if (!target) return
+    const position = {
+      lineNumber: Math.max(1, pendingJump.line),
+      column: Math.max(1, pendingJump.column),
+    }
+    target.setPosition(position)
+    target.revealPositionInCenter(position)
+    target.focus()
+    onApplyPendingJump?.()
+  }, [busy, editorReadyTick, onApplyPendingJump, path, pendingJump, showDiff])
+
   const updateCursorInfo = React.useCallback((position?: IPosition | null) => {
     if (!position) return
     setCursorInfo({ line: position.lineNumber, column: position.column })
@@ -143,6 +165,8 @@ export function FileEditorPane({
   }), [busy, saving, fontSize, wrap])
 
   const handleEditorMount = React.useCallback((instance: editor.IStandaloneCodeEditor, monaco: typeof import('monaco-editor')) => {
+    editorRef.current = instance
+    setEditorReadyTick((tick) => tick + 1)
     updateCursorInfo(instance.getPosition())
     instance.onDidChangeCursorPosition((e) => updateCursorInfo(e.position))
     instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
@@ -151,6 +175,8 @@ export function FileEditorPane({
   }, [handleSave, updateCursorInfo])
 
   const handleDiffMount = React.useCallback((instance: editor.IStandaloneDiffEditor, monaco: typeof import('monaco-editor')) => {
+    diffEditorRef.current = instance
+    setEditorReadyTick((tick) => tick + 1)
     const modified = instance.getModifiedEditor()
     updateCursorInfo(modified.getPosition())
     modified.onDidChangeCursorPosition((e) => updateCursorInfo(e.position))

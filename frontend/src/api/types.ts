@@ -172,6 +172,31 @@ export type SemanticSearchResult = {
   }
 }
 
+export type TextSearchMatch = {
+  path: string
+  line: number
+  col: number
+  snippet: string
+  truncated_file: boolean
+}
+
+export type TextSearchResult = {
+  matches: TextSearchMatch[]
+  meta: {
+    query: string
+    prefix: string
+    case_sensitive: boolean
+    limit_files: number
+    limit_matches: number
+    context_chars: number
+    scan_max_chars_per_file?: number
+    scanned_files: number
+    matched_files: number
+    truncated_files: number
+    message?: string
+  }
+}
+
 export type PlanTz = {
   summary: string
   requirements: string[]
