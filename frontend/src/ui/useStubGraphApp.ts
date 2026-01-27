@@ -1177,15 +1177,17 @@ export function useStubGraphApp() {
     await loadFileEditor(activeFilePath)
   }, [activeFilePath, loadFileEditor])
 
-  const saveFileEditor = useCallback(async (): Promise<boolean> => {
-    if (!activeProject || !activeFilePath) return false
-    const entry = fileEditorsByPath[activeFilePath]
+  const saveFileEditorPath = useCallback(async (path: string): Promise<boolean> => {
+    if (!activeProject) return false
+    const p = String(path || '').trim()
+    if (!p) return false
+    const entry = fileEditorsByPath[p]
     if (!entry) return false
-    updateFileEditorEntry(activeFilePath, (current) => ({ ...current, saving: true, error: null }))
+    updateFileEditorEntry(p, (current) => ({ ...current, saving: true, error: null }))
     try {
-      const res: FileSaveResult = await updateFileContent(activeProject.id, activeFilePath, entry.content)
+      const res: FileSaveResult = await updateFileContent(activeProject.id, p, entry.content)
       if (res?.saved) {
-        updateFileEditorEntry(activeFilePath, (current) => ({
+        updateFileEditorEntry(p, (current) => ({
           ...current,
           original: current.content,
           truncated: false,
@@ -1199,17 +1201,23 @@ export function useStubGraphApp() {
         return true
       }
     } catch (e: any) {
-      updateFileEditorEntry(activeFilePath, (current) => ({ ...current, error: extractError(e) }))
+      updateFileEditorEntry(p, (current) => ({ ...current, error: extractError(e) }))
     } finally {
-      updateFileEditorEntry(activeFilePath, (current) => ({ ...current, saving: false }))
+      updateFileEditorEntry(p, (current) => ({ ...current, saving: false }))
     }
     return false
-  }, [activeFilePath, activeProject, fileEditorsByPath, notifyInfo, queryClient, updateFileEditorEntry])
+  }, [activeProject, fileEditorsByPath, notifyInfo, queryClient, updateFileEditorEntry])
+
+  const saveFileEditor = useCallback(async (): Promise<boolean> => {
+    if (!activeFilePath) return false
+    return saveFileEditorPath(activeFilePath)
+  }, [activeFilePath, saveFileEditorPath])
 
   const confirmSave = useCallback(async () => {
-    const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
-    if (activeEntry?.saving || activeEntry?.busy) return
-    const saved = await saveFileEditor()
+    const targetPath = pendingClosePath ?? activeFilePath
+    const targetEntry = targetPath ? fileEditorsByPath[targetPath] : null
+    if (targetEntry?.saving || targetEntry?.busy) return
+    const saved = targetPath ? await saveFileEditorPath(targetPath) : false
     if (!saved) return
     if (pendingClosePath) {
       setOpenFilePaths((prev) => {
@@ -1240,16 +1248,17 @@ export function useStubGraphApp() {
     pendingActivePath,
     pendingClosePath,
     pendingView,
-    saveFileEditor,
+    saveFileEditorPath,
     activeFilePath,
     fileEditorsByPath,
   ])
 
   const confirmDiscard = useCallback(async () => {
-    const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
-    if (activeEntry?.saving || activeEntry?.busy) return
-    if (activeFilePath) {
-      updateFileEditorEntry(activeFilePath, (entry) => {
+    const targetPath = pendingClosePath ?? activeFilePath
+    const targetEntry = targetPath ? fileEditorsByPath[targetPath] : null
+    if (targetEntry?.saving || targetEntry?.busy) return
+    if (targetPath) {
+      updateFileEditorEntry(targetPath, (entry) => {
         if (entry.content === entry.original) return entry
         return { ...entry, content: entry.original, error: null }
       })
@@ -1802,9 +1811,9 @@ export function useStubGraphApp() {
     (path: string) => {
       const p = String(path || '').trim()
       if (!p) return
-      const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
-      const activeDirty = activeEntry ? activeEntry.content !== activeEntry.original : false
-      if (activeDirty && activeFilePath === p) {
+      const entry = fileEditorsByPath[p]
+      const isDirty = entry ? entry.content !== entry.original : false
+      if (isDirty) {
         setConfirmOpen(true)
         setConfirmReason('close-tab')
         setPendingClosePath(p)
