@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 ANALYZE_SCHEMA = {
-  "name": "cgraph_analyze",
+  "name": "stubgraph_analyze",
   "schema": {
     "type": "object",
     "additionalProperties": False,
@@ -34,7 +34,7 @@ ANALYZE_SCHEMA = {
 }
 
 PLAN_TZ_SCHEMA = {
-  "name": "cgraph_plan_tz",
+  "name": "stubgraph_plan_tz",
   "schema": {
     "type": "object",
     "additionalProperties": False,
@@ -63,7 +63,7 @@ PLAN_TZ_SCHEMA = {
 }
 
 SELF_CHECK_SCHEMA = {
-  "name": "cgraph_self_check",
+  "name": "stubgraph_self_check",
   "schema": {
     "type": "object",
     "additionalProperties": False,
@@ -78,7 +78,7 @@ SELF_CHECK_SCHEMA = {
 }
 
 TRIAGE_SCHEMA = {
-  "name": "cgraph_triage",
+  "name": "stubgraph_triage",
   "schema": {
     "type": "object",
     "additionalProperties": False,
@@ -95,7 +95,7 @@ TRIAGE_SCHEMA = {
 }
 
 FIX_SCHEMA = {
-  "name": "cgraph_fix",
+  "name": "stubgraph_fix",
   "schema": {
     "type": "object",
     "additionalProperties": False,
@@ -127,7 +127,7 @@ FIX_SCHEMA = {
 }
 
 DOCS_SCHEMA = {
-  "name": "cgraph_docs",
+  "name": "stubgraph_docs",
   "schema": {
     "type": "object",
     "additionalProperties": False,

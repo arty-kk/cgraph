@@ -11,7 +11,7 @@ from .config import settings
 
 DB_DIR = Path(settings.db_dir).expanduser()
 DB_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DB_DIR / "cgraph.sqlite3"
+DB_PATH = DB_DIR / "stubgraph.sqlite3"
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",

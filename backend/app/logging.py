@@ -34,7 +34,7 @@ def setup_logging() -> None:
     )
 
 
-def get_logger(name: str = "cgraph") -> logging.Logger:
+def get_logger(name: str = "stubgraph") -> logging.Logger:
     return logging.getLogger(name)
 
 
@@ -42,7 +42,7 @@ async def log_requests(request: Request, call_next: Callable[[Request], Awaitabl
     started = time.perf_counter()
     response = await call_next(request)
     duration_ms = (time.perf_counter() - started) * 1000
-    logger = get_logger("cgraph.api")
+    logger = get_logger("stubgraph.api")
     logger.info(
         "HTTP %s %s",
         request.method,

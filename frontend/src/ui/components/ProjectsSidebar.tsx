@@ -208,7 +208,7 @@ export function ProjectsSidebar({
       {/* Scrollable content */}
       <div className="h-full min-h-0 overflow-auto">
         <div className="p-4 flex flex-col gap-3">
-          <div className="text-lg font-semibold">CGRAPH</div>
+          <div className="text-lg font-semibold">StubGraph</div>
 
           <div className="mt-2">
             <SectionHeader title="Project" topic="projects" />

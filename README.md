@@ -1,6 +1,6 @@
-# CGRAPH (local)
+# StubGraph (local)
 
-CGRAPH — локальный сервис и веб‑интерфейс для исследования репозиториев. Приложение индексирует код, строит граф связей по файлам, позволяет искать узлы и запускать LLM‑задачи над выбранным файлом (с учетом контракта). Для LLM‑задач доступен agentic‑режим получения контекста (tool‑based retrieval), когда модель сама выбирает необходимые файлы через инструментарий. Интерфейс рассчитан на разработчиков, которым нужно быстро разобраться в структуре проекта, оценить связи и получить анализ/фиксы по конкретным файлам с учетом связей по контракту.
+StubGraph — локальный сервис и веб‑интерфейс для исследования репозиториев. Приложение индексирует код, строит граф связей по файлам, позволяет искать узлы и запускать LLM‑задачи над выбранным файлом (с учетом контракта). Для LLM‑задач доступен agentic‑режим получения контекста (tool‑based retrieval), когда модель сама выбирает необходимые файлы через инструментарий. Интерфейс рассчитан на разработчиков, которым нужно быстро разобраться в структуре проекта, оценить связи и получить анализ/фиксы по конкретным файлам с учетом связей по контракту.
 
 ## Возможности
 
@@ -105,19 +105,19 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 ### Backend (`backend/app/config.py`)
 
 - `OPENAI_API_KEY` — ключ для LLM‑функций.
-- `CGRAPH_DB_DIR` — каталог для SQLite и файлов патчей (по умолчанию `~/.CGRAPH`).
-- `CGRAPH_DEFAULT_DEPTH` — глубина обхода зависимостей (0..6).
-- `CGRAPH_IMPACT_MAX_NODES` — лимит числа узлов в impact (если не задан, лимита нет).
-- `CGRAPH_IMPACT_MAX_DEPTH` — лимит глубины impact (если не задан, лимита нет).
-- `CGRAPH_CORS_ALLOW_ORIGINS` — разрешённые origin‑ы для фронтенда.
-- `CGRAPH_MODEL_TRIAGE`, `CGRAPH_MODEL_ANALYSIS`, `CGRAPH_MODEL_PATCH` — модели для LLM‑режимов.
-- `CGRAPH_OPENAI_TIMEOUT_SECONDS`, `CGRAPH_OPENAI_MAX_RETRIES` — таймаут и ретраи запросов к OpenAI.
-- `CGRAPH_LLM_AGENTIC_RETRIEVAL` — включить agentic‑режим получения контекста (tool‑based retrieval) вместо `pack_context`.
-- `CGRAPH_LLM_AGENTIC_MAX_CALLS` — лимит числа вызовов инструментов в agentic‑режиме.
-- `CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS` — лимит общего объёма вывода инструментов в agentic‑режиме.
-- `CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS` — лимит символов при чтении файла в agentic‑режиме.
-- `CGRAPH_LLM_AGENTIC_TEMPERATURE` — температура для agentic‑режима (0..2).
-- `CGRAPH_LLM_AGENTIC_TRACE_ENABLED` — включает выдачу `tool_trace` в `retrieval_settings` agentic‑ответов (по умолчанию включено).
+- `STUBGRAPH_DB_DIR` — каталог для SQLite и файлов патчей (по умолчанию `~/.StubGraph`).
+- `STUBGRAPH_DEFAULT_DEPTH` — глубина обхода зависимостей (0..6).
+- `STUBGRAPH_IMPACT_MAX_NODES` — лимит числа узлов в impact (если не задан, лимита нет).
+- `STUBGRAPH_IMPACT_MAX_DEPTH` — лимит глубины impact (если не задан, лимита нет).
+- `STUBGRAPH_CORS_ALLOW_ORIGINS` — разрешённые origin‑ы для фронтенда.
+- `STUBGRAPH_MODEL_TRIAGE`, `STUBGRAPH_MODEL_ANALYSIS`, `STUBGRAPH_MODEL_PATCH` — модели для LLM‑режимов.
+- `STUBGRAPH_OPENAI_TIMEOUT_SECONDS`, `STUBGRAPH_OPENAI_MAX_RETRIES` — таймаут и ретраи запросов к OpenAI.
+- `STUBGRAPH_LLM_AGENTIC_RETRIEVAL` — включить agentic‑режим получения контекста (tool‑based retrieval) вместо `pack_context`.
+- `STUBGRAPH_LLM_AGENTIC_MAX_CALLS` — лимит числа вызовов инструментов в agentic‑режиме.
+- `STUBGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS` — лимит общего объёма вывода инструментов в agentic‑режиме.
+- `STUBGRAPH_LLM_AGENTIC_MAX_FILE_CHARS` — лимит символов при чтении файла в agentic‑режиме.
+- `STUBGRAPH_LLM_AGENTIC_TEMPERATURE` — температура для agentic‑режима (0..2).
+- `STUBGRAPH_LLM_AGENTIC_TRACE_ENABLED` — включает выдачу `tool_trace` в `retrieval_settings` agentic‑ответов (по умолчанию включено).
 - В agentic‑режиме фактические лимиты могут динамически увеличиваться (в пределах серверных caps), учитывая глубину (`depth`), `mode`, длину промпта и размер проекта (количество `FileNode`). Итоговые значения возвращаются в `retrieval_settings` ответа.
 - В `retrieval_settings.agentic.budget_reason` возвращается список активных факторов бюджета: `depth`, `prompt_size`, `project_size`, `mode` (и `self_check_retry`, если был повтор).
 - `retrieval_settings.agentic.temperature` и `reasoning_effort` вычисляются из базовых значений с учётом `complexity_coeff` (ступенчатое повышение, capped серверными лимитами): `temperature` +0.05/+0.1/+0.15 при `complexity_coeff` ≥1.25/1.5/1.75, `reasoning_effort` повышается на 1 ступень при ≥1.3 и на 2 ступени при ≥1.6.
@@ -131,12 +131,12 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 | Профиль | Назначение | Instructions (суть) | Temperature | Max calls | Max total tool output chars | Max file chars | Depth (min..max, default) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `architect` | Основной режим | Используются текущие `SYSTEM_INSTRUCTIONS` сервера | По умолчанию из `CGRAPH_LLM_AGENTIC_TEMPERATURE` | По умолчанию из `CGRAPH_LLM_AGENTIC_MAX_CALLS` | По умолчанию из `CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS` | По умолчанию из `CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS` | 0..6, default из `CGRAPH_DEFAULT_DEPTH` |
+| `architect` | Основной режим | Используются текущие `SYSTEM_INSTRUCTIONS` сервера | По умолчанию из `STUBGRAPH_LLM_AGENTIC_TEMPERATURE` | По умолчанию из `STUBGRAPH_LLM_AGENTIC_MAX_CALLS` | По умолчанию из `STUBGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS` | По умолчанию из `STUBGRAPH_LLM_AGENTIC_MAX_FILE_CHARS` | 0..6, default из `STUBGRAPH_DEFAULT_DEPTH` |
 | `surgical` | Минимальные точечные изменения | Хирургический режим: минимальный радиус правок | `0.0` | `12` | `60000` | `8000` | 0..2, default `1` |
 | `incident` | Быстрый отклик на инциденты | Быстрое восстановление с безопасными правками | `0.2` | `40` | `140000` | `16000` | 0..4, default `2` |
-- `CGRAPH_GO_BUILD_TAGS` — список build‑tag значений Go (через запятую или пробел) для фильтрации импорта/символов.
-- `GOFLAGS` — стандартные Go‑флаги; поддержка `-tags` и `-tags=` влияет на набор build‑tag при индексации Go‑файлов (можно дополнить через `CGRAPH_GO_BUILD_TAGS`).
-- `CGRAPH_GO_INCLUDE_UNEXPORTED_SYMBOLS` — включать неэкспортируемые Go‑символы в индексации.
+- `STUBGRAPH_GO_BUILD_TAGS` — список build‑tag значений Go (через запятую или пробел) для фильтрации импорта/символов.
+- `GOFLAGS` — стандартные Go‑флаги; поддержка `-tags` и `-tags=` влияет на набор build‑tag при индексации Go‑файлов (можно дополнить через `STUBGRAPH_GO_BUILD_TAGS`).
+- `STUBGRAPH_GO_INCLUDE_UNEXPORTED_SYMBOLS` — включать неэкспортируемые Go‑символы в индексации.
 
 При наличии одновременно `//go:build` и `// +build` используется приоритет `go:build`. Если выражение `go:build` не парсится, применяется fallback на `+build`. Если оба выражения валидны, но дают разный результат, индексатор безопасно считает контекст активным, чтобы избежать ложного исключения файла из индексации.
 
@@ -158,7 +158,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 В agentic‑режиме `retrieval_settings.agentic.retrieval_plan` содержит план извлечения контекста, зафиксированный через инструмент `plan_retrieval`.
 
-Если `CGRAPH_LLM_AGENTIC_TRACE_ENABLED=true`, в `retrieval_settings.agentic.tool_trace` возвращается список объектов со следующими полями: `name`, `args`, `reason`, `duration_ms`, `cache_hit`, `response_chars`, `response_bytes`, `status`, `error_code`, `error_message`, а также `truncated_due_to_budget` при усечении.
+Если `STUBGRAPH_LLM_AGENTIC_TRACE_ENABLED=true`, в `retrieval_settings.agentic.tool_trace` возвращается список объектов со следующими полями: `name`, `args`, `reason`, `duration_ms`, `cache_hit`, `response_chars`, `response_bytes`, `status`, `error_code`, `error_message`, а также `truncated_due_to_budget` при усечении.
 
 В agentic‑режиме доступен инструмент `search_tests`, который ищет тестовые файлы по стандартным паттернам (`tests/`, `__tests__/`, `*.spec.*`, `*.test.*`, `test_*.py`, `*_test.*`) и возвращает пути с метаданными узлов (язык, fan‑in/fan‑out) согласно реализации в backend.
 
@@ -168,8 +168,8 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 
 ## Локальные данные
 
-- SQLite хранится в `~/.CGRAPH/cgraph.sqlite3` (можно переопределить `CGRAPH_DB_DIR`).
-- Большие патчи сохраняются в `~/.CGRAPH/patches` и возвращаются по отдельному запросу, если превышен лимит 50k символов.
+- SQLite хранится в `~/.StubGraph/stubgraph.sqlite3` (можно переопределить `STUBGRAPH_DB_DIR`).
+- Большие патчи сохраняются в `~/.StubGraph/patches` и возвращаются по отдельному запросу, если превышен лимит 50k символов.
 
 ## Ручная проверка
 

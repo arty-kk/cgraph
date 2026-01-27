@@ -14,7 +14,7 @@ from .logging import log_requests, setup_logging
 
 init_db()
 
-app = FastAPI(title="CGRAPH", version="0.1.0")
+app = FastAPI(title="StubGraph", version="0.1.0")
 
 setup_logging()
 install_exception_handlers(app)
