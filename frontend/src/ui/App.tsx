@@ -381,9 +381,9 @@ export function App() {
                 </div>
               )}
 
-              <div className="flex-1 min-w-0 h-full overflow-auto p-4">
+              <div className="flex-1 min-w-0 h-full min-h-0 flex flex-col p-4">
                 {app.fileEditorOpen && app.fileEditorDirty && app.activeFilePath && (
-                  <div className="mb-3 flex items-center justify-end">
+                  <div className="mb-3 flex items-center justify-end shrink-0">
                     <span
                       className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-200"
                       aria-label="Unsaved changes"
@@ -393,33 +393,35 @@ export function App() {
                     </span>
                   </div>
                 )}
-                <FileEditorPane
-                  open={app.fileEditorOpen}
-                  path={app.activeFilePath}
-                  tabs={editorTabs}
-                  activePath={app.activeFilePath}
-                  original={app.fileEditorOriginal}
-                  content={app.fileEditorContent}
-                  busy={app.fileEditorBusy}
-                  saving={app.fileEditorSaving}
-                  dirty={app.fileEditorDirty}
-                  truncated={app.fileEditorTruncated}
-                  error={app.fileEditorError}
-                  wrap={editorWrap}
-                  showDiff={editorShowDiff}
-                  fontSize={editorFontSize}
-                  pendingJump={app.pendingJump}
-                  onApplyPendingJump={app.clearPendingJump}
-                  onSelectTab={(path) => void app.openFileEditor(path)}
-                  onCloseTab={(path) => app.closeFileEditor(path)}
-                  onChange={app.setFileEditorContent}
-                  onReload={app.requestReloadFileEditor}
-                  onSave={app.saveFileEditor}
-                  onClose={() => app.setWorkspaceView('graph')}
-                  onToggleWrap={() => setEditorWrap((prev) => !prev)}
-                  onToggleDiff={() => setEditorShowDiff((prev) => !prev)}
-                  onSetFontSize={handleSetFontSize}
-                />
+                <div className="flex-1 min-h-0">
+                  <FileEditorPane
+                    open={app.fileEditorOpen}
+                    path={app.activeFilePath}
+                    tabs={editorTabs}
+                    activePath={app.activeFilePath}
+                    original={app.fileEditorOriginal}
+                    content={app.fileEditorContent}
+                    busy={app.fileEditorBusy}
+                    saving={app.fileEditorSaving}
+                    dirty={app.fileEditorDirty}
+                    truncated={app.fileEditorTruncated}
+                    error={app.fileEditorError}
+                    wrap={editorWrap}
+                    showDiff={editorShowDiff}
+                    fontSize={editorFontSize}
+                    pendingJump={app.pendingJump}
+                    onApplyPendingJump={app.clearPendingJump}
+                    onSelectTab={(path) => void app.openFileEditor(path)}
+                    onCloseTab={(path) => app.closeFileEditor(path)}
+                    onChange={app.setFileEditorContent}
+                    onReload={app.requestReloadFileEditor}
+                    onSave={app.saveFileEditor}
+                    onClose={() => app.setWorkspaceView('graph')}
+                    onToggleWrap={() => setEditorWrap((prev) => !prev)}
+                    onToggleDiff={() => setEditorShowDiff((prev) => !prev)}
+                    onSetFontSize={handleSetFontSize}
+                  />
+                </div>
               </div>
 
               {app.workspaceView === 'editor' && !editorExplorerOpen && (
