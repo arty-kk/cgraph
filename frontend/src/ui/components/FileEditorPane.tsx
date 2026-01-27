@@ -199,7 +199,7 @@ export function FileEditorPane({
   }, [handleSave, onChange, updateCursorInfo])
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 h-full min-h-0">
       {tabs.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px]">
           {tabs.map((tab) => {
@@ -317,11 +317,11 @@ export function FileEditorPane({
           </div>
         </div>
       </div>
-      <div className="rounded-lg border border-neutral-800 bg-gradient-to-b from-neutral-950 via-neutral-950 to-neutral-900/70 shadow-inner">
-        <div className="min-h-[60vh]">
+      <div className="rounded-lg border border-neutral-800 bg-gradient-to-b from-neutral-950 via-neutral-950 to-neutral-900/70 shadow-inner flex flex-col flex-1 min-h-0">
+        <div className="flex-1 min-h-0">
           {showDiff ? (
             <DiffEditor
-              height="60vh"
+              height="100%"
               language={language}
               original={original}
               modified={content}
@@ -334,7 +334,7 @@ export function FileEditorPane({
             />
           ) : (
             <Editor
-              height="60vh"
+              height="100%"
               language={language}
               value={content}
               onChange={(value) => onChange(value ?? '')}
@@ -345,7 +345,7 @@ export function FileEditorPane({
           )}
         </div>
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px] text-neutral-400">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px] text-neutral-400 shrink-0">
         <div className="flex flex-wrap items-center gap-3">
           <span className={dirty ? 'text-amber-300' : 'text-neutral-400'}>
             {dirty ? 'Есть несохранённые изменения' : 'Изменений нет'}
@@ -357,7 +357,7 @@ export function FileEditorPane({
           <span>{content.length} chars</span>
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 shrink-0">
         <button
           type="button"
           className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-3 py-2 text-xs font-semibold disabled:opacity-50"
