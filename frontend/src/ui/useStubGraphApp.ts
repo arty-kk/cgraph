@@ -364,6 +364,22 @@ export function useStubGraphApp() {
   const [pendingView, setPendingView] = useState<WorkspaceView | null>(null)
   const FILE_EDITOR_MAX_CHARS = 200_000
 
+  const hasDirtyEditors = useMemo(() => {
+    return Object.values(fileEditorsByPath).some((entry) => entry.content !== entry.original)
+  }, [fileEditorsByPath])
+
+  useEffect(() => {
+    if (!hasDirtyEditors) return
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [hasDirtyEditors])
+
   const buildWorkspaceState = useCallback((): WorkspaceStateV3 => {
     const fileEditorState: Record<string, { dirty?: boolean }> = {}
     for (const path of openFilePaths || []) {
