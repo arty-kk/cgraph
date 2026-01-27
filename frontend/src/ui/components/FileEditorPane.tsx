@@ -209,7 +209,7 @@ export function FileEditorPane({
             className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
             onClick={() => setShowDiff((prev) => !prev)}
           >
-            {showDiff ? 'Diff on' : 'Diff off'}
+            {showDiff ? 'Hide diff' : 'Show diff'}
           </button>
           <button
             type="button"
