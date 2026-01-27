@@ -16,12 +16,20 @@ export function FileEditorModal({
   dirty,
   truncated,
   error,
+  wrap,
+  showDiff,
+  fontSize,
+  pendingJump,
+  onApplyPendingJump,
   onSelectTab,
   onCloseTab,
   onChange,
   onReload,
   onSave,
   onClose,
+  onToggleWrap,
+  onToggleDiff,
+  onSetFontSize,
 }: Props) {
   const title = path ? `File: ${path}` : 'File viewer'
 
@@ -44,12 +52,20 @@ export function FileEditorModal({
         dirty={dirty}
         truncated={truncated}
         error={error}
+        wrap={wrap}
+        showDiff={showDiff}
+        fontSize={fontSize}
+        pendingJump={pendingJump}
+        onApplyPendingJump={onApplyPendingJump}
         onSelectTab={onSelectTab}
         onCloseTab={onCloseTab}
         onChange={onChange}
         onReload={onReload}
         onSave={onSave}
         onClose={onClose}
+        onToggleWrap={onToggleWrap}
+        onToggleDiff={onToggleDiff}
+        onSetFontSize={onSetFontSize}
       />
     </Modal>
   )
