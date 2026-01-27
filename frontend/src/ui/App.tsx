@@ -47,6 +47,20 @@ export function App() {
     return s
   }, [app.projectFiles])
 
+  const editorTabs = React.useMemo(() => {
+    return (app.openFilePaths || []).map((path) => {
+      const entry = app.fileEditorsByPath?.[path]
+      const dirty = entry ? entry.content !== entry.original : false
+      return { path, dirty }
+    })
+  }, [app.fileEditorsByPath, app.openFilePaths])
+
+  const activeFileDirty = React.useMemo(() => {
+    if (!app.activeFilePath) return false
+    const entry = app.fileEditorsByPath?.[app.activeFilePath]
+    return entry ? entry.content !== entry.original : false
+  }, [app.activeFilePath, app.fileEditorsByPath])
+
   const openDocs = React.useCallback(() => {
     if (!app.activeProject) return
     setDocsOpen(true)
@@ -179,7 +193,7 @@ export function App() {
                       activeProject={app.activeProject}
                       busy={app.busy}
                       selectedPath={app.selectedPath}
-                      dirtyPath={app.fileEditorDirty ? app.fileEditorPath : null}
+                      dirtyPath={activeFileDirty ? app.activeFilePath : null}
                       onSelectPath={app.onSelectNodePath}
                       projectFiles={app.projectFiles}
                       projectFilesMeta={app.projectFilesMeta}
@@ -191,12 +205,12 @@ export function App() {
               )}
 
               <div className="flex-1 min-w-0 h-full overflow-auto p-4">
-                {app.fileEditorOpen && app.fileEditorDirty && app.fileEditorPath && (
+                {app.fileEditorOpen && app.fileEditorDirty && app.activeFilePath && (
                   <div className="mb-3 flex items-center justify-end">
                     <span
                       className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-200"
                       aria-label="Unsaved changes"
-                      title={`Unsaved changes in ${app.fileEditorPath}`}
+                      title={`Unsaved changes in ${app.activeFilePath}`}
                     >
                       ● Unsaved
                     </span>
@@ -204,7 +218,9 @@ export function App() {
                 )}
                 <FileEditorPane
                   open={app.fileEditorOpen}
-                  path={app.fileEditorPath}
+                  path={app.activeFilePath}
+                  tabs={editorTabs}
+                  activePath={app.activeFilePath}
                   original={app.fileEditorOriginal}
                   content={app.fileEditorContent}
                   busy={app.fileEditorBusy}
@@ -212,6 +228,8 @@ export function App() {
                   dirty={app.fileEditorDirty}
                   truncated={app.fileEditorTruncated}
                   error={app.fileEditorError}
+                  onSelectTab={(path) => void app.openFileEditor(path)}
+                  onCloseTab={(path) => app.closeFileEditor(path)}
                   onChange={app.setFileEditorContent}
                   onReload={app.reloadFileEditor}
                   onSave={app.saveFileEditor}

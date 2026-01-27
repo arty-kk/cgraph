@@ -7,6 +7,8 @@ type Props = FileEditorPaneProps
 export function FileEditorModal({
   open,
   path,
+  tabs,
+  activePath,
   original,
   content,
   busy,
@@ -14,6 +16,8 @@ export function FileEditorModal({
   dirty,
   truncated,
   error,
+  onSelectTab,
+  onCloseTab,
   onChange,
   onReload,
   onSave,
@@ -31,6 +35,8 @@ export function FileEditorModal({
       <FileEditorPane
         open={open}
         path={path}
+        tabs={tabs}
+        activePath={activePath}
         original={original}
         content={content}
         busy={busy}
@@ -38,6 +44,8 @@ export function FileEditorModal({
         dirty={dirty}
         truncated={truncated}
         error={error}
+        onSelectTab={onSelectTab}
+        onCloseTab={onCloseTab}
         onChange={onChange}
         onReload={onReload}
         onSave={onSave}
