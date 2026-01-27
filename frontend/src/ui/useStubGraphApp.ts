@@ -357,6 +357,7 @@ export function useStubGraphApp() {
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null)
   const [pendingActivePath, setPendingActivePath] = useState<string | null>(null)
+  const [pendingReloadPath, setPendingReloadPath] = useState<string | null>(null)
   const [pendingJump, setPendingJump] = useState<PendingFileJump | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [confirmReason, setConfirmReason] = useState<string | null>(null)
@@ -955,6 +956,7 @@ export function useStubGraphApp() {
     setActiveFilePath(null)
     setPendingClosePath(null)
     setPendingActivePath(null)
+    setPendingReloadPath(null)
     setConfirmOpen(false)
     setConfirmReason(null)
     setPendingView(null)
@@ -988,6 +990,7 @@ export function useStubGraphApp() {
     setActiveFilePath(null)
     setPendingClosePath(null)
     setPendingActivePath(null)
+    setPendingReloadPath(null)
     setConfirmOpen(false)
     setConfirmReason(null)
     setPendingView(null)
@@ -1024,6 +1027,7 @@ export function useStubGraphApp() {
     setActiveFilePath(null)
     setPendingClosePath(null)
     setPendingActivePath(null)
+    setPendingReloadPath(null)
     setConfirmOpen(false)
     setConfirmReason(null)
     setPendingView(null)
@@ -1120,6 +1124,7 @@ export function useStubGraphApp() {
     setConfirmReason(null)
     setPendingClosePath(null)
     setPendingActivePath(null)
+    setPendingReloadPath(null)
     setPendingView(null)
   }, [])
 
@@ -1172,10 +1177,21 @@ export function useStubGraphApp() {
     setPendingJump(null)
   }, [])
 
-  const reloadFileEditor = useCallback(async () => {
+  const requestReloadFileEditor = useCallback(async () => {
     if (!activeFilePath) return
+    const activeEntry = fileEditorsByPath[activeFilePath]
+    const activeDirty = activeEntry ? activeEntry.content !== activeEntry.original : false
+    if (activeDirty) {
+      setConfirmOpen(true)
+      setConfirmReason('reload-file')
+      setPendingReloadPath(activeFilePath)
+      setPendingClosePath(null)
+      setPendingActivePath(null)
+      setPendingView(null)
+      return
+    }
     await loadFileEditor(activeFilePath)
-  }, [activeFilePath, loadFileEditor])
+  }, [activeFilePath, fileEditorsByPath, loadFileEditor])
 
   const saveFileEditorPath = useCallback(async (path: string): Promise<boolean> => {
     if (!activeProject) return false
@@ -1254,6 +1270,17 @@ export function useStubGraphApp() {
   ])
 
   const confirmDiscard = useCallback(async () => {
+    if (confirmReason === 'reload-file') {
+      const targetPath = pendingReloadPath ?? activeFilePath
+      const targetEntry = targetPath ? fileEditorsByPath[targetPath] : null
+      if (targetEntry?.saving || targetEntry?.busy) return
+      if (targetPath) {
+        await loadFileEditor(targetPath)
+      }
+      setPendingReloadPath(null)
+      clearConfirm()
+      return
+    }
     const targetPath = pendingClosePath ?? activeFilePath
     const targetEntry = targetPath ? fileEditorsByPath[targetPath] : null
     if (targetEntry?.saving || targetEntry?.busy) return
@@ -1288,12 +1315,15 @@ export function useStubGraphApp() {
     clearConfirm()
   }, [
     clearConfirm,
+    confirmReason,
+    fileEditorsByPath,
+    loadFileEditor,
     openFileEditor,
     pendingActivePath,
     pendingClosePath,
+    pendingReloadPath,
     pendingView,
     activeFilePath,
-    fileEditorsByPath,
     updateFileEditorEntry,
   ])
 
@@ -1950,7 +1980,7 @@ export function useStubGraphApp() {
     openFileEditor,
     openFileEditorAt,
     closeFileEditor,
-    reloadFileEditor,
+    requestReloadFileEditor,
     saveFileEditor,
     pendingJump,
     clearPendingJump,
