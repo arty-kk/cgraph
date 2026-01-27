@@ -40,7 +40,7 @@ export {
   searchProjectText,
 } from './projects'
 export { getGraph, getLocalGraph, searchNodes } from './graph'
-export { getNode, getContract, getFileContent, updateFileContent } from './nodes'
+export { getNode, getContract, getFileContent, updateFileContent, createFile, renameFile, deleteFile } from './nodes'
 export {
   runTask,
   listRuns,

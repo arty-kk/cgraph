@@ -24,6 +24,9 @@ import {
   searchProjectText,
   getFileContent,
   updateFileContent,
+  createFile,
+  renameFile,
+  deleteFile,
   type DepMode,
   type GraphData,
   type GraphNode,
@@ -1358,6 +1361,94 @@ export function useStubGraphApp() {
     })
   }, [activeProject, queryClient, runOp])
 
+  const onCreateFile = useCallback(
+    async (path: string, content?: string) => {
+      if (!activeProject) return
+      const p = String(path || '').trim()
+      if (!p) return
+      let createdPath: string | null = null
+      await runOp(async () => {
+        const res = await createFile(activeProject.id, p, content)
+        const nextPath = String(res?.path || p).trim() || p
+        createdPath = nextPath
+        notifyInfo('File created')
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+        ])
+      })
+      if (createdPath) {
+        setSelection(createdPath, { pushHistory: true })
+      }
+    },
+    [activeProject, notifyInfo, queryClient, runOp, setSelection],
+  )
+
+  const onRenameFile = useCallback(
+    async (path: string, newPath: string) => {
+      if (!activeProject) return
+      const oldPath = String(path || '').trim()
+      const nextRaw = String(newPath || '').trim()
+      if (!oldPath || !nextRaw || oldPath === nextRaw) return
+      await runOp(async () => {
+        const res = await renameFile(activeProject.id, oldPath, nextRaw)
+        const nextPath = String(res?.path || nextRaw).trim() || nextRaw
+        setOpenFilePaths((prev) => prev.map((item) => (item === oldPath ? nextPath : item)))
+        setFileEditorsByPath((prev) => {
+          if (!(oldPath in prev)) return prev
+          const next = { ...prev }
+          const entry = next[oldPath]
+          delete next[oldPath]
+          next[nextPath] = { ...entry, path: nextPath }
+          return next
+        })
+        setPinnedPaths((prev) => prev.map((item) => (item === oldPath ? nextPath : item)))
+        setActiveFilePath((prev) => (prev === oldPath ? nextPath : prev))
+        if (selectedPathRef.current === oldPath) {
+          setSelection(nextPath, { pushHistory: false })
+        }
+        notifyInfo('File renamed')
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+        ])
+      })
+    },
+    [activeProject, notifyInfo, queryClient, runOp, setSelection],
+  )
+
+  const onDeleteFile = useCallback(
+    async (path: string) => {
+      if (!activeProject) return
+      const p = String(path || '').trim()
+      if (!p) return
+      await runOp(async () => {
+        await deleteFile(activeProject.id, p)
+        setOpenFilePaths((prev) => prev.filter((item) => item !== p))
+        setFileEditorsByPath((prev) => {
+          if (!(p in prev)) return prev
+          const next = { ...prev }
+          delete next[p]
+          return next
+        })
+        setPinnedPaths((prev) => prev.filter((item) => item !== p))
+        setActiveFilePath((prev) => (prev === p ? null : prev))
+        if (selectedPathRef.current === p) {
+          setSelection(null, { pushHistory: false })
+        }
+        notifyInfo('File deleted')
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+        ])
+      })
+    },
+    [activeProject, notifyInfo, queryClient, runOp, setSelection],
+  )
+
   const onDeleteRun = useCallback(
     async (runId: number) => {
       const pid = Number(activeProject?.id)
@@ -1981,6 +2072,9 @@ export function useStubGraphApp() {
     onLoadFullPatch,
     onApplyRunPatch,
     onLoadRun,
+    onCreateFile,
+    onRenameFile,
+    onDeleteFile,
 
     // derived
     canRun,

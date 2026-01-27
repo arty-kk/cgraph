@@ -106,6 +106,9 @@ export function App() {
             onRefresh={app.onRefresh}
             setNewName={app.setNewName}
             setNewPath={app.setNewPath}
+            onCreateFile={app.onCreateFile}
+            onRenameFile={app.onRenameFile}
+            onDeleteFile={app.onDeleteFile}
             graphMode={app.graphMode}
             graphLimitN={app.graphLimitN}
             setGraphMode={app.setGraphMode}
@@ -222,6 +225,9 @@ export function App() {
                         selectedPath={app.selectedPath}
                         dirtyPath={activeFileDirty ? app.activeFilePath : null}
                         onSelectPath={app.onSelectNodePath}
+                        onCreateFile={app.onCreateFile}
+                        onRenameFile={app.onRenameFile}
+                        onDeleteFile={app.onDeleteFile}
                         projectFiles={app.projectFiles}
                         projectFilesMeta={app.projectFilesMeta}
                         projectFilesBusy={app.projectFilesBusy}

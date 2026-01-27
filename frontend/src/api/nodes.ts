@@ -24,3 +24,18 @@ export async function updateFileContent(projectId: number, path: string, content
   const r = await api.put(`/api/nodes/${projectId}/${encodePath(path)}/file`, { content })
   return r.data
 }
+
+export async function createFile(projectId: number, path: string, content?: string): Promise<FileSaveResult> {
+  const r = await api.post(`/api/nodes/${projectId}/${encodePath(path)}/file`, { content })
+  return r.data
+}
+
+export async function renameFile(projectId: number, path: string, newPath: string): Promise<FileSaveResult> {
+  const r = await api.post(`/api/nodes/${projectId}/${encodePath(path)}/rename`, { new_path: newPath })
+  return r.data
+}
+
+export async function deleteFile(projectId: number, path: string): Promise<FileSaveResult> {
+  const r = await api.delete(`/api/nodes/${projectId}/${encodePath(path)}/file`)
+  return r.data
+}

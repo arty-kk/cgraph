@@ -7,18 +7,26 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
-from ..db import get_session
-from ..graph import update_graph_metrics_incremental
-from ..models import Project, FileNode
-from ..scan import scan_files
-from ..contracts import get_or_build_contract
 from ..config import settings
+from ..contracts import get_or_build_contract
+from ..db import get_session
 from ..errors import BadRequestError, NotFoundError
-from ..utils import normalize_project_root, resolve_under_root, project_lock
+from ..graph import update_graph_metrics_incremental
+from ..models import FileNode, Project
+from ..scan import scan_files
+from ..utils import normalize_project_root, project_lock, resolve_under_root
 
 
 class FileUpdate(BaseModel):
     content: str = Field(..., description="New file content")
+
+
+class FileCreate(BaseModel):
+    content: str | None = Field(None, description="New file content")
+
+
+class FileRename(BaseModel):
+    new_path: str = Field(..., description="New file path under project root")
 
 
 def _clamp_int(v: int | None, default: int, lo: int, hi: int) -> int:
@@ -41,6 +49,13 @@ def _read_text_limited(path: str, max_chars: int | None) -> tuple[str, bool]:
     if truncated:
         chunk = chunk[:max_chars]
     return chunk, truncated
+
+
+def _removed_neighbors(reindexed: object) -> list[str] | None:
+    if isinstance(reindexed, dict):
+        value = reindexed.get("removed_edge_neighbors")
+        return value if isinstance(value, list) else value
+    return None
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
@@ -139,10 +154,120 @@ def update_file(project_id: int, path: str, body: FileUpdate):
     with project_lock(project_id):
         abs_path.write_text(content, encoding="utf-8")
         reindexed = scan_files(project_id, root, [rel_norm])
+        removed_neighbors = _removed_neighbors(reindexed)
         update_graph_metrics_incremental(
             project_id,
             [rel_norm],
-            removed_edge_neighbors=reindexed.get("removed_edge_neighbors") if isinstance(reindexed, dict) else None,
+            removed_edge_neighbors=removed_neighbors,
+        )
+
+    return {"path": rel_norm, "saved": True, "reindexed": reindexed}
+
+
+@router.post("/{project_id}/{path:path}/file")
+def create_file(project_id: int, path: str, body: FileCreate):
+    with get_session() as s:
+        p = s.get(Project, project_id)
+    if not p:
+        raise NotFoundError("Проект не найден", context={"project_id": project_id})
+
+    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+
+    content = body.content if isinstance(body.content, str) or body.content is None else None
+    if content is None and body.content is not None:
+        raise BadRequestError("Некорректное содержимое файла")
+    content = content or ""
+
+    with project_lock(project_id):
+        if abs_path.exists():
+            raise BadRequestError("Файл уже существует", context={"path": rel_norm})
+        parent = abs_path.parent
+        if parent.exists() and not parent.is_dir():
+            raise BadRequestError("Родительский путь должен быть директорией")
+        if not parent.exists():
+            parent.mkdir(parents=True, exist_ok=True)
+
+        abs_path.write_text(content, encoding="utf-8")
+        reindexed = scan_files(project_id, root, [rel_norm])
+        removed_neighbors = _removed_neighbors(reindexed)
+        update_graph_metrics_incremental(
+            project_id,
+            [rel_norm],
+            removed_edge_neighbors=removed_neighbors,
+        )
+
+    return {"path": rel_norm, "saved": True, "reindexed": reindexed}
+
+
+@router.post("/{project_id}/{path:path}/rename")
+def rename_file(project_id: int, path: str, body: FileRename):
+    with get_session() as s:
+        p = s.get(Project, project_id)
+    if not p:
+        raise NotFoundError("Проект не найден", context={"project_id": project_id})
+
+    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+    new_abs, new_rel = resolve_under_root(
+        root,
+        body.new_path,
+        max_length=settings.max_rel_path_chars,
+    )
+    if rel_norm == new_rel:
+        raise BadRequestError("Новый путь совпадает со старым", context={"path": rel_norm})
+
+    with project_lock(project_id):
+        if not abs_path.exists():
+            raise NotFoundError("Файл не найден", context={"path": rel_norm})
+        if not abs_path.is_file():
+            raise BadRequestError("Цель должна быть файлом")
+        if new_abs.exists():
+            raise BadRequestError("Файл уже существует", context={"path": new_rel})
+        new_parent = new_abs.parent
+        if not new_parent.exists():
+            raise BadRequestError(
+                "Родительская директория не существует",
+                context={"path": new_rel},
+            )
+        if not new_parent.is_dir():
+            raise BadRequestError("Родительский путь должен быть директорией")
+
+        abs_path.rename(new_abs)
+        reindexed = scan_files(project_id, root, [rel_norm, new_rel])
+        removed_neighbors = _removed_neighbors(reindexed)
+        update_graph_metrics_incremental(
+            project_id,
+            [rel_norm, new_rel],
+            removed_edge_neighbors=removed_neighbors,
+        )
+
+    return {"path": new_rel, "saved": True, "reindexed": reindexed}
+
+
+@router.delete("/{project_id}/{path:path}/file")
+def delete_file(project_id: int, path: str):
+    with get_session() as s:
+        p = s.get(Project, project_id)
+    if not p:
+        raise NotFoundError("Проект не найден", context={"project_id": project_id})
+
+    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+
+    with project_lock(project_id):
+        if not abs_path.exists():
+            raise NotFoundError("Файл не найден", context={"path": rel_norm})
+        if not abs_path.is_file():
+            raise BadRequestError("Цель должна быть файлом")
+
+        abs_path.unlink()
+        reindexed = scan_files(project_id, root, [rel_norm])
+        removed_neighbors = _removed_neighbors(reindexed)
+        update_graph_metrics_incremental(
+            project_id,
+            [rel_norm],
+            removed_edge_neighbors=removed_neighbors,
         )
 
     return {"path": rel_norm, "saved": True, "reindexed": reindexed}
