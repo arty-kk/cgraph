@@ -6,6 +6,8 @@ import type { editor, IPosition } from 'monaco-editor'
 export type FileEditorPaneProps = {
   open: boolean
   path: string | null
+  tabs: Array<{ path: string; dirty: boolean }>
+  activePath: string | null
   original: string
   content: string
   busy: boolean
@@ -13,15 +15,19 @@ export type FileEditorPaneProps = {
   dirty: boolean
   truncated: boolean
   error: string | null
+  onSelectTab: (path: string) => void
+  onCloseTab: (path: string) => void
   onChange: (value: string) => void
   onReload: () => void | Promise<void>
-  onSave: () => void | Promise<void>
+  onSave: () => void | Promise<boolean>
   onClose: () => void
 }
 
 export function FileEditorPane({
   open,
   path,
+  tabs,
+  activePath,
   original,
   content,
   busy,
@@ -29,6 +35,8 @@ export function FileEditorPane({
   dirty,
   truncated,
   error,
+  onSelectTab,
+  onCloseTab,
   onChange,
   onReload,
   onSave,
@@ -157,6 +165,46 @@ export function FileEditorPane({
 
   return (
     <div className="flex flex-col gap-3">
+      {tabs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px]">
+          {tabs.map((tab) => {
+            const name = tab.path.split('/').pop() || tab.path
+            const active = tab.path === activePath
+            return (
+              <div
+                key={tab.path}
+                className={[
+                  'flex items-center gap-2 rounded-md border px-2 py-1',
+                  active ? 'border-indigo-500/70 bg-indigo-500/10' : 'border-neutral-800 bg-neutral-900/60',
+                ].join(' ')}
+              >
+                <button
+                  type="button"
+                  className="flex items-center gap-2 min-w-0 max-w-[18vw] text-left text-neutral-200 hover:text-neutral-100"
+                  onClick={() => onSelectTab(tab.path)}
+                  title={tab.path}
+                >
+                  <span className="truncate">{name}</span>
+                  {tab.dirty && (
+                    <span className="text-amber-300" aria-label="Unsaved changes" title="Unsaved changes">●</span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-sm border border-neutral-700 bg-neutral-900 px-1 text-[10px] text-neutral-300 hover:bg-neutral-800"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onCloseTab(tab.path)
+                  }}
+                  aria-label={`Close ${name}`}
+                >
+                  ×
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
       {error && (
         <div className="rounded-md border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-xs text-rose-200">
           {error}

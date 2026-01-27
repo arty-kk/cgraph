@@ -48,6 +48,16 @@ type GraphMode = 'local' | 'full' | 'limit'
 type RetrievalMode = 'agentic' | 'pack'
 type WorkspaceView = 'graph' | 'editor'
 
+export type FileEditorEntry = {
+  path: string
+  content: string
+  original: string
+  truncated: boolean
+  busy: boolean
+  saving: boolean
+  error: string | null
+}
+
 type WorkspaceStateV1 = {
   version: 1
   selectedPath: string | null
@@ -75,8 +85,26 @@ type WorkspaceStateV2 = {
   workspaceView: WorkspaceView
 }
 
-const WORKSPACE_KEY_PREFIX = 'cs.workspace.v2.'
-const LEGACY_WORKSPACE_KEY_PREFIX = 'cs.workspace.v1.'
+type WorkspaceStateV3 = {
+  version: 3
+  selectedPath: string | null
+  pinnedPaths: string[]
+  selectionTrail: string[]
+  backStack: string[]
+  forwardStack: string[]
+  graphMode: GraphMode
+  graphLimitN: number
+  graphHops: number
+  graphLocalMax: number
+  workspaceView: WorkspaceView
+  openFilePaths: string[]
+  activeFilePath: string | null
+  fileEditorsByPath: Record<string, { dirty?: boolean }>
+}
+
+const WORKSPACE_KEY_PREFIX = 'cs.workspace.v3.'
+const LEGACY_WORKSPACE_KEY_PREFIX = 'cs.workspace.v2.'
+const LEGACY_WORKSPACE_KEY_PREFIX_V1 = 'cs.workspace.v1.'
 
 function wsKey(projectId: number): string {
   return `${WORKSPACE_KEY_PREFIX}${projectId}`
@@ -86,6 +114,9 @@ function legacyWsKey(projectId: number): string {
   return `${LEGACY_WORKSPACE_KEY_PREFIX}${projectId}`
 }
 
+function legacyWsKeyV1(projectId: number): string {
+  return `${LEGACY_WORKSPACE_KEY_PREFIX_V1}${projectId}`
+}
 function isAnyModalOpen(): boolean {
   if (typeof document === 'undefined') return false
   const raw = document.body?.dataset?.csModalOpenCount
@@ -121,6 +152,19 @@ function asGraphMode(v: any, fallback: GraphMode): GraphMode {
   return s === 'local' || s === 'full' || s === 'limit' ? s : fallback
 }
 
+function createFileEditorEntry(path: string, opts: { dirty?: boolean } = {}): FileEditorEntry {
+  const dirty = Boolean(opts.dirty)
+  return {
+    path,
+    content: dirty ? '\n' : '',
+    original: '',
+    truncated: false,
+    busy: false,
+    saving: false,
+    error: null,
+  }
+}
+
 export type NotificationKind = 'info' | 'error'
 
 export type NotificationItem = {
@@ -132,6 +176,7 @@ export type NotificationItem = {
 export function useStubGraphApp() {
   const workspaceBootingRef = useRef(false)
   const workspaceSaveTimerRef = useRef<number | null>(null)
+  const restoredEditorRef = useRef(false)
 
   const queryClient = useQueryClient()
 
@@ -278,10 +323,25 @@ export function useStubGraphApp() {
   const toggleRightPanel = useCallback(() => setRightPanelOpen((v) => !v), [])
   
   const [workspaceView, setWorkspaceViewState] = useState<WorkspaceView>('graph')
+  const [openFilePaths, setOpenFilePaths] = useState<string[]>([])
+  const [fileEditorsByPath, setFileEditorsByPath] = useState<Record<string, FileEditorEntry>>({})
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
+  const [pendingClosePath, setPendingClosePath] = useState<string | null>(null)
+  const [pendingActivePath, setPendingActivePath] = useState<string | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [confirmReason, setConfirmReason] = useState<string | null>(null)
+  const [pendingView, setPendingView] = useState<WorkspaceView | null>(null)
+  const FILE_EDITOR_MAX_CHARS = 200_000
 
-  const buildWorkspaceState = useCallback((): WorkspaceStateV2 => {
+  const buildWorkspaceState = useCallback((): WorkspaceStateV3 => {
+    const fileEditorState: Record<string, { dirty?: boolean }> = {}
+    for (const path of openFilePaths || []) {
+      const entry = fileEditorsByPath[path]
+      const dirty = entry ? entry.content !== entry.original : false
+      fileEditorState[path] = { dirty }
+    }
     return {
-      version: 2,
+      version: 3,
       selectedPath,
       pinnedPaths: (pinnedPaths || []).slice(0, PIN_LIMIT),
       selectionTrail: (selectionTrail || []).slice(-10),
@@ -292,6 +352,9 @@ export function useStubGraphApp() {
       graphHops,
       graphLocalMax,
       workspaceView,
+      openFilePaths: (openFilePaths || []).slice(0, 200),
+      activeFilePath,
+      fileEditorsByPath: fileEditorState,
     }
   }, [
     selectedPath,
@@ -304,6 +367,9 @@ export function useStubGraphApp() {
     graphHops,
     graphLocalMax,
     workspaceView,
+    openFilePaths,
+    activeFilePath,
+    fileEditorsByPath,
   ])
 
   const persistWorkspace = useCallback(
@@ -385,13 +451,15 @@ export function useStubGraphApp() {
       return
     }
     workspaceBootingRef.current = true
+    restoredEditorRef.current = false
 
     try {
       const raw = localStorage.getItem(wsKey(pid))
       const legacyRaw = raw ? null : localStorage.getItem(legacyWsKey(pid))
-      const parsedRaw = raw || legacyRaw
+      const legacyRawV1 = raw || legacyRaw ? null : localStorage.getItem(legacyWsKeyV1(pid))
+      const parsedRaw = raw || legacyRaw || legacyRawV1
       if (parsedRaw) {
-        const parsed = JSON.parse(parsedRaw) as Partial<WorkspaceStateV2> | Partial<WorkspaceStateV1>
+        const parsed = JSON.parse(parsedRaw) as Partial<WorkspaceStateV3> | Partial<WorkspaceStateV2> | Partial<WorkspaceStateV1>
         const nextSelected = asStr(parsed.selectedPath) || null
         const nextPinned = asStrArr(parsed.pinnedPaths, 20).slice(0, PIN_LIMIT)
         const nextTrail = asStrArr(parsed.selectionTrail, 20).slice(-10)
@@ -401,6 +469,22 @@ export function useStubGraphApp() {
           'workspaceView' in parsed && (parsed.workspaceView === 'editor' || parsed.workspaceView === 'graph')
             ? parsed.workspaceView
             : 'graph'
+        const nextOpenFilePaths = 'openFilePaths' in parsed ? asStrArr(parsed.openFilePaths, 200) : []
+        const nextActiveFilePath =
+          'activeFilePath' in parsed && parsed.activeFilePath && nextOpenFilePaths.includes(parsed.activeFilePath)
+            ? parsed.activeFilePath
+            : null
+        const nextFileEditors: Record<string, FileEditorEntry> = {}
+        if ('fileEditorsByPath' in parsed && parsed.fileEditorsByPath) {
+          const storedEditors = parsed.fileEditorsByPath as Record<string, { dirty?: boolean }>
+          for (const path of nextOpenFilePaths) {
+            nextFileEditors[path] = createFileEditorEntry(path, { dirty: Boolean(storedEditors?.[path]?.dirty) })
+          }
+        } else {
+          for (const path of nextOpenFilePaths) {
+            nextFileEditors[path] = createFileEditorEntry(path)
+          }
+        }
 
         setGraphMode(asGraphMode(parsed.graphMode, 'limit'))
         setGraphLimitN(asInt(parsed.graphLimitN, 2000, 100, 20000))
@@ -413,6 +497,10 @@ export function useStubGraphApp() {
         setForwardStack(nextFwd)
         setSelectedPath(nextSelected)
         setWorkspaceViewState(nextWorkspaceView)
+        setOpenFilePaths(nextOpenFilePaths)
+        setActiveFilePath(nextActiveFilePath)
+        setFileEditorsByPath(nextFileEditors)
+        restoredEditorRef.current = Boolean(nextActiveFilePath)
         selectedPathRef.current = nextSelected; selectionTrailRef.current = nextTrail; backStackRef.current = nextBack; forwardStackRef.current = nextFwd
       }
     } catch {}
@@ -456,6 +544,9 @@ export function useStubGraphApp() {
     graphHops,
     graphLocalMax,
     workspaceView,
+    openFilePaths,
+    activeFilePath,
+    fileEditorsByPath,
     persistWorkspace,
   ])
 
@@ -829,6 +920,14 @@ export function useStubGraphApp() {
     setForwardStack([])
     setSelectionTrail([])
     setPinnedPaths([])
+    setOpenFilePaths([])
+    setFileEditorsByPath({})
+    setActiveFilePath(null)
+    setPendingClosePath(null)
+    setPendingActivePath(null)
+    setConfirmOpen(false)
+    setConfirmReason(null)
+    setPendingView(null)
   }, [activeProject?.id, persistWorkspace])
 
   const clearActiveProject = useCallback(() => {
@@ -854,6 +953,14 @@ export function useStubGraphApp() {
     setSelectionTrail([])
     setPinnedPaths([])
     setWorkspaceViewState('graph')
+    setOpenFilePaths([])
+    setFileEditorsByPath({})
+    setActiveFilePath(null)
+    setPendingClosePath(null)
+    setPendingActivePath(null)
+    setConfirmOpen(false)
+    setConfirmReason(null)
+    setPendingView(null)
   }, [activeProject?.id, persistWorkspace, setErrorMessage])
 
   const projects = projectsQuery.data ?? []
@@ -876,35 +983,19 @@ export function useStubGraphApp() {
   const [docsBuildBusy, setDocsBuildBusy] = useState(false)
   const [docsBuildError, setDocsBuildError] = useState<string | null>(null)
 
-  const [fileEditorOpen, setFileEditorOpen] = useState(false)
-  const [fileEditorPath, setFileEditorPath] = useState<string | null>(null)
-  const [fileEditorContent, setFileEditorContent] = useState('')
-  const [fileEditorOriginal, setFileEditorOriginal] = useState('')
-  const [fileEditorTruncated, setFileEditorTruncated] = useState(false)
-  const [fileEditorBusy, setFileEditorBusy] = useState(false)
-  const [fileEditorSaving, setFileEditorSaving] = useState(false)
-  const [fileEditorError, setFileEditorError] = useState<string | null>(null)
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [confirmReason, setConfirmReason] = useState<string | null>(null)
-  const [pendingFilePath, setPendingFilePath] = useState<string | null>(null)
-  const [pendingView, setPendingView] = useState<WorkspaceView | null>(null)
-  const FILE_EDITOR_MAX_CHARS = 200_000
-
   useEffect(() => {
     setDocs(null)
     setDocsBuildError(null)
   }, [activeProject?.id])
 
   useEffect(() => {
-    setFileEditorOpen(false)
-    setFileEditorPath(null)
-    setFileEditorContent('')
-    setFileEditorOriginal('')
-    setFileEditorTruncated(false)
-    setFileEditorError(null)
+    setOpenFilePaths([])
+    setFileEditorsByPath({})
+    setActiveFilePath(null)
+    setPendingClosePath(null)
+    setPendingActivePath(null)
     setConfirmOpen(false)
     setConfirmReason(null)
-    setPendingFilePath(null)
     setPendingView(null)
   }, [activeProject?.id])
 
@@ -942,35 +1033,63 @@ export function useStubGraphApp() {
     }
   }, [activeProject, notifyInfo, setErrorMessage])
 
+  const updateFileEditorEntry = useCallback((path: string, updater: (entry: FileEditorEntry) => FileEditorEntry) => {
+    const p = String(path || '').trim()
+    if (!p) return
+    setFileEditorsByPath((prev) => {
+      const current = prev[p] ?? createFileEditorEntry(p)
+      const next = updater(current)
+      if (next === current) return prev
+      return { ...prev, [p]: next }
+    })
+  }, [])
+
+  const setActiveFileContent = useCallback(
+    (value: string) => {
+      if (!activeFilePath) return
+      updateFileEditorEntry(activeFilePath, (entry) => ({ ...entry, content: value }))
+    },
+    [activeFilePath, updateFileEditorEntry],
+  )
+
   const loadFileEditor = useCallback(
     async (path: string) => {
       if (!activeProject) return
       const p = String(path || '').trim()
       if (!p) return
-      setFileEditorBusy(true)
-      setFileEditorError(null)
+      updateFileEditorEntry(p, (entry) => ({ ...entry, busy: true, error: null }))
       try {
         const res: FileContent = await getFileContent(activeProject.id, p, FILE_EDITOR_MAX_CHARS)
         const content = String(res.content ?? '')
-        setFileEditorContent(content)
-        setFileEditorOriginal(content)
-        setFileEditorTruncated(Boolean(res.truncated))
+        updateFileEditorEntry(p, (entry) => ({
+          ...entry,
+          content,
+          original: content,
+          truncated: Boolean(res.truncated),
+          busy: false,
+          saving: false,
+          error: null,
+        }))
       } catch (e: any) {
-        setFileEditorError(extractError(e))
-        setFileEditorContent('')
-        setFileEditorOriginal('')
-        setFileEditorTruncated(false)
-      } finally {
-        setFileEditorBusy(false)
+        updateFileEditorEntry(p, (entry) => ({
+          ...entry,
+          content: '',
+          original: '',
+          truncated: false,
+          busy: false,
+          saving: false,
+          error: extractError(e),
+        }))
       }
     },
-    [activeProject],
+    [activeProject, updateFileEditorEntry],
   )
 
   const clearConfirm = useCallback(() => {
     setConfirmOpen(false)
     setConfirmReason(null)
-    setPendingFilePath(null)
+    setPendingClosePath(null)
+    setPendingActivePath(null)
     setPendingView(null)
   }, [])
 
@@ -979,96 +1098,149 @@ export function useStubGraphApp() {
       if (!activeProject) return
       const p = String(path || '').trim()
       if (!p) return
-      if (fileEditorContent !== fileEditorOriginal && p !== fileEditorPath) {
+      const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
+      const activeDirty = activeEntry ? activeEntry.content !== activeEntry.original : false
+      if (activeDirty && activeFilePath && p !== activeFilePath) {
         setConfirmOpen(true)
-        setConfirmReason('open-file')
-        setPendingFilePath(p)
+        setConfirmReason('switch-tab')
+        setPendingActivePath(p)
+        setPendingClosePath(null)
         setPendingView(null)
         return
       }
-      setFileEditorOpen(true)
-      setFileEditorPath(p)
-      await loadFileEditor(p)
+      setOpenFilePaths((prev) => (prev.includes(p) ? prev : [...prev, p]))
+      setActiveFilePath(p)
+      updateFileEditorEntry(p, (entry) => entry)
+      const existingEntry = fileEditorsByPath[p]
+      const shouldLoad = !existingEntry || (!existingEntry.content && !existingEntry.original && !existingEntry.busy)
+      if (shouldLoad) {
+        await loadFileEditor(p)
+      }
     },
-    [activeProject, fileEditorContent, fileEditorOriginal, fileEditorPath, loadFileEditor],
+    [activeProject, activeFilePath, fileEditorsByPath, loadFileEditor, updateFileEditorEntry],
   )
 
   const reloadFileEditor = useCallback(async () => {
-    if (!fileEditorPath) return
-    await loadFileEditor(fileEditorPath)
-  }, [fileEditorPath, loadFileEditor])
+    if (!activeFilePath) return
+    await loadFileEditor(activeFilePath)
+  }, [activeFilePath, loadFileEditor])
 
-  const saveFileEditor = useCallback(async () => {
-    if (!activeProject || !fileEditorPath) return
-    setFileEditorSaving(true)
-    setFileEditorError(null)
+  const saveFileEditor = useCallback(async (): Promise<boolean> => {
+    if (!activeProject || !activeFilePath) return false
+    const entry = fileEditorsByPath[activeFilePath]
+    if (!entry) return false
+    updateFileEditorEntry(activeFilePath, (current) => ({ ...current, saving: true, error: null }))
     try {
-      const res: FileSaveResult = await updateFileContent(activeProject.id, fileEditorPath, fileEditorContent)
+      const res: FileSaveResult = await updateFileContent(activeProject.id, activeFilePath, entry.content)
       if (res?.saved) {
-        setFileEditorOriginal(fileEditorContent)
-        setFileEditorTruncated(false)
+        updateFileEditorEntry(activeFilePath, (current) => ({
+          ...current,
+          original: current.content,
+          truncated: false,
+        }))
         notifyInfo('File saved')
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
         ])
+        return true
       }
     } catch (e: any) {
-      setFileEditorError(extractError(e))
+      updateFileEditorEntry(activeFilePath, (current) => ({ ...current, error: extractError(e) }))
     } finally {
-      setFileEditorSaving(false)
+      updateFileEditorEntry(activeFilePath, (current) => ({ ...current, saving: false }))
     }
-  }, [activeProject, fileEditorContent, fileEditorPath, notifyInfo, queryClient])
+    return false
+  }, [activeFilePath, activeProject, fileEditorsByPath, notifyInfo, queryClient, updateFileEditorEntry])
 
   const confirmSave = useCallback(async () => {
-    if (fileEditorSaving || fileEditorBusy) return
-    await saveFileEditor()
-    if (pendingFilePath) {
-      setFileEditorOpen(true)
-      setFileEditorPath(pendingFilePath)
-      await loadFileEditor(pendingFilePath)
+    const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
+    if (activeEntry?.saving || activeEntry?.busy) return
+    const saved = await saveFileEditor()
+    if (!saved) return
+    if (pendingClosePath) {
+      setOpenFilePaths((prev) => {
+        if (!prev.includes(pendingClosePath)) return prev
+        const next = prev.filter((item) => item !== pendingClosePath)
+        if (activeFilePath === pendingClosePath) {
+          const idx = prev.indexOf(pendingClosePath)
+          const nextActive = next[idx - 1] ?? next[idx] ?? null
+          setActiveFilePath(nextActive)
+        }
+        return next
+      })
+      setFileEditorsByPath((prev) => {
+        if (!(pendingClosePath in prev)) return prev
+        const next = { ...prev }
+        delete next[pendingClosePath]
+        return next
+      })
+    } else if (pendingActivePath) {
+      await openFileEditor(pendingActivePath)
     } else if (pendingView) {
       setWorkspaceViewState(pendingView)
-      if (pendingView === 'graph') setFileEditorOpen(false)
     }
     clearConfirm()
   }, [
     clearConfirm,
-    fileEditorBusy,
-    fileEditorSaving,
-    loadFileEditor,
-    pendingFilePath,
+    openFileEditor,
+    pendingActivePath,
+    pendingClosePath,
     pendingView,
     saveFileEditor,
+    activeFilePath,
+    fileEditorsByPath,
   ])
 
   const confirmDiscard = useCallback(async () => {
-    if (fileEditorSaving || fileEditorBusy) return
-    if (pendingFilePath) {
-      setFileEditorOpen(true)
-      setFileEditorPath(pendingFilePath)
-      await loadFileEditor(pendingFilePath)
+    const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
+    if (activeEntry?.saving || activeEntry?.busy) return
+    if (activeFilePath) {
+      updateFileEditorEntry(activeFilePath, (entry) => {
+        if (entry.content === entry.original) return entry
+        return { ...entry, content: entry.original, error: null }
+      })
+    }
+    if (pendingClosePath) {
+      setOpenFilePaths((prev) => {
+        if (!prev.includes(pendingClosePath)) return prev
+        const next = prev.filter((item) => item !== pendingClosePath)
+        if (activeFilePath === pendingClosePath) {
+          const idx = prev.indexOf(pendingClosePath)
+          const nextActive = next[idx - 1] ?? next[idx] ?? null
+          setActiveFilePath(nextActive)
+        }
+        return next
+      })
+      setFileEditorsByPath((prev) => {
+        if (!(pendingClosePath in prev)) return prev
+        const next = { ...prev }
+        delete next[pendingClosePath]
+        return next
+      })
+    } else if (pendingActivePath) {
+      await openFileEditor(pendingActivePath)
     } else if (pendingView) {
       setWorkspaceViewState(pendingView)
-      if (pendingView === 'graph') setFileEditorOpen(false)
-    } else {
-      setFileEditorOpen(false)
     }
     clearConfirm()
   }, [
     clearConfirm,
-    fileEditorBusy,
-    fileEditorSaving,
-    loadFileEditor,
-    pendingFilePath,
+    openFileEditor,
+    pendingActivePath,
+    pendingClosePath,
     pendingView,
+    activeFilePath,
+    fileEditorsByPath,
+    updateFileEditorEntry,
   ])
 
   const confirmCancel = useCallback(() => {
-    if (fileEditorSaving || fileEditorBusy) return
+    const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
+    if (activeEntry?.saving || activeEntry?.busy) return
     clearConfirm()
-  }, [clearConfirm, fileEditorBusy, fileEditorSaving])
+  }, [activeFilePath, clearConfirm, fileEditorsByPath])
 
   const runOp = useCallback(async (fn: () => Promise<void>) => {
     setBusyCount((count) => count + 1)
@@ -1452,31 +1624,60 @@ export function useStubGraphApp() {
     [activeProject, notifyInfo, semanticSearchEnabled, setErrorMessage]
   )
 
-  const closeFileEditor = useCallback(() => {
-    setFileEditorOpen(false)
-  }, [])
+  const closeFileEditor = useCallback(
+    (path: string) => {
+      const p = String(path || '').trim()
+      if (!p) return
+      const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
+      const activeDirty = activeEntry ? activeEntry.content !== activeEntry.original : false
+      if (activeDirty && activeFilePath === p) {
+        setConfirmOpen(true)
+        setConfirmReason('close-tab')
+        setPendingClosePath(p)
+        setPendingActivePath(null)
+        setPendingView(null)
+        return
+      }
+      setOpenFilePaths((prev) => {
+        if (!prev.includes(p)) return prev
+        const next = prev.filter((item) => item !== p)
+        if (activeFilePath === p) {
+          const idx = prev.indexOf(p)
+          const nextActive = next[idx - 1] ?? next[idx] ?? null
+          setActiveFilePath(nextActive)
+        }
+        return next
+      })
+      setFileEditorsByPath((prev) => {
+        if (!(p in prev)) return prev
+        const next = { ...prev }
+        delete next[p]
+        return next
+      })
+    },
+    [activeFilePath, fileEditorsByPath],
+  )
 
   const setWorkspaceView = useCallback(
     (nextView: WorkspaceView) => {
       if (workspaceView === nextView) return
-      if (fileEditorContent !== fileEditorOriginal && nextView === 'graph') {
+      const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
+      const activeDirty = activeEntry ? activeEntry.content !== activeEntry.original : false
+      if (activeDirty && nextView === 'graph') {
         setConfirmOpen(true)
         setConfirmReason('close-editor')
         setPendingView('graph')
-        setPendingFilePath(null)
+        setPendingClosePath(null)
+        setPendingActivePath(null)
         return
       }
       setWorkspaceViewState(nextView)
-      if (nextView === 'graph') {
-        closeFileEditor()
-        return
-      }
       const nextPath = selectedPathRef.current
-      if (nextView === 'editor' && nextPath) {
+      if (nextView === 'editor' && nextPath && nextPath !== activeFilePath) {
         void openFileEditor(nextPath)
       }
     },
-    [closeFileEditor, fileEditorContent, fileEditorOriginal, openFileEditor, workspaceView],
+    [activeFilePath, fileEditorsByPath, openFileEditor, workspaceView],
   )
 
   const toggleWorkspaceView = useCallback(() => {
@@ -1485,19 +1686,38 @@ export function useStubGraphApp() {
 
   useEffect(() => {
     if (workspaceView !== 'editor') return
+    if (activeFilePath && restoredEditorRef.current) {
+      restoredEditorRef.current = false
+      void loadFileEditor(activeFilePath)
+      return
+    }
     if (!selectedPath) return
+    if (selectedPath === activeFilePath) return
     void openFileEditor(selectedPath)
-  }, [openFileEditor, selectedPath, workspaceView])
+  }, [activeFilePath, loadFileEditor, openFileEditor, selectedPath, workspaceView])
 
   const selectedInGraph = useMemo(() => {
     if (!selectedPath || !graph?.nodes?.length) return false
     return graph.nodes.some((n: GraphNode) => n.path === selectedPath || n.id === selectedPath)
   }, [graph, selectedPath])
 
+  const activeFileEntry = useMemo(() => {
+    if (!activeFilePath) return null
+    return fileEditorsByPath[activeFilePath] ?? null
+  }, [activeFilePath, fileEditorsByPath])
+
   const graphBusy = graphQuery.isFetching
   const nodeBusy = nodeQuery.isFetching
   const mutationBusy = busy || projectsQuery.isFetching
-  const fileEditorDirty = fileEditorContent !== fileEditorOriginal
+  const fileEditorDirty = activeFileEntry ? activeFileEntry.content !== activeFileEntry.original : false
+  const fileEditorOpen = workspaceView === 'editor'
+  const fileEditorPath = activeFilePath
+  const fileEditorContent = activeFileEntry?.content ?? ''
+  const fileEditorOriginal = activeFileEntry?.original ?? ''
+  const fileEditorTruncated = activeFileEntry?.truncated ?? false
+  const fileEditorBusy = activeFileEntry?.busy ?? false
+  const fileEditorSaving = activeFileEntry?.saving ?? false
+  const fileEditorError = activeFileEntry?.error ?? null
 
   const canRun = useMemo(() => {
     const fileReady = !!selectedPath && (contract != null || nodeInfo != null)
@@ -1535,7 +1755,10 @@ export function useStubGraphApp() {
     fileEditorBusy,
     fileEditorSaving,
     fileEditorError,
-    setFileEditorContent,
+    openFilePaths,
+    fileEditorsByPath,
+    activeFilePath,
+    setFileEditorContent: setActiveFileContent,
     confirmOpen,
     confirmReason,
     confirmSave,
