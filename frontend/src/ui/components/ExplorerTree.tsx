@@ -6,6 +6,7 @@ type ExplorerTreeProps = {
   activeProject: Project | null
   busy: boolean
   selectedPath: string | null
+  dirtyPath?: string | null
   onSelectPath: (path: string) => void | Promise<void>
   projectFiles: ProjectFileItem[]
   projectFilesMeta: any
@@ -17,6 +18,7 @@ export function ExplorerTree({
   activeProject,
   busy,
   selectedPath,
+  dirtyPath = null,
   onSelectPath,
   projectFiles,
   projectFilesMeta,
@@ -347,6 +349,7 @@ export function ExplorerTree({
 
   const renderFile = (f: ProjectFileItem, depth: number, opts?: { showPath?: boolean }) => {
     const selected = isSelectedFile(f.path)
+    const isDirtySelected = selected && !!dirtyPath && dirtyPath === f.path
     const name = f.path.split('/').pop() || f.path
     const showPath = Boolean(opts?.showPath)
     const lang = String((f as any)?.language ?? '—')
@@ -376,7 +379,14 @@ export function ExplorerTree({
         title={tooltip}
         style={{ marginLeft: depth > 0 ? depth * 10 : 0 }}
       >
-        <div className="text-neutral-200 truncate">{showPath ? f.path : name}</div>
+        <div className="flex items-center gap-2 text-neutral-200 truncate">
+          <span className="truncate">{showPath ? f.path : name}</span>
+          {isDirtySelected && (
+            <span className="text-amber-300" aria-label="Unsaved changes" title="Unsaved changes">
+              ●
+            </span>
+          )}
+        </div>
       </button>
     )
   }
