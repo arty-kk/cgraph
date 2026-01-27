@@ -45,7 +45,7 @@ MIN_GRAPH_NODES_FOR_READY = 2
 MIN_GRAPH_EDGES_FOR_READY = 1
 GRAPH_NOT_READY_WARNING = "graph not built"
 
-logger = get_logger("cgraph.api")
+logger = get_logger("stubgraph.api")
 
 PLAN_TZ_EMPTY = {
     "summary": "",

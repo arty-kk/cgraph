@@ -10,7 +10,7 @@ from .config import settings
 from .logging import get_logger
 
 PATCH_BLOB_DIRNAME = "patches"
-logger = get_logger("cgraph.api")
+logger = get_logger("stubgraph.api")
 
 
 class PatchApplyError(RuntimeError):

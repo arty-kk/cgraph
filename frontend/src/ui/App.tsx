@@ -8,12 +8,12 @@ import { NodePanel } from './components/NodePanel'
 import { Notifications } from './components/Notifications'
 import { FileEditorPane } from './components/FileEditorPane'
 import { ExplorerTree } from './components/ExplorerTree'
-import { useCGRAPHApp } from './useCGRAPHApp'
+import { useStubGraphApp } from './useStubGraphApp'
 import { CommandPalette } from './components/CommandPalette'
 import { Modal } from './components/Modal'
 
 export function App() {
-  const app = useCGRAPHApp()
+  const app = useStubGraphApp()
 
   const [docsOpen, setDocsOpen] = React.useState(false)
   const [onboardOpen, setOnboardOpen] = React.useState(false)

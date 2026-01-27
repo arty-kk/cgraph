@@ -32,7 +32,7 @@ from .api_contracts import extract_backend_route_contract_rows, extract_frontend
 PARSE_CACHE_LIMIT = 256
 _parse_cache: OrderedDict[Tuple[str, str], tuple[int, list[dict]]] = OrderedDict()
 _parse_cache_lock = Lock()
-logger = get_logger("cgraph.scan")
+logger = get_logger("stubgraph.scan")
 
 
 def _get_cached_parse(lang: str, file_hash: str) -> tuple[int, list[dict]] | None:

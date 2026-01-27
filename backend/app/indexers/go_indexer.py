@@ -12,7 +12,7 @@ from .tree_sitter_utils import iter_nodes, node_text, parse_tree
 from ..config import settings
 from ..logging import get_logger
 
-LOGGER = get_logger("cgraph.indexer.go")
+LOGGER = get_logger("stubgraph.indexer.go")
 
 
 def _strip_quotes(s: str) -> str:

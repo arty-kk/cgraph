@@ -1,4 +1,4 @@
-// frontend/src/ui/useCGRAPHApp.ts
+// frontend/src/ui/useStubGraphApp.ts
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -129,7 +129,7 @@ export type NotificationItem = {
   text: string
 }
 
-export function useCGRAPHApp() {
+export function useStubGraphApp() {
   const workspaceBootingRef = useRef(false)
   const workspaceSaveTimerRef = useRef<number | null>(null)
 

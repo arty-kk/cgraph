@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-LOGGER = logging.getLogger("cgraph.api")
+LOGGER = logging.getLogger("stubgraph.api")
 
 
 class AppError(Exception):

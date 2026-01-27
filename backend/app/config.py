@@ -12,86 +12,86 @@ class Settings(BaseSettings):
 
     cors_allow_origins: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
-        alias="CGRAPH_CORS_ALLOW_ORIGINS",
+        alias="STUBGRAPH_CORS_ALLOW_ORIGINS",
     )
 
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     # OpenAI Responses API stores responses by default; for codebases this is often undesirable.
-    openai_store: bool = Field(default=False, alias="CGRAPH_OPENAI_STORE")
+    openai_store: bool = Field(default=False, alias="STUBGRAPH_OPENAI_STORE")
     # Prompt caching is opt-in (privacy/correctness trade-off).
-    openai_prompt_cache_key: str | None = Field(default=None, alias="CGRAPH_OPENAI_PROMPT_CACHE_KEY")
-    openai_prompt_cache_retention: str | None = Field(default=None, alias="CGRAPH_OPENAI_PROMPT_CACHE_RETENTION")
-    
-    db_dir: Path = Field(default=Path.home() / ".CGRAPH", alias="CGRAPH_DB_DIR")
-    default_depth: int = Field(default=1, alias="CGRAPH_DEFAULT_DEPTH")
-    max_root_path_chars: int = Field(default=500, alias="CGRAPH_MAX_ROOT_PATH_CHARS")
-    max_rel_path_chars: int = Field(default=1024, alias="CGRAPH_MAX_REL_PATH_CHARS")
-    max_prompt_chars: int = Field(default=8000, alias="CGRAPH_MAX_PROMPT_CHARS")
+    openai_prompt_cache_key: str | None = Field(default=None, alias="STUBGRAPH_OPENAI_PROMPT_CACHE_KEY")
+    openai_prompt_cache_retention: str | None = Field(default=None, alias="STUBGRAPH_OPENAI_PROMPT_CACHE_RETENTION")
+
+    db_dir: Path = Field(default=Path.home() / ".StubGraph", alias="STUBGRAPH_DB_DIR")
+    default_depth: int = Field(default=1, alias="STUBGRAPH_DEFAULT_DEPTH")
+    max_root_path_chars: int = Field(default=500, alias="STUBGRAPH_MAX_ROOT_PATH_CHARS")
+    max_rel_path_chars: int = Field(default=1024, alias="STUBGRAPH_MAX_REL_PATH_CHARS")
+    max_prompt_chars: int = Field(default=8000, alias="STUBGRAPH_MAX_PROMPT_CHARS")
 
     # Patch application guardrails
-    patch_require_in_context: bool = Field(default=True, alias="CGRAPH_PATCH_REQUIRE_IN_CONTEXT")
-    patch_allow_new_files: bool = Field(default=False, alias="CGRAPH_PATCH_ALLOW_NEW_FILES")
+    patch_require_in_context: bool = Field(default=True, alias="STUBGRAPH_PATCH_REQUIRE_IN_CONTEXT")
+    patch_allow_new_files: bool = Field(default=False, alias="STUBGRAPH_PATCH_ALLOW_NEW_FILES")
 
-    triage_model: str = Field(default="gpt-5-nano", alias="CGRAPH_MODEL_TRIAGE")
-    analysis_model: str = Field(default="gpt-5-nano", alias="CGRAPH_MODEL_ANALYSIS")
-    patch_model: str = Field(default="gpt-5-nano", alias="CGRAPH_MODEL_PATCH")
+    triage_model: str = Field(default="gpt-5-nano", alias="STUBGRAPH_MODEL_TRIAGE")
+    analysis_model: str = Field(default="gpt-5-nano", alias="STUBGRAPH_MODEL_ANALYSIS")
+    patch_model: str = Field(default="gpt-5-nano", alias="STUBGRAPH_MODEL_PATCH")
 
-    reasoning_effort_triage: str = Field(default="low", alias="CGRAPH_REASONING_EFFORT_TRIAGE")
-    reasoning_effort_analysis: str = Field(default="medium", alias="CGRAPH_REASONING_EFFORT_ANALYSIS")
-    reasoning_effort_patch: str = Field(default="high", alias="CGRAPH_REASONING_EFFORT_PATCH")
+    reasoning_effort_triage: str = Field(default="low", alias="STUBGRAPH_REASONING_EFFORT_TRIAGE")
+    reasoning_effort_analysis: str = Field(default="medium", alias="STUBGRAPH_REASONING_EFFORT_ANALYSIS")
+    reasoning_effort_patch: str = Field(default="high", alias="STUBGRAPH_REASONING_EFFORT_PATCH")
 
-    compute_scc: bool = Field(default=True, alias="CGRAPH_COMPUTE_SCC")
-    scc_max_nodes: int = Field(default=4000, alias="CGRAPH_SCC_MAX_NODES")
-    scc_max_edges: int = Field(default=20000, alias="CGRAPH_SCC_MAX_EDGES")
+    compute_scc: bool = Field(default=True, alias="STUBGRAPH_COMPUTE_SCC")
+    scc_max_nodes: int = Field(default=4000, alias="STUBGRAPH_SCC_MAX_NODES")
+    scc_max_edges: int = Field(default=20000, alias="STUBGRAPH_SCC_MAX_EDGES")
 
     graph_metrics_incremental_max_paths: int = Field(
-        default=200, alias="CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_PATHS"
+        default=200, alias="STUBGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_PATHS"
     )
     graph_metrics_incremental_max_component_nodes: int = Field(
-        default=2000, alias="CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_NODES"
+        default=2000, alias="STUBGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_NODES"
     )
     graph_metrics_incremental_max_component_edges: int = Field(
-        default=5000, alias="CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES"
+        default=5000, alias="STUBGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES"
     )
 
-    impact_max_nodes: int | None = Field(default=None, alias="CGRAPH_IMPACT_MAX_NODES")
-    impact_max_depth: int | None = Field(default=None, alias="CGRAPH_IMPACT_MAX_DEPTH")
+    impact_max_nodes: int | None = Field(default=None, alias="STUBGRAPH_IMPACT_MAX_NODES")
+    impact_max_depth: int | None = Field(default=None, alias="STUBGRAPH_IMPACT_MAX_DEPTH")
 
-    openai_timeout_seconds: float = Field(default=900.0, alias="CGRAPH_OPENAI_TIMEOUT_SECONDS")
-    openai_max_retries: int = Field(default=3, alias="CGRAPH_OPENAI_MAX_RETRIES")
+    openai_timeout_seconds: float = Field(default=900.0, alias="STUBGRAPH_OPENAI_TIMEOUT_SECONDS")
+    openai_max_retries: int = Field(default=3, alias="STUBGRAPH_OPENAI_MAX_RETRIES")
 
-    embeddings_enabled: bool = Field(default=False, alias="CGRAPH_EMBEDDINGS_ENABLED")
-    embeddings_model: str = Field(default="text-embedding-3-small", alias="CGRAPH_EMBEDDINGS_MODEL")
-    embeddings_chunk_size: int = Field(default=1500, alias="CGRAPH_EMBEDDINGS_CHUNK_SIZE")
-    embeddings_chunk_overlap: int = Field(default=200, alias="CGRAPH_EMBEDDINGS_CHUNK_OVERLAP")
-    embeddings_max_file_chars: int = Field(default=200_000, alias="CGRAPH_EMBEDDINGS_MAX_FILE_CHARS")
+    embeddings_enabled: bool = Field(default=False, alias="STUBGRAPH_EMBEDDINGS_ENABLED")
+    embeddings_model: str = Field(default="text-embedding-3-small", alias="STUBGRAPH_EMBEDDINGS_MODEL")
+    embeddings_chunk_size: int = Field(default=1500, alias="STUBGRAPH_EMBEDDINGS_CHUNK_SIZE")
+    embeddings_chunk_overlap: int = Field(default=200, alias="STUBGRAPH_EMBEDDINGS_CHUNK_OVERLAP")
+    embeddings_max_file_chars: int = Field(default=200_000, alias="STUBGRAPH_EMBEDDINGS_MAX_FILE_CHARS")
     embeddings_search_max_candidates: int = Field(
-        default=500, alias="CGRAPH_EMBEDDINGS_SEARCH_MAX_CANDIDATES"
+        default=500, alias="STUBGRAPH_EMBEDDINGS_SEARCH_MAX_CANDIDATES"
     )
     embeddings_search_max_results: int = Field(
-        default=20, alias="CGRAPH_EMBEDDINGS_SEARCH_MAX_RESULTS"
+        default=20, alias="STUBGRAPH_EMBEDDINGS_SEARCH_MAX_RESULTS"
     )
 
     # Agentic tool-based retrieval (LLM chooses which context to fetch)
-    llm_agentic_retrieval: bool = Field(default=True, alias="CGRAPH_LLM_AGENTIC_RETRIEVAL")
-    llm_agentic_max_calls: int = Field(default=100, alias="CGRAPH_LLM_AGENTIC_MAX_CALLS")
+    llm_agentic_retrieval: bool = Field(default=True, alias="STUBGRAPH_LLM_AGENTIC_RETRIEVAL")
+    llm_agentic_max_calls: int = Field(default=100, alias="STUBGRAPH_LLM_AGENTIC_MAX_CALLS")
     llm_agentic_max_total_tool_output_chars: int = Field(
-        default=2_000_000, alias="CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS"
+        default=2_000_000, alias="STUBGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS"
     )
-    llm_agentic_max_file_chars: int = Field(default=200_000, alias="CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS")
-    llm_agentic_temperature: float = Field(default=0.0, alias="CGRAPH_LLM_AGENTIC_TEMPERATURE")
+    llm_agentic_max_file_chars: int = Field(default=200_000, alias="STUBGRAPH_LLM_AGENTIC_MAX_FILE_CHARS")
+    llm_agentic_temperature: float = Field(default=0.0, alias="STUBGRAPH_LLM_AGENTIC_TEMPERATURE")
     llm_agentic_trace_enabled: bool = Field(
-        default=True, alias="CGRAPH_LLM_AGENTIC_TRACE_ENABLED"
+        default=True, alias="STUBGRAPH_LLM_AGENTIC_TRACE_ENABLED"
     )
 
-    go_build_tags: str = Field(default="", alias="CGRAPH_GO_BUILD_TAGS")
+    go_build_tags: str = Field(default="", alias="STUBGRAPH_GO_BUILD_TAGS")
     go_include_unexported_symbols: bool = Field(
-        default=False, alias="CGRAPH_GO_INCLUDE_UNEXPORTED_SYMBOLS"
+        default=False, alias="STUBGRAPH_GO_INCLUDE_UNEXPORTED_SYMBOLS"
     )
     task_queue_completed_ttl_seconds: int | None = Field(
-        default=None, alias="CGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS"
+        default=None, alias="STUBGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS"
     )
-    task_queue_max_completed: int | None = Field(default=None, alias="CGRAPH_TASK_QUEUE_MAX_COMPLETED")
+    task_queue_max_completed: int | None = Field(default=None, alias="STUBGRAPH_TASK_QUEUE_MAX_COMPLETED")
 
     def cors_origins(self) -> list[str]:
         raw = (self.cors_allow_origins or "").strip()
@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _validate_limits(self) -> "Settings":
         if self.default_depth < 0:
-            raise ValueError("CGRAPH_DEFAULT_DEPTH должен быть неотрицательным")
+            raise ValueError("STUBGRAPH_DEFAULT_DEPTH должен быть неотрицательным")
         if self.max_root_path_chars <= 0:
             raise ValueError("Лимит длины пути до корня должен быть положительным")
         if self.max_rel_path_chars <= 0:
@@ -112,45 +112,45 @@ class Settings(BaseSettings):
         if self.scc_max_nodes < 0 or self.scc_max_edges < 0:
             raise ValueError("Параметры SCC должны быть неотрицательными")
         if self.graph_metrics_incremental_max_paths <= 0:
-            raise ValueError("CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_PATHS должен быть положительным")
+            raise ValueError("STUBGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_PATHS должен быть положительным")
         if self.graph_metrics_incremental_max_component_nodes <= 0:
-            raise ValueError("CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_NODES должен быть положительным")
+            raise ValueError("STUBGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_NODES должен быть положительным")
         if self.graph_metrics_incremental_max_component_edges <= 0:
-            raise ValueError("CGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES должен быть положительным")
+            raise ValueError("STUBGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES должен быть положительным")
         if self.impact_max_nodes is not None and self.impact_max_nodes <= 0:
-            raise ValueError("CGRAPH_IMPACT_MAX_NODES должен быть положительным")
+            raise ValueError("STUBGRAPH_IMPACT_MAX_NODES должен быть положительным")
         if self.impact_max_depth is not None and self.impact_max_depth < 0:
-            raise ValueError("CGRAPH_IMPACT_MAX_DEPTH должен быть неотрицательным")
+            raise ValueError("STUBGRAPH_IMPACT_MAX_DEPTH должен быть неотрицательным")
         if self.openai_timeout_seconds <= 0:
             raise ValueError("Таймаут OpenAI должен быть положительным")
         if self.openai_max_retries < 0:
             raise ValueError("Количество ретраев OpenAI не может быть отрицательным")
         if self.embeddings_chunk_size <= 0:
-            raise ValueError("CGRAPH_EMBEDDINGS_CHUNK_SIZE должен быть положительным")
+            raise ValueError("STUBGRAPH_EMBEDDINGS_CHUNK_SIZE должен быть положительным")
         if self.embeddings_chunk_overlap < 0:
-            raise ValueError("CGRAPH_EMBEDDINGS_CHUNK_OVERLAP должен быть неотрицательным")
+            raise ValueError("STUBGRAPH_EMBEDDINGS_CHUNK_OVERLAP должен быть неотрицательным")
         if self.embeddings_chunk_overlap >= self.embeddings_chunk_size:
-            raise ValueError("CGRAPH_EMBEDDINGS_CHUNK_OVERLAP должен быть меньше размера чанка")
+            raise ValueError("STUBGRAPH_EMBEDDINGS_CHUNK_OVERLAP должен быть меньше размера чанка")
         if self.embeddings_max_file_chars <= 0:
-            raise ValueError("CGRAPH_EMBEDDINGS_MAX_FILE_CHARS должен быть положительным")
+            raise ValueError("STUBGRAPH_EMBEDDINGS_MAX_FILE_CHARS должен быть положительным")
         if self.embeddings_search_max_candidates <= 0:
-            raise ValueError("CGRAPH_EMBEDDINGS_SEARCH_MAX_CANDIDATES должен быть положительным")
+            raise ValueError("STUBGRAPH_EMBEDDINGS_SEARCH_MAX_CANDIDATES должен быть положительным")
         if self.embeddings_search_max_results <= 0:
-            raise ValueError("CGRAPH_EMBEDDINGS_SEARCH_MAX_RESULTS должен быть положительным")
+            raise ValueError("STUBGRAPH_EMBEDDINGS_SEARCH_MAX_RESULTS должен быть положительным")
         if not self.embeddings_model or not self.embeddings_model.strip():
-            raise ValueError("CGRAPH_EMBEDDINGS_MODEL должен быть непустым")
+            raise ValueError("STUBGRAPH_EMBEDDINGS_MODEL должен быть непустым")
         if self.llm_agentic_max_calls <= 0:
-            raise ValueError("CGRAPH_LLM_AGENTIC_MAX_CALLS должен быть положительным")
+            raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_CALLS должен быть положительным")
         if self.llm_agentic_max_total_tool_output_chars <= 0:
-            raise ValueError("CGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS должен быть положительным")
+            raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS должен быть положительным")
         if self.llm_agentic_max_file_chars <= 0:
-            raise ValueError("CGRAPH_LLM_AGENTIC_MAX_FILE_CHARS должен быть положительным")
+            raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_FILE_CHARS должен быть положительным")
         if self.llm_agentic_temperature < 0 or self.llm_agentic_temperature > 2:
-            raise ValueError("CGRAPH_LLM_AGENTIC_TEMPERATURE должен быть в диапазоне 0..2")
+            raise ValueError("STUBGRAPH_LLM_AGENTIC_TEMPERATURE должен быть в диапазоне 0..2")
         if self.task_queue_completed_ttl_seconds is not None and self.task_queue_completed_ttl_seconds <= 0:
-            raise ValueError("CGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS должен быть положительным")
+            raise ValueError("STUBGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS должен быть положительным")
         if self.task_queue_max_completed is not None and self.task_queue_max_completed <= 0:
-            raise ValueError("CGRAPH_TASK_QUEUE_MAX_COMPLETED должен быть положительным")
+            raise ValueError("STUBGRAPH_TASK_QUEUE_MAX_COMPLETED должен быть положительным")
         return self
 
 settings = Settings()
