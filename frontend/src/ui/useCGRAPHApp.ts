@@ -884,6 +884,10 @@ export function useCGRAPHApp() {
   const [fileEditorBusy, setFileEditorBusy] = useState(false)
   const [fileEditorSaving, setFileEditorSaving] = useState(false)
   const [fileEditorError, setFileEditorError] = useState<string | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [confirmReason, setConfirmReason] = useState<string | null>(null)
+  const [pendingFilePath, setPendingFilePath] = useState<string | null>(null)
+  const [pendingView, setPendingView] = useState<WorkspaceView | null>(null)
   const FILE_EDITOR_MAX_CHARS = 200_000
 
   useEffect(() => {
@@ -898,6 +902,10 @@ export function useCGRAPHApp() {
     setFileEditorOriginal('')
     setFileEditorTruncated(false)
     setFileEditorError(null)
+    setConfirmOpen(false)
+    setConfirmReason(null)
+    setPendingFilePath(null)
+    setPendingView(null)
   }, [activeProject?.id])
 
   const loadDocs = useCallback(async () => {
@@ -959,16 +967,30 @@ export function useCGRAPHApp() {
     [activeProject],
   )
 
+  const clearConfirm = useCallback(() => {
+    setConfirmOpen(false)
+    setConfirmReason(null)
+    setPendingFilePath(null)
+    setPendingView(null)
+  }, [])
+
   const openFileEditor = useCallback(
     async (path: string) => {
       if (!activeProject) return
       const p = String(path || '').trim()
       if (!p) return
+      if (fileEditorContent !== fileEditorOriginal && p !== fileEditorPath) {
+        setConfirmOpen(true)
+        setConfirmReason('open-file')
+        setPendingFilePath(p)
+        setPendingView(null)
+        return
+      }
       setFileEditorOpen(true)
       setFileEditorPath(p)
       await loadFileEditor(p)
     },
-    [activeProject, loadFileEditor],
+    [activeProject, fileEditorContent, fileEditorOriginal, fileEditorPath, loadFileEditor],
   )
 
   const reloadFileEditor = useCallback(async () => {
@@ -998,6 +1020,55 @@ export function useCGRAPHApp() {
       setFileEditorSaving(false)
     }
   }, [activeProject, fileEditorContent, fileEditorPath, notifyInfo, queryClient])
+
+  const confirmSave = useCallback(async () => {
+    if (fileEditorSaving || fileEditorBusy) return
+    await saveFileEditor()
+    if (pendingFilePath) {
+      setFileEditorOpen(true)
+      setFileEditorPath(pendingFilePath)
+      await loadFileEditor(pendingFilePath)
+    } else if (pendingView) {
+      setWorkspaceViewState(pendingView)
+      if (pendingView === 'graph') setFileEditorOpen(false)
+    }
+    clearConfirm()
+  }, [
+    clearConfirm,
+    fileEditorBusy,
+    fileEditorSaving,
+    loadFileEditor,
+    pendingFilePath,
+    pendingView,
+    saveFileEditor,
+  ])
+
+  const confirmDiscard = useCallback(async () => {
+    if (fileEditorSaving || fileEditorBusy) return
+    if (pendingFilePath) {
+      setFileEditorOpen(true)
+      setFileEditorPath(pendingFilePath)
+      await loadFileEditor(pendingFilePath)
+    } else if (pendingView) {
+      setWorkspaceViewState(pendingView)
+      if (pendingView === 'graph') setFileEditorOpen(false)
+    } else {
+      setFileEditorOpen(false)
+    }
+    clearConfirm()
+  }, [
+    clearConfirm,
+    fileEditorBusy,
+    fileEditorSaving,
+    loadFileEditor,
+    pendingFilePath,
+    pendingView,
+  ])
+
+  const confirmCancel = useCallback(() => {
+    if (fileEditorSaving || fileEditorBusy) return
+    clearConfirm()
+  }, [clearConfirm, fileEditorBusy, fileEditorSaving])
 
   const runOp = useCallback(async (fn: () => Promise<void>) => {
     setBusyCount((count) => count + 1)
@@ -1388,6 +1459,13 @@ export function useCGRAPHApp() {
   const setWorkspaceView = useCallback(
     (nextView: WorkspaceView) => {
       if (workspaceView === nextView) return
+      if (fileEditorContent !== fileEditorOriginal && nextView === 'graph') {
+        setConfirmOpen(true)
+        setConfirmReason('close-editor')
+        setPendingView('graph')
+        setPendingFilePath(null)
+        return
+      }
       setWorkspaceViewState(nextView)
       if (nextView === 'graph') {
         closeFileEditor()
@@ -1398,7 +1476,7 @@ export function useCGRAPHApp() {
         void openFileEditor(nextPath)
       }
     },
-    [closeFileEditor, openFileEditor, workspaceView],
+    [closeFileEditor, fileEditorContent, fileEditorOriginal, openFileEditor, workspaceView],
   )
 
   const toggleWorkspaceView = useCallback(() => {
@@ -1458,6 +1536,11 @@ export function useCGRAPHApp() {
     fileEditorSaving,
     fileEditorError,
     setFileEditorContent,
+    confirmOpen,
+    confirmReason,
+    confirmSave,
+    confirmDiscard,
+    confirmCancel,
     openFileEditor,
     closeFileEditor,
     reloadFileEditor,
