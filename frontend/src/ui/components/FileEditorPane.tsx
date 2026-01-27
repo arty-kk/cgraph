@@ -15,6 +15,9 @@ export type FileEditorPaneProps = {
   dirty: boolean
   truncated: boolean
   error: string | null
+  wrap: boolean
+  showDiff: boolean
+  fontSize: number
   pendingJump?: { path: string; line: number; column: number } | null
   onApplyPendingJump?: () => void
   onSelectTab: (path: string) => void
@@ -23,6 +26,9 @@ export type FileEditorPaneProps = {
   onReload: () => void | Promise<void>
   onSave: () => void | Promise<boolean>
   onClose: () => void
+  onToggleWrap: () => void
+  onToggleDiff: () => void
+  onSetFontSize: (value: number) => void
 }
 
 export function FileEditorPane({
@@ -37,6 +43,9 @@ export function FileEditorPane({
   dirty,
   truncated,
   error,
+  wrap,
+  showDiff,
+  fontSize,
   pendingJump,
   onApplyPendingJump,
   onSelectTab,
@@ -45,22 +54,10 @@ export function FileEditorPane({
   onReload,
   onSave,
   onClose,
+  onToggleWrap,
+  onToggleDiff,
+  onSetFontSize,
 }: FileEditorPaneProps) {
-  const [wrap, setWrap] = React.useState(() => {
-    try { return (localStorage.getItem('cs.editor.wrap') || '1') !== '0' } catch { return true }
-  })
-  const [fontSize, setFontSize] = React.useState(() => {
-    try {
-      const raw = localStorage.getItem('cs.editor.fontSize')
-      const parsed = raw ? Number(raw) : Number.NaN
-      return Number.isFinite(parsed) ? parsed : 13
-    } catch {
-      return 13
-    }
-  })
-  const [showDiff, setShowDiff] = React.useState(() => {
-    try { return (localStorage.getItem('cs.editor.showDiff') || '') === '1' } catch { return false }
-  })
   const [cursorInfo, setCursorInfo] = React.useState({ line: 1, column: 1 })
   const editorRef = React.useRef<editor.IStandaloneCodeEditor | null>(null)
   const diffEditorRef = React.useRef<editor.IStandaloneDiffEditor | null>(null)
@@ -133,18 +130,6 @@ export function FileEditorPane({
   React.useEffect(() => {
     setCursorInfo({ line: 1, column: 1 })
   }, [path, open])
-
-  React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.wrap', wrap ? '1' : '0') } catch {}
-  }, [wrap])
-
-  React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.fontSize', String(fontSize)) } catch {}
-  }, [fontSize])
-
-  React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.showDiff', showDiff ? '1' : '0') } catch {}
-  }, [showDiff])
 
   React.useEffect(() => {
     if (!pendingJump || !path || busy) return
@@ -305,14 +290,14 @@ export function FileEditorPane({
           <button
             type="button"
             className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
-            onClick={() => setShowDiff((prev) => !prev)}
+            onClick={onToggleDiff}
           >
             {showDiff ? 'Hide diff' : 'Show diff'}
           </button>
           <button
             type="button"
             className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
-            onClick={() => setWrap((prev) => !prev)}
+            onClick={onToggleWrap}
           >
             {wrap ? 'Wrap on' : 'Wrap off'}
           </button>
@@ -324,7 +309,7 @@ export function FileEditorPane({
               max={16}
               step={1}
               value={fontSize}
-              onChange={(e) => setFontSize(Number(e.target.value))}
+              onChange={(e) => onSetFontSize(Number(e.target.value))}
               className="h-1 w-20 accent-indigo-500"
               aria-label="Font size"
             />

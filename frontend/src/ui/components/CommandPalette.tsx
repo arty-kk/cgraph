@@ -5,7 +5,7 @@ import { searchNodes } from '../../api'
 import { Modal } from './Modal'
 import { LanguageIcon } from './LanguageIcon'
 
-type CmdGroup = 'Project' | 'Graph' | 'UI' | 'Selection' | 'Navigation'
+type CmdGroup = 'Project' | 'Graph' | 'UI' | 'Editor' | 'Selection' | 'Navigation'
 
 type Item = {
   key: string
@@ -45,6 +45,17 @@ type Props = {
 
   compactMode: boolean
   onToggleCompactMode: () => void
+
+  editorOpen: boolean
+  activeFilePath: string | null
+  canSave: boolean
+  onSave: () => void | Promise<boolean>
+  onCloseTab: (path: string) => void
+  onToggleWrap: () => void
+  onToggleDiff: () => void
+  onIncreaseFontSize: () => void
+  onDecreaseFontSize: () => void
+  onToggleExplorer: () => void
 }
 
 function norm(s: string) {
@@ -72,6 +83,16 @@ export function CommandPalette({
   onForward,
   compactMode,
   onToggleCompactMode,
+  editorOpen,
+  activeFilePath,
+  canSave,
+  onSave,
+  onCloseTab,
+  onToggleWrap,
+  onToggleDiff,
+  onIncreaseFontSize,
+  onDecreaseFontSize,
+  onToggleExplorer,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [query, setQuery] = useState('')
@@ -154,8 +175,101 @@ export function CommandPalette({
   const commandItems: Item[] = useMemo(() => {
     const hasProject = Boolean(activeProject)
     const hasSel = Boolean(selectedPath)
+    const hasActiveFile = Boolean(activeFilePath)
 
     return [
+      {
+        key: 'cmd.editor.save',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Save',
+        subtitle: 'Сохранить файл в редакторе',
+        subtitleText: 'Сохранить файл в редакторе',
+        disabled: !hasActiveFile || !canSave,
+        onSelect: async () => {
+          onClose()
+          await onSave()
+        },
+      },
+      {
+        key: 'cmd.editor.close',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Close tab',
+        subtitle: 'Закрыть активную вкладку редактора',
+        subtitleText: 'Закрыть активную вкладку редактора',
+        disabled: !hasActiveFile,
+        onSelect: () => {
+          if (!activeFilePath) return
+          onClose()
+          onCloseTab(activeFilePath)
+        },
+      },
+      {
+        key: 'cmd.editor.wrap',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Toggle wrap',
+        subtitle: 'Включить/выключить перенос строк',
+        subtitleText: 'Включить/выключить перенос строк',
+        disabled: !editorOpen,
+        onSelect: () => {
+          onClose()
+          onToggleWrap()
+        },
+      },
+      {
+        key: 'cmd.editor.diff',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Toggle diff',
+        subtitle: 'Показать/скрыть diff-режим',
+        subtitleText: 'Показать/скрыть diff-режим',
+        disabled: !editorOpen,
+        onSelect: () => {
+          onClose()
+          onToggleDiff()
+        },
+      },
+      {
+        key: 'cmd.editor.font.increase',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Increase font size',
+        subtitle: 'Увеличить размер шрифта редактора',
+        subtitleText: 'Увеличить размер шрифта редактора',
+        disabled: !editorOpen,
+        onSelect: () => {
+          onClose()
+          onIncreaseFontSize()
+        },
+      },
+      {
+        key: 'cmd.editor.font.decrease',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Decrease font size',
+        subtitle: 'Уменьшить размер шрифта редактора',
+        subtitleText: 'Уменьшить размер шрифта редактора',
+        disabled: !editorOpen,
+        onSelect: () => {
+          onClose()
+          onDecreaseFontSize()
+        },
+      },
+      {
+        key: 'cmd.editor.explorer',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Toggle explorer',
+        subtitle: 'Показать/скрыть боковую панель редактора',
+        subtitleText: 'Показать/скрыть боковую панель редактора',
+        disabled: !editorOpen,
+        onSelect: () => {
+          onClose()
+          onToggleExplorer()
+        },
+      },
       {
         key: 'cmd.docs',
         kind: 'command',
@@ -282,21 +396,31 @@ export function CommandPalette({
     ]
   }, [
     activeProject,
+    activeFilePath,
+    canSave,
     compactMode,
     canGoBack,
     canGoForward,
+    editorOpen,
     focusGraph,
     onBack,
     onClearSelection,
+    onCloseTab,
     onClose,
+    onDecreaseFontSize,
+    onIncreaseFontSize,
     onOpenDocs,
     onToggleCompactMode,
+    onToggleDiff,
+    onToggleExplorer,
     onForward,
     onRefresh,
     onScan,
+    onSave,
     selectedPath,
     setFocusGraph,
     onTogglePinPath,
+    onToggleWrap,
   ])
 
   const projectItems: Item[] = useMemo(() => {
@@ -370,7 +494,7 @@ export function CommandPalette({
       push('projects', 'Projects', projectItems, projectsNote)
     }
 
-    const groupOrder: CmdGroup[] = ['Project', 'Graph', 'UI', 'Selection', 'Navigation']
+    const groupOrder: CmdGroup[] = ['Project', 'Graph', 'UI', 'Editor', 'Selection', 'Navigation']
     for (const g of groupOrder) {
       const items = filteredCommands.filter((c) => c.group === g)
       push(`actions.${g}`, `Actions: ${g}`, items)

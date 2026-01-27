@@ -20,6 +20,21 @@ export function App() {
   const [onboardStep, setOnboardStep] = React.useState(0)
   const [editorExplorerOpen, setEditorExplorerOpen] = React.useState(true)
   const [editorLeftTab, setEditorLeftTab] = React.useState<'explorer' | 'search'>('explorer')
+  const [editorWrap, setEditorWrap] = React.useState(() => {
+    try { return (localStorage.getItem('cs.editor.wrap') || '1') !== '0' } catch { return true }
+  })
+  const [editorShowDiff, setEditorShowDiff] = React.useState(() => {
+    try { return (localStorage.getItem('cs.editor.showDiff') || '') === '1' } catch { return false }
+  })
+  const [editorFontSize, setEditorFontSize] = React.useState(() => {
+    try {
+      const raw = localStorage.getItem('cs.editor.fontSize')
+      const parsed = raw ? Number(raw) : Number.NaN
+      return Number.isFinite(parsed) ? parsed : 13
+    } catch {
+      return 13
+    }
+  })
 
   const pid = app.activeProject?.id
   const onboardKey = pid != null ? `cs.onboarding.seen.${pid}` : null
@@ -62,11 +77,50 @@ export function App() {
       ? 'Перезагрузка файла приведёт к потере несохранённых изменений.'
       : 'Есть несохранённые изменения.'
 
+  const clampFontSize = React.useCallback((value: number) => Math.min(16, Math.max(12, value)), [])
+
+  React.useEffect(() => {
+    setEditorFontSize((prev) => clampFontSize(prev))
+  }, [clampFontSize])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.wrap', editorWrap ? '1' : '0') } catch {}
+  }, [editorWrap])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.showDiff', editorShowDiff ? '1' : '0') } catch {}
+  }, [editorShowDiff])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.fontSize', String(editorFontSize)) } catch {}
+  }, [editorFontSize])
+
   const activeFileDirty = React.useMemo(() => {
     if (!app.activeFilePath) return false
     const entry = app.fileEditorsByPath?.[app.activeFilePath]
     return entry ? entry.content !== entry.original : false
   }, [app.activeFilePath, app.fileEditorsByPath])
+
+  const canSaveEditor = Boolean(
+    app.fileEditorOpen
+    && app.activeFilePath
+    && app.fileEditorDirty
+    && !app.fileEditorTruncated
+    && !app.fileEditorBusy
+    && !app.fileEditorSaving
+  )
+
+  const handleIncreaseFontSize = React.useCallback(() => {
+    setEditorFontSize((prev) => clampFontSize(prev + 1))
+  }, [clampFontSize])
+
+  const handleDecreaseFontSize = React.useCallback(() => {
+    setEditorFontSize((prev) => clampFontSize(prev - 1))
+  }, [clampFontSize])
+
+  const handleSetFontSize = React.useCallback((value: number) => {
+    setEditorFontSize(clampFontSize(value))
+  }, [clampFontSize])
 
   const openDocs = React.useCallback(() => {
     if (!app.activeProject) return
@@ -351,6 +405,9 @@ export function App() {
                   dirty={app.fileEditorDirty}
                   truncated={app.fileEditorTruncated}
                   error={app.fileEditorError}
+                  wrap={editorWrap}
+                  showDiff={editorShowDiff}
+                  fontSize={editorFontSize}
                   pendingJump={app.pendingJump}
                   onApplyPendingJump={app.clearPendingJump}
                   onSelectTab={(path) => void app.openFileEditor(path)}
@@ -359,6 +416,9 @@ export function App() {
                   onReload={app.requestReloadFileEditor}
                   onSave={app.saveFileEditor}
                   onClose={() => app.setWorkspaceView('graph')}
+                  onToggleWrap={() => setEditorWrap((prev) => !prev)}
+                  onToggleDiff={() => setEditorShowDiff((prev) => !prev)}
+                  onSetFontSize={handleSetFontSize}
                 />
               </div>
 
@@ -457,6 +517,16 @@ export function App() {
         onForward={app.goForward}
         compactMode={app.compactMode}
         onToggleCompactMode={app.toggleCompactMode}
+        editorOpen={app.fileEditorOpen}
+        activeFilePath={app.activeFilePath}
+        canSave={canSaveEditor}
+        onSave={app.saveFileEditor}
+        onCloseTab={(path) => app.closeFileEditor(path)}
+        onToggleWrap={() => setEditorWrap((prev) => !prev)}
+        onToggleDiff={() => setEditorShowDiff((prev) => !prev)}
+        onIncreaseFontSize={handleIncreaseFontSize}
+        onDecreaseFontSize={handleDecreaseFontSize}
+        onToggleExplorer={() => setEditorExplorerOpen((prev) => !prev)}
       />
 
       <Modal
