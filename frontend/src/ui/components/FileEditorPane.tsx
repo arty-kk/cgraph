@@ -46,9 +46,21 @@ export function FileEditorPane({
   onSave,
   onClose,
 }: FileEditorPaneProps) {
-  const [wrap, setWrap] = React.useState(true)
-  const [fontSize, setFontSize] = React.useState(13)
-  const [showDiff, setShowDiff] = React.useState(false)
+  const [wrap, setWrap] = React.useState(() => {
+    try { return (localStorage.getItem('cs.editor.wrap') || '1') !== '0' } catch { return true }
+  })
+  const [fontSize, setFontSize] = React.useState(() => {
+    try {
+      const raw = localStorage.getItem('cs.editor.fontSize')
+      const parsed = raw ? Number(raw) : Number.NaN
+      return Number.isFinite(parsed) ? parsed : 13
+    } catch {
+      return 13
+    }
+  })
+  const [showDiff, setShowDiff] = React.useState(() => {
+    try { return (localStorage.getItem('cs.editor.showDiff') || '') === '1' } catch { return false }
+  })
   const [cursorInfo, setCursorInfo] = React.useState({ line: 1, column: 1 })
   const editorRef = React.useRef<editor.IStandaloneCodeEditor | null>(null)
   const diffEditorRef = React.useRef<editor.IStandaloneDiffEditor | null>(null)
@@ -121,6 +133,18 @@ export function FileEditorPane({
   React.useEffect(() => {
     setCursorInfo({ line: 1, column: 1 })
   }, [path, open])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.wrap', wrap ? '1' : '0') } catch {}
+  }, [wrap])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.fontSize', String(fontSize)) } catch {}
+  }, [fontSize])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.showDiff', showDiff ? '1' : '0') } catch {}
+  }, [showDiff])
 
   React.useEffect(() => {
     if (!pendingJump || !path || busy) return
