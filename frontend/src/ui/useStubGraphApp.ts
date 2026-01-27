@@ -21,6 +21,7 @@ import {
   getProjectDocs,
   buildProjectDocs,
   searchProjectSemantic,
+  searchProjectText,
   getFileContent,
   updateFileContent,
   type DepMode,
@@ -33,6 +34,8 @@ import {
   type NodeInfo,
   type NodeSearchItem,
   type SemanticSearchItem,
+  type TextSearchMatch,
+  type TextSearchResult,
   type Project,
   type RunRecord,
   type RunTaskBody,
@@ -56,6 +59,12 @@ export type FileEditorEntry = {
   busy: boolean
   saving: boolean
   error: string | null
+}
+
+export type PendingFileJump = {
+  path: string
+  line: number
+  column: number
 }
 
 type WorkspaceStateV1 = {
@@ -201,6 +210,15 @@ export function useStubGraphApp() {
   const [semanticSearchFallbackUsed, setSemanticSearchFallbackUsed] = useState(false)
   const [semanticSearchUnavailableReason, setSemanticSearchUnavailableReason] = useState<SemanticSearchErrorReason | null>(null)
 
+  const textSearchSeqRef = useRef(0)
+  const [textSearchQuery, setTextSearchQuery] = useState('')
+  const [textSearchResults, setTextSearchResults] = useState<TextSearchMatch[]>([])
+  const [textSearchMeta, setTextSearchMeta] = useState<TextSearchResult['meta'] | null>(null)
+  const [textSearchBusy, setTextSearchBusy] = useState(false)
+  const [textSearchCaseSensitive, setTextSearchCaseSensitive] = useState(false)
+  const [textSearchPrefix, setTextSearchPrefix] = useState('')
+  const [textSearchError, setTextSearchError] = useState<string | null>(null)
+
   useEffect(() => {
     if (searchQuery.trim()) return
     if (searchResults.length === 0) return
@@ -218,6 +236,14 @@ export function useStubGraphApp() {
     setSearchSemanticResults([])
     setSemanticSearchFallbackUsed(false)
   }, [semanticSearchEnabled])
+
+  useEffect(() => {
+    if (textSearchQuery.trim()) return
+    if (textSearchResults.length === 0 && !textSearchMeta && !textSearchError) return
+    setTextSearchResults([])
+    setTextSearchMeta(null)
+    setTextSearchError(null)
+  }, [textSearchError, textSearchMeta, textSearchQuery, textSearchResults.length])
 
   const selectedPathRef = useRef<string | null>(null)
   const backStackRef = useRef<string[]>([])
@@ -328,6 +354,7 @@ export function useStubGraphApp() {
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null)
   const [pendingActivePath, setPendingActivePath] = useState<string | null>(null)
+  const [pendingJump, setPendingJump] = useState<PendingFileJump | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [confirmReason, setConfirmReason] = useState<string | null>(null)
   const [pendingView, setPendingView] = useState<WorkspaceView | null>(null)
@@ -1120,6 +1147,28 @@ export function useStubGraphApp() {
     [activeProject, activeFilePath, fileEditorsByPath, loadFileEditor, updateFileEditorEntry],
   )
 
+  const openFileEditorAt = useCallback(
+    async (path: string, line: number, column: number) => {
+      if (!activeProject) return
+      const p = String(path || '').trim()
+      if (!p) return
+      setPendingJump({
+        path: p,
+        line: Math.max(1, Math.trunc(line || 1)),
+        column: Math.max(1, Math.trunc(column || 1)),
+      })
+      if (workspaceView !== 'editor') {
+        setWorkspaceViewState('editor')
+      }
+      await openFileEditor(p)
+    },
+    [activeProject, openFileEditor, workspaceView],
+  )
+
+  const clearPendingJump = useCallback(() => {
+    setPendingJump(null)
+  }, [])
+
   const reloadFileEditor = useCallback(async () => {
     if (!activeFilePath) return
     await loadFileEditor(activeFilePath)
@@ -1624,6 +1673,40 @@ export function useStubGraphApp() {
     [activeProject, notifyInfo, semanticSearchEnabled, setErrorMessage]
   )
 
+  const onSearchText = useCallback(
+    async (queryInput: string) => {
+      if (!activeProject) return
+      const query = String(queryInput || '').trim()
+      setTextSearchQuery(query)
+      if (!query) {
+        textSearchSeqRef.current++
+        setTextSearchBusy(false)
+        setTextSearchResults([])
+        setTextSearchMeta(null)
+        setTextSearchError(null)
+        return
+      }
+      const seq = ++textSearchSeqRef.current
+      setTextSearchBusy(true)
+      setTextSearchError(null)
+      try {
+        const res = await searchProjectText(activeProject.id, query, {
+          prefix: textSearchPrefix.trim() || undefined,
+          case_sensitive: textSearchCaseSensitive,
+        })
+        if (textSearchSeqRef.current !== seq) return
+        setTextSearchResults(res.matches || [])
+        setTextSearchMeta(res.meta || null)
+      } catch (e: any) {
+        if (textSearchSeqRef.current !== seq) return
+        setTextSearchError(extractError(e))
+      } finally {
+        if (textSearchSeqRef.current === seq) setTextSearchBusy(false)
+      }
+    },
+    [activeProject, textSearchCaseSensitive, textSearchPrefix],
+  )
+
   const closeFileEditor = useCallback(
     (path: string) => {
       const p = String(path || '').trim()
@@ -1765,9 +1848,12 @@ export function useStubGraphApp() {
     confirmDiscard,
     confirmCancel,
     openFileEditor,
+    openFileEditorAt,
     closeFileEditor,
     reloadFileEditor,
     saveFileEditor,
+    pendingJump,
+    clearPendingJump,
     runs,
     newName,
     newPath,
@@ -1819,6 +1905,17 @@ export function useStubGraphApp() {
     semanticSearchUnavailableReason,
     searchBusy,
     onSearchNodes,
+    textSearchQuery,
+    setTextSearchQuery,
+    textSearchResults,
+    textSearchMeta,
+    textSearchBusy,
+    textSearchCaseSensitive,
+    setTextSearchCaseSensitive,
+    textSearchPrefix,
+    setTextSearchPrefix,
+    textSearchError,
+    onSearchText,
     setMode,
     setDepth,
     setDepMode,

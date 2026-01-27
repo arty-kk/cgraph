@@ -4,6 +4,7 @@ import type {
   Project, ScanResult, TaskPollOptions,
   TaskStatus, ProjectFilesResponse, ProjectDocs,
   SemanticSearchResult,
+  TextSearchResult,
 } from './types'
 import { waitForTaskResult } from './tasks'
 
@@ -56,5 +57,30 @@ export async function searchProjectSemantic(
   const params: Record<string, any> = { q, limit }
   if (typeof prefix === 'string' && prefix.trim()) params.prefix = prefix.trim()
   const r = await api.get(`/api/projects/${projectId}/search/semantic`, { params })
+  return r.data
+}
+
+export async function searchProjectText(
+  projectId: number,
+  q: string,
+  opts: {
+    limit_files?: number
+    limit_matches?: number
+    context_chars?: number
+    prefix?: string
+    case_sensitive?: boolean
+  } = {},
+): Promise<TextSearchResult> {
+  const {
+    limit_files = 200,
+    limit_matches = 50,
+    context_chars = 160,
+    prefix,
+    case_sensitive,
+  } = opts
+  const params: Record<string, any> = { q, limit_files, limit_matches, context_chars }
+  if (typeof prefix === 'string' && prefix.trim()) params.prefix = prefix.trim()
+  if (case_sensitive) params.case_sensitive = true
+  const r = await api.get(`/api/projects/${projectId}/search/text`, { params })
   return r.data
 }

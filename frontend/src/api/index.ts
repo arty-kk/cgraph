@@ -9,6 +9,8 @@ export type {
   NodeSearchItem,
   SemanticSearchItem,
   SemanticSearchResult,
+  TextSearchMatch,
+  TextSearchResult,
   NodeContract,
   NodeInfo,
   FileContent,
@@ -35,6 +37,7 @@ export {
   getProjectDocs,
   buildProjectDocs,
   searchProjectSemantic,
+  searchProjectText,
 } from './projects'
 export { getGraph, getLocalGraph, searchNodes } from './graph'
 export { getNode, getContract, getFileContent, updateFileContent } from './nodes'

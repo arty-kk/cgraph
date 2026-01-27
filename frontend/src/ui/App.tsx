@@ -19,6 +19,7 @@ export function App() {
   const [onboardOpen, setOnboardOpen] = React.useState(false)
   const [onboardStep, setOnboardStep] = React.useState(0)
   const [editorExplorerOpen, setEditorExplorerOpen] = React.useState(true)
+  const [editorLeftTab, setEditorLeftTab] = React.useState<'explorer' | 'search'>('explorer')
 
   const pid = app.activeProject?.id
   const onboardKey = pid != null ? `cs.onboarding.seen.${pid}` : null
@@ -177,7 +178,32 @@ export function App() {
               {app.workspaceView === 'editor' && editorExplorerOpen && (
                 <div className="w-72 shrink-0 border-r border-neutral-800 bg-neutral-950/70 flex flex-col">
                   <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-neutral-800">
-                    <div className="text-sm font-semibold text-neutral-200">Explorer</div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        className={[
+                          'rounded-md px-2 py-1 text-[11px] font-semibold',
+                          editorLeftTab === 'explorer'
+                            ? 'bg-neutral-800 text-neutral-100'
+                            : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200',
+                        ].join(' ')}
+                        onClick={() => setEditorLeftTab('explorer')}
+                      >
+                        Explorer
+                      </button>
+                      <button
+                        type="button"
+                        className={[
+                          'rounded-md px-2 py-1 text-[11px] font-semibold',
+                          editorLeftTab === 'search'
+                            ? 'bg-neutral-800 text-neutral-100'
+                            : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200',
+                        ].join(' ')}
+                        onClick={() => setEditorLeftTab('search')}
+                      >
+                        Search
+                      </button>
+                    </div>
                     <button
                       type="button"
                       className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800"
@@ -189,17 +215,102 @@ export function App() {
                     </button>
                   </div>
                   <div className="p-3 overflow-auto">
-                    <ExplorerTree
-                      activeProject={app.activeProject}
-                      busy={app.busy}
-                      selectedPath={app.selectedPath}
-                      dirtyPath={activeFileDirty ? app.activeFilePath : null}
-                      onSelectPath={app.onSelectNodePath}
-                      projectFiles={app.projectFiles}
-                      projectFilesMeta={app.projectFilesMeta}
-                      projectFilesBusy={app.projectFilesBusy}
-                      showModuleSelect={false}
-                    />
+                    {editorLeftTab === 'explorer' ? (
+                      <ExplorerTree
+                        activeProject={app.activeProject}
+                        busy={app.busy}
+                        selectedPath={app.selectedPath}
+                        dirtyPath={activeFileDirty ? app.activeFilePath : null}
+                        onSelectPath={app.onSelectNodePath}
+                        projectFiles={app.projectFiles}
+                        projectFilesMeta={app.projectFilesMeta}
+                        projectFilesBusy={app.projectFilesBusy}
+                        showModuleSelect={false}
+                      />
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="space-y-2">
+                          <label className="text-xs text-neutral-400">Query</label>
+                          <input
+                            type="text"
+                            value={app.textSearchQuery}
+                            onChange={(e) => app.setTextSearchQuery(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void app.onSearchText(app.textSearchQuery)
+                            }}
+                            placeholder="Find in project..."
+                            className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs text-neutral-400">Prefix</label>
+                          <input
+                            type="text"
+                            value={app.textSearchPrefix}
+                            onChange={(e) => app.setTextSearchPrefix(e.target.value)}
+                            placeholder="Optional path prefix"
+                            className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+                            onClick={() => void app.onSearchText(app.textSearchQuery)}
+                            disabled={!app.activeProject || app.textSearchBusy || !app.textSearchQuery.trim()}
+                          >
+                            {app.textSearchBusy ? '...' : 'Search'}
+                          </button>
+                          <label className="flex items-center gap-2 text-[11px] text-neutral-300">
+                            <input
+                              type="checkbox"
+                              checked={app.textSearchCaseSensitive}
+                              onChange={(e) => app.setTextSearchCaseSensitive(e.target.checked)}
+                              className="accent-indigo-500"
+                            />
+                            Case sensitive
+                          </label>
+                        </div>
+                        {app.textSearchError && (
+                          <div className="rounded-md border border-rose-900/60 bg-rose-950/40 px-2 py-1 text-[11px] text-rose-200">
+                            {app.textSearchError}
+                          </div>
+                        )}
+                        {app.textSearchMeta?.message && (
+                          <div className="rounded-md border border-amber-800/60 bg-amber-950/30 px-2 py-1 text-[11px] text-amber-200">
+                            {app.textSearchMeta.message}
+                          </div>
+                        )}
+                        {app.textSearchMeta && (
+                          <div className="text-[11px] text-neutral-500">
+                            Scanned {app.textSearchMeta.scanned_files} files, matched {app.textSearchMeta.matched_files}.
+                          </div>
+                        )}
+                        {app.textSearchResults.length === 0 && app.textSearchQuery.trim() && !app.textSearchBusy && !app.textSearchError && (
+                          <div className="text-[11px] text-neutral-500">No matches yet.</div>
+                        )}
+                        <div className="space-y-2">
+                          {app.textSearchResults.map((match, idx) => (
+                            <button
+                              key={`${match.path}:${match.line}:${match.col}:${idx}`}
+                              type="button"
+                              onClick={() => void app.openFileEditorAt(match.path, match.line, match.col)}
+                              className="w-full text-left text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 hover:border-neutral-700"
+                            >
+                              <div className="text-[11px] text-neutral-400">
+                                {match.path} · Ln {match.line}, Col {match.col}
+                                {match.truncated_file && (
+                                  <span className="ml-2 text-[10px] text-amber-300">truncated</span>
+                                )}
+                              </div>
+                              <div className="text-[11px] text-neutral-200 font-mono whitespace-pre-wrap">
+                                {match.snippet}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -228,6 +339,8 @@ export function App() {
                   dirty={app.fileEditorDirty}
                   truncated={app.fileEditorTruncated}
                   error={app.fileEditorError}
+                  pendingJump={app.pendingJump}
+                  onApplyPendingJump={app.clearPendingJump}
                   onSelectTab={(path) => void app.openFileEditor(path)}
                   onCloseTab={(path) => app.closeFileEditor(path)}
                   onChange={app.setFileEditorContent}
