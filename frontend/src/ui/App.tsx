@@ -304,6 +304,42 @@ export function App() {
         onToggleCompactMode={app.toggleCompactMode}
       />
 
+      <Modal
+        open={app.confirmOpen}
+        title="Несохранённые изменения"
+        onClose={app.confirmCancel}
+      >
+        <div className="space-y-4">
+          <div className="text-sm text-neutral-200">Есть несохранённые изменения.</div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-2 text-sm font-semibold disabled:opacity-50"
+              onClick={() => void app.confirmCancel()}
+              disabled={app.fileEditorSaving || app.fileEditorBusy}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-2 text-sm font-semibold disabled:opacity-50"
+              onClick={() => void app.confirmDiscard()}
+              disabled={app.fileEditorSaving || app.fileEditorBusy}
+            >
+              Продолжить без сохранения
+            </button>
+            <button
+              type="button"
+              className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold disabled:opacity-50"
+              onClick={() => void app.confirmSave()}
+              disabled={app.fileEditorSaving || app.fileEditorBusy}
+            >
+              Сохранить
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal open={docsOpen && !!app.activeProject} title="Project docs" onClose={() => setDocsOpen(false)}>
         <div className="space-y-3">
           <div className="flex items-center gap-2">
