@@ -13,6 +13,7 @@ const FILTER_STORAGE_KEY = 'cs.graph.filters.v1'
 const LABELS_STORAGE_KEY = 'cs.graph.labels.v1'
 const SPOTLIGHT_STORAGE_KEY = 'cs.graph.spotlight.v1'
 const EDGE_DIR_STORAGE_KEY = 'cs.graph.edgeDir.v1'
+const LEGEND_STORAGE_KEY = 'cs.graph.legend.v1'
 const EDGE_IN_COLOR = '#22c55e'
 const EDGE_OUT_COLOR = '#3b82f6'
 const LEGACY_FILTER_STORAGE_KEY = 'cs.graph.filters'
@@ -107,6 +108,13 @@ function loadEdgeDir(pid: number | null): boolean {
   if (raw === '0') return false
   if (raw === '1') return true
   return true
+}
+
+function loadLegendCollapsed(): boolean {
+  const raw = (safeGet(LEGEND_STORAGE_KEY) || '').trim()
+  if (raw === '1') return true
+  if (raw === '0') return false
+  return false
 }
 
 const EyeIcon = () => (
@@ -297,6 +305,8 @@ export function GraphCanvas({
   const [labelMode, setLabelMode] = useState<LabelMode>(() => loadLabelMode(projectId))
   const [spotlight, setSpotlight] = useState<boolean>(() => loadSpotlight(projectId))
   const [edgeDirColors, setEdgeDirColors] = useState<boolean>(() => loadEdgeDir(projectId))
+  const [legendCollapsed, setLegendCollapsed] = useState<boolean>(() => loadLegendCollapsed())
+  const legendIsCompact = focusGraph || legendCollapsed
 
   // Load per-project UI settings when project changes (skip persistence during boot)
   useEffect(() => {
@@ -341,6 +351,10 @@ export function GraphCanvas({
     const key = pidKey(EDGE_DIR_STORAGE_KEY, Number.isFinite(pid) && pid > 0 ? pid : null)
     try { localStorage.setItem(key, edgeDirColors ? '1' : '0') } catch {}
   }, [edgeDirColors, projectId])
+
+  useEffect(() => {
+    safeSet(LEGEND_STORAGE_KEY, legendCollapsed ? '1' : '0')
+  }, [legendCollapsed])
 
   const [panelOpen, setPanelOpen] = useState(false)
   const [neighborsOpen, setNeighborsOpen] = useState(false)
@@ -1578,53 +1592,94 @@ export function GraphCanvas({
       )}
       {/* Status bar */}
       {activeProject && (
-        <div className="group absolute bottom-3 right-3 z-10 max-w-[calc(100%-24px)] rounded-md bg-neutral-950/80 border border-neutral-800 px-3 py-2 shadow-lg text-[11px] text-neutral-300 break-words">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-neutral-400">Mode:</span> <span className="text-neutral-100 font-semibold">{graphMode}</span>
-            <span className="text-neutral-500">·</span>
-            <span>Nodes: <span className="text-neutral-100">{stats.visibleNodes}</span>/{returnedNodes}</span>
-            <span className="text-neutral-500">·</span>
-            <span>Edges: <span className="text-neutral-100">{returnedEdges}</span></span>
-            {selectedPath && (
-              <>
-                <span className="text-neutral-500">·</span>
-                <span className="truncate max-w-[260px]">Sel: <span className="text-neutral-100">{baseName(selectedPath)}</span></span>
-              </>
+        <div className="absolute bottom-3 right-3 z-10 flex max-w-[calc(100%-24px)] flex-wrap items-end gap-2">
+          <div className="rounded-md bg-neutral-950/80 border border-neutral-800 px-3 py-2 shadow-lg text-[11px] text-neutral-300">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="flex h-5 w-5 items-center justify-center rounded border border-neutral-700 bg-neutral-900 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800"
+                onClick={() => setLegendCollapsed((prev) => !prev)}
+                title={legendIsCompact ? 'Expand legend' : 'Collapse legend'}
+                aria-label={legendIsCompact ? 'Expand legend' : 'Collapse legend'}
+              >
+                ?
+              </button>
+              {legendIsCompact ? (
+                <div className="text-[10px] text-neutral-400">
+                  F · Esc
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400">
+                  <span className="text-neutral-500">Colors:</span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: EDGE_IN_COLOR }} />
+                    <span className="text-neutral-200">IN</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: EDGE_OUT_COLOR }} />
+                    <span className="text-neutral-200">OUT</span>
+                  </span>
+                  <span className="text-neutral-500">·</span>
+                  <span className="text-neutral-500">Keys:</span>
+                  <span className="text-neutral-200">F</span>
+                  <span className="text-neutral-500">,</span>
+                  <span className="text-neutral-200">Esc</span>
+                  <span className="text-neutral-500">,</span>
+                  <span className="text-neutral-200">Ctrl/⌘+K</span>
+                  <span className="text-neutral-500">,</span>
+                  <span className="text-neutral-200">Alt+←/→</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="group max-w-[calc(100%-24px)] rounded-md bg-neutral-950/80 border border-neutral-800 px-3 py-2 shadow-lg text-[11px] text-neutral-300 break-words">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-neutral-400">Mode:</span> <span className="text-neutral-100 font-semibold">{graphMode}</span>
+              <span className="text-neutral-500">·</span>
+              <span>Nodes: <span className="text-neutral-100">{stats.visibleNodes}</span>/{returnedNodes}</span>
+              <span className="text-neutral-500">·</span>
+              <span>Edges: <span className="text-neutral-100">{returnedEdges}</span></span>
+              {selectedPath && (
+                <>
+                  <span className="text-neutral-500">·</span>
+                  <span className="truncate max-w-[260px]">Sel: <span className="text-neutral-100">{baseName(selectedPath)}</span></span>
+                </>
+              )}
+            </div>
+            {!focusGraph && (
+              <div className={['mt-1 flex-wrap items-center gap-2', hoverRevealFlex].join(' ')}>
+                <button
+                  type="button"
+                  className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold"
+                  onClick={() => setPanelOpen(true)}
+                  title="Open filters panel"
+                >
+                  Filters {filtersActiveCount ? `(${filtersActiveCount})` : '(0)'}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold disabled:opacity-50"
+                  onClick={() => { pushUndo(actions.exportSnapshot()); actions.showAll(); notifyInfo('Show all') }}
+                  disabled={editStats.hidden === 0}
+                  title="Show all hidden nodes"
+                >
+                  Hidden {editStats.hidden}
+                </button>
+                <span className="text-neutral-500">Locked {editStats.locked}</span>
+                <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={saveLayout} title="Save layout">
+                  Save
+                </button>
+                <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={resetLayout} title="Reset layout">
+                  Reset
+                </button>
+              </div>
+            )}
+            {compactMode && (
+              <div className="mt-1 text-[10px] text-neutral-500">
+                Hover for controls
+              </div>
             )}
           </div>
-          {!focusGraph && (
-            <div className={['mt-1 flex-wrap items-center gap-2', hoverRevealFlex].join(' ')}>
-              <button
-                type="button"
-                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold"
-                onClick={() => setPanelOpen(true)}
-                title="Open filters panel"
-              >
-                Filters {filtersActiveCount ? `(${filtersActiveCount})` : '(0)'}
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold disabled:opacity-50"
-                onClick={() => { pushUndo(actions.exportSnapshot()); actions.showAll(); notifyInfo('Show all') }}
-                disabled={editStats.hidden === 0}
-                title="Show all hidden nodes"
-              >
-                Hidden {editStats.hidden}
-              </button>
-              <span className="text-neutral-500">Locked {editStats.locked}</span>
-              <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={saveLayout} title="Save layout">
-                Save
-              </button>
-              <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={resetLayout} title="Reset layout">
-                Reset
-              </button>
-            </div>
-          )}
-          {compactMode && (
-            <div className="mt-1 text-[10px] text-neutral-500">
-              Hover for controls
-            </div>
-          )}
         </div>
       )}
       {/* Focus inspector (non-modal) */}
