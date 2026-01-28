@@ -13,8 +13,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { Modal } from './components/Modal'
 
 export function App() {
-  const app = useStubGraphApp()
-
+  const searchInputRef = React.useRef<HTMLInputElement | null>(null)
   const [docsOpen, setDocsOpen] = React.useState(false)
   const [onboardOpen, setOnboardOpen] = React.useState(false)
   const [onboardStep, setOnboardStep] = React.useState(0)
@@ -35,6 +34,14 @@ export function App() {
       return 13
     }
   })
+
+  const handleFocusSearch = React.useCallback(() => {
+    setEditorLeftTab('search')
+    setEditorExplorerOpen(true)
+    requestAnimationFrame(() => searchInputRef.current?.focus())
+  }, [])
+
+  const app = useStubGraphApp({ onFocusSearch: handleFocusSearch })
 
   const pid = app.activeProject?.id
   const onboardKey = pid != null ? `cs.onboarding.seen.${pid}` : null
@@ -298,6 +305,7 @@ export function App() {
                         <div className="space-y-2">
                           <label className="text-xs text-neutral-400">Query</label>
                           <input
+                            ref={searchInputRef}
                             type="text"
                             value={app.textSearchQuery}
                             onChange={(e) => app.setTextSearchQuery(e.target.value)}
@@ -410,6 +418,7 @@ export function App() {
                     showDiff={editorShowDiff}
                     fontSize={editorFontSize}
                     pendingJump={app.pendingJump}
+                    gotoLineRequestId={app.gotoLineRequestId}
                     onApplyPendingJump={app.clearPendingJump}
                     onSelectTab={(path) => void app.openFileEditor(path)}
                     onCloseTab={(path) => app.closeFileEditor(path)}
