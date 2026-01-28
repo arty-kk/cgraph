@@ -176,6 +176,10 @@ export function App() {
             onCreateFile={app.onCreateFile}
             onRenameFile={app.onRenameFile}
             onDeleteFile={app.onDeleteFile}
+            onOpenFileEditor={(path) => {
+              app.setWorkspaceView('editor')
+              void Promise.resolve(app.openFileEditor(path))
+            }}
             graphMode={app.graphMode}
             graphLimitN={app.graphLimitN}
             setGraphMode={app.setGraphMode}
@@ -295,6 +299,10 @@ export function App() {
                         onCreateFile={app.onCreateFile}
                         onRenameFile={app.onRenameFile}
                         onDeleteFile={app.onDeleteFile}
+                        onOpenFileEditor={(path) => {
+                          app.setWorkspaceView('editor')
+                          void Promise.resolve(app.openFileEditor(path))
+                        }}
                         projectFiles={app.projectFiles}
                         projectFilesMeta={app.projectFilesMeta}
                         projectFilesBusy={app.projectFilesBusy}

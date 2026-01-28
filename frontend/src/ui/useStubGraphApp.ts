@@ -1383,6 +1383,19 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     }
   }, [])
 
+  const runOpThrow = useCallback(async (fn: () => Promise<void>) => {
+    setBusyCount((count) => count + 1)
+    setErrorMessage(null)
+    try {
+      await fn()
+    } catch (e: any) {
+      setErrorMessage(extractError(e))
+      throw e
+    } finally {
+      setBusyCount((count) => Math.max(0, count - 1))
+    }
+  }, [setErrorMessage])
+
   const onPickProject = useCallback((p: Project) => selectProjectLocal(p), [selectProjectLocal])
 
   const onCreateProject = useCallback(async () => {
@@ -1444,7 +1457,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const p = String(path || '').trim()
       if (!p) return
       let createdPath: string | null = null
-      await runOp(async () => {
+      await runOpThrow(async () => {
         const res = await createFile(activeProject.id, p, content)
         const nextPath = String(res?.path || p).trim() || p
         createdPath = nextPath
@@ -1459,7 +1472,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         setSelection(createdPath, { pushHistory: true })
       }
     },
-    [activeProject, notifyInfo, queryClient, runOp, setSelection],
+    [activeProject, notifyInfo, queryClient, runOpThrow, setSelection],
   )
 
   const onRenameFile = useCallback(
@@ -1468,7 +1481,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const oldPath = String(path || '').trim()
       const nextRaw = String(newPath || '').trim()
       if (!oldPath || !nextRaw || oldPath === nextRaw) return
-      await runOp(async () => {
+      await runOpThrow(async () => {
         const res = await renameFile(activeProject.id, oldPath, nextRaw)
         const nextPath = String(res?.path || nextRaw).trim() || nextRaw
         setOpenFilePaths((prev) => prev.map((item) => (item === oldPath ? nextPath : item)))
@@ -1493,7 +1506,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         ])
       })
     },
-    [activeProject, notifyInfo, queryClient, runOp, setSelection],
+    [activeProject, notifyInfo, queryClient, runOpThrow, setSelection],
   )
 
   const onDeleteFile = useCallback(
@@ -1501,7 +1514,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       if (!activeProject) return
       const p = String(path || '').trim()
       if (!p) return
-      await runOp(async () => {
+      await runOpThrow(async () => {
         await deleteFile(activeProject.id, p)
         setOpenFilePaths((prev) => prev.filter((item) => item !== p))
         setFileEditorsByPath((prev) => {
@@ -1523,7 +1536,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         ])
       })
     },
-    [activeProject, notifyInfo, queryClient, runOp, setSelection],
+    [activeProject, notifyInfo, queryClient, runOpThrow, setSelection],
   )
 
   const onDeleteRun = useCallback(

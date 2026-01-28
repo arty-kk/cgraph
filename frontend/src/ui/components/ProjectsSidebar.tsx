@@ -52,6 +52,7 @@ type Props = {
   onCreateFile: (path: string) => void | Promise<void>
   onRenameFile: (path: string, newPath: string) => void | Promise<void>
   onDeleteFile: (path: string) => void | Promise<void>
+  onOpenFileEditor?: (path: string) => void | Promise<void>
 
   projectFiles: ProjectFileItem[]
   projectFilesMeta: any
@@ -99,6 +100,7 @@ export function ProjectsSidebar({
   onCreateFile,
   onRenameFile,
   onDeleteFile,
+  onOpenFileEditor,
   projectFiles,
   projectFilesMeta,
   projectFilesBusy,
@@ -276,6 +278,7 @@ export function ProjectsSidebar({
                 onCreateFile={onCreateFile}
                 onRenameFile={onRenameFile}
                 onDeleteFile={onDeleteFile}
+                onOpenFileEditor={onOpenFileEditor}
                 projectFiles={projectFiles}
                 projectFilesMeta={projectFilesMeta}
                 projectFilesBusy={projectFilesBusy}
