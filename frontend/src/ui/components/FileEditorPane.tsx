@@ -276,11 +276,13 @@ export function FileEditorPane({
           <span className="rounded-full border border-neutral-700 bg-neutral-900/80 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-neutral-400">
             Editor
           </span>
+          <span className="text-[10px] text-neutral-500">Ctrl/⌘+Shift+G</span>
           <button
             type="button"
             className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
             onClick={onClose}
             disabled={saving}
+            title="Back to graph (Ctrl/⌘+Shift+G)"
           >
             Back to graph
           </button>

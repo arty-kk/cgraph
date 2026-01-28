@@ -57,6 +57,7 @@ type Props = {
   onIncreaseFontSize: () => void
   onDecreaseFontSize: () => void
   onToggleExplorer: () => void
+  onToggleWorkspaceView: () => void
 }
 
 function norm(s: string) {
@@ -95,6 +96,7 @@ export function CommandPalette({
   onIncreaseFontSize,
   onDecreaseFontSize,
   onToggleExplorer,
+  onToggleWorkspaceView,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [query, setQuery] = useState('')
@@ -286,6 +288,20 @@ export function CommandPalette({
         },
       },
       {
+        key: 'cmd.ui.workspace',
+        kind: 'command',
+        group: 'UI',
+        hint: 'Ctrl/⌘+Shift+G',
+        title: 'Toggle workspace view',
+        subtitle: 'Переключить граф/редактор',
+        subtitleText: 'Переключить граф/редактор',
+        disabled: false,
+        onSelect: () => {
+          onClose()
+          onToggleWorkspaceView()
+        },
+      },
+      {
         key: 'cmd.ui.compact',
         kind: 'command',
         group: 'UI',
@@ -415,6 +431,7 @@ export function CommandPalette({
     onToggleCompactMode,
     onToggleDiff,
     onToggleExplorer,
+    onToggleWorkspaceView,
     onForward,
     onRefresh,
     onScan,
