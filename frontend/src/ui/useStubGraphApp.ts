@@ -185,7 +185,12 @@ export type NotificationItem = {
   text: string
 }
 
-export function useStubGraphApp() {
+type UseStubGraphAppOptions = {
+  onFocusSearch?: () => void
+}
+
+export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
+  const { onFocusSearch } = options
   const workspaceBootingRef = useRef(false)
   const workspaceSaveTimerRef = useRef<number | null>(null)
   const restoredEditorRef = useRef(false)
@@ -204,6 +209,8 @@ export function useStubGraphApp() {
   const [graphLimitN, setGraphLimitN] = useState<number>(2000)
   const [graphHops, setGraphHops] = useState<number>(2)
   const [graphLocalMax, setGraphLocalMax] = useState<number>(400)
+
+  const [gotoLineRequestId, setGotoLineRequestId] = useState(0)
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<NodeSearchItem[]>([])
@@ -751,10 +758,25 @@ export function useStubGraphApp() {
 
       const otherModalOpen = modalCount > (paletteOpen ? 1 : 0)
 
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K' || e.key === 'p' || e.key === 'P')) {
         if (otherModalOpen) return
         e.preventDefault()
         setPaletteOpen((v) => !v)
+        return
+      }
+
+      if (mod && e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+        if (otherModalOpen) return
+        e.preventDefault()
+        onFocusSearch?.()
+        return
+      }
+
+      if (mod && !e.shiftKey && !e.altKey && (e.key === 'g' || e.key === 'G')) {
+        if (otherModalOpen) return
+        e.preventDefault()
+        setGotoLineRequestId((value) => value + 1)
         return
       }
 
@@ -772,7 +794,6 @@ export function useStubGraphApp() {
       if (typing) return
       if (paletteOpen) return
 
-      const mod = e.ctrlKey || e.metaKey
       if (mod && !e.shiftKey && !e.altKey && (e.key === 'b' || e.key === 'B')) {
         e.preventDefault()
         if (focusGraph) {
@@ -845,7 +866,8 @@ export function useStubGraphApp() {
     setRightPanelOpen,
     toggleLeftPanel,
     toggleRightPanel,
-    toggleCompactMode
+    toggleCompactMode,
+    onFocusSearch
   ])
 
   const projectsQuery = useQuery<Project[]>({
@@ -1987,6 +2009,7 @@ export function useStubGraphApp() {
     openFilePaths,
     fileEditorsByPath,
     activeFilePath,
+    gotoLineRequestId,
     setFileEditorContent: setActiveFileContent,
     confirmOpen,
     confirmReason,
