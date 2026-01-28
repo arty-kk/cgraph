@@ -30,6 +30,7 @@ type Props = {
   selectedPath: string | null
   onSelectPath: (path: string) => void | Promise<void>
   onTogglePinPath: (path: string) => void | Promise<void>
+  onOpenFileEditor?: (path: string) => void | Promise<void>
 
   onScan: () => void | Promise<void>
   onRefresh: () => void | Promise<void>
@@ -71,6 +72,7 @@ export function CommandPalette({
   selectedPath,
   onSelectPath,
   onTogglePinPath,
+  onOpenFileEditor,
   onScan,
   onRefresh,
   onOpenDocs,
@@ -461,9 +463,12 @@ export function CommandPalette({
       onSelect: async () => {
         onClose()
         await onSelectPath(f.path)
+        if (onOpenFileEditor) {
+          await onOpenFileEditor(f.path)
+        }
       },
     }))
-  }, [activeProject, files, onClose, onSelectPath])
+  }, [activeProject, files, onClose, onOpenFileEditor, onSelectPath])
 
   const filteredCommands = useMemo(() => {
     if (!qNorm) return commandItems
@@ -576,6 +581,9 @@ export function CommandPalette({
         onClose()
         await onSelectPath(path)
         await onTogglePinPath(path)
+        if (onOpenFileEditor) {
+          await onOpenFileEditor(path)
+        }
         return
       }
       await item.onSelect()
@@ -591,7 +599,7 @@ export function CommandPalette({
     const active = idx === activeIndex
     const tooltip =
       item.kind === 'file'
-        ? [item.title, item.subtitleText || '', 'Enter — открыть', 'Shift+Enter — открыть + toggle pin'].filter(Boolean).join('\n')
+        ? [item.title, item.subtitleText || '', 'Enter — открыть в редакторе', 'Shift+Enter — открыть + toggle pin'].filter(Boolean).join('\n')
         : [item.title, item.subtitleText || '', item.hint ? `Keys: ${item.hint}` : ''].filter(Boolean).join('\n')
     return (
       <button
@@ -696,7 +704,7 @@ export function CommandPalette({
             <span className="text-neutral-300">Ctrl/⌘+K</span> — открыть
           </span>
           <span>
-            <span className="text-neutral-300">Shift+Enter</span> — toggle pin (file)
+            <span className="text-neutral-300">Shift+Enter</span> — открыть + toggle pin (file)
           </span>
           <span>
             <span className="text-neutral-300">Ctrl/⌘+Shift+M</span> — compact
@@ -728,10 +736,10 @@ export function CommandPalette({
               Управление
             </div>
             <div>
-              • <span className="font-mono">Enter</span> — выполнить действие / выбрать проект / открыть файл.
+              • <span className="font-mono">Enter</span> — выполнить действие / выбрать проект / открыть файл в редакторе.
             </div>
             <div>
-              • <span className="font-mono">Shift+Enter</span> на файле — открыть и <span className="font-mono">toggle</span> pin (закрепить/открепить).
+              • <span className="font-mono">Shift+Enter</span> на файле — открыть в редакторе и <span className="font-mono">toggle</span> pin (закрепить/открепить).
             </div>
             <div>
               • <span className="font-mono">↑/↓</span> — перемещение по списку.
