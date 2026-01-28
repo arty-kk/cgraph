@@ -63,6 +63,8 @@ export function FileEditorPane({
   const diffEditorRef = React.useRef<editor.IStandaloneDiffEditor | null>(null)
   const [editorReadyTick, setEditorReadyTick] = React.useState(0)
   const lineCount = React.useMemo(() => content.split('\n').length || 1, [content])
+  const readOnly = busy || saving || truncated
+  const readOnlyTooltip = 'Редактирование заблокировано из-за режима только чтение/крупного файла'
   const language = React.useMemo(() => {
     if (!path) return 'plaintext'
     const ext = path.split('.').pop()?.toLowerCase()
@@ -164,14 +166,14 @@ export function FileEditorPane({
   }
 
   const editorOptions = React.useMemo<editor.IStandaloneEditorConstructionOptions>(() => ({
-    readOnly: busy || saving,
+    readOnly,
     fontSize,
     wordWrap: wrap ? 'on' : 'off',
     minimap: { enabled: false },
     renderWhitespace: 'selection',
     automaticLayout: true,
     scrollBeyondLastLine: false,
-  }), [busy, saving, fontSize, wrap])
+  }), [readOnly, fontSize, wrap])
 
   const handleEditorMount = React.useCallback((instance: editor.IStandaloneCodeEditor, monaco: typeof import('monaco-editor')) => {
     editorRef.current = instance
@@ -197,6 +199,12 @@ export function FileEditorPane({
       handleSave()
     })
   }, [handleSave, onChange, updateCursorInfo])
+
+  React.useEffect(() => {
+    const diffEditor = diffEditorRef.current
+    if (!diffEditor) return
+    diffEditor.getModifiedEditor().updateOptions({ readOnly })
+  }, [readOnly])
 
   return (
     <div className="flex flex-col gap-3 h-full min-h-0">
@@ -273,6 +281,15 @@ export function FileEditorPane({
                   title="Unsaved changes"
                 >
                   ● Unsaved
+                </span>
+              )}
+              {readOnly && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full border border-neutral-600/70 bg-neutral-800/80 px-2 py-0.5 text-[10px] font-semibold text-neutral-200"
+                  aria-label={readOnlyTooltip}
+                  title={readOnlyTooltip}
+                >
+                  Только чтение
                 </span>
               )}
             </div>
