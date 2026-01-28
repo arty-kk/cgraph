@@ -64,7 +64,13 @@ export function FileEditorPane({
   const editorRef = React.useRef<editor.IStandaloneCodeEditor | null>(null)
   const diffEditorRef = React.useRef<editor.IStandaloneDiffEditor | null>(null)
   const monacoRef = React.useRef<typeof import('monaco-editor') | null>(null)
+  const tabScrollRef = React.useRef<HTMLDivElement | null>(null)
   const [editorReadyTick, setEditorReadyTick] = React.useState(0)
+  const [tabOverflowState, setTabOverflowState] = React.useState({
+    hasOverflow: false,
+    canScrollLeft: false,
+    canScrollRight: false,
+  })
   const lineCount = React.useMemo(() => content.split('\n').length || 1, [content])
   const readOnly = busy || saving || truncated
   const readOnlyTooltip = 'Редактирование заблокировано из-за режима только чтение/крупного файла'
@@ -164,6 +170,28 @@ export function FileEditorPane({
     setCursorInfo({ line: position.lineNumber, column: position.column })
   }, [])
 
+  const updateTabOverflowState = React.useCallback(() => {
+    const container = tabScrollRef.current
+    if (!container) {
+      setTabOverflowState({ hasOverflow: false, canScrollLeft: false, canScrollRight: false })
+      return
+    }
+    const { scrollLeft, scrollWidth, clientWidth } = container
+    const hasOverflow = scrollWidth > clientWidth + 1
+    const canScrollLeft = scrollLeft > 0
+    const canScrollRight = scrollLeft + clientWidth < scrollWidth - 1
+    setTabOverflowState({ hasOverflow, canScrollLeft, canScrollRight })
+  }, [])
+
+  React.useEffect(() => {
+    const container = tabScrollRef.current
+    if (!container) return undefined
+    updateTabOverflowState()
+    const observer = new ResizeObserver(() => updateTabOverflowState())
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [tabs.length, updateTabOverflowState])
+
   const handleCopyPath = async () => {
     if (!path) return
     try {
@@ -175,6 +203,19 @@ export function FileEditorPane({
     if (busy || saving || !dirty || truncated || !path) return
     void onSave()
   }
+
+  const handleScrollTabs = (direction: -1 | 1) => {
+    const container = tabScrollRef.current
+    if (!container) return
+    container.scrollBy({ left: direction * container.clientWidth * 0.5, behavior: 'smooth' })
+  }
+
+  const getShortPath = React.useCallback((fullPath: string) => {
+    const segments = fullPath.split('/').filter(Boolean)
+    const tail = segments.slice(-3)
+    const shortPath = tail.join('/')
+    return segments.length > tail.length ? `…/${shortPath}` : shortPath
+  }, [])
 
   const editorOptions = React.useMemo<editor.IStandaloneEditorConstructionOptions>(() => ({
     readOnly,
@@ -222,43 +263,73 @@ export function FileEditorPane({
   return (
     <div className="flex flex-col gap-3 h-full min-h-0">
       {tabs.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px]">
-          {tabs.map((tab) => {
-            const name = tab.path.split('/').pop() || tab.path
-            const active = tab.path === activePath
-            return (
-              <div
-                key={tab.path}
-                className={[
-                  'flex items-center gap-2 rounded-md border px-2 py-1',
-                  active ? 'border-indigo-500/70 bg-indigo-500/10' : 'border-neutral-800 bg-neutral-900/60',
-                ].join(' ')}
-              >
-                <button
-                  type="button"
-                  className="flex items-center gap-2 min-w-0 max-w-[18vw] text-left text-neutral-200 hover:text-neutral-100"
-                  onClick={() => onSelectTab(tab.path)}
-                  title={tab.path}
+        <div className="flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px]">
+          {tabOverflowState.hasOverflow && tabOverflowState.canScrollLeft && (
+            <button
+              type="button"
+              className="rounded-md border border-neutral-800 bg-neutral-900 px-1.5 py-1 text-[10px] text-neutral-200 hover:bg-neutral-800"
+              onClick={() => handleScrollTabs(-1)}
+              aria-label="Scroll tabs left"
+            >
+              ←
+            </button>
+          )}
+          <div
+            ref={tabScrollRef}
+            onScroll={updateTabOverflowState}
+            className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
+          >
+            {tabs.map((tab) => {
+              const name = tab.path.split('/').pop() || tab.path
+              const shortPath = getShortPath(tab.path)
+              const active = tab.path === activePath
+              return (
+                <div
+                  key={tab.path}
+                  className={[
+                    'flex shrink-0 items-center gap-2 rounded-md border px-2 py-1 min-w-0',
+                    active ? 'border-indigo-500/70 bg-indigo-500/10' : 'border-neutral-800 bg-neutral-900/60',
+                  ].join(' ')}
                 >
-                  <span className="truncate">{name}</span>
-                  {tab.dirty && (
-                    <span className="text-amber-300" aria-label="Unsaved changes" title="Unsaved changes">●</span>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-sm border border-neutral-700 bg-neutral-900 px-1 text-[10px] text-neutral-300 hover:bg-neutral-800"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onCloseTab(tab.path)
-                  }}
-                  aria-label={`Close ${name}`}
-                >
-                  ×
-                </button>
-              </div>
-            )
-          })}
+                  <button
+                    type="button"
+                    className="flex min-w-0 max-w-[18vw] flex-col items-start gap-0.5 text-left text-neutral-200 hover:text-neutral-100"
+                    onClick={() => onSelectTab(tab.path)}
+                    title={tab.path}
+                  >
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className="truncate">{name}</span>
+                      {tab.dirty && (
+                        <span className="text-amber-300" aria-label="Unsaved changes" title="Unsaved changes">●</span>
+                      )}
+                    </span>
+                    <span className="max-w-full truncate text-[10px] text-neutral-500">{shortPath}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-sm border border-neutral-700 bg-neutral-900 px-1 text-[10px] text-neutral-300 hover:bg-neutral-800"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onCloseTab(tab.path)
+                    }}
+                    aria-label={`Close ${name}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+          {tabOverflowState.hasOverflow && tabOverflowState.canScrollRight && (
+            <button
+              type="button"
+              className="rounded-md border border-neutral-800 bg-neutral-900 px-1.5 py-1 text-[10px] text-neutral-200 hover:bg-neutral-800"
+              onClick={() => handleScrollTabs(1)}
+              aria-label="Scroll tabs right"
+            >
+              →
+            </button>
+          )}
         </div>
       )}
       {error && (
