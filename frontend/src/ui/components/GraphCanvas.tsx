@@ -869,8 +869,8 @@ export function GraphCanvas({
                 className={toggleBtnClass}
                 onClick={onToggleWorkspaceView}
                 disabled={!activeProject}
-                title={workspaceView === 'graph' ? 'Switch to editor' : 'Switch to graph'}
-                aria-label={workspaceView === 'graph' ? 'Switch to editor' : 'Switch to graph'}
+                title={workspaceView === 'graph' ? 'Switch to editor (Ctrl/⌘+Shift+G)' : 'Switch to graph (Ctrl/⌘+Shift+G)'}
+                aria-label={workspaceView === 'graph' ? 'Switch to editor (Ctrl/⌘+Shift+G)' : 'Switch to graph (Ctrl/⌘+Shift+G)'}
               >
                 {workspaceView === 'graph' ? <PencilIcon /> : <GraphIcon />}
               </button>
@@ -1052,8 +1052,8 @@ export function GraphCanvas({
                   className={toggleBtnClass}
                   onClick={onToggleWorkspaceView}
                   disabled={!activeProject}
-                  title={workspaceView === 'graph' ? 'Switch to editor' : 'Switch to graph'}
-                  aria-label={workspaceView === 'graph' ? 'Switch to editor' : 'Switch to graph'}
+                  title={workspaceView === 'graph' ? 'Switch to editor (Ctrl/⌘+Shift+G)' : 'Switch to graph (Ctrl/⌘+Shift+G)'}
+                  aria-label={workspaceView === 'graph' ? 'Switch to editor (Ctrl/⌘+Shift+G)' : 'Switch to graph (Ctrl/⌘+Shift+G)'}
                 >
                   {workspaceView === 'graph' ? <PencilIcon /> : <GraphIcon />}
                 </button>

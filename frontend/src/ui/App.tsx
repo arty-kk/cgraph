@@ -546,6 +546,7 @@ export function App() {
         onIncreaseFontSize={handleIncreaseFontSize}
         onDecreaseFontSize={handleDecreaseFontSize}
         onToggleExplorer={() => setEditorExplorerOpen((prev) => !prev)}
+        onToggleWorkspaceView={app.toggleWorkspaceView}
         onOpenFileEditor={(path) => {
           app.setWorkspaceView('editor')
           void Promise.resolve(app.openFileEditor(path))
