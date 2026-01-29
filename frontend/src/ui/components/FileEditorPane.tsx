@@ -73,7 +73,7 @@ export function FileEditorPane({
   })
   const lineCount = React.useMemo(() => content.split('\n').length || 1, [content])
   const readOnly = busy || saving || truncated
-  const readOnlyTooltip = 'Редактирование заблокировано из-за режима только чтение/крупного файла'
+  const readOnlyTooltip = 'Editing is locked due to read-only mode or large file'
   const language = React.useMemo(() => {
     if (!path) return 'plaintext'
     const ext = path.split('.').pop()?.toLowerCase()
@@ -339,7 +339,7 @@ export function FileEditorPane({
       )}
       {truncated && (
         <div className="rounded-md border border-amber-800/70 bg-amber-950/40 px-3 py-2 text-[11px] text-amber-200">
-          Файл очень большой — показан только фрагмент. Сохранение заблокировано.
+          File is too large — only a fragment is shown. Saving is disabled.
         </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px] text-neutral-300">
@@ -375,7 +375,7 @@ export function FileEditorPane({
                   aria-label={readOnlyTooltip}
                   title={readOnlyTooltip}
                 >
-                  Только чтение
+                  Read-only
                 </span>
               )}
             </div>
@@ -451,7 +451,7 @@ export function FileEditorPane({
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px] text-neutral-400 shrink-0">
         <div className="flex flex-wrap items-center gap-3">
           <span className={dirty ? 'text-amber-300' : 'text-neutral-400'}>
-            {dirty ? 'Есть несохранённые изменения' : 'Изменений нет'}
+            {dirty ? 'Unsaved changes' : 'No changes'}
           </span>
           <span className="text-neutral-500">Ln {cursorInfo.line}, Col {cursorInfo.column}</span>
         </div>
