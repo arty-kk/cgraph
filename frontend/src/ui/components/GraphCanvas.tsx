@@ -188,6 +188,7 @@ type Props = {
   onClearPins: () => void | Promise<void>
   onOpenFileEditor: (path: string) => void | Promise<void>
   onToggleWorkspaceView: () => void
+  onRegisterUndoRedo?: (handlers: { undo: () => void; redo: () => void }) => void
 }
 
 export function GraphCanvas({ 
@@ -227,6 +228,7 @@ export function GraphCanvas({
   onClearPins,
   onOpenFileEditor,
   onToggleWorkspaceView,
+  onRegisterUndoRedo,
 }: Props) {
 
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -291,6 +293,13 @@ export function GraphCanvas({
     forceRerender((x) => x + 1)
     notifyRef.current?.('Redo')
   }, [])
+
+  useEffect(() => {
+    onRegisterUndoRedo?.({ undo: doUndo, redo: doRedo })
+    return () => {
+      onRegisterUndoRedo?.({ undo: () => {}, redo: () => {} })
+    }
+  }, [doRedo, doUndo, onRegisterUndoRedo])
 
   const layoutKey = useMemo(() => {
     const pid = activeProject?.id != null ? String(activeProject.id) : 'none'
