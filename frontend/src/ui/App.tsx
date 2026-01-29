@@ -427,6 +427,9 @@ export function App() {
                     fontSize={editorFontSize}
                     pendingJump={app.pendingJump}
                     gotoLineRequestId={app.gotoLineRequestId}
+                    findRequestId={app.findRequestId}
+                    replaceRequestId={app.replaceRequestId}
+                    outlineRequestId={app.outlineRequestId}
                     onApplyPendingJump={app.clearPendingJump}
                     onSelectTab={(path) => void app.openFileEditor(path)}
                     onCloseTab={(path) => app.closeFileEditor(path)}
@@ -437,6 +440,9 @@ export function App() {
                     onToggleWrap={() => setEditorWrap((prev) => !prev)}
                     onToggleDiff={() => setEditorShowDiff((prev) => !prev)}
                     onSetFontSize={handleSetFontSize}
+                    onFindInFile={app.requestFindInFile}
+                    onReplaceInFile={app.requestReplaceInFile}
+                    onGoToSymbol={app.requestOutlineInFile}
                   />
                 </div>
               </div>
@@ -547,6 +553,9 @@ export function App() {
         onDecreaseFontSize={handleDecreaseFontSize}
         onToggleExplorer={() => setEditorExplorerOpen((prev) => !prev)}
         onToggleWorkspaceView={app.toggleWorkspaceView}
+        onFindInFile={app.requestFindInFile}
+        onReplaceInFile={app.requestReplaceInFile}
+        onGoToSymbol={app.requestOutlineInFile}
         onOpenFileEditor={(path) => {
           app.setWorkspaceView('editor')
           void Promise.resolve(app.openFileEditor(path))

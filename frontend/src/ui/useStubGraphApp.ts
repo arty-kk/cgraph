@@ -211,6 +211,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [graphLocalMax, setGraphLocalMax] = useState<number>(400)
 
   const [gotoLineRequestId, setGotoLineRequestId] = useState(0)
+  const [findRequestId, setFindRequestId] = useState(0)
+  const [replaceRequestId, setReplaceRequestId] = useState(0)
+  const [outlineRequestId, setOutlineRequestId] = useState(0)
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<NodeSearchItem[]>([])
@@ -1821,6 +1824,20 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setWorkspaceView(workspaceView === 'graph' ? 'editor' : 'graph')
   }, [setWorkspaceView, workspaceView])
 
+  const fileEditorOpen = workspaceView === 'editor'
+
+  const requestFindInFile = useCallback(() => {
+    setFindRequestId((value) => value + 1)
+  }, [])
+
+  const requestReplaceInFile = useCallback(() => {
+    setReplaceRequestId((value) => value + 1)
+  }, [])
+
+  const requestOutlineInFile = useCallback(() => {
+    setOutlineRequestId((value) => value + 1)
+  }, [])
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (isAnyModalOpen() && !paletteOpen) return
@@ -1862,6 +1879,30 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         if (otherModalOpen) return
         e.preventDefault()
         setGotoLineRequestId((value) => value + 1)
+        return
+      }
+
+      if (mod && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+        if (otherModalOpen) return
+        if (!fileEditorOpen) return
+        e.preventDefault()
+        requestFindInFile()
+        return
+      }
+
+      if (mod && !e.shiftKey && !e.altKey && (e.key === 'h' || e.key === 'H')) {
+        if (otherModalOpen) return
+        if (!fileEditorOpen) return
+        e.preventDefault()
+        requestReplaceInFile()
+        return
+      }
+
+      if (mod && e.shiftKey && !e.altKey && (e.key === 'o' || e.key === 'O')) {
+        if (otherModalOpen) return
+        if (!fileEditorOpen) return
+        e.preventDefault()
+        requestOutlineInFile()
         return
       }
 
@@ -1953,7 +1994,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     toggleRightPanel,
     toggleCompactMode,
     onFocusSearch,
-    toggleWorkspaceView
+    toggleWorkspaceView,
+    fileEditorOpen,
+    requestFindInFile,
+    requestReplaceInFile,
+    requestOutlineInFile,
   ])
 
   useEffect(() => {
@@ -1982,7 +2027,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const nodeBusy = nodeQuery.isFetching
   const mutationBusy = busy || projectsQuery.isFetching
   const fileEditorDirty = activeFileEntry ? activeFileEntry.content !== activeFileEntry.original : false
-  const fileEditorOpen = workspaceView === 'editor'
   const fileEditorPath = activeFilePath
   const fileEditorContent = activeFileEntry?.content ?? ''
   const fileEditorOriginal = activeFileEntry?.original ?? ''
@@ -2031,6 +2075,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     fileEditorsByPath,
     activeFilePath,
     gotoLineRequestId,
+    findRequestId,
+    replaceRequestId,
+    outlineRequestId,
     setFileEditorContent: setActiveFileContent,
     confirmOpen,
     confirmReason,
@@ -2040,6 +2087,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     openFileEditor,
     openFileEditorAt,
     closeFileEditor,
+    requestFindInFile,
+    requestReplaceInFile,
+    requestOutlineInFile,
     requestReloadFileEditor,
     saveFileEditor,
     pendingJump,

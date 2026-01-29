@@ -58,6 +58,9 @@ type Props = {
   onDecreaseFontSize: () => void
   onToggleExplorer: () => void
   onToggleWorkspaceView: () => void
+  onFindInFile: () => void
+  onReplaceInFile: () => void
+  onGoToSymbol: () => void
 }
 
 function norm(s: string) {
@@ -97,6 +100,9 @@ export function CommandPalette({
   onDecreaseFontSize,
   onToggleExplorer,
   onToggleWorkspaceView,
+  onFindInFile,
+  onReplaceInFile,
+  onGoToSymbol,
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [query, setQuery] = useState('')
@@ -207,6 +213,48 @@ export function CommandPalette({
           if (!activeFilePath) return
           onClose()
           onCloseTab(activeFilePath)
+        },
+      },
+      {
+        key: 'cmd.editor.find',
+        kind: 'command',
+        group: 'Editor',
+        hint: 'Ctrl/⌘+F',
+        title: 'Find in file',
+        subtitle: 'Find text in file',
+        subtitleText: 'Find text in file',
+        disabled: !editorOpen,
+        onSelect: () => {
+          onClose()
+          onFindInFile()
+        },
+      },
+      {
+        key: 'cmd.editor.replace',
+        kind: 'command',
+        group: 'Editor',
+        hint: 'Ctrl/⌘+H',
+        title: 'Replace in file',
+        subtitle: 'Find and replace in file',
+        subtitleText: 'Find and replace in file',
+        disabled: !editorOpen,
+        onSelect: () => {
+          onClose()
+          onReplaceInFile()
+        },
+      },
+      {
+        key: 'cmd.editor.outline',
+        kind: 'command',
+        group: 'Editor',
+        hint: 'Ctrl/⌘+Shift+O',
+        title: 'Go to Symbol',
+        subtitle: 'Open outline/symbols list',
+        subtitleText: 'Open outline/symbols list',
+        disabled: !editorOpen,
+        onSelect: () => {
+          onClose()
+          onGoToSymbol()
         },
       },
       {
@@ -427,6 +475,9 @@ export function CommandPalette({
     onClose,
     onDecreaseFontSize,
     onIncreaseFontSize,
+    onFindInFile,
+    onReplaceInFile,
+    onGoToSymbol,
     onOpenDocs,
     onToggleCompactMode,
     onToggleDiff,
