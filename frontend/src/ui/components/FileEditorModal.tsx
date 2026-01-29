@@ -20,6 +20,10 @@ export function FileEditorModal({
   showDiff,
   fontSize,
   pendingJump,
+  gotoLineRequestId,
+  findRequestId,
+  replaceRequestId,
+  outlineRequestId,
   onApplyPendingJump,
   onSelectTab,
   onCloseTab,
@@ -30,6 +34,9 @@ export function FileEditorModal({
   onToggleWrap,
   onToggleDiff,
   onSetFontSize,
+  onFindInFile,
+  onReplaceInFile,
+  onGoToSymbol,
 }: Props) {
   const title = path ? `File: ${path}` : 'File viewer'
 
@@ -56,6 +63,10 @@ export function FileEditorModal({
         showDiff={showDiff}
         fontSize={fontSize}
         pendingJump={pendingJump}
+        gotoLineRequestId={gotoLineRequestId}
+        findRequestId={findRequestId}
+        replaceRequestId={replaceRequestId}
+        outlineRequestId={outlineRequestId}
         onApplyPendingJump={onApplyPendingJump}
         onSelectTab={onSelectTab}
         onCloseTab={onCloseTab}
@@ -66,6 +77,9 @@ export function FileEditorModal({
         onToggleWrap={onToggleWrap}
         onToggleDiff={onToggleDiff}
         onSetFontSize={onSetFontSize}
+        onFindInFile={onFindInFile}
+        onReplaceInFile={onReplaceInFile}
+        onGoToSymbol={onGoToSymbol}
       />
     </Modal>
   )

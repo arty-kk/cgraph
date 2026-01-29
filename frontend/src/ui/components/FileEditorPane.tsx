@@ -20,6 +20,9 @@ export type FileEditorPaneProps = {
   fontSize: number
   pendingJump?: { path: string; line: number; column: number } | null
   gotoLineRequestId?: number
+  findRequestId?: number
+  replaceRequestId?: number
+  outlineRequestId?: number
   onApplyPendingJump?: () => void
   onSelectTab: (path: string) => void
   onCloseTab: (path: string) => void
@@ -30,6 +33,9 @@ export type FileEditorPaneProps = {
   onToggleWrap: () => void
   onToggleDiff: () => void
   onSetFontSize: (value: number) => void
+  onFindInFile: () => void
+  onReplaceInFile: () => void
+  onGoToSymbol: () => void
 }
 
 export function FileEditorPane({
@@ -49,6 +55,9 @@ export function FileEditorPane({
   fontSize,
   pendingJump,
   gotoLineRequestId,
+  findRequestId,
+  replaceRequestId,
+  outlineRequestId,
   onApplyPendingJump,
   onSelectTab,
   onCloseTab,
@@ -59,6 +68,9 @@ export function FileEditorPane({
   onToggleWrap,
   onToggleDiff,
   onSetFontSize,
+  onFindInFile,
+  onReplaceInFile,
+  onGoToSymbol,
 }: FileEditorPaneProps) {
   const [cursorInfo, setCursorInfo] = React.useState({ line: 1, column: 1 })
   const editorRef = React.useRef<editor.IStandaloneCodeEditor | null>(null)
@@ -157,14 +169,6 @@ export function FileEditorPane({
     onApplyPendingJump?.()
   }, [busy, editorReadyTick, onApplyPendingJump, path, pendingJump, showDiff])
 
-  React.useEffect(() => {
-    if (!gotoLineRequestId) return
-    const target = diffEditorRef.current?.getModifiedEditor() ?? editorRef.current
-    if (!target) return
-    target.getAction('editor.action.gotoLine')?.run()
-    target.focus()
-  }, [gotoLineRequestId])
-
   const updateCursorInfo = React.useCallback((position?: IPosition | null) => {
     if (!position) return
     setCursorInfo({ line: position.lineNumber, column: position.column })
@@ -226,6 +230,36 @@ export function FileEditorPane({
     automaticLayout: true,
     scrollBeyondLastLine: false,
   }), [readOnly, fontSize, wrap])
+
+  const runEditorAction = React.useCallback((actionId: string) => {
+    const target = diffEditorRef.current?.getModifiedEditor() ?? editorRef.current
+    if (!target) return false
+    const action = target.getAction(actionId)
+    if (!action) return false
+    void action.run()
+    target.focus()
+    return true
+  }, [])
+
+  React.useEffect(() => {
+    if (!gotoLineRequestId) return
+    runEditorAction('editor.action.gotoLine')
+  }, [gotoLineRequestId, runEditorAction])
+
+  React.useEffect(() => {
+    if (!findRequestId) return
+    runEditorAction('editor.action.find')
+  }, [findRequestId, runEditorAction])
+
+  React.useEffect(() => {
+    if (!replaceRequestId) return
+    runEditorAction('editor.action.startFindReplaceAction')
+  }, [replaceRequestId, runEditorAction])
+
+  React.useEffect(() => {
+    if (!outlineRequestId) return
+    runEditorAction('editor.action.quickOutline')
+  }, [outlineRequestId, runEditorAction])
 
   const handleEditorMount = React.useCallback((instance: editor.IStandaloneCodeEditor, monaco: typeof import('monaco-editor')) => {
     editorRef.current = instance
@@ -389,6 +423,30 @@ export function FileEditorPane({
             disabled={!path}
           >
             Copy path
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            onClick={onFindInFile}
+            disabled={!path}
+          >
+            Find
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            onClick={onReplaceInFile}
+            disabled={!path}
+          >
+            Replace
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            onClick={onGoToSymbol}
+            disabled={!path}
+          >
+            Outline
           </button>
           <button
             type="button"
