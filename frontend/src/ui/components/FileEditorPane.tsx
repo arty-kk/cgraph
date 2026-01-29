@@ -77,6 +77,8 @@ export function FileEditorPane({
   const diffEditorRef = React.useRef<editor.IStandaloneDiffEditor | null>(null)
   const monacoRef = React.useRef<typeof import('monaco-editor') | null>(null)
   const tabScrollRef = React.useRef<HTMLDivElement | null>(null)
+  const viewStateByPathRef = React.useRef<Map<string, editor.ICodeEditorViewState | null>>(new Map())
+  const prevActivePathRef = React.useRef<string | null>(null)
   const [editorReadyTick, setEditorReadyTick] = React.useState(0)
   const [tabOverflowState, setTabOverflowState] = React.useState({
     hasOverflow: false,
@@ -187,6 +189,31 @@ export function FileEditorPane({
     setTabOverflowState({ hasOverflow, canScrollLeft, canScrollRight })
   }, [])
 
+  const getActiveEditor = React.useCallback(() => {
+    return showDiff ? diffEditorRef.current?.getModifiedEditor() ?? null : editorRef.current
+  }, [showDiff])
+
+  const saveViewStateForPath = React.useCallback((targetPath: string | null) => {
+    if (!targetPath) return
+    const editorInstance = getActiveEditor()
+    if (!editorInstance) return
+    viewStateByPathRef.current.set(targetPath, editorInstance.saveViewState())
+  }, [getActiveEditor])
+
+  const restoreViewStateForPath = React.useCallback((targetPath: string | null) => {
+    if (!targetPath) return
+    const editorInstance = getActiveEditor()
+    if (!editorInstance) return
+    const state = viewStateByPathRef.current.get(targetPath)
+    if (!state) return
+    editorInstance.restoreViewState(state)
+    const position = editorInstance.getPosition()
+    if (position) {
+      editorInstance.revealPositionInCenter(position)
+    }
+    editorInstance.focus()
+  }, [getActiveEditor])
+
   React.useEffect(() => {
     const container = tabScrollRef.current
     if (!container) return undefined
@@ -270,7 +297,8 @@ export function FileEditorPane({
     instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       handleSave()
     })
-  }, [handleSave, updateCursorInfo])
+    restoreViewStateForPath(activePath)
+  }, [activePath, handleSave, restoreViewStateForPath, updateCursorInfo])
 
   const handleDiffMount = React.useCallback((instance: editor.IStandaloneDiffEditor, monaco: typeof import('monaco-editor')) => {
     diffEditorRef.current = instance
@@ -286,13 +314,33 @@ export function FileEditorPane({
     modified.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       handleSave()
     })
-  }, [handleSave, onChange, updateCursorInfo])
+    restoreViewStateForPath(activePath)
+  }, [activePath, handleSave, onChange, restoreViewStateForPath, updateCursorInfo])
 
   React.useEffect(() => {
     const diffEditor = diffEditorRef.current
     if (!diffEditor) return
     diffEditor.getModifiedEditor().updateOptions({ readOnly })
   }, [readOnly])
+
+  React.useEffect(() => {
+    const previousPath = prevActivePathRef.current
+    if (previousPath && previousPath !== activePath) {
+      saveViewStateForPath(previousPath)
+    }
+    prevActivePathRef.current = activePath
+  }, [activePath, saveViewStateForPath])
+
+  React.useEffect(() => {
+    if (!activePath) return
+    restoreViewStateForPath(activePath)
+  }, [activePath, editorReadyTick, restoreViewStateForPath, showDiff])
+
+  React.useEffect(() => {
+    return () => {
+      saveViewStateForPath(activePath)
+    }
+  }, [activePath, saveViewStateForPath])
 
   return (
     <div className="flex flex-col gap-3 h-full min-h-0">
@@ -344,6 +392,9 @@ export function FileEditorPane({
                     className="rounded-sm border border-neutral-700 bg-neutral-900 px-1 text-[10px] text-neutral-300 hover:bg-neutral-800"
                     onClick={(e) => {
                       e.stopPropagation()
+                      if (tab.path === activePath) {
+                        saveViewStateForPath(tab.path)
+                      }
                       onCloseTab(tab.path)
                     }}
                     aria-label={`Close ${name}`}
