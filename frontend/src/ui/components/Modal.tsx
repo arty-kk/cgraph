@@ -108,7 +108,7 @@ export function Modal({ open, title, onClose, panelClassName, children }: Props)
           <button
             className="text-neutral-400 hover:text-neutral-100"
             onClick={onClose}
-            aria-label="Закрыть"
+            aria-label="Close"
             type="button"
           >
             ×

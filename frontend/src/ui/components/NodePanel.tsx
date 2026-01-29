@@ -188,7 +188,7 @@ export function NodePanel({
       const status = await getTaskStatus(graphScanTaskId)
       setGraphScanStatus(status.status ?? null)
     } catch {
-      notifyInfo('Не удалось обновить статус скана')
+      notifyInfo('Failed to update scan status')
     } finally {
       setGraphScanBusy(false)
     }
@@ -228,16 +228,16 @@ export function NodePanel({
 
   const promptPlaceholder =
     isAuto
-      ? 'Опиши задачу для выбранного файла. Примеры: "объясни назначение и риски", "предложи рефакторинг", "исправь баг и добавь тест", "покажи impact изменения X".'
+      ? 'Describe a task for the selected file. Examples: "explain purpose and risks", "propose a refactor", "fix a bug and add a test", "show impact of change X".'
       : mode === 'analyze'
-        ? 'Пример: "Кратко опиши назначение файла, найди точки риска/узкие места и предложи улучшения".'
+        ? 'Example: "Briefly describe the file purpose, find risk hot spots, and suggest improvements".'
         : mode === 'evolve'
-          ? 'Пример: "Предложи безопасный план улучшений/рефакторинга: шаги, затронутые места, тесты".'
+          ? 'Example: "Propose a safe improvement/refactor plan: steps, affected areas, tests".'
           : mode === 'fix'
-            ? 'Пример: "Исправь <описание проблемы>, не ломая контракт; добавь/обнови тест(ы). Верни патч".'
+            ? 'Example: "Fix <problem description> without breaking the contract; add/update tests. Return a patch".'
             : mode === 'impact'
-              ? 'Пример: "Если изменить <символ/поведение>, какие файлы/модули будут затронуты?"'
-              : 'Опиши задачу.'
+              ? 'Example: "If we change <symbol/behavior>, which files/modules are affected?"'
+              : 'Describe the task.'
 
   const runPayload = runResult ? (isRecord(runResult.result) ? runResult.result : { raw: runResult.result }) : null
   const blockedPaths = useMemo(() => {
@@ -384,12 +384,12 @@ export function NodePanel({
 
   const promptChips = useMemo(() => {
     return [
-      { label: 'Explain', mode: 'analyze' as const, text: 'Объясни назначение файла. Укажи ключевые функции/классы и ответственность.' },
-      { label: 'Risks', mode: 'analyze' as const, text: 'Найди основные риски/узкие места: сложность, зависимости, потенциальные баги. Дай рекомендации.' },
-      { label: 'Refactor plan', mode: 'evolve' as const, text: 'Предложи план рефакторинга: шаги, что затронуть, риски, как проверить тестами.' },
-      { label: 'Add tests', mode: 'evolve' as const, text: 'Предложи набор тестов (unit/integration) для ключевой логики, включая edge cases.' },
-      { label: 'Fix', mode: 'fix' as const, text: 'Исправь проблему: <описание>. Сохрани поведение/контракт. Добавь/обнови тесты. Верни патч.' },
-      { label: 'Impact', mode: 'impact' as const, text: 'Если изменить <символ/поведение>, какие файлы будут затронуты? Верни список и краткие причины.' },
+      { label: 'Explain', mode: 'analyze' as const, text: 'Explain the file purpose. Point out key functions/classes and responsibilities.' },
+      { label: 'Risks', mode: 'analyze' as const, text: 'Find major risks/bottlenecks: complexity, dependencies, potential bugs. Provide recommendations.' },
+      { label: 'Refactor plan', mode: 'evolve' as const, text: 'Propose a refactor plan: steps, what to touch, risks, and how to validate with tests.' },
+      { label: 'Add tests', mode: 'evolve' as const, text: 'Propose a set of tests (unit/integration) for key logic, including edge cases.' },
+      { label: 'Fix', mode: 'fix' as const, text: 'Fix the issue: <description>. Preserve behavior/contract. Add/update tests. Return a patch.' },
+      { label: 'Impact', mode: 'impact' as const, text: 'If we change <symbol/behavior>, which files are affected? Return a list and brief reasons.' },
     ]
   }, [])
 
@@ -433,8 +433,8 @@ export function NodePanel({
       className="w-3.5 h-3.5 rounded-full border border-neutral-800 bg-neutral-900 text-neutral-200 text-[10px] leading-none font-semibold hover:bg-neutral-800 shrink-0"
       onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
       onClick={() => setHelpOpen(topic)}
-      aria-label={label || 'Открыть подсказку'}
-      title={label || 'Подсказка'}
+      aria-label={label || 'Open help'}
+      title={label || 'Help'}
     >
       ?
     </button>
@@ -649,7 +649,7 @@ export function NodePanel({
           </div>
 
           {!selectedPath ? (
-            <div className="text-sm text-neutral-300">Выбери файл через поиск или клик по графу.</div>
+            <div className="text-sm text-neutral-300">Pick a file via search or click on the graph.</div>
           ) : (
             <>
               <div className="text-sm font-semibold truncate" title={selectedPath}>{selectedPath}</div>
@@ -666,24 +666,24 @@ export function NodePanel({
               {detailsOpen && !selectedInGraph && graphTruncated && (
                 <div className="mt-2 text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2">
                   <div className="text-neutral-300">
-                    Этот файл не попал в текущий граф (graph limited / top-N). Это не ошибка файла.
+                    This file is not in the current graph (graph limited / top-N). This is not a file error.
                   </div>
                   <button
                     className="mt-2 rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"
                     onClick={() => onLoadFullGraph()}
                     disabled={!activeProject}
-                    title="Загрузить полный граф"
+                    title="Load full graph"
                   >
-                    Загрузить полный граф
+                    Load full graph
                   </button>
                 </div>
               )}
 
               {detailsOpen && !nodeBusy && selectedPath && !selectedInGraph && !graphTruncated && (
                 <div className="mt-2 text-xs text-amber-300 whitespace-pre-wrap">
-                  Файл отсутствует в графе (возможно удалён/переименован или ещё не проиндексирован).
+                  File is missing from the graph (maybe deleted/renamed or not indexed yet).
                   {'\n'}
-                  Нажми Scan или Refresh.
+                  Run Scan or Refresh.
                 </div>
               )}
 
@@ -746,7 +746,7 @@ export function NodePanel({
                     {runResult?.warning && (
                       <div className="mt-2 text-xs bg-amber-950/40 border border-amber-800 rounded-md p-2 text-amber-200 space-y-2">
                         <div>
-                          Индекс графа неполный. Для корректного контекста нужен полный Scan — иначе результаты LLM/impact могут быть неполными.
+                          Graph index is incomplete. For correct context, run a full Scan — otherwise LLM/impact results may be incomplete.
                         </div>
                         <button
                           type="button"
@@ -831,7 +831,7 @@ export function NodePanel({
                                 value={mode}
                                 onChange={(e) => setMode(e.target.value as AutoOrMode)}
                                 disabled={busy}
-                                title="Auto — выбрать режим автоматически. Analyze — разбор/диагностика. Evolve — план улучшений. Fix — исправление (возможен patch). Impact — что затронет изменение."
+                                title="Auto — choose mode automatically. Analyze — analysis/diagnostics. Evolve — improvement plan. Fix — fix (may include a patch). Impact — what the change affects."
                               >
                                 <option value="auto">Auto</option>
                                 <option value="analyze">Analyze</option>
@@ -851,7 +851,7 @@ export function NodePanel({
                                 value={depth}
                                 min={0}
                                 max={6}
-                                title="Глубина захвата зависимостей для режима (кроме Auto). 0 — только файл, выше — глубже по графу."
+                                title="Dependency capture depth for the mode (except Auto). 0 — file only, higher — deeper in the graph."
                                 onChange={(e) => {
                                   const raw = e.target.value
                                   const next = raw === '' ? 1 : clampInt(Number(raw), 0, 6)
@@ -870,7 +870,7 @@ export function NodePanel({
                                 value={depMode}
                                 onChange={(e) => setDepMode(e.target.value as DepMode)}
                                 disabled={busy || isAuto || isAgentic}
-                                title={isAgentic ? 'В agentic режиме dep_mode не используется' : 'dep_mode для pack_context'}
+                                title={isAgentic ? 'In agentic mode dep_mode is not used' : 'dep_mode for pack_context'}
                               >
                                 <option value="contracts">Contracts</option>
                                 <option value="full">Full</option>
@@ -879,7 +879,7 @@ export function NodePanel({
 
                             <label
                               className="col-span-2 h-9 rounded-md bg-neutral-900 border border-neutral-800 px-2 flex items-center justify-between gap-2"
-                              title="Если включено — применить Unified Diff к репозиторию (имеет смысл в основном для Fix)."
+                              title="If enabled, apply a Unified Diff to the repo (mostly useful for Fix)."
                             >
                               <span className="text-[11px] font-semibold text-neutral-200">
                                 Apply patch
@@ -1143,7 +1143,7 @@ export function NodePanel({
                               className="rounded-md bg-red-900/40 hover:bg-red-900/60 border border-red-800 px-2 py-1 text-[11px] font-semibold text-red-100 disabled:opacity-50"
                               onClick={async () => {
                                 if (!Number.isFinite(rid)) return
-                                if (!window.confirm('Удалить этот запуск?')) return
+                                if (!window.confirm('Delete this run?')) return
                                 if (activeRunId === rid) {
                                   setActiveRunId(null)
                                   setResultOpen(false)
@@ -1308,10 +1308,10 @@ export function NodePanel({
                 {graphScanWarning && (
                   <div className="text-xs bg-amber-950/40 border border-amber-800 rounded-md p-2 text-amber-200 space-y-2">
                     <div>
-                      Запущен фоновый Scan для построения графа. Пока он не завершится, результаты могут быть неполными.
+                      Background Scan started to build the graph. Results may be incomplete until it finishes.
                     </div>
                     <div className="text-[11px] text-amber-300">
-                      Статус: {graphScanStatus ?? '—'}
+                      Status: {graphScanStatus ?? '—'}
                       {graphScanTaskId ? ` · task_id: ${graphScanTaskId}` : ''}
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -1321,7 +1321,7 @@ export function NodePanel({
                         onClick={refreshGraphScanStatus}
                         disabled={!graphScanTaskId || graphScanBusy}
                       >
-                        {graphScanBusy ? 'Обновление…' : 'Обновить статус'}
+                        {graphScanBusy ? 'Updating…' : 'Refresh status'}
                       </button>
                       <button
                         type="button"
@@ -1329,7 +1329,7 @@ export function NodePanel({
                         onClick={() => onScan()}
                         disabled={!activeProject || busy}
                       >
-                        Перейти к скану
+                        Go to Scan
                       </button>
                     </div>
                   </div>
@@ -1379,7 +1379,7 @@ export function NodePanel({
                 )}
                 {showBlockedWarning && (
                   <div className="rounded-md border border-amber-800 bg-amber-950/40 p-3 text-xs text-amber-200">
-                    <div className="font-semibold">Patch вне контекста</div>
+                    <div className="font-semibold">Patch out of context</div>
                     {blockedPaths.length > 0 ? (
                       <ul className="mt-2 list-disc space-y-1 pl-4 text-amber-100">
                         {blockedPaths.map((path) => (
@@ -1390,7 +1390,7 @@ export function NodePanel({
                       </ul>
                     ) : (
                       <div className="mt-2 text-amber-100">
-                        Patch затрагивает файлы вне текущего контекста.
+                        Patch touches files outside the current context.
                       </div>
                     )}
                     <button
@@ -1399,7 +1399,7 @@ export function NodePanel({
                       onClick={onRunWithExpandedContext}
                       disabled={!canRun || busy}
                     >
-                      Повторить с расширением контекста
+                      Retry with expanded context
                     </button>
                   </div>
                 )}
@@ -1525,61 +1525,61 @@ export function NodePanel({
           open={helpOpen != null}
           title={
             helpOpen === 'details'
-              ? 'Подсказка: Details'
+              ? 'Help: Details'
             :
              helpOpen === 'contract'
-              ? 'Подсказка: Contract'
+              ? 'Help: Contract'
             : helpOpen === 'run'
-              ? 'Подсказка: Run task'
+              ? 'Help: Run task'
             : helpOpen === 'runs'
-               ? 'Подсказка: Results'
+               ? 'Help: Results'
             : helpOpen === 'ctxSettings'
-              ? 'Подсказка: Context settings'
-            : 'Подсказка'
+              ? 'Help: Context settings'
+            : 'Help'
           }
           onClose={() => setHelpOpen(null)}
         >
           {helpOpen === 'details' && (
             <div className="space-y-2">
-              <div className="text-neutral-200 font-semibold">Метрики узла</div>
-              <div>• <span className="font-mono">LOC</span> — строки кода (как считает backend).</div>
-              <div>• <span className="font-mono">Fan In / Fan Out</span> — входящие/исходящие зависимости по графу.</div>
-              <div>• <span className="font-mono">Complexity</span> — оценка сложности (методика зависит от backend).</div>
-              <div>• <span className="font-mono">SCC</span> — Strongly Connected Component: идентификатор группы циклических зависимостей.</div>
-              <div>• <span className="font-mono">Status</span> — метка/состояние узла от backend (напр. <span className="font-mono">new</span>). Точные значения зависят от индексатора.</div>
+              <div className="text-neutral-200 font-semibold">Node metrics</div>
+              <div>• <span className="font-mono">LOC</span> — lines of code (as counted by the backend).</div>
+              <div>• <span className="font-mono">Fan In / Fan Out</span> — inbound/outbound dependencies in the graph.</div>
+              <div>• <span className="font-mono">Complexity</span> — complexity estimate (method depends on the backend).</div>
+              <div>• <span className="font-mono">SCC</span> — Strongly Connected Component: id of a cyclic dependency group.</div>
+              <div>• <span className="font-mono">Status</span> — label/state from the backend (e.g. <span className="font-mono">new</span>). Exact values depend on the indexer.</div>
             </div>
           )}
           {helpOpen === 'contract' && (
             <div className="space-y-2">
-              <div>• Contract — структурированное описание API/поведения узла (что “обещает” файл/модуль).</div>
-              <div>• Используется для более быстрых/дешёвых задач (особенно при dep_mode=contracts).</div>
-              <div>• Если контракт пустой/устарел — сделай Scan/Refresh.</div>
+              <div>• Contract — structured description of node API/behavior (what the file/module “promises”).</div>
+              <div>• Used for faster/cheaper tasks (especially with dep_mode=contracts).</div>
+              <div>• If the contract is empty/stale — run Scan/Refresh.</div>
             </div>
           )}
           {helpOpen === 'run' && (
             <div className="space-y-2">
-              <div className="text-neutral-200 font-semibold">Run task: как выбрать настройки</div>
-              <div>• Заполни <span className="font-mono">Prompt</span> и выбери пресет при необходимости.</div>
-              <div>• Все настройки контекста теперь в блоке <span className="font-mono">Context Settings</span> (можно свернуть/развернуть).</div>
-              <div>• По умолчанию <span className="font-mono">Apply patch</span> выключен — включай его только если нужен diff.</div>
+              <div className="text-neutral-200 font-semibold">Run task: how to choose settings</div>
+              <div>• Fill in <span className="font-mono">Prompt</span> and pick a preset if needed.</div>
+              <div>• All context settings are now in <span className="font-mono">Context Settings</span> (can be collapsed/expanded).</div>
+              <div>• By default <span className="font-mono">Apply patch</span> is off — enable it only if you need a diff.</div>
             </div>
           )}
           {helpOpen === 'runs' && (
             <div className="space-y-2">
-              <div>• Results — история завершённых задач по проекту/файлам.</div>
-              <div>• Новые запуски подсвечиваются, пока не откроешь результат.</div>
-              <div>• Кнопка <span className="font-mono">Open</span> открывает модалку с контекстом и патчем.</div>
+              <div>• Results — history of completed tasks for the project/files.</div>
+              <div>• New runs are highlighted until you open the result.</div>
+              <div>• The <span className="font-mono">Open</span> button opens a modal with context and a patch.</div>
             </div>
           )}
           {helpOpen === 'ctxSettings' && (
             <div className="space-y-2">
               <div className="text-neutral-200 font-semibold">Context Settings</div>
-              <div>• <span className="font-mono">Context</span>: Agentic — контекст через tools; Pack — собранный пакет по графу/контрактам.</div>
-              <div>• <span className="font-mono">Mode</span>: auto/analyze/evolve/fix/impact — логика ответа.</div>
-              <div>• <span className="font-mono">Depth</span> и <span className="font-mono">Dependencies</span> управляют глубиной и типом зависимостей.</div>
-              <div>• <span className="font-mono">Apply patch</span> применяет unified diff (обычно только для fix).</div>
+              <div>• <span className="font-mono">Context</span>: Agentic — context via tools; Pack — bundled package via graph/contracts.</div>
+              <div>• <span className="font-mono">Mode</span>: auto/analyze/evolve/fix/impact — response logic.</div>
+              <div>• <span className="font-mono">Depth</span> and <span className="font-mono">Dependencies</span> control depth and dependency types.</div>
+              <div>• <span className="font-mono">Apply patch</span> applies a unified diff (usually only for fix).</div>
               <div className="pt-2 text-neutral-200 font-semibold">Limits</div>
-              <div>• Управляют бюджетом контекста и количеством действий.</div>
+              <div>• These control context budget and action count.</div>
             </div>
           )}
         </Modal>

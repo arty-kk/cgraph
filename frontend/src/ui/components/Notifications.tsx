@@ -31,7 +31,7 @@ export function Notifications({ notifications, onDismiss }: Props) {
           <button
             className="text-xs text-neutral-300 hover:text-white"
             onClick={() => onDismiss(n.id)}
-            aria-label="Закрыть уведомление"
+            aria-label="Dismiss notification"
           >
             ×
           </button>

@@ -594,7 +594,7 @@ export function ExplorerTree({
                 setJumpFile('')
               }}
               disabled={!activeProject || busy || projectFilesBusy}
-              title="Быстрый переход к верхнеуровневой папке (модулю). В списке показаны агрегированные метрики."
+              title="Quick jump to a top-level folder (module). The list shows aggregated metrics."
             >
               {modules.map((m) => (
                 <option key={m.key} value={m.key}>
@@ -616,7 +616,7 @@ export function ExplorerTree({
                 if (p) void Promise.resolve(onSelectPath(p))
               }}
               disabled={!activeProject || busy || projectFilesBusy}
-              title="Быстрый переход к файлу внутри выбранного модуля"
+              title="Quick jump to a file inside the selected module"
             >
               <option value="">—</option>
               {jumpFiles.slice(0, 250).map((f) => (
@@ -635,7 +635,7 @@ export function ExplorerTree({
         value={explorerFilter}
         onChange={(e) => setExplorerFilter(e.target.value)}
         disabled={!activeProject || busy}
-        title="Локальный фильтр по дереву файлов (по подстроке пути). Не делает запрос к backend."
+        title="Local filter for the file tree (path substring). Does not query the backend."
       />
 
       <div className="flex flex-wrap gap-2">
@@ -647,7 +647,7 @@ export function ExplorerTree({
             if (actionsDisabled) return
             setCreateOpen(true)
           }}
-          title="Создать новый файл"
+          title="Create new file"
         >
           Create
         </button>
@@ -659,7 +659,7 @@ export function ExplorerTree({
             if (renameDisabled) return
             setRenameOpen(true)
           }}
-          title="Переименовать выбранный файл"
+          title="Rename selected file"
         >
           Rename
         </button>
@@ -671,7 +671,7 @@ export function ExplorerTree({
             if (deleteDisabled) return
             setDeleteOpen(true)
           }}
-          title="Удалить выбранный файл"
+          title="Delete selected file"
         >
           Delete
         </button>
@@ -845,9 +845,9 @@ export function ExplorerTree({
           Loading files…
         </div>
       ) : !activeProject ? (
-        <div className="text-xs text-neutral-500">Выбери проект.</div>
+        <div className="text-xs text-neutral-500">Pick a project.</div>
       ) : (projectFiles?.length || 0) === 0 ? (
-        <div className="text-xs text-neutral-500">Нет файлов (сначала Scan).</div>
+        <div className="text-xs text-neutral-500">No files yet (run Scan first).</div>
       ) : (
         <div ref={explorerScrollRef} className="mt-2 max-h-[55vh] overflow-auto flex flex-col gap-0.5">
           {projectFilesMeta?.truncated && (
