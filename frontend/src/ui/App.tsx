@@ -246,6 +246,7 @@ export function App() {
                 void Promise.resolve(app.openFileEditor(path))
               }}
               onToggleWorkspaceView={app.toggleWorkspaceView}
+              onRegisterUndoRedo={app.registerUndoRedoHandlers}
             />
           ) : (
             <div className="h-full w-full overflow-hidden flex relative">

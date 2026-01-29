@@ -194,6 +194,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const workspaceBootingRef = useRef(false)
   const workspaceSaveTimerRef = useRef<number | null>(null)
   const restoredEditorRef = useRef(false)
+  const undoRedoHandlersRef = useRef<{ undo?: () => void; redo?: () => void } | null>(null)
 
   const queryClient = useQueryClient()
 
@@ -1838,6 +1839,13 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setOutlineRequestId((value) => value + 1)
   }, [])
 
+  const registerUndoRedoHandlers = useCallback(
+    (handlers: { undo: () => void; redo: () => void }) => {
+      undoRedoHandlersRef.current = handlers
+    },
+    [],
+  )
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (isAnyModalOpen() && !paletteOpen) return
@@ -1920,6 +1928,36 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       if (typing) return
       if (paletteOpen) return
 
+      if (
+        !otherModalOpen
+        && workspaceView === 'graph'
+        && graph
+        && !focusGraph
+        && mod
+        && !e.shiftKey
+        && !e.altKey
+        && (e.key === 'z' || e.key === 'Z')
+      ) {
+        e.preventDefault()
+        undoRedoHandlersRef.current?.undo?.()
+        return
+      }
+
+      if (
+        !otherModalOpen
+        && workspaceView === 'graph'
+        && graph
+        && !focusGraph
+        && mod
+        && e.shiftKey
+        && !e.altKey
+        && (e.key === 'z' || e.key === 'Z')
+      ) {
+        e.preventDefault()
+        undoRedoHandlersRef.current?.redo?.()
+        return
+      }
+
       if (mod && !e.shiftKey && !e.altKey && (e.key === 'b' || e.key === 'B')) {
         e.preventDefault()
         if (focusGraph) {
@@ -1995,6 +2033,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     toggleCompactMode,
     onFocusSearch,
     toggleWorkspaceView,
+    workspaceView,
+    graph,
     fileEditorOpen,
     requestFindInFile,
     requestReplaceInFile,
@@ -2189,6 +2229,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     toggleRightPanel,
     paletteOpen,
     setPaletteOpen,
+    registerUndoRedoHandlers,
 
     selectionTrail,
     onNavigatePath,
