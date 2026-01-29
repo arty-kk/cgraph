@@ -418,6 +418,8 @@ export function ExplorerTree({
     const isDirtySelected = selected && !!dirtyPath && dirtyPath === f.path
     const name = f.path.split('/').pop() || f.path
     const showPath = Boolean(opts?.showPath)
+    const canOpenInEditor = Boolean(onOpenFileEditor)
+    const isDisabled = !activeProject || busy
     const lang = String((f as any)?.language ?? '—')
     const risk = toNum((f as any)?.risk)
     const loc = toNum((f as any)?.loc)
@@ -426,34 +428,67 @@ export function ExplorerTree({
 
     const tooltip = [
       f.path,
+      ...(canOpenInEditor ? ['Double-click to open'] : []),
       `lang: ${lang}`,
       `risk: ${Number.isFinite(risk) ? risk.toFixed(2) : '—'}`,
       `loc: ${Number.isFinite(loc) ? String(loc) : '—'}`,
       `fan_in/out: ${Number.isFinite(fi) ? String(fi) : '—'}/${Number.isFinite(fo) ? String(fo) : '—'}`,
     ].join('\n')
     return (
-      <button
+      <div
         key={f.path}
-        id={selected ? 'cs-explorer-selected' : undefined}
-        className={[
-          itemBase,
-          selected ? itemActive : itemIdle,
-        ].join(' ')}
-        onClick={() => onSelectPath(f.path)}
-        onMouseDown={(e) => e.preventDefault()}
-        disabled={!activeProject || busy}
-        title={tooltip}
         style={{ marginLeft: depth > 0 ? depth * 10 : 0 }}
+        className="flex items-center gap-2"
       >
-        <div className="flex items-center gap-2 text-neutral-200 truncate">
-          <span className="truncate">{showPath ? f.path : name}</span>
-          {isDirtySelected && (
-            <span className="text-amber-300" aria-label="Unsaved changes" title="Unsaved changes">
-              ●
-            </span>
-          )}
-        </div>
-      </button>
+        <button
+          id={selected ? 'cs-explorer-selected' : undefined}
+          className={[
+            itemBase,
+            selected ? itemActive : itemIdle,
+            isDisabled ? 'cursor-not-allowed' : 'cursor-pointer',
+            'flex items-center justify-between gap-2 min-w-0',
+          ].join(' ')}
+          onClick={() => {
+            if (isDisabled) return
+            void Promise.resolve(onSelectPath(f.path))
+          }}
+          onDoubleClick={() => {
+            if (isDisabled || !canOpenInEditor) return
+            void Promise.resolve(onOpenFileEditor?.(f.path))
+          }}
+          onMouseDown={(e) => e.preventDefault()}
+          disabled={isDisabled}
+          title={tooltip}
+        >
+          <div className="flex items-center gap-2 text-neutral-200 truncate">
+            <span className="truncate">{showPath ? f.path : name}</span>
+            {isDirtySelected && (
+              <span className="text-amber-300" aria-label="Unsaved changes" title="Unsaved changes">
+                ●
+              </span>
+            )}
+          </div>
+        </button>
+        {canOpenInEditor && (
+          <button
+            type="button"
+            className="shrink-0 rounded-md border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            title="Open file"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              void Promise.resolve(onOpenFileEditor?.(f.path))
+            }}
+            disabled={isDisabled}
+          >
+            Open
+          </button>
+        )}
+      </div>
     )
   }
 
