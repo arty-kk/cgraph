@@ -2,12 +2,15 @@
 import React from 'react'
 import { DiffEditor, Editor } from '@monaco-editor/react'
 import type { editor, IPosition } from 'monaco-editor'
+import type { NodeInfo, ProjectFileItem } from '../../api'
 
 export type FileEditorPaneProps = {
   open: boolean
   path: string | null
   tabs: Array<{ path: string; dirty: boolean }>
   activePath: string | null
+  nodeInfo?: NodeInfo | null
+  fileMeta?: ProjectFileItem | null
   original: string
   content: string
   busy: boolean
@@ -36,6 +39,7 @@ export type FileEditorPaneProps = {
   onFindInFile: () => void
   onReplaceInFile: () => void
   onGoToSymbol: () => void
+  onOpenInGraph: (path: string) => void
 }
 
 export function FileEditorPane({
@@ -43,6 +47,8 @@ export function FileEditorPane({
   path,
   tabs,
   activePath,
+  nodeInfo,
+  fileMeta,
   original,
   content,
   busy,
@@ -71,6 +77,7 @@ export function FileEditorPane({
   onFindInFile,
   onReplaceInFile,
   onGoToSymbol,
+  onOpenInGraph,
 }: FileEditorPaneProps) {
   const [cursorInfo, setCursorInfo] = React.useState({ line: 1, column: 1 })
   const editorRef = React.useRef<editor.IStandaloneCodeEditor | null>(null)
@@ -342,6 +349,19 @@ export function FileEditorPane({
     }
   }, [activePath, saveViewStateForPath])
 
+  const nodeInfoMatchesPath = Boolean(path && nodeInfo?.path && nodeInfo.path === path)
+  const fileMetaMatchesPath = Boolean(path && fileMeta?.path && fileMeta.path === path)
+  const showContext = nodeInfoMatchesPath || fileMetaMatchesPath
+  const contextRisk = fileMetaMatchesPath ? fileMeta?.risk : null
+  const contextLoc = nodeInfoMatchesPath ? nodeInfo?.loc : null
+  const contextFanIn = nodeInfoMatchesPath ? nodeInfo?.fan_in : null
+  const contextFanOut = nodeInfoMatchesPath ? nodeInfo?.fan_out : null
+  const formatContextValue = (value: number | null | undefined) => {
+    if (value === null || value === undefined) return '—'
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? String(value) : '—'
+  }
+
   return (
     <div className="flex flex-col gap-3 h-full min-h-0">
       {tabs.length > 0 && (
@@ -467,6 +487,33 @@ export function FileEditorPane({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {showContext && (
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/80 px-2 py-1 text-[11px] text-neutral-300">
+              <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Context</span>
+              <div className="flex flex-wrap items-center gap-2 text-neutral-400">
+                <span>
+                  Risk <span className="text-neutral-100">{formatContextValue(contextRisk)}</span>
+                </span>
+                <span>
+                  LOC <span className="text-neutral-100">{formatContextValue(contextLoc)}</span>
+                </span>
+                <span>
+                  Fan in <span className="text-neutral-100">{formatContextValue(contextFanIn)}</span>
+                </span>
+                <span>
+                  Fan out <span className="text-neutral-100">{formatContextValue(contextFanOut)}</span>
+                </span>
+              </div>
+            </div>
+          )}
+          <button
+            type="button"
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            onClick={() => path && onOpenInGraph(path)}
+            disabled={!path}
+          >
+            Open in graph
+          </button>
           <button
             type="button"
             className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
