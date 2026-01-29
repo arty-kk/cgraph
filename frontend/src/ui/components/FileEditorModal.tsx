@@ -9,6 +9,8 @@ export function FileEditorModal({
   path,
   tabs,
   activePath,
+  nodeInfo,
+  fileMeta,
   original,
   content,
   busy,
@@ -37,6 +39,7 @@ export function FileEditorModal({
   onFindInFile,
   onReplaceInFile,
   onGoToSymbol,
+  onOpenInGraph,
 }: Props) {
   const title = path ? `File: ${path}` : 'File viewer'
 
@@ -52,6 +55,8 @@ export function FileEditorModal({
         path={path}
         tabs={tabs}
         activePath={activePath}
+        nodeInfo={nodeInfo}
+        fileMeta={fileMeta}
         original={original}
         content={content}
         busy={busy}
@@ -80,6 +85,7 @@ export function FileEditorModal({
         onFindInFile={onFindInFile}
         onReplaceInFile={onReplaceInFile}
         onGoToSymbol={onGoToSymbol}
+        onOpenInGraph={onOpenInGraph}
       />
     </Modal>
   )

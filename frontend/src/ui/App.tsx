@@ -78,6 +78,11 @@ export function App() {
     })
   }, [app.fileEditorsByPath, app.openFilePaths])
 
+  const activeFileMeta = React.useMemo(() => {
+    if (!app.activeFilePath) return null
+    return app.projectFiles?.find((file) => file.path === app.activeFilePath) ?? null
+  }, [app.activeFilePath, app.projectFiles])
+
   const confirmTitle = app.confirmReason === 'reload-file' ? 'Reload file?' : 'Unsaved changes'
   const confirmBody =
     app.confirmReason === 'reload-file'
@@ -416,6 +421,8 @@ export function App() {
                     path={app.activeFilePath}
                     tabs={editorTabs}
                     activePath={app.activeFilePath}
+                    nodeInfo={app.nodeInfo}
+                    fileMeta={activeFileMeta}
                     original={app.fileEditorOriginal}
                     content={app.fileEditorContent}
                     busy={app.fileEditorBusy}
@@ -444,6 +451,10 @@ export function App() {
                     onFindInFile={app.requestFindInFile}
                     onReplaceInFile={app.requestReplaceInFile}
                     onGoToSymbol={app.requestOutlineInFile}
+                    onOpenInGraph={(path) => {
+                      app.onSelectNodePath(path)
+                      app.setWorkspaceView('graph')
+                    }}
                   />
                 </div>
               </div>
