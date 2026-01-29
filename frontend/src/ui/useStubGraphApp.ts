@@ -778,7 +778,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       if (!activeProject) return null
       const projectId = activeProject.id
       if (graphMode === 'local') {
-        if (!selectedPath) throw new Error('Укажи файл, чтобы построить локальный граф.')
+        if (!selectedPath) throw new Error('Select a file to build a local graph.')
         return getLocalGraph(projectId, selectedPath, graphHops, graphLocalMax, graphLocalMax * 2)
       }
       if (graphMode === 'full') return getGraph(projectId, 0)
@@ -1686,7 +1686,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
             setSearchResults(fallbackRes)
             setSearchSemanticResults([])
             setSemanticSearchFallbackUsed(true)
-            notifyInfo('Семантический поиск не дал результатов — показан поиск по пути.')
+            notifyInfo('Semantic search returned no results — showing path search instead.')
           } else {
             setSearchSemanticResults(semanticResults)
             setSearchResults([])
@@ -1706,14 +1706,14 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
           setSemanticSearchEnabled(false)
           setSemanticSearchUnavailableReason(reason)
           if (reason === 'no_embeddings') {
-            notifyInfo('Эмбеддинги для проекта отсутствуют — запустите Scan с включёнными embeddings.')
+            notifyInfo('Project embeddings are missing — run Scan with embeddings enabled.')
           }
           try {
             const res = await searchNodes(activeProject.id, query, 30)
             if (searchSeqRef.current !== seq) return
             setSearchResults(res)
             setSearchSemanticResults([])
-            notifyInfo('Семантический поиск недоступен — выполнен обычный поиск.')
+            notifyInfo('Semantic search is unavailable — using standard search.')
           } catch (fallbackError: any) {
             setErrorMessage(extractError(fallbackError))
           }

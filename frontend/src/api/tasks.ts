@@ -45,13 +45,13 @@ export async function waitForTaskResult<T>(
     }
 
     if (errorStatuses.has(current.status)) {
-      const err = current.error ?? 'Задача завершилась с ошибкой'
+      const err = current.error ?? 'Task failed'
       const message = typeof err === 'string' ? err : JSON.stringify(err)
       throw new Error(message)
     }
 
     if (!pendingStatuses.has(current.status)) {
-      throw new Error(`Неизвестный статус задачи: ${current.status}`)
+      throw new Error(`Unknown task status: ${current.status}`)
     }
 
     await delay(pollInterval)
@@ -59,7 +59,7 @@ export async function waitForTaskResult<T>(
     attempt += 1
   }
 
-  throw new Error('Задача не завершилась вовремя')
+  throw new Error('Task did not finish in time')
 }
 
 export async function runTask(

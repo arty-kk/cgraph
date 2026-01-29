@@ -78,11 +78,11 @@ export function App() {
     })
   }, [app.fileEditorsByPath, app.openFilePaths])
 
-  const confirmTitle = app.confirmReason === 'reload-file' ? 'Перезагрузить файл?' : 'Несохранённые изменения'
+  const confirmTitle = app.confirmReason === 'reload-file' ? 'Reload file?' : 'Unsaved changes'
   const confirmBody =
     app.confirmReason === 'reload-file'
-      ? 'Перезагрузка файла приведёт к потере несохранённых изменений.'
-      : 'Есть несохранённые изменения.'
+      ? 'Reloading the file will discard unsaved changes.'
+      : 'You have unsaved changes.'
 
   const clampFontSize = React.useCallback((value: number) => Math.min(16, Math.max(12, value)), [])
 
@@ -567,7 +567,7 @@ export function App() {
               onClick={() => void app.confirmCancel()}
               disabled={app.fileEditorSaving || app.fileEditorBusy}
             >
-              Отмена
+              Cancel
             </button>
             <button
               type="button"
@@ -575,7 +575,7 @@ export function App() {
               onClick={() => void app.confirmDiscard()}
               disabled={app.fileEditorSaving || app.fileEditorBusy}
             >
-              Продолжить без сохранения
+              Continue without saving
             </button>
             <button
               type="button"
@@ -583,7 +583,7 @@ export function App() {
               onClick={() => void app.confirmSave()}
               disabled={app.fileEditorSaving || app.fileEditorBusy}
             >
-              Сохранить
+              Save
             </button>
           </div>
         </div>
@@ -617,7 +617,7 @@ export function App() {
           <div className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-3 overflow-auto max-h-[70vh]">
             {app.docsBuildError && app.docs?.markdown && (
               <div className="text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded-md p-2 mb-3">
-                Docs не обновились из-за ошибки — показана предыдущая версия.
+                Docs failed to update due to an error — showing the previous version.
               </div>
             )}
             {!app.docs?.markdown ? (
@@ -749,7 +749,7 @@ export function App() {
           </div>
           {onboardStep === 0 && (
             <div className="space-y-2">
-              <div>1) Проиндексируй проект: <span className="font-mono">Scan</span>.</div>
+              <div>1) Index the project: <span className="font-mono">Scan</span>.</div>
               <button
                 className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold disabled:opacity-50"
                 onClick={() => void app.onScan()}
@@ -761,7 +761,7 @@ export function App() {
           )}
           {onboardStep === 1 && (
             <div className="space-y-2">
-              <div>2) Выбери файл: <span className="font-mono">Ctrl/⌘+K</span>, введи путь, Enter.</div>
+              <div>2) Pick a file: <span className="font-mono">Ctrl/⌘+K</span>, type a path, press Enter.</div>
               <button
                 className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-2 text-sm font-semibold"
                 onClick={() => app.setPaletteOpen(true)}
@@ -772,14 +772,14 @@ export function App() {
           )}
           {onboardStep === 2 && (
             <div className="space-y-2">
-              <div>3) Клик по узлу — центрирование и подсветка связей.</div>
-              <div>В focus-режиме (F) можно прятать/фиксировать узлы и сохранять раскладку.</div>
+              <div>3) Click a node to center it and highlight its edges.</div>
+              <div>In focus mode (F), you can hide/pin nodes and save the layout.</div>
             </div>
           )}
           {onboardStep === 3 && (
             <div className="space-y-2">
-              <div>4) Запусти задачу справа: выбери шаблон (chips) или напиши промпт и нажми Run.</div>
-              <div className="text-[12px] text-neutral-400">История запусков — в “Recent runs” с фильтрами.</div>
+              <div>4) Run a task on the right: pick a chip or write a prompt, then press Run.</div>
+              <div className="text-[12px] text-neutral-400">Run history is in “Recent runs” with filters.</div>
             </div>
           )}
 

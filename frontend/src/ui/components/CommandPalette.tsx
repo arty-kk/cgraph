@@ -123,8 +123,8 @@ export function CommandPalette({
         e.stopPropagation()
       }}
       onClick={() => setHelpOpen(true)}
-      aria-label={label || 'Открыть подсказку'}
-      title={label || 'Подсказка'}
+      aria-label={label || 'Open help'}
+      title={label || 'Help'}
     >
       ?
     </button>
@@ -187,8 +187,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Editor',
         title: 'Save',
-        subtitle: 'Сохранить файл в редакторе',
-        subtitleText: 'Сохранить файл в редакторе',
+        subtitle: 'Save file in editor',
+        subtitleText: 'Save file in editor',
         disabled: !hasActiveFile || !canSave,
         onSelect: async () => {
           onClose()
@@ -200,8 +200,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Editor',
         title: 'Close tab',
-        subtitle: 'Закрыть активную вкладку редактора',
-        subtitleText: 'Закрыть активную вкладку редактора',
+        subtitle: 'Close active editor tab',
+        subtitleText: 'Close active editor tab',
         disabled: !hasActiveFile,
         onSelect: () => {
           if (!activeFilePath) return
@@ -214,8 +214,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Editor',
         title: 'Toggle wrap',
-        subtitle: 'Включить/выключить перенос строк',
-        subtitleText: 'Включить/выключить перенос строк',
+        subtitle: 'Toggle line wrapping',
+        subtitleText: 'Toggle line wrapping',
         disabled: !editorOpen,
         onSelect: () => {
           onClose()
@@ -227,8 +227,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Editor',
         title: 'Toggle diff',
-        subtitle: 'Показать/скрыть diff-режим',
-        subtitleText: 'Показать/скрыть diff-режим',
+        subtitle: 'Toggle diff mode',
+        subtitleText: 'Toggle diff mode',
         disabled: !editorOpen,
         onSelect: () => {
           onClose()
@@ -240,8 +240,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Editor',
         title: 'Increase font size',
-        subtitle: 'Увеличить размер шрифта редактора',
-        subtitleText: 'Увеличить размер шрифта редактора',
+        subtitle: 'Increase editor font size',
+        subtitleText: 'Increase editor font size',
         disabled: !editorOpen,
         onSelect: () => {
           onClose()
@@ -253,8 +253,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Editor',
         title: 'Decrease font size',
-        subtitle: 'Уменьшить размер шрифта редактора',
-        subtitleText: 'Уменьшить размер шрифта редактора',
+        subtitle: 'Decrease editor font size',
+        subtitleText: 'Decrease editor font size',
         disabled: !editorOpen,
         onSelect: () => {
           onClose()
@@ -266,8 +266,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Editor',
         title: 'Toggle explorer',
-        subtitle: 'Показать/скрыть боковую панель редактора',
-        subtitleText: 'Показать/скрыть боковую панель редактора',
+        subtitle: 'Show/hide editor sidebar',
+        subtitleText: 'Show/hide editor sidebar',
         disabled: !editorOpen,
         onSelect: () => {
           onClose()
@@ -279,8 +279,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Project',
         title: 'Open docs',
-        subtitle: 'Открыть сгенерированную документацию проекта',
-        subtitleText: 'Открыть сгенерированную документацию проекта',
+        subtitle: 'Open generated project docs',
+        subtitleText: 'Open generated project docs',
         disabled: !hasProject,
         onSelect: async () => {
           onClose()
@@ -293,8 +293,8 @@ export function CommandPalette({
         group: 'UI',
         hint: 'Ctrl/⌘+Shift+G',
         title: 'Toggle workspace view',
-        subtitle: 'Переключить граф/редактор',
-        subtitleText: 'Переключить граф/редактор',
+        subtitle: 'Switch graph/editor',
+        subtitleText: 'Switch graph/editor',
         disabled: false,
         onSelect: () => {
           onClose()
@@ -307,8 +307,8 @@ export function CommandPalette({
         group: 'UI',
         hint: 'Ctrl/⌘+Shift+M',
         title: compactMode ? 'Disable compact mode' : 'Enable compact mode',
-        subtitle: 'Сократить подписи (tooltips остаются)',
-        subtitleText: 'Сократить подписи (tooltips остаются)',
+        subtitle: 'Compact labels (tooltips stay)',
+        subtitleText: 'Compact labels (tooltips stay)',
         disabled: false,
         onSelect: () => {
           onClose()
@@ -320,8 +320,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Graph',
         title: 'Scan',
-        subtitle: 'Проиндексировать файлы и пересчитать зависимости',
-        subtitleText: 'Проиндексировать файлы и пересчитать зависимости',
+        subtitle: 'Index files and recompute dependencies',
+        subtitleText: 'Index files and recompute dependencies',
         disabled: !hasProject,
         onSelect: async () => {
           onClose()
@@ -333,8 +333,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Graph',
         title: 'Refresh',
-        subtitle: 'Перезагрузить данные графа и панелей (без смены проекта)',
-        subtitleText: 'Перезагрузить данные графа и панелей (без смены проекта)',
+        subtitle: 'Reload graph and panel data (without changing project)',
+        subtitleText: 'Reload graph and panel data (without changing project)',
         disabled: !hasProject,
         onSelect: async () => {
           onClose()
@@ -347,8 +347,8 @@ export function CommandPalette({
         group: 'UI',
         hint: 'F',
         title: focusGraph ? 'Exit focus' : 'Enter focus',
-        subtitle: 'Переключить режим фокуса на графе',
-        subtitleText: 'Переключить режим фокуса на графе',
+        subtitle: 'Toggle graph focus mode',
+        subtitleText: 'Toggle graph focus mode',
         disabled: !hasProject,
         onSelect: () => {
           onClose()
@@ -360,8 +360,8 @@ export function CommandPalette({
         kind: 'command',
         group: 'Selection',
         title: 'Toggle pin for selection',
-        subtitle: 'Закрепить/открепить выбранный файл',
-        subtitleText: 'Закрепить/открепить выбранный файл',
+        subtitle: 'Pin/unpin selected file',
+        subtitleText: 'Pin/unpin selected file',
         disabled: !hasSel,
         onSelect: async () => {
           if (!selectedPath) return
@@ -375,8 +375,8 @@ export function CommandPalette({
         group: 'Selection',
         hint: 'Esc',
         title: 'Clear selection',
-        subtitle: 'Снять выделение (файл/узел)',
-        subtitleText: 'Снять выделение (файл/узел)',
+        subtitle: 'Clear selection (file/node)',
+        subtitleText: 'Clear selection (file/node)',
         disabled: !hasSel,
         onSelect: () => {
           onClose()
@@ -389,8 +389,8 @@ export function CommandPalette({
         group: 'Navigation',
         hint: 'Alt+← / ⌘[',
         title: 'Back',
-        subtitle: 'Назад по истории выделений',
-        subtitleText: 'Назад по истории выделений',
+        subtitle: 'Back in selection history',
+        subtitleText: 'Back in selection history',
         disabled: !canGoBack,
         onSelect: () => {
           onClose()
@@ -403,8 +403,8 @@ export function CommandPalette({
         group: 'Navigation',
         hint: 'Alt+→ / ⌘]',
         title: 'Forward',
-        subtitle: 'Вперёд по истории выделений',
-        subtitleText: 'Вперёд по истории выделений',
+        subtitle: 'Forward in selection history',
+        subtitleText: 'Forward in selection history',
         disabled: !canGoForward,
         onSelect: () => {
           onClose()
@@ -509,7 +509,7 @@ export function CommandPalette({
     const showProjectsSection = !activeProject || hasQuery
     const projectsNote =
       showProjectsSection && projectItems.length === 0
-        ? (hasQuery ? 'Проекты не найдены.' : 'Нет проектов.')
+        ? (hasQuery ? 'No projects found.' : 'No projects.')
         : undefined
 
     if (!activeProject && showProjectsSection) {
@@ -529,11 +529,11 @@ export function CommandPalette({
     const wantsFiles = q.length >= 2
     const fileNote =
       !activeProject && wantsFiles
-        ? 'Выбери проект, чтобы искать файлы.'
+        ? 'Pick a project to search files.'
         : activeProject && wantsFiles && filesBusy
-          ? 'Поиск файлов…'
+          ? 'Search files…'
           : activeProject && wantsFiles && !filesBusy && fileItems.length === 0
-            ? 'Файлы не найдены.'
+            ? 'No files found.'
             : undefined
 
     if (wantsFiles || fileItems.length > 0) {
@@ -616,7 +616,7 @@ export function CommandPalette({
     const active = idx === activeIndex
     const tooltip =
       item.kind === 'file'
-        ? [item.title, item.subtitleText || '', 'Enter — открыть в редакторе', 'Shift+Enter — открыть + toggle pin'].filter(Boolean).join('\n')
+        ? [item.title, item.subtitleText || '', 'Enter — open in editor', 'Shift+Enter — open + toggle pin'].filter(Boolean).join('\n')
         : [item.title, item.subtitleText || '', item.hint ? `Keys: ${item.hint}` : ''].filter(Boolean).join('\n')
     return (
       <button
@@ -656,10 +656,10 @@ export function CommandPalette({
   const hasQuery = qTrim.length > 0
   const inlineHint =
     !activeProject
-      ? (hasQuery ? 'Выбери проект, чтобы стали доступны команды и поиск файлов.' : 'Выбери проект в секции Projects.')
+      ? (hasQuery ? 'Pick a project to enable commands and file search.' : 'Pick a project in the Projects section.')
       : (!hasQuery
-          ? 'Начни ввод, чтобы переключить проект или найти файл.'
-          : (qTrim.length < 2 ? 'Файлы: введи минимум 2 символа для поиска.' : null))
+          ? 'Start typing to switch projects or find a file.'
+          : (qTrim.length < 2 ? 'Files: enter at least 2 characters to search.' : null))
 
   return (
     <Modal open={open} title="Command palette" onClose={onClose}>
@@ -670,9 +670,9 @@ export function CommandPalette({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Команда, проект или путь файла…"
+            placeholder="Command, project, or file path…"
             className={['flex-1', controlClass].join(' ')}
-            title="Поиск по командам/проектам/файлам. Файлы ищутся по активному проекту (минимум 2 символа)."
+            title="Search commands/projects/files. Files are searched in the active project (min 2 chars)."
           />
           <HelpButton label="Help: Command palette" />
         </div>
@@ -703,80 +703,80 @@ export function CommandPalette({
           ))}
 
           {renderSections.length === 0 && (
-            <div className="text-xs text-neutral-500">Ничего не найдено.</div>
+            <div className="text-xs text-neutral-500">Nothing found.</div>
           )}
         </div>
 
         <div className="mt-4 text-[11px] text-neutral-500 flex flex-wrap gap-x-3 gap-y-1">
           <span>
-            <span className="text-neutral-300">Enter</span> — открыть/выполнить
+            <span className="text-neutral-300">Enter</span> — open/run
           </span>
           <span>
-            <span className="text-neutral-300">Esc</span> — закрыть
+            <span className="text-neutral-300">Esc</span> — close
           </span>
           <span>
-            <span className="text-neutral-300">↑/↓</span> — навигация
+            <span className="text-neutral-300">↑/↓</span> — navigate
           </span>
           <span>
-            <span className="text-neutral-300">Ctrl/⌘+K</span> — открыть
+            <span className="text-neutral-300">Ctrl/⌘+K</span> — open
           </span>
           <span>
-            <span className="text-neutral-300">Shift+Enter</span> — открыть + toggle pin (file)
+            <span className="text-neutral-300">Shift+Enter</span> — open + toggle pin (file)
           </span>
           <span>
             <span className="text-neutral-300">Ctrl/⌘+Shift+M</span> — compact
           </span>
         </div>
 
-        <Modal open={helpOpen} title="Подсказка: Command palette" onClose={() => setHelpOpen(false)}>
+        <Modal open={helpOpen} title="Help: Command palette" onClose={() => setHelpOpen(false)}>
           <div className="space-y-2">
             <div className="text-neutral-200 font-semibold">
-              Что это
+              What it is
             </div>
             <div>
-              • Command palette — быстрый доступ к действиям (Actions), переключению проектов и поиску файлов.
+              • Command palette provides quick access to actions, project switching, and file search.
             </div>
             <div className="pt-2 text-neutral-200 font-semibold">
-              Поиск
+              Search
             </div>
             <div>
-              • Actions/Projects фильтруются локально по вводу.
+              • Actions/Projects are filtered locally by your input.
             </div>
             <div>
-              • Files ищутся через backend по активному проекту (<span className="font-mono">min 2 chars</span>).
+              • Files are searched via the backend for the active project (<span className="font-mono">min 2 chars</span>).
             </div>
             <div className="text-neutral-400 text-[12px]">
-              Совет: для файлов используйте подстроку пути, например <span className="font-mono">service/</span> или имя модуля.
+              Tip: for files use a path substring, e.g. <span className="font-mono">service/</span> or a module name.
             </div>
 
             <div className="pt-2 text-neutral-200 font-semibold">
-              Управление
+              Controls
             </div>
             <div>
-              • <span className="font-mono">Enter</span> — выполнить действие / выбрать проект / открыть файл в редакторе.
+              • <span className="font-mono">Enter</span> — run an action / pick a project / open a file in the editor.
             </div>
             <div>
-              • <span className="font-mono">Shift+Enter</span> на файле — открыть в редакторе и <span className="font-mono">toggle</span> pin (закрепить/открепить).
+              • <span className="font-mono">Shift+Enter</span> on a file — open in the editor and <span className="font-mono">toggle</span> pin (pin/unpin).
             </div>
             <div>
-              • <span className="font-mono">↑/↓</span> — перемещение по списку.
+              • <span className="font-mono">↑/↓</span> — move through the list.
             </div>
             <div>
-              • <span className="font-mono">Esc</span> — закрыть.
+              • <span className="font-mono">Esc</span> — close.
             </div>
             <div className="pt-2 text-neutral-200 font-semibold">
-              Группы
+              Groups
             </div>
             <div>
-              • Actions сгруппированы по доменам: Project / Graph / UI / Selection / Navigation.
+              • Actions are grouped by domain: Project / Graph / UI / Selection / Navigation.
             </div>
             <div>
-              • Projects — список проектов. Появляется при вводе запроса; если проект не выбран — показывается сразу.
-              Чтобы переключить проект при пустом запросе — просто начни ввод.
+              • Projects — project list. Appears when you type; if no project is selected, it shows immediately.
+              To switch projects with an empty query, just start typing.
             </div>
             <div>
-              • Files — результаты поиска файлов. Появляется при вводе 2+ символов; поиск идёт в активном проекте.
-              Если проекта нет — сначала выбери проект.
+              • Files — file search results. Appears after 2+ characters; search runs in the active project.
+              If no project is selected, pick one first.
             </div>
           </div>
         </Modal>

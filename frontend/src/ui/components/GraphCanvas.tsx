@@ -721,8 +721,8 @@ export function GraphCanvas({
   const formatRiskValue = (value: number) => (riskSliderMax > 50 ? value.toFixed(0) : value.toFixed(2))
 
   const graphInfo = useMemo(() => {
-    if (!activeProject) return 'Выбери проект'
-    if (!graph) return busy ? 'загрузка…' : '—'
+    if (!activeProject) return 'Pick a project'
+    if (!graph) return busy ? 'loading…' : '—'
 
     const shown = `${returnedNodes} Nodes · ${returnedEdges} Edges`
     const totalsDiffer =
@@ -731,12 +731,12 @@ export function GraphCanvas({
       (totalNodes !== returnedNodes || totalEdges !== returnedEdges || truncated || limitNodes != null)
 
     const totalPart = totalsDiffer
-      ? ` (из ${totalNodes ?? '—'}/${totalEdges ?? '—'}${truncated ? ', срезано' : ''}${
-          limitNodes ? `, лимит ${limitNodes}` : ''
+      ? ` (of ${totalNodes ?? '—'}/${totalEdges ?? '—'}${truncated ? ', truncated' : ''}${
+          limitNodes ? `, limit ${limitNodes}` : ''
         })`
       : ''
 
-    const statusSuffix = busy || stats.hydrating ? ' · подгружаем…' : ''
+    const statusSuffix = busy || stats.hydrating ? ' · loading…' : ''
     return `${shown}${totalPart}${statusSuffix}`
   }, [activeProject, graph, busy, returnedNodes, returnedEdges, totalNodes, totalEdges, truncated, limitNodes, stats.hydrating])
 
@@ -850,10 +850,10 @@ export function GraphCanvas({
                 {label('Relayout', '↻')}
               </button>
               <button type="button" className={btnClass} onClick={saveLayout} disabled={!activeProject || !graph} title="Save layout">
-                {label('Save', 'S')}
+                {label('Save layout', 'S')}
               </button>
               <button type="button" className={btnClass} onClick={resetLayout} disabled={!activeProject || !graph} title="Reset layout">
-                {label('Reset', 'R')}
+                {label('Reset layout', 'R')}
               </button>
             </div>
           </>
@@ -865,7 +865,7 @@ export function GraphCanvas({
                 className="text-left min-w-0 flex-1"
                 onClick={() => setPanelOpen(true)}
                 disabled={!activeProject}
-                title="Открыть панель фильтров"
+                title="Open filters panel"
               >
                 <div className="text-xs text-neutral-300 truncate">
                   {activeProject ? (
@@ -874,7 +874,7 @@ export function GraphCanvas({
                       <span className="ml-2 text-neutral-400">{graphInfo}</span>
                     </>
                   ) : (
-                    'Выбери проект'
+                    'Pick a project'
                   )}
                 </div>
               </button>
@@ -965,7 +965,7 @@ export function GraphCanvas({
                 className={btnClass}
                 onClick={() => setNeighborsOpen((v) => !v)}
                 disabled={!activeProject || !selectedPath}
-                title="Показать входящие/исходящие связи"
+                title="Show incoming/outgoing edges"
               >
                 {label('Neighbors', '⇄')}
               </button>
@@ -973,7 +973,7 @@ export function GraphCanvas({
                 type="button"
                 className="shrink-0 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
                 onClick={() => setHelpOpen(true)}
-                title="Что это и как пользоваться"
+                title="What this is and how to use it"
               >
                 ?
               </button>
@@ -1057,7 +1057,7 @@ export function GraphCanvas({
                     <span className="ml-2 text-neutral-400">{graphInfo}</span>
                   </>
                 ) : (
-                  'Выбери проект'
+                  'Pick a project'
                 )}
               </div>
               <div className="ml-auto flex items-center gap-2">
@@ -1075,8 +1075,8 @@ export function GraphCanvas({
                   type="button"
                   className="text-xs text-neutral-300 hover:text-white"
                   onClick={() => setPanelOpen(false)}
-                  aria-label="Свернуть панель"
-                  title="Свернуть"
+                  aria-label="Collapse panel"
+                  title="Collapse"
                 >
                   ×
                 </button>
@@ -1091,7 +1091,7 @@ export function GraphCanvas({
                   disabled={!activeProject}
                 />
                 <span className="text-[11px] text-neutral-300">
-                  Spotlight: выделять связку выбранного узла, остальное приглушать (без скрытия)
+                  Spotlight: highlight selected node edges and dim the rest (no hiding)
                 </span>
               </label>
 
@@ -1104,7 +1104,7 @@ export function GraphCanvas({
                 />
                 <span className="text-[11px] text-neutral-300">
                   Direction Colors: <span className="font-mono" style={{ color: EDGE_IN_COLOR }}>IN</span> /
-                  <span className="font-mono ml-1" style={{ color: EDGE_OUT_COLOR }}>OUT</span> для рёбер выбранного узла
+                  <span className="font-mono ml-1" style={{ color: EDGE_OUT_COLOR }}>OUT</span> for edges of the selected node
                 </span>
               </label>
 
@@ -1127,7 +1127,7 @@ export function GraphCanvas({
               className="rounded-md bg-neutral-900 border border-neutral-800 px-2 py-1"
               value={filters.text}
               onChange={(e) => setFilters((prev) => ({ ...prev, text: e.target.value }))}
-              placeholder="например, service/"
+              placeholder="e.g., service/"
               disabled={!activeProject}
             />
           </label>
@@ -1163,9 +1163,9 @@ export function GraphCanvas({
               disabled={!activeProject || !selectedPath || !selectedInGraph}
             />
             <span className="text-[11px] text-neutral-300">
-              Узлы в окрестности выбранного файла
-              {!selectedPath && ' (нужно выбрать узел)'}
-              {selectedPath && !selectedInGraph && ' (нет в графе)'}
+              Nodes around the selected file
+              {!selectedPath && ' (select a node)'}
+              {selectedPath && !selectedInGraph && ' (not in graph)'}
             </span>
           </label>
             <div className="flex items-center gap-2 col-span-2">
@@ -1181,7 +1181,7 @@ export function GraphCanvas({
               className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
               onClick={() => actions.relayout()}
               disabled={!activeProject || !graph}
-              title="Пересчитать layout"
+              title="Recompute layout"
             >
               Relayout
             </button>
@@ -1190,7 +1190,7 @@ export function GraphCanvas({
               className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
               onClick={() => setFocusGraph(!focusGraph)}
               disabled={!activeProject}
-              title="F — focus, Esc — вернуть панели"
+              title="F — focus, Esc — show panels"
             >
               {focusGraph ? 'Panels' : 'Focus'}
             </button>
@@ -1204,7 +1204,7 @@ export function GraphCanvas({
               {focusGraph ? 'Back' : 'Clear'}
             </button>
             <div className="text-[11px] text-neutral-400">
-              Показано {stats.visibleNodes} / {stats.totalNodes || returnedNodes} узлов
+              Showing {stats.visibleNodes} / {stats.totalNodes || returnedNodes} nodes
             </div>
           </div>
             </div>
@@ -1216,7 +1216,7 @@ export function GraphCanvas({
           className="absolute left-3 z-10 rounded-md bg-neutral-950/80 border border-neutral-800 px-3 py-2 text-[11px] text-neutral-300 shadow-lg"
           style={{ bottom: pinnedPaths.length ? 220 : 12 }}
         >
-          {compactMode ? 'Loading…' : 'Подгружаем большой граф партиями, чтобы не подвесить браузер…'}
+          {compactMode ? 'Loading…' : 'Loading a large graph in batches to avoid freezing the browser…'}
         </div>
       )}
       {showLimitBanner && (
@@ -1225,7 +1225,7 @@ export function GraphCanvas({
             'group absolute right-3 z-10 rounded-md bg-amber-950/70 border border-amber-800 px-3 py-2 text-[11px] text-amber-200 shadow-lg',
             activeProject ? 'bottom-20' : 'bottom-3',
           ].join(' ')}
-          title="Ограничение графа: hover показывает детали"
+          title="Graph limit: hover shows details"
         >
           <div className="font-semibold">
             {truncated ? 'Truncated' : 'Limited'}
@@ -1235,9 +1235,9 @@ export function GraphCanvas({
           </div>
           <div className={compactMode ? hoverRevealBlock : ''}>
             {truncated ? (
-              <>Граф усечён на бэкенде. Увеличь лимит/режим или уточни фильтры.</>
+              <>Graph is truncated on the backend. Increase the limit/mode or refine filters.</>
             ) : (
-              <>Режим top-N. Увеличь N или переключи режим графа (full/local), чтобы увидеть больше.</>
+              <>Top-N mode. Increase N or switch graph mode (full/local) to see more.</>
             )}
           </div>
         </div>
@@ -1245,10 +1245,10 @@ export function GraphCanvas({
       {activeProject && !graph && !busy && (
         <div className="absolute inset-0 z-[5] flex items-center justify-center">
           <div className="max-w-[520px] rounded-md bg-neutral-950/80 border border-neutral-800 p-4 shadow-lg">
-            <div className="text-sm font-semibold text-neutral-100">Граф пока не отображается</div>
+            <div className="text-sm font-semibold text-neutral-100">Graph is not displayed yet</div>
             <div className="mt-2 text-xs text-neutral-300 space-y-2">
               {graphMode === 'local' && !selectedPath && (
-                <div>Mode <span className="font-mono">Local</span>: сначала выбери файл.</div>
+                <div>Mode <span className="font-mono">Local</span>: select a file first.</div>
               )}
               <div className="flex flex-wrap gap-2 pt-1">
                 {graphMode === 'local' && !selectedPath && (
@@ -1278,7 +1278,7 @@ export function GraphCanvas({
                 </button>
               </div>
               <div className="text-[11px] text-neutral-500">
-                Tip: для первого обзора удобнее <span className="font-mono">top-N</span> или <span className="font-mono">full</span>.
+                Tip: for a first pass, <span className="font-mono">top-N</span> or <span className="font-mono">full</span> is easier.
               </div>
             </div>
           </div>
@@ -1354,7 +1354,7 @@ export function GraphCanvas({
                       In: <span className="text-neutral-100">{fi != null ? String(fi) : '—'}</span>
                       {' · '}
                       Out: <span className="text-neutral-100">{fo != null ? String(fo) : '—'}</span>
-                      {!n && <span className="text-neutral-500"> · нет в текущем графе</span>}
+                      {!n && <span className="text-neutral-500"> · not in current graph</span>}
                     </div>
                   )}
                 </div>
@@ -1399,27 +1399,27 @@ export function GraphCanvas({
           )}
         </div>
       )}
-      <Modal open={helpOpen} title="Как этим пользоваться (коротко)" onClose={() => setHelpOpen(false)}>
+      <Modal open={helpOpen} title="How to use this (quick)" onClose={() => setHelpOpen(false)}>
         <div className="space-y-2 text-sm">
           <div>
-            <span className="font-semibold">1) Scan</span> — проиндексируй проект (файлы и зависимости).
+            <span className="font-semibold">1) Scan</span> — index the project (files and dependencies).
           </div>
           <div>
-            <span className="font-semibold">2) Выбери файл</span> — клик по узлу или <span className="font-mono">Ctrl/⌘+K</span> и введи часть пути.
+            <span className="font-semibold">2) Pick a file</span> — click a node or press <span className="font-mono">Ctrl/⌘+K</span> and type part of a path.
           </div>
           <div>
-            <span className="font-semibold">3) Читать граф</span>: узлы = файлы, стрелки = зависимости (import/use).
-            При выбранном узле рёбра подсвечиваются по направлению: <span className="font-mono" style={{ color: EDGE_IN_COLOR }}>IN</span> /
+            <span className="font-semibold">3) Read the graph</span>: nodes = files, arrows = dependencies (import/use).
+            For a selected node, edges are highlighted by direction: <span className="font-mono" style={{ color: EDGE_IN_COLOR }}>IN</span> /
             <span className="font-mono ml-1" style={{ color: EDGE_OUT_COLOR }}>OUT</span>.
           </div>
           <div>
-            <span className="font-semibold">4) Навигация</span>: Trail — последние переходы, Back/Forward — история, Neighbors — входящие/исходящие связи.
+            <span className="font-semibold">4) Navigation</span>: Trail — recent jumps, Back/Forward — history, Neighbors — incoming/outgoing edges.
           </div>
           <div>
-            <span className="font-semibold">5) Pin</span> — закрепи до 3 файлов, чтобы сравнить метрики.
+            <span className="font-semibold">5) Pin</span> — pin up to 3 files to compare metrics.
           </div>
           <div>
-            <span className="font-semibold">6) Задачи</span> — в правой панели запускай analyze/evolve/fix для выбранного файла.
+            <span className="font-semibold">6) Tasks</span> — run analyze/evolve/fix for the selected file in the right panel.
           </div>
         </div>
       </Modal>
@@ -1499,7 +1499,7 @@ export function GraphCanvas({
               }}
               title="Hide node"
             >
-              Hide Mode
+              Hide node
             </button>
             <button
               type="button"
@@ -1524,24 +1524,24 @@ export function GraphCanvas({
               onClick={() => { pushUndo(actions.exportSnapshot()); actions.relayoutVisible(); setCtxMenu(null); notifyInfo('Relayout visible') }}
               title="Relayout only visible nodes"
             >
-              Relayout (vis)
+              Relayout visible
             </button>
 
             <button
               type="button"
               className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-2 py-1 text-[11px] font-semibold"
               onClick={() => { saveLayout(); setCtxMenu(null) }}
-              title="Save layout (local)"
+              title="Save layout"
             >
-              Save Layout
+              Save layout
             </button>
             <button
               type="button"
               className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-2 py-1 text-[11px] font-semibold"
               onClick={() => { resetLayout(); setCtxMenu(null) }}
-              title="Reset saved layout"
+              title="Reset layout"
             >
-              Reset Layout
+              Reset layout
             </button>
             <button
               type="button"
@@ -1667,10 +1667,10 @@ export function GraphCanvas({
                 </button>
                 <span className="text-neutral-500">Locked {editStats.locked}</span>
                 <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={saveLayout} title="Save layout">
-                  Save
+                  Save layout
                 </button>
                 <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={resetLayout} title="Reset layout">
-                  Reset
+                  Reset layout
                 </button>
               </div>
             )}

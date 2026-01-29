@@ -10,7 +10,7 @@ export function formatResult(res: Record<string, any> | null | undefined): strin
   if (res.impacted) {
     const impacted: string[] = Array.isArray(res.impacted) ? res.impacted : []
     const count = Number.isFinite(res.count) ? res.count : impacted.length
-    return `### Impact\n\nЗатронутые файлы (**${count}**):\n\n` + impacted.map((p) => `- \`${p}\``).join('\n')
+    return `### Impact\n\nImpacted files (**${count}**):\n\n` + impacted.map((p) => `- \`${p}\``).join('\n')
   }
 
   const lines: string[] = []
