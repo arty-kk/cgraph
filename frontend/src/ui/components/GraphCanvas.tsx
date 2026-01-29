@@ -801,6 +801,29 @@ export function GraphCanvas({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [focusGraph, doUndo, doRedo])
 
+  const undoRedoControls = (
+    <>
+      <button
+        type="button"
+        className={btnClass}
+        onClick={doUndo}
+        disabled={!activeProject || undoStackRef.current.length === 0}
+        title="Undo (Ctrl/⌘+Z)"
+      >
+        {label('Undo', 'Z')}
+      </button>
+      <button
+        type="button"
+        className={btnClass}
+        onClick={doRedo}
+        disabled={!activeProject || redoStackRef.current.length === 0}
+        title="Redo (Ctrl/⌘+Shift+Z)"
+      >
+        {label('Redo', 'Y')}
+      </button>
+    </>
+  )
+
   return (
     <div ref={rootRef} className="relative w-full h-full">
       <div ref={panelRef} className="absolute top-3 left-3 z-10">
@@ -816,24 +839,7 @@ export function GraphCanvas({
               >
                 {label('Panels', 'P')}
               </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={doUndo}
-                disabled={!activeProject || undoStackRef.current.length === 0}
-                title="Undo (Ctrl/⌘+Z)"
-              >
-                {label('Undo', 'Z')}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={doRedo}
-                disabled={!activeProject || redoStackRef.current.length === 0}
-                title="Redo (Ctrl/⌘+Shift+Z)"
-              >
-                {label('Redo', 'Y')}
-              </button>
+              {undoRedoControls}
               <button type="button" className={btnClass} onClick={() => actions.fit()} disabled={!activeProject || !graph} title="Fit">
                 {label('Fit', '⤢')}
               </button>
@@ -897,6 +903,7 @@ export function GraphCanvas({
               >
                 {label(focusGraph ? 'Panels' : 'Focus', focusGraph ? 'P' : 'F')}
               </button>
+              {undoRedoControls}
               <button
                 type="button"
                 className={btnClass}
