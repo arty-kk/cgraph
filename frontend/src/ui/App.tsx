@@ -151,6 +151,7 @@ export function App() {
     && !app.fileEditorBusy
     && !app.fileEditorSaving
   )
+  const showEditorEmptyState = !app.fileEditorOpen || !app.activeFilePath || editorTabs.length === 0
 
   const handleIncreaseFontSize = React.useCallback(() => {
     setEditorFontSize((prev) => clampFontSize(prev + 1))
@@ -446,46 +447,80 @@ export function App() {
                   </div>
                 )}
                 <div className="flex-1 min-h-0">
-                  <FileEditorPane
-                    open={app.fileEditorOpen}
-                    path={app.activeFilePath}
-                    tabs={editorTabs}
-                    activePath={app.activeFilePath}
-                    nodeInfo={app.nodeInfo}
-                    fileMeta={activeFileMeta}
-                    original={app.fileEditorOriginal}
-                    content={app.fileEditorContent}
-                    busy={app.fileEditorBusy}
-                    saving={app.fileEditorSaving}
-                    dirty={app.fileEditorDirty}
-                    truncated={app.fileEditorTruncated}
-                    error={app.fileEditorError}
-                    wrap={editorWrap}
-                    showDiff={editorShowDiff}
-                    fontSize={editorFontSize}
-                    pendingJump={app.pendingJump}
-                    gotoLineRequestId={app.gotoLineRequestId}
-                    findRequestId={app.findRequestId}
-                    replaceRequestId={app.replaceRequestId}
-                    outlineRequestId={app.outlineRequestId}
-                    onApplyPendingJump={app.clearPendingJump}
-                    onSelectTab={(path) => void app.openFileEditor(path)}
-                    onCloseTab={(path) => app.closeFileEditor(path)}
-                    onChange={app.setFileEditorContent}
-                    onReload={app.requestReloadFileEditor}
-                    onSave={app.saveFileEditor}
-                    onClose={() => app.setWorkspaceView('graph')}
-                    onToggleWrap={() => setEditorWrap((prev) => !prev)}
-                    onToggleDiff={() => setEditorShowDiff((prev) => !prev)}
-                    onSetFontSize={handleSetFontSize}
-                    onFindInFile={app.requestFindInFile}
-                    onReplaceInFile={app.requestReplaceInFile}
-                    onGoToSymbol={app.requestOutlineInFile}
-                    onOpenInGraph={(path) => {
-                      app.onSelectNodePath(path)
-                      app.setWorkspaceView('graph')
-                    }}
-                  />
+                  {showEditorEmptyState ? (
+                    <div className="h-full w-full rounded-lg border border-neutral-800 bg-neutral-950/70 p-6 flex flex-col items-center justify-center text-center gap-4">
+                      <div className="space-y-2 max-w-md">
+                        <div className="text-sm font-semibold text-neutral-100">Редактируйте быстрее</div>
+                        <p className="text-xs text-neutral-400">
+                          Редактируйте файлы, ищите по проекту и просматривайте историю правок.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-800"
+                          onClick={() => app.setPaletteOpen(true)}
+                        >
+                          Открыть файл (Ctrl/⌘+K)
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-800"
+                          onClick={handleFocusSearch}
+                        >
+                          Поиск по проекту (Ctrl/⌘+Shift+F)
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-800"
+                          onClick={() => app.setWorkspaceView('graph')}
+                        >
+                          Вернуться к графу (Ctrl/⌘+Shift+G)
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <FileEditorPane
+                      open={app.fileEditorOpen}
+                      path={app.activeFilePath}
+                      tabs={editorTabs}
+                      activePath={app.activeFilePath}
+                      nodeInfo={app.nodeInfo}
+                      fileMeta={activeFileMeta}
+                      original={app.fileEditorOriginal}
+                      content={app.fileEditorContent}
+                      busy={app.fileEditorBusy}
+                      saving={app.fileEditorSaving}
+                      dirty={app.fileEditorDirty}
+                      truncated={app.fileEditorTruncated}
+                      error={app.fileEditorError}
+                      wrap={editorWrap}
+                      showDiff={editorShowDiff}
+                      fontSize={editorFontSize}
+                      pendingJump={app.pendingJump}
+                      gotoLineRequestId={app.gotoLineRequestId}
+                      findRequestId={app.findRequestId}
+                      replaceRequestId={app.replaceRequestId}
+                      outlineRequestId={app.outlineRequestId}
+                      onApplyPendingJump={app.clearPendingJump}
+                      onSelectTab={(path) => void app.openFileEditor(path)}
+                      onCloseTab={(path) => app.closeFileEditor(path)}
+                      onChange={app.setFileEditorContent}
+                      onReload={app.requestReloadFileEditor}
+                      onSave={app.saveFileEditor}
+                      onClose={() => app.setWorkspaceView('graph')}
+                      onToggleWrap={() => setEditorWrap((prev) => !prev)}
+                      onToggleDiff={() => setEditorShowDiff((prev) => !prev)}
+                      onSetFontSize={handleSetFontSize}
+                      onFindInFile={app.requestFindInFile}
+                      onReplaceInFile={app.requestReplaceInFile}
+                      onGoToSymbol={app.requestOutlineInFile}
+                      onOpenInGraph={(path) => {
+                        app.onSelectNodePath(path)
+                        app.setWorkspaceView('graph')
+                      }}
+                    />
+                  )}
                 </div>
               </div>
 
