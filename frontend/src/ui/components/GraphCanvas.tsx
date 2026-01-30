@@ -1077,6 +1077,7 @@ export function GraphCanvas({
                 )}
               </div>
               <div className="ml-auto flex items-center gap-2">
+                {undoRedoControls}
                 <button
                   type="button"
                   className={toggleBtnClass}
@@ -1622,7 +1623,7 @@ export function GraphCanvas({
               </button>
               {legendIsCompact ? (
                 <div className="text-[10px] text-neutral-400">
-                  F · Esc
+                  F · Esc · Undo/Redo: Ctrl/⌘+Z / Ctrl/⌘+Shift+Z
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400">
@@ -1644,6 +1645,9 @@ export function GraphCanvas({
                   <span className="text-neutral-200">Ctrl/⌘+K</span>
                   <span className="text-neutral-500">,</span>
                   <span className="text-neutral-200">Alt+←/→</span>
+                  <span className="text-neutral-500">,</span>
+                  <span className="text-neutral-500">Undo/Redo:</span>
+                  <span className="text-neutral-200">Ctrl/⌘+Z / Ctrl/⌘+Shift+Z</span>
                 </div>
               )}
             </div>
