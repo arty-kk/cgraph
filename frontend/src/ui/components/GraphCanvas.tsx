@@ -288,6 +288,19 @@ const ResetLayoutIcon = () => (
   </svg>
 )
 
+const ResetFiltersIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path
+      d="M4 6h16l-6 7v4l-4 2v-6L4 6Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path d="M8 6l8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+)
+
 const NeighborsIcon = () => (
   <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
     <path d="M7 7h3v3H7z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
@@ -1382,43 +1395,48 @@ export function GraphCanvas({
           </label>
             <div className="flex items-center gap-2 col-span-2">
               <button
-                className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
+                className={btnClass}
                 onClick={resetFilters}
-              disabled={!activeProject}
-            >
-              Reset
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
-              onClick={() => actions.relayout()}
-              disabled={!activeProject || !graph}
-              title="Recompute layout"
-            >
-              Relayout
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
-              onClick={() => setFocusGraph(!focusGraph)}
-              disabled={!activeProject}
-              title="F — focus, Esc — show panels"
-            >
-              {focusGraph ? 'Panels' : 'Focus'}
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-1 text-[11px] font-semibold disabled:opacity-50"
-              onClick={onEscAction}
-              disabled={!activeProject || (!selectedPath && !focusGraph)}
-              title="Esc — back/clear"
-            >
-              {focusGraph ? 'Back' : 'Clear'}
-            </button>
-            <div className="text-[11px] text-neutral-400">
-              Showing {stats.visibleNodes} / {stats.totalNodes || returnedNodes} nodes
+                disabled={!activeProject}
+                title="Reset filters"
+                aria-label="Reset filters"
+              >
+                {label(<ResetFiltersIcon />)}
+              </button>
+              <button
+                type="button"
+                className={btnClass}
+                onClick={() => actions.relayout()}
+                disabled={!activeProject || !graph}
+                title="Relayout"
+                aria-label="Relayout"
+              >
+                {label(<RelayoutIcon />)}
+              </button>
+              <button
+                type="button"
+                className={btnClass}
+                onClick={() => setFocusGraph(!focusGraph)}
+                disabled={!activeProject}
+                title={focusGraph ? 'Panels' : 'Focus'}
+                aria-label={focusGraph ? 'Panels' : 'Focus'}
+              >
+                {label(focusGraph ? <PanelsIcon /> : <FocusIcon />, focusGraph ? 'P' : 'F')}
+              </button>
+              <button
+                type="button"
+                className={btnClass}
+                onClick={onEscAction}
+                disabled={!activeProject || (!selectedPath && !focusGraph)}
+                title={focusGraph ? 'Back' : 'Clear'}
+                aria-label={focusGraph ? 'Back' : 'Clear'}
+              >
+                {label(focusGraph ? <BackIcon /> : <ClearIcon />, 'Esc')}
+              </button>
+              <div className="text-[11px] text-neutral-400">
+                Showing {stats.visibleNodes} / {stats.totalNodes || returnedNodes} nodes
+              </div>
             </div>
-          </div>
             </div>
           </div>
         )}
