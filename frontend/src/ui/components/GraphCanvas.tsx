@@ -1303,7 +1303,7 @@ export function GraphCanvas({
                   aria-label="Collapse panel"
                   title="Collapse"
                 >
-                  ×
+                  <ClearIcon />
                 </button>
               </div>
             </div>
