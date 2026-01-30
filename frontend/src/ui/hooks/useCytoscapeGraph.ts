@@ -69,6 +69,7 @@ const PINNED_BORDER = '#a855f7'
 const LABEL_ZOOM_THRESHOLD = 1.15
 const MAX_NEIGHBOR_LABELS = 28
 const EDGE_BATCH_SIZE = 1600
+const DOUBLE_TAP_MS = 320
 
 const CENTER_MIN_ZOOM = 0.6
 const CENTER_MAX_ZOOM = 2.5
@@ -118,6 +119,7 @@ export function useCytoscapeGraph({
   selectedPath,
   onBackgroundTap,
   onNodeTap,
+  onNodeDoubleTap,
   onNodeContextMenu,
   enableStarburst = true,
   onEditEvent,
@@ -131,6 +133,7 @@ export function useCytoscapeGraph({
   selectedPath: string | null
   onBackgroundTap: () => void
   onNodeTap: (path: string) => void | Promise<void>
+  onNodeDoubleTap?: (path: string) => void | Promise<void>
   onNodeContextMenu?: (p: NodeContextMenuPayload) => void
   enableStarburst?: boolean
   onEditEvent?: (e: GraphEditEvent) => void
@@ -144,6 +147,7 @@ export function useCytoscapeGraph({
   const chunkTimerRef = useRef<number | null>(null)
   const applyFiltersRef = useRef<() => void>(() => {})
   const zoomTimerRef = useRef<number | null>(null)
+  const lastTapRef = useRef<{ path: string; time: number } | null>(null)
 
   const enableStarburstRef = useRef<boolean>(Boolean(enableStarburst))
   useEffect(() => {
@@ -156,10 +160,12 @@ export function useCytoscapeGraph({
 
   const onBackgroundTapRef = useRef(onBackgroundTap)
   const onNodeTapRef = useRef(onNodeTap)
+  const onNodeDoubleTapRef = useRef(onNodeDoubleTap)
   const onNodeContextMenuRef = useRef(onNodeContextMenu)
   const onEditEventRef = useRef(onEditEvent)
   useEffect(() => { onBackgroundTapRef.current = onBackgroundTap }, [onBackgroundTap])
   useEffect(() => { onNodeTapRef.current = onNodeTap }, [onNodeTap])
+  useEffect(() => { onNodeDoubleTapRef.current = onNodeDoubleTap }, [onNodeDoubleTap])
   useEffect(() => { onNodeContextMenuRef.current = onNodeContextMenu }, [onNodeContextMenu])
   useEffect(() => { onEditEventRef.current = onEditEvent }, [onEditEvent])
 
@@ -800,6 +806,7 @@ export function useCytoscapeGraph({
 
       cy.on('tap', (evt) => {
         if (evt.target !== cy) return
+        lastTapRef.current = null
         onBackgroundTapRef.current?.()
       })
 
@@ -832,6 +839,14 @@ export function useCytoscapeGraph({
       cy.on('tap', 'node', (evt) => {
         const node = evt.target
         const path = (node.data('path') as string) || node.id()
+        const now = Date.now()
+        const prev = lastTapRef.current
+        if (prev && prev.path === path && now - prev.time <= DOUBLE_TAP_MS) {
+          lastTapRef.current = null
+          void onNodeDoubleTapRef.current?.(path)
+        } else {
+          lastTapRef.current = { path, time: now }
+        }
         void onNodeTapRef.current?.(path)
       })
 
@@ -839,6 +854,7 @@ export function useCytoscapeGraph({
         try {
           evt?.originalEvent?.preventDefault?.()
         } catch {}
+        lastTapRef.current = null
         const node = evt.target
         const path = (node.data('path') as string) || node.id()
         const rp = evt?.renderedPosition
