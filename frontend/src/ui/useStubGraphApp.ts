@@ -1863,6 +1863,13 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const otherModalOpen = modalCount > (paletteOpen ? 1 : 0)
 
       const mod = e.ctrlKey || e.metaKey
+      if (mod && e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+        if (otherModalOpen) return
+        e.preventDefault()
+        setPaletteOpen(true)
+        return
+      }
+
       if (mod && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K' || e.key === 'p' || e.key === 'P')) {
         if (otherModalOpen) return
         e.preventDefault()
