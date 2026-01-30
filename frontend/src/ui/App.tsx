@@ -14,6 +14,7 @@ import { Modal } from './components/Modal'
 
 export function App() {
   const searchInputRef = React.useRef<HTMLInputElement | null>(null)
+  const appRef = React.useRef<ReturnType<typeof useStubGraphApp> | null>(null)
   const [docsOpen, setDocsOpen] = React.useState(false)
   const [onboardOpen, setOnboardOpen] = React.useState(false)
   const [onboardStep, setOnboardStep] = React.useState(0)
@@ -52,12 +53,17 @@ export function App() {
   })
 
   const handleFocusSearch = React.useCallback(() => {
+    appRef.current?.setWorkspaceView('editor')
     setEditorLeftTab('search')
     setEditorExplorerOpen(true)
     requestAnimationFrame(() => searchInputRef.current?.focus())
   }, [])
 
   const app = useStubGraphApp({ onFocusSearch: handleFocusSearch })
+
+  React.useEffect(() => {
+    appRef.current = app
+  }, [app])
 
   const pid = app.activeProject?.id
   const onboardKey = pid != null ? `cs.onboarding.seen.${pid}` : null
