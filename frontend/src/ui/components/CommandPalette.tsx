@@ -50,8 +50,16 @@ type Props = {
   editorOpen: boolean
   activeFilePath: string | null
   canSave: boolean
+  canSaveAll: boolean
   onSave: () => void | Promise<boolean>
+  onSaveAll: () => void | Promise<boolean>
   onCloseTab: (path: string) => void
+  canCloseAllTabs: boolean
+  onCloseAllTabs: () => void
+  canCloseOtherTabs: boolean
+  onCloseOtherTabs: (path: string) => void
+  canCloseTabsToRight: boolean
+  onCloseTabsToRight: (path: string) => void
   onToggleWrap: () => void
   onToggleDiff: () => void
   onIncreaseFontSize: () => void
@@ -92,8 +100,16 @@ export function CommandPalette({
   editorOpen,
   activeFilePath,
   canSave,
+  canSaveAll,
   onSave,
+  onSaveAll,
   onCloseTab,
+  canCloseAllTabs,
+  onCloseAllTabs,
+  canCloseOtherTabs,
+  onCloseOtherTabs,
+  canCloseTabsToRight,
+  onCloseTabsToRight,
   onToggleWrap,
   onToggleDiff,
   onIncreaseFontSize,
@@ -202,6 +218,19 @@ export function CommandPalette({
         },
       },
       {
+        key: 'cmd.editor.save.all',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Save all',
+        subtitle: 'Save all open files',
+        subtitleText: 'Save all open files',
+        disabled: !canSaveAll,
+        onSelect: async () => {
+          onClose()
+          await onSaveAll()
+        },
+      },
+      {
         key: 'cmd.editor.close',
         kind: 'command',
         group: 'Editor',
@@ -213,6 +242,47 @@ export function CommandPalette({
           if (!activeFilePath) return
           onClose()
           onCloseTab(activeFilePath)
+        },
+      },
+      {
+        key: 'cmd.editor.close.all',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Close all tabs',
+        subtitle: 'Close all open tabs',
+        subtitleText: 'Close all open tabs',
+        disabled: !canCloseAllTabs,
+        onSelect: () => {
+          onClose()
+          onCloseAllTabs()
+        },
+      },
+      {
+        key: 'cmd.editor.close.others',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Close other tabs',
+        subtitle: 'Close tabs except the active one',
+        subtitleText: 'Close tabs except the active one',
+        disabled: !hasActiveFile || !canCloseOtherTabs,
+        onSelect: () => {
+          if (!activeFilePath) return
+          onClose()
+          onCloseOtherTabs(activeFilePath)
+        },
+      },
+      {
+        key: 'cmd.editor.close.right',
+        kind: 'command',
+        group: 'Editor',
+        title: 'Close tabs to the right',
+        subtitle: 'Close tabs to the right of the active tab',
+        subtitleText: 'Close tabs to the right of the active tab',
+        disabled: !hasActiveFile || !canCloseTabsToRight,
+        onSelect: () => {
+          if (!activeFilePath) return
+          onClose()
+          onCloseTabsToRight(activeFilePath)
         },
       },
       {

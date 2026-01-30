@@ -368,6 +368,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [fileEditorsByPath, setFileEditorsByPath] = useState<Record<string, FileEditorEntry>>({})
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null)
+  const [pendingClosePaths, setPendingClosePaths] = useState<string[]>([])
   const [pendingActivePath, setPendingActivePath] = useState<string | null>(null)
   const [pendingReloadPath, setPendingReloadPath] = useState<string | null>(null)
   const [pendingJump, setPendingJump] = useState<PendingFileJump | null>(null)
@@ -871,6 +872,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setFileEditorsByPath({})
     setActiveFilePath(null)
     setPendingClosePath(null)
+    setPendingClosePaths([])
     setPendingActivePath(null)
     setPendingReloadPath(null)
     setConfirmOpen(false)
@@ -905,6 +907,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setFileEditorsByPath({})
     setActiveFilePath(null)
     setPendingClosePath(null)
+    setPendingClosePaths([])
     setPendingActivePath(null)
     setPendingReloadPath(null)
     setConfirmOpen(false)
@@ -942,6 +945,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setFileEditorsByPath({})
     setActiveFilePath(null)
     setPendingClosePath(null)
+    setPendingClosePaths([])
     setPendingActivePath(null)
     setPendingReloadPath(null)
     setConfirmOpen(false)
@@ -1039,6 +1043,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setConfirmOpen(false)
     setConfirmReason(null)
     setPendingClosePath(null)
+    setPendingClosePaths([])
     setPendingActivePath(null)
     setPendingReloadPath(null)
     setPendingView(null)
@@ -1056,6 +1061,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         setConfirmReason('switch-tab')
         setPendingActivePath(p)
         setPendingClosePath(null)
+        setPendingClosePaths([])
         setPendingView(null)
         return
       }
@@ -1102,6 +1108,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       setConfirmReason('reload-file')
       setPendingReloadPath(activeFilePath)
       setPendingClosePath(null)
+      setPendingClosePaths([])
       setPendingActivePath(null)
       setPendingView(null)
       return
@@ -1145,29 +1152,82 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     return saveFileEditorPath(activeFilePath)
   }, [activeFilePath, saveFileEditorPath])
 
-  const confirmSave = useCallback(async () => {
-    const targetPath = pendingClosePath ?? activeFilePath
-    const targetEntry = targetPath ? fileEditorsByPath[targetPath] : null
-    if (targetEntry?.saving || targetEntry?.busy) return
-    const saved = targetPath ? await saveFileEditorPath(targetPath) : false
-    if (!saved) return
-    if (pendingClosePath) {
-      setOpenFilePaths((prev) => {
-        if (!prev.includes(pendingClosePath)) return prev
-        const next = prev.filter((item) => item !== pendingClosePath)
-        if (activeFilePath === pendingClosePath) {
-          const idx = prev.indexOf(pendingClosePath)
-          const nextActive = next[idx - 1] ?? next[idx] ?? null
-          setActiveFilePath(nextActive)
+  const saveAllOpenFiles = useCallback(async (): Promise<boolean> => {
+    const dirtyPaths = openFilePaths.filter((path) => {
+      const entry = fileEditorsByPath[path]
+      return entry ? entry.content !== entry.original : false
+    })
+    if (dirtyPaths.length === 0) return false
+    const results = await Promise.all(dirtyPaths.map((path) => saveFileEditorPath(path)))
+    return results.every(Boolean)
+  }, [fileEditorsByPath, openFilePaths, saveFileEditorPath])
+
+  const closeFileEditorPaths = useCallback((paths: string[]) => {
+    if (paths.length === 0) return
+    const closingSet = new Set(paths)
+    setOpenFilePaths((prev) => {
+      if (!prev.some((item) => closingSet.has(item))) return prev
+      const next = prev.filter((item) => !closingSet.has(item))
+      if (activeFilePath && closingSet.has(activeFilePath)) {
+        const activeIndex = prev.indexOf(activeFilePath)
+        let nextActive: string | null = null
+        for (let i = activeIndex + 1; i < prev.length; i += 1) {
+          const candidate = prev[i]
+          if (!closingSet.has(candidate)) {
+            nextActive = candidate
+            break
+          }
         }
-        return next
-      })
-      setFileEditorsByPath((prev) => {
-        if (!(pendingClosePath in prev)) return prev
-        const next = { ...prev }
-        delete next[pendingClosePath]
-        return next
-      })
+        if (!nextActive) {
+          for (let i = activeIndex - 1; i >= 0; i -= 1) {
+            const candidate = prev[i]
+            if (!closingSet.has(candidate)) {
+              nextActive = candidate
+              break
+            }
+          }
+        }
+        setActiveFilePath(nextActive)
+      }
+      return next
+    })
+    setFileEditorsByPath((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const path of closingSet) {
+        if (path in next) {
+          delete next[path]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [activeFilePath])
+
+  const confirmSave = useCallback(async () => {
+    const pendingTargets = pendingClosePaths.length
+      ? pendingClosePaths
+      : pendingClosePath
+        ? [pendingClosePath]
+        : activeFilePath
+          ? [activeFilePath]
+          : []
+    const pendingDirtyTargets = pendingTargets.filter((path) => {
+      const entry = fileEditorsByPath[path]
+      return entry ? entry.content !== entry.original : false
+    })
+    const hasBusyTarget = pendingTargets.some((path) => {
+      const entry = fileEditorsByPath[path]
+      return entry ? entry.saving || entry.busy : false
+    })
+    if (hasBusyTarget) return
+    const results = await Promise.all(pendingDirtyTargets.map((path) => saveFileEditorPath(path)))
+    const saved = pendingDirtyTargets.length === 0 ? true : results.every(Boolean)
+    if (!saved) return
+    if (pendingClosePaths.length > 0) {
+      closeFileEditorPaths(pendingClosePaths)
+    } else if (pendingClosePath) {
+      closeFileEditorPaths([pendingClosePath])
     } else if (pendingActivePath) {
       await openFileEditor(pendingActivePath)
     } else if (pendingView) {
@@ -1176,9 +1236,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     clearConfirm()
   }, [
     clearConfirm,
+    closeFileEditorPaths,
     openFileEditor,
     pendingActivePath,
     pendingClosePath,
+    pendingClosePaths,
     pendingView,
     saveFileEditorPath,
     activeFilePath,
@@ -1197,32 +1259,28 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       clearConfirm()
       return
     }
-    const targetPath = pendingClosePath ?? activeFilePath
-    const targetEntry = targetPath ? fileEditorsByPath[targetPath] : null
-    if (targetEntry?.saving || targetEntry?.busy) return
-    if (targetPath) {
-      updateFileEditorEntry(targetPath, (entry) => {
+    const pendingTargets = pendingClosePaths.length
+      ? pendingClosePaths
+      : pendingClosePath
+        ? [pendingClosePath]
+        : activeFilePath
+          ? [activeFilePath]
+          : []
+    const hasBusyTarget = pendingTargets.some((path) => {
+      const entry = fileEditorsByPath[path]
+      return entry ? entry.saving || entry.busy : false
+    })
+    if (hasBusyTarget) return
+    pendingTargets.forEach((path) => {
+      updateFileEditorEntry(path, (entry) => {
         if (entry.content === entry.original) return entry
         return { ...entry, content: entry.original, error: null }
       })
-    }
-    if (pendingClosePath) {
-      setOpenFilePaths((prev) => {
-        if (!prev.includes(pendingClosePath)) return prev
-        const next = prev.filter((item) => item !== pendingClosePath)
-        if (activeFilePath === pendingClosePath) {
-          const idx = prev.indexOf(pendingClosePath)
-          const nextActive = next[idx - 1] ?? next[idx] ?? null
-          setActiveFilePath(nextActive)
-        }
-        return next
-      })
-      setFileEditorsByPath((prev) => {
-        if (!(pendingClosePath in prev)) return prev
-        const next = { ...prev }
-        delete next[pendingClosePath]
-        return next
-      })
+    })
+    if (pendingClosePaths.length > 0) {
+      closeFileEditorPaths(pendingClosePaths)
+    } else if (pendingClosePath) {
+      closeFileEditorPaths([pendingClosePath])
     } else if (pendingActivePath) {
       await openFileEditor(pendingActivePath)
     } else if (pendingView) {
@@ -1231,12 +1289,14 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     clearConfirm()
   }, [
     clearConfirm,
+    closeFileEditorPaths,
     confirmReason,
     fileEditorsByPath,
     loadFileEditor,
     openFileEditor,
     pendingActivePath,
     pendingClosePath,
+    pendingClosePaths,
     pendingReloadPath,
     pendingView,
     activeFilePath,
@@ -1244,10 +1304,20 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   ])
 
   const confirmCancel = useCallback(() => {
-    const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
-    if (activeEntry?.saving || activeEntry?.busy) return
+    const pendingTargets = pendingClosePaths.length
+      ? pendingClosePaths
+      : pendingClosePath
+        ? [pendingClosePath]
+        : activeFilePath
+          ? [activeFilePath]
+          : []
+    const hasBusyTarget = pendingTargets.some((path) => {
+      const entry = fileEditorsByPath[path]
+      return entry ? entry.saving || entry.busy : false
+    })
+    if (hasBusyTarget) return
     clearConfirm()
-  }, [activeFilePath, clearConfirm, fileEditorsByPath])
+  }, [activeFilePath, clearConfirm, fileEditorsByPath, pendingClosePath, pendingClosePaths])
 
   const runOp = useCallback(async (fn: () => Promise<void>) => {
     setBusyCount((count) => count + 1)
@@ -1776,29 +1846,77 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         setConfirmOpen(true)
         setConfirmReason('close-tab')
         setPendingClosePath(p)
+        setPendingClosePaths([])
         setPendingActivePath(null)
         setPendingView(null)
         return
       }
-      setOpenFilePaths((prev) => {
-        if (!prev.includes(p)) return prev
-        const next = prev.filter((item) => item !== p)
-        if (activeFilePath === p) {
-          const idx = prev.indexOf(p)
-          const nextActive = next[idx - 1] ?? next[idx] ?? null
-          setActiveFilePath(nextActive)
-        }
-        return next
-      })
-      setFileEditorsByPath((prev) => {
-        if (!(p in prev)) return prev
-        const next = { ...prev }
-        delete next[p]
-        return next
-      })
+      closeFileEditorPaths([p])
     },
-    [activeFilePath, fileEditorsByPath],
+    [closeFileEditorPaths, fileEditorsByPath],
   )
+
+  const closeAllTabs = useCallback(() => {
+    if (openFilePaths.length === 0) return
+    const dirtyPaths = openFilePaths.filter((path) => {
+      const entry = fileEditorsByPath[path]
+      return entry ? entry.content !== entry.original : false
+    })
+    if (dirtyPaths.length > 0) {
+      setConfirmOpen(true)
+      setConfirmReason('close-tab')
+      setPendingClosePaths(openFilePaths)
+      setPendingClosePath(null)
+      setPendingActivePath(null)
+      setPendingView(null)
+      return
+    }
+    closeFileEditorPaths(openFilePaths)
+  }, [closeFileEditorPaths, fileEditorsByPath, openFilePaths])
+
+  const closeOtherTabs = useCallback((targetPath: string | null) => {
+    const activePath = String(targetPath || '').trim()
+    if (!activePath) return
+    const targets = openFilePaths.filter((path) => path !== activePath)
+    if (targets.length === 0) return
+    const dirtyPaths = targets.filter((path) => {
+      const entry = fileEditorsByPath[path]
+      return entry ? entry.content !== entry.original : false
+    })
+    if (dirtyPaths.length > 0) {
+      setConfirmOpen(true)
+      setConfirmReason('close-tab')
+      setPendingClosePaths(targets)
+      setPendingClosePath(null)
+      setPendingActivePath(null)
+      setPendingView(null)
+      return
+    }
+    closeFileEditorPaths(targets)
+  }, [closeFileEditorPaths, fileEditorsByPath, openFilePaths])
+
+  const closeTabsToRight = useCallback((targetPath: string | null) => {
+    const activePath = String(targetPath || '').trim()
+    if (!activePath) return
+    const activeIndex = openFilePaths.indexOf(activePath)
+    if (activeIndex < 0 || activeIndex >= openFilePaths.length - 1) return
+    const targets = openFilePaths.slice(activeIndex + 1)
+    if (targets.length === 0) return
+    const dirtyPaths = targets.filter((path) => {
+      const entry = fileEditorsByPath[path]
+      return entry ? entry.content !== entry.original : false
+    })
+    if (dirtyPaths.length > 0) {
+      setConfirmOpen(true)
+      setConfirmReason('close-tab')
+      setPendingClosePaths(targets)
+      setPendingClosePath(null)
+      setPendingActivePath(null)
+      setPendingView(null)
+      return
+    }
+    closeFileEditorPaths(targets)
+  }, [closeFileEditorPaths, fileEditorsByPath, openFilePaths])
 
   const setWorkspaceView = useCallback(
     (nextView: WorkspaceView) => {
@@ -1810,6 +1928,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         setConfirmReason('close-editor')
         setPendingView('graph')
         setPendingClosePath(null)
+        setPendingClosePaths([])
         setPendingActivePath(null)
         return
       }
@@ -2170,6 +2289,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     requestOutlineInFile,
     requestReloadFileEditor,
     saveFileEditor,
+    saveAllOpenFiles,
     pendingJump,
     clearPendingJump,
     runs,
@@ -2303,6 +2423,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     onCreateFile,
     onRenameFile,
     onDeleteFile,
+    closeAllTabs,
+    closeOtherTabs,
+    closeTabsToRight,
 
     // derived
     canRun,
