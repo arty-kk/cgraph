@@ -260,6 +260,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [textSearchError, textSearchMeta, textSearchQuery, textSearchResults.length])
 
   const selectedPathRef = useRef<string | null>(null)
+  const prevActiveFilePathRef = useRef<string | null>(null)
   const backStackRef = useRef<string[]>([])
   const forwardStackRef = useRef<string[]>([])
   const selectionTrailRef = useRef<string[]>([])
@@ -2052,6 +2053,16 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     if (selectedPath === activeFilePath) return
     void openFileEditor(selectedPath)
   }, [activeFilePath, loadFileEditor, openFileEditor, selectedPath, workspaceView])
+
+  useEffect(() => {
+    const prevActiveFilePath = prevActiveFilePathRef.current
+    prevActiveFilePathRef.current = activeFilePath
+    if (workspaceView !== 'editor') return
+    if (!activeFilePath) return
+    if (prevActiveFilePath === activeFilePath) return
+    if (selectedPath === activeFilePath) return
+    setSelection(activeFilePath, { pushHistory: false })
+  }, [activeFilePath, selectedPath, setSelection, workspaceView])
 
   const selectedInGraph = useMemo(() => {
     if (!selectedPath || !graph?.nodes?.length) return false
