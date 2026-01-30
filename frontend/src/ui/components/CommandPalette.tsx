@@ -769,7 +769,8 @@ export function CommandPalette({
             <span className="text-neutral-300">↑/↓</span> — navigate
           </span>
           <span>
-            <span className="text-neutral-300">Ctrl/⌘+K</span> — open
+            <span className="text-neutral-300">Ctrl/⌘+K</span> or{' '}
+            <span className="text-neutral-300">Ctrl/⌘+Shift+P</span> — open
           </span>
           <span>
             <span className="text-neutral-300">Shift+Enter</span> — open + toggle pin (file)
