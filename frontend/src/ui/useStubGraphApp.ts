@@ -2027,7 +2027,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         if (selectedPath) return void onClearSelection()
         return
       }
-      if (e.key === 'f' || e.key === 'F') setFocusGraph((v) => !v)
+      if (!otherModalOpen && !typing && workspaceView === 'graph' && (e.key === 'f' || e.key === 'F')) {
+        setFocusGraph((v) => !v)
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
