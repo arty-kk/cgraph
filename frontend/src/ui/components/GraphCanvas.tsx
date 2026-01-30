@@ -151,6 +151,153 @@ const GraphIcon = () => (
   </svg>
 )
 
+const UndoIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M9 7l-4 4 4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path
+      d="M6 11h7a5 5 0 1 1 0 10"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+)
+
+const RedoIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M15 7l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path
+      d="M18 11h-7a5 5 0 1 0 0 10"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+)
+
+const FitIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M4 8V4h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M20 8V4h-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M4 16v4h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M20 16v4h-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const CenterIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M12 3v4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M12 17v4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M3 12h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M17 12h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+)
+
+const RelayoutIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M4 12a8 8 0 0 1 13.5-5.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M20 12a8 8 0 0 1-13.5 5.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M16.5 4.5h3v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M7.5 19.5h-3v-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const BackIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M14 6l-6 6 6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const ForwardIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M10 6l6 6-6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const ClearIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M6 6l12 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M18 6l-12 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+)
+
+const PinIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path
+      d="M9 4h6l-1 5 3 3-4 1-1 6-2-6-4-1 3-3-1-5Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+  </svg>
+)
+
+const UnpinIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path
+      d="M9 4h6l-1 5 3 3-4 1-1 6-2-6-4-1 3-3-1-5Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+    <path d="M5 5l14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+)
+
+const PanelsIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <rect x="4" y="5" width="7" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.6" />
+    <rect x="13" y="5" width="7" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.6" />
+  </svg>
+)
+
+const FocusIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M4 9V4h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M20 9V4h-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M4 15v5h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M20 15v5h-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const SaveLayoutIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path
+      d="M5 5h12l2 2v12H5V5Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+    <path d="M8 5v6h8V5" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+    <path d="M8 17h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+)
+
+const ResetLayoutIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path
+      d="M6 7a8 8 0 1 1-2 5.3"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+    />
+    <path d="M4 4v4h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const NeighborsIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path d="M7 7h3v3H7z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+    <path d="M14 14h3v3h-3z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+    <path d="M10 9l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M7 17h3v-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M14 7h3v3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
 type Props = {
   graph: GraphData | null
   activeProject: Project | null
@@ -239,7 +386,14 @@ export function GraphCanvas({
   const uiBootingRef = useRef(false)
 
   const label = useCallback(
-    (full: string, compact: string) => (compactMode ? compact : full),
+    (icon: React.ReactNode, hotkey?: string) => (
+      <span className="flex items-center gap-1">
+        {icon}
+        {compactMode && hotkey ? (
+          <span className="text-[9px] text-neutral-400">{hotkey}</span>
+        ) : null}
+      </span>
+    ),
     [compactMode],
   )
   const btnClass =
@@ -818,8 +972,9 @@ export function GraphCanvas({
         onClick={doUndo}
         disabled={!activeProject || undoStackRef.current.length === 0}
         title="Undo (Ctrl/⌘+Z)"
+        aria-label="Undo (Ctrl/⌘+Z)"
       >
-        {label('Undo', 'Z')}
+        {label(<UndoIcon />, 'Z')}
       </button>
       <button
         type="button"
@@ -827,8 +982,9 @@ export function GraphCanvas({
         onClick={doRedo}
         disabled={!activeProject || redoStackRef.current.length === 0}
         title="Redo (Ctrl/⌘+Shift+Z)"
+        aria-label="Redo (Ctrl/⌘+Shift+Z)"
       >
-        {label('Redo', 'Y')}
+        {label(<RedoIcon />, 'Y')}
       </button>
     </>
   )
@@ -845,12 +1001,20 @@ export function GraphCanvas({
                 onClick={() => setFocusGraph(false)}
                 disabled={!activeProject}
                 title="Exit focus (Panels)"
+                aria-label="Exit focus (Panels)"
               >
-                {label('Panels', 'P')}
+                {label(<PanelsIcon />, 'P')}
               </button>
               {undoRedoControls}
-              <button type="button" className={btnClass} onClick={() => actions.fit()} disabled={!activeProject || !graph} title="Fit">
-                {label('Fit', '⤢')}
+              <button
+                type="button"
+                className={btnClass}
+                onClick={() => actions.fit()}
+                disabled={!activeProject || !graph}
+                title="Fit"
+                aria-label="Fit"
+              >
+                {label(<FitIcon />)}
               </button>
               <button
                 type="button"
@@ -858,17 +1022,39 @@ export function GraphCanvas({
                 onClick={() => { if (selectedPath) actions.centerPath(selectedPath) }}
                 disabled={!activeProject || !graph || !selectedPath}
                 title="Center selected"
+                aria-label="Center selected"
               >
-                {label('Center', '⌖')}
+                {label(<CenterIcon />)}
               </button>
-              <button type="button" className={btnClass} onClick={() => actions.relayoutVisible()} disabled={!activeProject || !graph} title="Relayout visible">
-                {label('Relayout', '↻')}
+              <button
+                type="button"
+                className={btnClass}
+                onClick={() => actions.relayoutVisible()}
+                disabled={!activeProject || !graph}
+                title="Relayout visible"
+                aria-label="Relayout visible"
+              >
+                {label(<RelayoutIcon />)}
               </button>
-              <button type="button" className={btnClass} onClick={saveLayout} disabled={!activeProject || !graph} title="Save layout">
-                {label('Save layout', 'S')}
+              <button
+                type="button"
+                className={btnClass}
+                onClick={saveLayout}
+                disabled={!activeProject || !graph}
+                title="Save layout"
+                aria-label="Save layout"
+              >
+                {label(<SaveLayoutIcon />, 'S')}
               </button>
-              <button type="button" className={btnClass} onClick={resetLayout} disabled={!activeProject || !graph} title="Reset layout">
-                {label('Reset layout', 'R')}
+              <button
+                type="button"
+                className={btnClass}
+                onClick={resetLayout}
+                disabled={!activeProject || !graph}
+                title="Reset layout"
+                aria-label="Reset layout"
+              >
+                {label(<ResetLayoutIcon />, 'R')}
               </button>
             </div>
           </>
@@ -909,8 +1095,9 @@ export function GraphCanvas({
                 onClick={() => setFocusGraph(!focusGraph)}
                 disabled={!activeProject}
                 title="F — Focus, Esc — Back"
+                aria-label="F — Focus, Esc — Back"
               >
-                {label(focusGraph ? 'Panels' : 'Focus', focusGraph ? 'P' : 'F')}
+                {label(focusGraph ? <PanelsIcon /> : <FocusIcon />, focusGraph ? 'P' : 'F')}
               </button>
               {undoRedoControls}
               <button
@@ -919,8 +1106,9 @@ export function GraphCanvas({
                 onClick={() => actions.fit()}
                 disabled={!activeProject || !graph}
                 title="Fit"
+                aria-label="Fit"
               >
-                {label('Fit', '⤢')}
+                {label(<FitIcon />)}
               </button>
               <button
                 type="button"
@@ -928,8 +1116,9 @@ export function GraphCanvas({
                 onClick={() => { if (selectedPath) actions.centerPath(selectedPath) }}
                 disabled={!activeProject || !graph || !selectedPath}
                 title="Center selected"
+                aria-label="Center selected"
               >
-                {label('Center', '⌖')}
+                {label(<CenterIcon />)}
               </button>
               <button
                 type="button"
@@ -937,8 +1126,9 @@ export function GraphCanvas({
                 onClick={() => actions.relayout()}
                 disabled={!activeProject || !graph}
                 title="Relayout"
+                aria-label="Relayout"
               >
-                {label('Relayout', '↻')}
+                {label(<RelayoutIcon />)}
               </button>
               <button
                 type="button"
@@ -946,8 +1136,9 @@ export function GraphCanvas({
                 onClick={() => onBack?.()}
                 disabled={!activeProject || !canGoBack}
                 title="Back (Alt+← / ⌘[)"
+                aria-label="Back (Alt+← / ⌘[)"
               >
-                ←
+                {label(<BackIcon />)}
               </button>
               <button
                 type="button"
@@ -955,8 +1146,9 @@ export function GraphCanvas({
                 onClick={() => onForward?.()}
                 disabled={!activeProject || !canGoForward}
                 title="Forward (Alt+→ / ⌘])"
+                aria-label="Forward (Alt+→ / ⌘])"
               >
-                →
+                {label(<ForwardIcon />)}
               </button>
               <button
                 type="button"
@@ -964,8 +1156,9 @@ export function GraphCanvas({
                 onClick={onEscAction}
                 disabled={!activeProject || (!selectedPath && !focusGraph)}
                 title="Esc — back/clear"
+                aria-label="Esc — back/clear"
               >
-                {label(focusGraph ? 'Back' : 'Clear', 'Esc')}
+                {label(focusGraph ? <BackIcon /> : <ClearIcon />, 'Esc')}
               </button>
               <button
                 type="button"
@@ -973,8 +1166,9 @@ export function GraphCanvas({
                 onClick={() => onTogglePinSelected()}
                 disabled={!activeProject || !selectedPath}
                 title="Pin/Unpin selected (max 3)"
+                aria-label="Pin/Unpin selected (max 3)"
               >
-                {label(isSelectedPinned ? 'Unpin' : 'Pin', '📌')}
+                {label(isSelectedPinned ? <UnpinIcon /> : <PinIcon />)}
               </button>
               <button
                 type="button"
@@ -982,8 +1176,9 @@ export function GraphCanvas({
                 onClick={() => setNeighborsOpen((v) => !v)}
                 disabled={!activeProject || !selectedPath}
                 title="Show incoming/outgoing edges"
+                aria-label="Show incoming/outgoing edges"
               >
-                {label('Neighbors', '⇄')}
+                {label(<NeighborsIcon />)}
               </button>
               <button
                 type="button"
@@ -1313,8 +1508,9 @@ export function GraphCanvas({
                 className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
                 onClick={() => onClearPins()}
                 title="Clear all pins"
+                aria-label="Clear all pins"
               >
-                {label('Clear pins', 'Clear')}
+                {label(<ClearIcon />)}
               </button>
             </div>
           </div>
