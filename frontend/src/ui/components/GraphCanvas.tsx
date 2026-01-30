@@ -1623,7 +1623,7 @@ export function GraphCanvas({
               </button>
               {legendIsCompact ? (
                 <div className="text-[10px] text-neutral-400">
-                  F · Esc · Undo/Redo: Ctrl/⌘+Z / Ctrl/⌘+Shift+Z
+                  F · Esc · Undo/Redo
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400">
@@ -1646,8 +1646,8 @@ export function GraphCanvas({
                   <span className="text-neutral-500">,</span>
                   <span className="text-neutral-200">Alt+←/→</span>
                   <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-500">Undo/Redo:</span>
-                  <span className="text-neutral-200">Ctrl/⌘+Z / Ctrl/⌘+Shift+Z</span>
+                  <span className="text-[10px] text-neutral-500">Undo/Redo:</span>
+                  <span className="text-neutral-200">Ctrl/⌘+Z, Ctrl/⌘+Shift+Z</span>
                 </div>
               )}
             </div>
