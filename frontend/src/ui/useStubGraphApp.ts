@@ -1929,6 +1929,21 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       if (typing) return
       if (paletteOpen) return
 
+      if (mod && !e.altKey && e.key === 'Tab') {
+        if (!fileEditorOpen) return
+        if (!activeFilePath || openFilePaths.length === 0) return
+        const currentIndex = openFilePaths.indexOf(activeFilePath)
+        if (currentIndex < 0) return
+        const nextIndex = e.shiftKey
+          ? (currentIndex - 1 + openFilePaths.length) % openFilePaths.length
+          : (currentIndex + 1) % openFilePaths.length
+        const nextPath = openFilePaths[nextIndex]
+        if (!nextPath) return
+        e.preventDefault()
+        void openFileEditor(nextPath)
+        return
+      }
+
       if (
         !otherModalOpen
         && workspaceView === 'graph'
@@ -2027,6 +2042,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     selectedPath,
     leftPanelOpen,
     rightPanelOpen,
+    activeFilePath,
+    openFilePaths,
+    openFileEditor,
     setLeftPanelOpen,
     setRightPanelOpen,
     toggleLeftPanel,
