@@ -100,6 +100,21 @@ export function App() {
     })
   }, [app.fileEditorsByPath, app.openFilePaths])
 
+  const hasDirtyTabs = React.useMemo(() => {
+    return (app.openFilePaths || []).some((path) => {
+      const entry = app.fileEditorsByPath?.[path]
+      return entry ? entry.content !== entry.original : false
+    })
+  }, [app.fileEditorsByPath, app.openFilePaths])
+
+  const canCloseAllTabs = (app.openFilePaths || []).length > 0
+  const canCloseOtherTabs = Boolean(app.activeFilePath && (app.openFilePaths || []).length > 1)
+  const canCloseTabsToRight = React.useMemo(() => {
+    if (!app.activeFilePath) return false
+    const index = (app.openFilePaths || []).indexOf(app.activeFilePath)
+    return index >= 0 && index < (app.openFilePaths || []).length - 1
+  }, [app.activeFilePath, app.openFilePaths])
+
   const activeFileMeta = React.useMemo(() => {
     if (!app.activeFilePath) return null
     return app.projectFiles?.find((file) => file.path === app.activeFilePath) ?? null
@@ -622,8 +637,16 @@ export function App() {
         editorOpen={app.fileEditorOpen}
         activeFilePath={app.activeFilePath}
         canSave={canSaveEditor}
+        canSaveAll={hasDirtyTabs}
         onSave={app.saveFileEditor}
+        onSaveAll={app.saveAllOpenFiles}
         onCloseTab={(path) => app.closeFileEditor(path)}
+        canCloseAllTabs={canCloseAllTabs}
+        onCloseAllTabs={app.closeAllTabs}
+        canCloseOtherTabs={canCloseOtherTabs}
+        onCloseOtherTabs={(path) => app.closeOtherTabs(path)}
+        canCloseTabsToRight={canCloseTabsToRight}
+        onCloseTabsToRight={(path) => app.closeTabsToRight(path)}
         onToggleWrap={() => setEditorWrap((prev) => !prev)}
         onToggleDiff={() => setEditorShowDiff((prev) => !prev)}
         onIncreaseFontSize={handleIncreaseFontSize}
