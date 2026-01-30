@@ -17,8 +17,24 @@ export function App() {
   const [docsOpen, setDocsOpen] = React.useState(false)
   const [onboardOpen, setOnboardOpen] = React.useState(false)
   const [onboardStep, setOnboardStep] = React.useState(0)
-  const [editorExplorerOpen, setEditorExplorerOpen] = React.useState(true)
-  const [editorLeftTab, setEditorLeftTab] = React.useState<'explorer' | 'search'>('explorer')
+  const [editorExplorerOpen, setEditorExplorerOpen] = React.useState(() => {
+    try {
+      const raw = localStorage.getItem('cs.editor.explorerOpen')
+      if (raw === '0') return false
+      if (raw === '1') return true
+      return true
+    } catch {
+      return true
+    }
+  })
+  const [editorLeftTab, setEditorLeftTab] = React.useState<'explorer' | 'search'>(() => {
+    try {
+      const raw = localStorage.getItem('cs.editor.leftTab')
+      return raw === 'explorer' || raw === 'search' ? raw : 'explorer'
+    } catch {
+      return 'explorer'
+    }
+  })
   const [editorWrap, setEditorWrap] = React.useState(() => {
     try { return (localStorage.getItem('cs.editor.wrap') || '1') !== '0' } catch { return true }
   })
@@ -98,6 +114,14 @@ export function App() {
   React.useEffect(() => {
     try { localStorage.setItem('cs.editor.wrap', editorWrap ? '1' : '0') } catch {}
   }, [editorWrap])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.explorerOpen', editorExplorerOpen ? '1' : '0') } catch {}
+  }, [editorExplorerOpen])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.leftTab', editorLeftTab) } catch {}
+  }, [editorLeftTab])
 
   React.useEffect(() => {
     try { localStorage.setItem('cs.editor.showDiff', editorShowDiff ? '1' : '0') } catch {}
