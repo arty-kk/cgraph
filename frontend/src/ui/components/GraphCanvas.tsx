@@ -129,6 +129,20 @@ const EyeIcon = () => (
   </svg>
 )
 
+const SummaryIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-3.5 w-3.5" fill="none">
+    <path
+      d="M7 4.5h10a1.5 1.5 0 0 1 1.5 1.5v12A1.5 1.5 0 0 1 17 19.5H7A1.5 1.5 0 0 1 5.5 18V6A1.5 1.5 0 0 1 7 4.5Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+    <path d="M8.5 9h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M8.5 12h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M8.5 15h4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+)
+
 const PencilIcon = () => (
   <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
     <path
@@ -324,6 +338,9 @@ type Props = {
   onRefresh: () => void | Promise<void>
   onOpenPalette: () => void
   notifyInfo: (msg: string) => void
+  onQuickSummary: (path: string) => void | Promise<void>
+  canQuickSummary: boolean
+  quickSummaryDisabledReason?: string
   compactMode: boolean
   focusGraph: boolean
   setFocusGraph: (v: boolean) => void
@@ -364,6 +381,9 @@ export function GraphCanvas({
   onRefresh,
   onOpenPalette,
   notifyInfo,
+  onQuickSummary,
+  canQuickSummary,
+  quickSummaryDisabledReason,
   compactMode,
   focusGraph,
   setFocusGraph,
@@ -415,6 +435,22 @@ export function GraphCanvas({
     'flex h-8 w-8 items-center justify-center rounded-md border border-indigo-500/50 bg-indigo-950/60 text-indigo-100 hover:bg-indigo-900/60 disabled:opacity-50'
   const hoverRevealBlock = compactMode ? 'hidden group-hover:block' : ''
   const hoverRevealFlex = compactMode ? 'hidden group-hover:flex' : 'flex'
+  const quickSummaryDisabled = !canQuickSummary
+  const quickSummaryTitle = quickSummaryDisabled
+    ? (quickSummaryDisabledReason || 'Quick summary unavailable')
+    : 'Quick summary'
+  const isQuickSummaryDisabledFor = useCallback(
+    (path: string) => quickSummaryDisabled || path !== selectedPath,
+    [quickSummaryDisabled, selectedPath]
+  )
+  const quickSummaryTitleFor = useCallback(
+    (path: string) => (
+      path !== selectedPath
+        ? 'Select this node to load info before summarizing.'
+        : quickSummaryTitle
+    ),
+    [quickSummaryTitle, selectedPath]
+  )
 
   const onEscAction = useCallback(() => {
     setCtxMenu(null)
@@ -1691,17 +1727,32 @@ export function GraphCanvas({
         </div>
       </Modal>
       {fileButtonPos && selectedPath && activeProject && selectedInGraph && (
-        <button
-          type="button"
-          className="absolute z-20 flex h-6 w-6 items-center justify-center rounded-full border border-neutral-700 bg-neutral-950/90 text-neutral-200 shadow hover:border-neutral-500 hover:bg-neutral-900"
+        <div
+          className="absolute z-20 flex items-center gap-1"
           style={{ left: fileButtonPos.x, top: fileButtonPos.y, transform: 'translate(-50%, -50%)' }}
-          title="View/edit file"
-          aria-label="View/edit file"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => void onOpenFileEditor(selectedPath)}
         >
-          <EyeIcon />
-        </button>
+          <button
+            type="button"
+            className="flex h-6 w-6 items-center justify-center rounded-full border border-neutral-700 bg-neutral-950/90 text-neutral-200 shadow hover:border-neutral-500 hover:bg-neutral-900"
+            title="View/edit file"
+            aria-label="View/edit file"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => void onOpenFileEditor(selectedPath)}
+          >
+            <EyeIcon />
+          </button>
+          <button
+            type="button"
+            className="flex h-6 w-6 items-center justify-center rounded-full border border-neutral-700 bg-neutral-950/90 text-neutral-200 shadow hover:border-neutral-500 hover:bg-neutral-900 disabled:opacity-50"
+            title={quickSummaryTitleFor(selectedPath)}
+            aria-label="Quick summary"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => void Promise.resolve(onQuickSummary(selectedPath))}
+            disabled={isQuickSummaryDisabledFor(selectedPath)}
+          >
+            <SummaryIcon />
+          </button>
+        </div>
       )}
       {ctxMenu && (
         <div
@@ -1744,6 +1795,15 @@ export function GraphCanvas({
               onClick={() => { void Promise.resolve(onOpenFileEditor(ctxMenu.path)); setCtxMenu(null) }}
             >
               Open in editor
+            </button>
+            <button
+              type="button"
+              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+              onClick={() => { void Promise.resolve(onQuickSummary(ctxMenu.path)); setCtxMenu(null) }}
+              title={quickSummaryTitleFor(ctxMenu.path)}
+              disabled={isQuickSummaryDisabledFor(ctxMenu.path)}
+            >
+              Quick summary
             </button>
             <button
               type="button"
