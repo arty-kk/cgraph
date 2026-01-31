@@ -12,7 +12,11 @@ import { useStubGraphApp } from './useStubGraphApp'
 import { CommandPalette } from './components/CommandPalette'
 import { Modal } from './components/Modal'
 
-export function App() {
+export type AppProps = {
+  showDependencies?: boolean
+}
+
+export function App({ showDependencies = true }: AppProps) {
   const searchInputRef = React.useRef<HTMLInputElement | null>(null)
   const appRef = React.useRef<ReturnType<typeof useStubGraphApp> | null>(null)
   const [docsOpen, setDocsOpen] = React.useState(false)
@@ -617,6 +621,7 @@ export function App() {
                         app.onSelectNodePath(path)
                         app.setWorkspaceView('graph')
                       }}
+                      showDependencies={showDependencies}
                       dependencies={activeFileDependencies}
                       totalIn={totalIn}
                       totalOut={totalOut}

@@ -12,6 +12,7 @@ export function FileEditorModal({
   nodeInfo,
   fileMeta,
   dependencies,
+  showDependencies,
   totalIn,
   totalOut,
   original,
@@ -63,6 +64,7 @@ export function FileEditorModal({
         nodeInfo={nodeInfo}
         fileMeta={fileMeta}
         dependencies={dependencies}
+        showDependencies={showDependencies}
         totalIn={totalIn}
         totalOut={totalOut}
         original={original}
