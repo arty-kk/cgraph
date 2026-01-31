@@ -992,7 +992,7 @@ export function useCytoscapeGraph({
           starburstRef.current?.(match[0])
         }
 
-        const centerTarget = match.union(match.connectedEdges())
+        const centerTarget = match.closedNeighborhood()
         const visibleTarget = centerTarget.filter(':visible')
         animateCenterTo(visibleTarget.empty() ? match : visibleTarget)
         
@@ -1043,7 +1043,7 @@ export function useCytoscapeGraph({
       if (!cy) return
       const sel = cy.nodes(':selected')
       if (!sel || sel.empty()) return
-      const centerTarget = sel.union(sel.connectedEdges())
+      const centerTarget = sel.closedNeighborhood()
       const visibleTarget = centerTarget.filter(':visible')
       animateCenterTo(visibleTarget.empty() ? sel : visibleTarget)
     } catch {}
@@ -1060,7 +1060,7 @@ export function useCytoscapeGraph({
         if (!cy) return
         const match = cy.nodes().filter((n) => n.data('path') === p || n.id() === p)
         if (match && !match.empty()) {
-          const centerTarget = match.union(match.connectedEdges())
+          const centerTarget = match.closedNeighborhood()
           const visibleTarget = centerTarget.filter(':visible')
           animateCenterTo(visibleTarget.empty() ? match : visibleTarget)
           return
