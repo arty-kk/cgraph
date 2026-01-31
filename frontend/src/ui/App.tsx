@@ -219,12 +219,11 @@ export function App({ showDependencies = true }: AppProps) {
   )
   const showEditorEmptyState = !app.fileEditorOpen || !app.activeFilePath || editorTabs.length === 0
 
-  const totalOnboardSteps = 4
   const onboardSteps = [
     {
       title: 'Scan the project',
       description: 'Index the project so the graph can build relationships.',
-      tip: 'Scan — слева в тулбаре.',
+      tip: 'Scan — left toolbar.',
       action: {
         label: 'Scan now',
         onClick: () => void app.onScan(),
@@ -244,16 +243,28 @@ export function App({ showDependencies = true }: AppProps) {
       },
     },
     {
+      title: 'Open the editor',
+      description: 'The editor is the workspace for search, diff, outline, and quick jumps to the graph.',
+      tip: 'Switch views — Ctrl/⌘+Shift+G.',
+      action: {
+        label: 'Open editor',
+        onClick: () => app.setWorkspaceView('editor'),
+        disabled: false,
+        variant: 'secondary',
+      },
+    },
+    {
       title: 'Explore the graph',
       description: 'Click a node to center it and highlight its edges.',
-      tip: 'Graph — центр.',
+      tip: 'Graph — center view.',
     },
     {
       title: 'Run a task',
       description: 'Pick a chip or write a prompt, then press Run.',
-      tip: 'Tasks — справа.',
+      tip: 'Tasks — right panel.',
     },
   ]
+  const totalOnboardSteps = onboardSteps.length
 
   const handleIncreaseFontSize = React.useCallback(() => {
     setEditorFontSize((prev) => clampFontSize(prev + 1))
@@ -548,9 +559,10 @@ export function App({ showDependencies = true }: AppProps) {
                   {showEditorEmptyState ? (
                     <div className="h-full w-full rounded-lg border border-neutral-800 bg-neutral-950/70 p-6 flex flex-col items-center justify-center text-center gap-4">
                       <div className="space-y-2 max-w-md">
-                        <div className="text-sm font-semibold text-neutral-100">Редактируйте быстрее</div>
+                        <div className="text-sm font-semibold text-neutral-100">Edit faster</div>
                         <p className="text-xs text-neutral-400">
-                          Редактируйте файлы, ищите по проекту и просматривайте историю правок.
+                          The graph shows structure and dependencies, while the editor is for precise code changes.
+                          Open files with Ctrl/⌘+K and return to the graph with Ctrl/⌘+Shift+G.
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center justify-center gap-2">
@@ -559,21 +571,21 @@ export function App({ showDependencies = true }: AppProps) {
                           className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-800"
                           onClick={() => app.setPaletteOpen(true)}
                         >
-                          Открыть файл (Ctrl/⌘+K)
+                          Open file (Ctrl/⌘+K)
                         </button>
                         <button
                           type="button"
                           className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-800"
                           onClick={handleFocusSearch}
                         >
-                          Поиск по проекту (Ctrl/⌘+Shift+F)
+                          Search project (Ctrl/⌘+Shift+F)
                         </button>
                         <button
                           type="button"
                           className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-800"
                           onClick={() => app.setWorkspaceView('graph')}
                         >
-                          Вернуться к графу (Ctrl/⌘+Shift+G)
+                          Back to graph (Ctrl/⌘+Shift+G)
                         </button>
                       </div>
                     </div>
@@ -1041,11 +1053,11 @@ export function App({ showDependencies = true }: AppProps) {
               <button
                 className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold"
                 onClick={() => {
-                  if (onboardStep >= 3) return closeOnboarding(true)
-                  setOnboardStep((s) => Math.min(3, s + 1))
+                  if (onboardStep >= totalOnboardSteps - 1) return closeOnboarding(true)
+                  setOnboardStep((s) => Math.min(totalOnboardSteps - 1, s + 1))
                 }}
               >
-                {onboardStep >= 3 ? 'Finish' : 'Next'}
+                {onboardStep >= totalOnboardSteps - 1 ? 'Finish' : 'Next'}
               </button>
             </div>
           </div>
