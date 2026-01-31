@@ -313,6 +313,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [agenticTemperature, setAgenticTemperature] = useState<number>(() => {
     try { return Number(localStorage.getItem('cs.ui.agentic.temperature') || '0') || 0 } catch { return 0 }
   })
+  const [agenticEvidenceMode, setAgenticEvidenceMode] = useState<boolean>(() => {
+    try { return (localStorage.getItem('cs.ui.agentic.evidenceMode') || '0') === '1' } catch { return false }
+  })
   const [packMaxFiles, setPackMaxFiles] = useState<number>(() => {
     try { return Number(localStorage.getItem('cs.ui.pack.maxFiles') || '25') || 25 } catch { return 25 }
   })
@@ -326,6 +329,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxFileChars', String(agenticMaxFileChars)) } catch {} }, [agenticMaxFileChars])
   useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxToolChars', String(agenticMaxTotalToolOutputChars)) } catch {} }, [agenticMaxTotalToolOutputChars])
   useEffect(() => { try { localStorage.setItem('cs.ui.agentic.temperature', String(agenticTemperature)) } catch {} }, [agenticTemperature])
+  useEffect(() => { try { localStorage.setItem('cs.ui.agentic.evidenceMode', agenticEvidenceMode ? '1' : '0') } catch {} }, [agenticEvidenceMode])
   useEffect(() => { try { localStorage.setItem('cs.ui.pack.maxFiles', String(packMaxFiles)) } catch {} }, [packMaxFiles])
   useEffect(() => { try { localStorage.setItem('cs.ui.pack.maxCharsPerFile', String(packMaxCharsPerFile)) } catch {} }, [packMaxCharsPerFile])
   useEffect(() => { try { localStorage.setItem('cs.ui.pack.maxTotalChars', String(packMaxTotalChars)) } catch {} }, [packMaxTotalChars])
@@ -1653,6 +1657,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         body.agentic_max_file_chars = clampedAgenticMaxFileChars
         body.agentic_max_total_tool_output_chars = clampedAgenticMaxTotalToolOutputChars
         body.agentic_temperature = agenticTemperature
+        body.agentic_evidence_mode = agenticEvidenceMode
       } else {
         body.pack_max_files = clampedPackMaxFiles
         body.pack_max_chars_per_file = clampedPackMaxCharsPerFile
@@ -1668,6 +1673,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     },
     [
       agenticMaxCalls,
+      agenticEvidenceMode,
       agenticMaxFileChars,
       agenticMaxTotalToolOutputChars,
       agenticTemperature,
@@ -2307,6 +2313,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     agenticMaxFileChars,
     agenticMaxTotalToolOutputChars,
     agenticTemperature,
+    agenticEvidenceMode,
     packMaxFiles,
     packMaxCharsPerFile,
     packMaxTotalChars,
@@ -2362,6 +2369,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setAgenticMaxFileChars,
     setAgenticMaxTotalToolOutputChars,
     setAgenticTemperature,
+    setAgenticEvidenceMode,
     setPackMaxFiles,
     setPackMaxCharsPerFile,
     setPackMaxTotalChars,

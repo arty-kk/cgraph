@@ -35,6 +35,7 @@ type Props = {
   agenticMaxFileChars: number
   agenticMaxTotalToolOutputChars: number
   agenticTemperature: number
+  agenticEvidenceMode: boolean
   packMaxFiles: number
   packMaxCharsPerFile: number
   packMaxTotalChars: number
@@ -49,6 +50,7 @@ type Props = {
   setAgenticMaxFileChars: (v: number) => void
   setAgenticMaxTotalToolOutputChars: (v: number) => void
   setAgenticTemperature: (v: number) => void
+  setAgenticEvidenceMode: (v: boolean) => void
   setPackMaxFiles: (v: number) => void
   setPackMaxCharsPerFile: (v: number) => void
   setPackMaxTotalChars: (v: number) => void
@@ -91,6 +93,7 @@ export function NodePanel({
   agenticMaxFileChars,
   agenticMaxTotalToolOutputChars,
   agenticTemperature,
+  agenticEvidenceMode,
   packMaxFiles,
   packMaxCharsPerFile,
   packMaxTotalChars,
@@ -104,6 +107,7 @@ export function NodePanel({
   setAgenticMaxFileChars,
   setAgenticMaxTotalToolOutputChars,
   setAgenticTemperature,
+  setAgenticEvidenceMode,
   setPackMaxFiles,
   setPackMaxCharsPerFile,
   setPackMaxTotalChars,
@@ -252,6 +256,12 @@ export function NodePanel({
   const retrievalSettings = (runResult as any)?.retrieval_settings ?? runResult?.retrieval_settings
   const applyPatchLabel =
     typeof runResult?.apply_patch === 'boolean' ? (runResult.apply_patch ? 'yes' : 'no') : '—'
+  const agenticEvidenceValue = isRecord(retrievalSettings)
+    && isRecord((retrievalSettings as any).agentic)
+    ? (retrievalSettings as any).agentic.agentic_evidence_mode
+    : undefined
+  const agenticEvidenceLabel =
+    typeof agenticEvidenceValue === 'boolean' ? (agenticEvidenceValue ? 'yes' : 'no') : '—'
 
   const fmtK = (n: unknown): string => {
     const v = Number(n)
@@ -891,6 +901,21 @@ export function NodePanel({
                                 disabled={busy || !patchAllowed}
                               />
                             </label>
+
+                            <label
+                              className="col-span-2 h-9 rounded-md bg-neutral-900 border border-neutral-800 px-2 flex items-center justify-between gap-2"
+                              title={isAgentic ? 'Require evidence for agentic runs.' : 'Only available in agentic mode.'}
+                            >
+                              <span className="text-[11px] font-semibold text-neutral-200">
+                                Require evidence
+                              </span>
+                              <input
+                                type="checkbox"
+                                checked={agenticEvidenceMode}
+                                onChange={(e) => setAgenticEvidenceMode(e.target.checked)}
+                                disabled={busy || !isAgentic}
+                              />
+                            </label>
                           </div>
 
                           <div className="border-t border-neutral-800 pt-3">
@@ -1225,7 +1250,7 @@ export function NodePanel({
                 <div className="text-xs text-neutral-400">
                   run_id: {runResult?.run_id ?? '—'} · mode: {runResult?.mode ?? '—'} · depth:{' '}
                   {runResult?.depth ?? '—'} · dep_mode: {runResult?.dep_mode ?? '—'} · retrieval:{' '}
-                  {String(retrieval)} · apply_patch: {applyPatchLabel}
+                  {String(retrieval)} · apply_patch: {applyPatchLabel} · evidence: {agenticEvidenceLabel}
                 </div>
                 {retrievalSummary && (
                   <div className="text-[11px] text-neutral-500 whitespace-pre-wrap">{retrievalSummary}</div>

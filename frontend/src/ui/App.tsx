@@ -577,6 +577,7 @@ export function App() {
             agenticMaxFileChars={app.agenticMaxFileChars}
             agenticMaxTotalToolOutputChars={app.agenticMaxTotalToolOutputChars}
             agenticTemperature={app.agenticTemperature}
+            agenticEvidenceMode={app.agenticEvidenceMode}
             packMaxFiles={app.packMaxFiles}
             packMaxCharsPerFile={app.packMaxCharsPerFile}
             packMaxTotalChars={app.packMaxTotalChars}
@@ -590,6 +591,7 @@ export function App() {
             setAgenticMaxFileChars={app.setAgenticMaxFileChars}
             setAgenticMaxTotalToolOutputChars={app.setAgenticMaxTotalToolOutputChars}
             setAgenticTemperature={app.setAgenticTemperature}
+            setAgenticEvidenceMode={app.setAgenticEvidenceMode}
             setPackMaxFiles={app.setPackMaxFiles}
             setPackMaxCharsPerFile={app.setPackMaxCharsPerFile}
             setPackMaxTotalChars={app.setPackMaxTotalChars}
