@@ -1198,157 +1198,161 @@ export function GraphCanvas({
             </div>
           </>
         ) : !panelOpen ? (
-          <div className="flex flex-col gap-1 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                className="text-left min-w-0 flex-1"
-                onClick={() => setPanelOpen(true)}
-                disabled={!activeProject}
-                title="Open filters panel"
-              >
-                <div className="text-xs text-neutral-300 truncate">
-                  {activeProject ? (
-                    <>
-                      <span className="font-semibold">{activeProject.name}</span>
-                      <span className="ml-2 text-neutral-400">{graphInfo}</span>
-                    </>
-                  ) : (
-                    'Pick a project'
-                  )}
-                </div>
-              </button>
-              <button
-                type="button"
-                className={toggleBtnClass}
-                onClick={onToggleWorkspaceView}
-                disabled={!activeProject}
-                title={workspaceView === 'graph' ? 'Switch to editor (Ctrl/⌘+Shift+G)' : 'Switch to graph (Ctrl/⌘+Shift+G)'}
-                aria-label={workspaceView === 'graph' ? 'Switch to editor (Ctrl/⌘+Shift+G)' : 'Switch to graph (Ctrl/⌘+Shift+G)'}
-              >
-                {workspaceView === 'graph' ? <PencilIcon /> : <GraphIcon />}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => setFocusGraph(!focusGraph)}
-                disabled={!activeProject}
-                title="F — Focus, Esc — Back"
-                aria-label="F — Focus, Esc — Back"
-              >
-                {label(focusGraph ? <PanelsIcon /> : <FocusIcon />, focusGraph ? 'P' : 'F')}
-              </button>
-              {undoRedoControls}
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => actions.fit()}
-                disabled={!activeProject || !graph}
-                title="Fit"
-                aria-label="Fit"
-              >
-                {label(<FitIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => { if (selectedPath) actions.centerPath(selectedPath) }}
-                disabled={!activeProject || !graph || !selectedPath}
-                title="Center selected"
-                aria-label="Center selected"
-              >
-                {label(<CenterIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => actions.relayout()}
-                disabled={!activeProject || !graph}
-                title="Relayout"
-                aria-label="Relayout"
-              >
-                {label(<RelayoutIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => onBack?.()}
-                disabled={!activeProject || !canGoBack}
-                title="Back (Alt+← / ⌘[)"
-                aria-label="Back (Alt+← / ⌘[)"
-              >
-                {label(<BackIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => onForward?.()}
-                disabled={!activeProject || !canGoForward}
-                title="Forward (Alt+→ / ⌘])"
-                aria-label="Forward (Alt+→ / ⌘])"
-              >
-                {label(<ForwardIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={onEscAction}
-                disabled={!activeProject || (!selectedPath && !focusGraph)}
-                title="Esc — back/clear"
-                aria-label="Esc — back/clear"
-              >
-                {label(focusGraph ? <BackIcon /> : <ClearIcon />, 'Esc')}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => onTogglePinSelected()}
-                disabled={!activeProject || !selectedPath}
-                title="Pin/Unpin selected (max 3)"
-                aria-label="Pin/Unpin selected (max 3)"
-              >
-                {label(isSelectedPinned ? <UnpinIcon /> : <PinIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => setNeighborsOpen((v) => !v)}
-                disabled={!activeProject || !selectedPath}
-                title="Show incoming/outgoing edges"
-                aria-label="Show incoming/outgoing edges"
-              >
-                {label(<NeighborsIcon />)}
-              </button>
-              <button
-                type="button"
-                className="shrink-0 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-                onClick={() => setHelpOpen(true)}
-                title="What this is and how to use it"
-              >
-                ?
-              </button>
+          <div className="inline-flex flex-col items-start gap-1 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
+            <div className="w-max max-w-full shrink-0 relative left-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  className="text-left min-w-0 flex-1"
+                  onClick={() => setPanelOpen(true)}
+                  disabled={!activeProject}
+                  title="Open filters panel"
+                >
+                  <div className="text-xs text-neutral-300 truncate">
+                    {activeProject ? (
+                      <>
+                        <span className="font-semibold">{activeProject.name}</span>
+                        <span className="ml-2 text-neutral-400">{graphInfo}</span>
+                      </>
+                    ) : (
+                      'Pick a project'
+                    )}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className={toggleBtnClass}
+                  onClick={onToggleWorkspaceView}
+                  disabled={!activeProject}
+                  title={workspaceView === 'graph' ? 'Switch to editor (Ctrl/⌘+Shift+G)' : 'Switch to graph (Ctrl/⌘+Shift+G)'}
+                  aria-label={workspaceView === 'graph' ? 'Switch to editor (Ctrl/⌘+Shift+G)' : 'Switch to graph (Ctrl/⌘+Shift+G)'}
+                >
+                  {workspaceView === 'graph' ? <PencilIcon /> : <GraphIcon />}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => setFocusGraph(!focusGraph)}
+                  disabled={!activeProject}
+                  title="F — Focus, Esc — Back"
+                  aria-label="F — Focus, Esc — Back"
+                >
+                  {label(focusGraph ? <PanelsIcon /> : <FocusIcon />, focusGraph ? 'P' : 'F')}
+                </button>
+                {undoRedoControls}
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => actions.fit()}
+                  disabled={!activeProject || !graph}
+                  title="Fit"
+                  aria-label="Fit"
+                >
+                  {label(<FitIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => { if (selectedPath) actions.centerPath(selectedPath) }}
+                  disabled={!activeProject || !graph || !selectedPath}
+                  title="Center selected"
+                  aria-label="Center selected"
+                >
+                  {label(<CenterIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => actions.relayout()}
+                  disabled={!activeProject || !graph}
+                  title="Relayout"
+                  aria-label="Relayout"
+                >
+                  {label(<RelayoutIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => onBack?.()}
+                  disabled={!activeProject || !canGoBack}
+                  title="Back (Alt+← / ⌘[)"
+                  aria-label="Back (Alt+← / ⌘[)"
+                >
+                  {label(<BackIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => onForward?.()}
+                  disabled={!activeProject || !canGoForward}
+                  title="Forward (Alt+→ / ⌘])"
+                  aria-label="Forward (Alt+→ / ⌘])"
+                >
+                  {label(<ForwardIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={onEscAction}
+                  disabled={!activeProject || (!selectedPath && !focusGraph)}
+                  title="Esc — back/clear"
+                  aria-label="Esc — back/clear"
+                >
+                  {label(focusGraph ? <BackIcon /> : <ClearIcon />, 'Esc')}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => onTogglePinSelected()}
+                  disabled={!activeProject || !selectedPath}
+                  title="Pin/Unpin selected (max 3)"
+                  aria-label="Pin/Unpin selected (max 3)"
+                >
+                  {label(isSelectedPinned ? <UnpinIcon /> : <PinIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => setNeighborsOpen((v) => !v)}
+                  disabled={!activeProject || !selectedPath}
+                  title="Show incoming/outgoing edges"
+                  aria-label="Show incoming/outgoing edges"
+                >
+                  {label(<NeighborsIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
+                  onClick={() => setHelpOpen(true)}
+                  title="What this is and how to use it"
+                >
+                  ?
+                </button>
+              </div>
             </div>
             {selectionTrail?.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1">
-                <span className="text-[10px] text-neutral-500">Trail:</span>
-                {selectionTrail.map((p) => {
-                  const active = selectedPath === p
-                  return (
-                    <button
-                      key={p}
-                      type="button"
-                      className={[
-                        'px-2 py-0.5 rounded-full border text-[11px] max-w-[220px] truncate',
-                        active ? 'bg-neutral-800 border-neutral-700 text-neutral-100' : 'bg-neutral-950 border-neutral-800 text-neutral-200 hover:border-neutral-700',
-                      ].join(' ')}
-                      onClick={() => void goTo(p)}
-                      title={p}
-                      disabled={!activeProject}
-                    >
-                      {baseName(p)}
-                    </button>
-                  )
-                })}
+              <div className="w-full max-w-[520px] min-w-0 overflow-x-auto">
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-[10px] text-neutral-500">Trail:</span>
+                  {selectionTrail.map((p) => {
+                    const active = selectedPath === p
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        className={[
+                          'px-2 py-0.5 rounded-full border text-[11px] max-w-[220px] truncate',
+                          active ? 'bg-neutral-800 border-neutral-700 text-neutral-100' : 'bg-neutral-950 border-neutral-800 text-neutral-200 hover:border-neutral-700',
+                        ].join(' ')}
+                        onClick={() => void goTo(p)}
+                        title={p}
+                        disabled={!activeProject}
+                      >
+                        {baseName(p)}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             )}
             {neighborsOpen && selectedPath && (
