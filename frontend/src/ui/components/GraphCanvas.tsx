@@ -1121,7 +1121,7 @@ export function GraphCanvas({
 
   return (
     <div ref={rootRef} className="relative w-full h-full">
-      <div ref={panelRef} className="relative absolute top-3 left-3 z-10">
+      <div ref={panelRef} className="absolute top-3 left-3 z-10">
         {isGraphActive && (
           <div
             className="pointer-events-none absolute -top-2 left-0 text-[10px] bg-neutral-950/80 border border-neutral-800 rounded-md px-2 py-0.5 text-neutral-200"
