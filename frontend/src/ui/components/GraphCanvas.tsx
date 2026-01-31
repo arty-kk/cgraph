@@ -573,6 +573,40 @@ export function GraphCanvas({
   const [panelOpen, setPanelOpen] = useState(false)
   const [neighborsOpen, setNeighborsOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [showKeyboardHint, setShowKeyboardHint] = useState(false)
+  const keyboardHintTimerRef = useRef<number | null>(null)
+  const prevFocusGraphRef = useRef(focusGraph)
+
+  useEffect(() => {
+    const wasFocusGraph = prevFocusGraphRef.current
+    prevFocusGraphRef.current = focusGraph
+
+    if (focusGraph && !wasFocusGraph) {
+      setShowKeyboardHint(true)
+      if (keyboardHintTimerRef.current) {
+        window.clearTimeout(keyboardHintTimerRef.current)
+      }
+      keyboardHintTimerRef.current = window.setTimeout(() => {
+        setShowKeyboardHint(false)
+        keyboardHintTimerRef.current = null
+      }, 1800)
+    }
+
+    if (!focusGraph) {
+      setShowKeyboardHint(false)
+      if (keyboardHintTimerRef.current) {
+        window.clearTimeout(keyboardHintTimerRef.current)
+        keyboardHintTimerRef.current = null
+      }
+    }
+
+    return () => {
+      if (keyboardHintTimerRef.current) {
+        window.clearTimeout(keyboardHintTimerRef.current)
+        keyboardHintTimerRef.current = null
+      }
+    }
+  }, [focusGraph])
 
   // In focus we keep UI minimal (no expanded panels/secondary popups).
   useEffect(() => {
@@ -1149,7 +1183,7 @@ export function GraphCanvas({
   return (
     <div ref={rootRef} className="relative w-full h-full">
       <div ref={panelRef} className="relative absolute top-3 left-3 z-10">
-        {isGraphActive && (
+        {showKeyboardHint && (
           <div
             className="pointer-events-none absolute -top-2 left-0 text-[10px] bg-neutral-950/80 border border-neutral-800 rounded-md px-2 py-0.5 text-neutral-200"
             title="Keyboard controls active"
@@ -2217,8 +2251,8 @@ export function GraphCanvas({
         ref={containerRef}
         className="w-full h-full"
         onContextMenu={(e) => e.preventDefault()}
-        aria-label={isGraphActive ? 'Graph focus active' : undefined}
-        title={isGraphActive ? 'Keyboard controls active' : undefined}
+        aria-label={focusGraph ? 'Graph focus active' : undefined}
+        title={showKeyboardHint ? 'Keyboard controls active' : undefined}
       />
     </div>
   )
