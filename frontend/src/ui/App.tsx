@@ -120,6 +120,43 @@ export function App() {
     return app.projectFiles?.find((file) => file.path === app.activeFilePath) ?? null
   }, [app.activeFilePath, app.projectFiles])
 
+  const activeFileDependencies = React.useMemo(() => {
+    const inSet = new Set<string>()
+    const outSet = new Set<string>()
+    if (!app.graph || !app.activeFilePath) return { in: [] as string[], out: [] as string[] }
+
+    const keyToPath = new Map<string, string>()
+    for (const n of app.graph.nodes || []) {
+      const id = typeof (n as any)?.id === 'string' ? String((n as any).id) : ''
+      const path = typeof (n as any)?.path === 'string' ? String((n as any).path) : ''
+      if (path) keyToPath.set(path, path)
+      if (id && path) keyToPath.set(id, path)
+      if (id && !keyToPath.has(id)) keyToPath.set(id, id)
+    }
+
+    const selNode =
+      (app.graph.nodes || []).find((n: any) => n?.path === app.activeFilePath || n?.id === app.activeFilePath) ?? null
+    const selId = selNode && typeof (selNode as any).id === 'string' ? String((selNode as any).id) : null
+
+    const isSel = (k: string) => k === app.activeFilePath || (selId != null && k === selId)
+    const toPath = (k: string) => keyToPath.get(k) || k
+
+    for (const e of app.graph.edges || []) {
+      const s = typeof (e as any)?.source === 'string' ? String((e as any).source) : ''
+      const t = typeof (e as any)?.target === 'string' ? String((e as any).target) : ''
+      if (!s || !t) continue
+      if (isSel(t)) inSet.add(toPath(s))
+      if (isSel(s)) outSet.add(toPath(t))
+    }
+
+    const inbound = Array.from(inSet).filter(Boolean).sort()
+    const outbound = Array.from(outSet).filter(Boolean).sort()
+    return { in: inbound, out: outbound }
+  }, [app.activeFilePath, app.graph])
+
+  const totalIn = activeFileDependencies.in.length
+  const totalOut = activeFileDependencies.out.length
+
   const confirmTitle = app.confirmReason === 'reload-file' ? 'Reload file?' : 'Unsaved changes'
   const confirmBody =
     app.confirmReason === 'reload-file'
@@ -546,6 +583,17 @@ export function App() {
                       onOpenInGraph={(path) => {
                         app.onSelectNodePath(path)
                         app.setWorkspaceView('graph')
+                      }}
+                      dependencies={activeFileDependencies}
+                      totalIn={totalIn}
+                      totalOut={totalOut}
+                      onOpenDependencyInGraph={(path) => {
+                        app.onSelectNodePath(path)
+                        app.setWorkspaceView('graph')
+                      }}
+                      onOpenDependencyFile={(path) => {
+                        app.setWorkspaceView('editor')
+                        void Promise.resolve(app.openFileEditor(path))
                       }}
                     />
                   )}
