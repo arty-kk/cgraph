@@ -1091,6 +1091,62 @@ export function useCytoscapeGraph({
     return { x: Number(pos.x), y: Number(pos.y) }
   }, [])
 
+  const getNeighbors = useCallback((path: string) => {
+    const cy = cyRef.current
+    if (!cy) return { inbound: [], outbound: [] }
+    const p = safeStr(path)
+    if (!p) return { inbound: [], outbound: [] }
+    const inbound = new Set<string>()
+    const outbound = new Set<string>()
+    cy.edges().forEach((edge: any) => {
+      const source = edge.source?.()
+      const target = edge.target?.()
+      if (!source || !target) return
+      const sourcePath = safeStr(source.data?.('path'))
+      const targetPath = safeStr(target.data?.('path'))
+      const sourceId = safeStr(source.id?.())
+      const targetId = safeStr(target.id?.())
+      const sourceKey = safeStr(sourcePath || sourceId)
+      const targetKey = safeStr(targetPath || targetId)
+      const isSourceMatch = sourcePath === p || sourceId === p
+      const isTargetMatch = targetPath === p || targetId === p
+      if (isSourceMatch && targetKey) outbound.add(targetKey)
+      if (isTargetMatch && sourceKey) inbound.add(sourceKey)
+    })
+    const sortKeys = (items: Set<string>) => Array.from(items).sort((a, b) => a.localeCompare(b))
+    return { inbound: sortKeys(inbound), outbound: sortKeys(outbound) }
+  }, [])
+
+  const getNextNode = useCallback((path: string, opts?: { loop?: boolean }) => {
+    const cy = cyRef.current
+    if (!cy) return null
+    const p = safeStr(path)
+    if (!p) return null
+    const nodes = cy.nodes(':visible')
+    if (!nodes || nodes.empty()) return null
+    const sorted = nodes.toArray().sort((a: any, b: any) => {
+      const aKey = safeStr(a.data?.('path') || a.id?.())
+      const bKey = safeStr(b.data?.('path') || b.id?.())
+      return aKey.localeCompare(bKey)
+    })
+    const currentIndex = sorted.findIndex((n: any) => {
+      const nPath = safeStr(n.data?.('path'))
+      const nId = safeStr(n.id?.())
+      return nPath === p || nId === p
+    })
+    if (currentIndex === -1) return null
+    const nextIndex = currentIndex + 1
+    if (nextIndex >= sorted.length) {
+      if (opts?.loop) {
+        const first = sorted[0]
+        return safeStr(first.data?.('path') || first.id?.()) || null
+      }
+      return null
+    }
+    const nextNode = sorted[nextIndex]
+    return safeStr(nextNode.data?.('path') || nextNode.id?.()) || null
+  }, [])
+
   const hidePath = useCallback(
     (path: string) => {
       const cy = cyRef.current
@@ -1356,6 +1412,8 @@ export function useCytoscapeGraph({
       centerSelected,
       centerPath,
       getRenderedPosition,
+      getNeighbors,
+      getNextNode,
       hidePath,
       hideOthers,
       showPath,
