@@ -316,10 +316,6 @@ export function App({ showDependencies = true }: AppProps) {
             onCreateFile={app.onCreateFile}
             onRenameFile={app.onRenameFile}
             onDeleteFile={app.onDeleteFile}
-            onOpenFileEditor={(path) => {
-              app.setWorkspaceView('editor')
-              void Promise.resolve(app.openFileEditor(path))
-            }}
             graphMode={app.graphMode}
             graphLimitN={app.graphLimitN}
             setGraphMode={app.setGraphMode}
