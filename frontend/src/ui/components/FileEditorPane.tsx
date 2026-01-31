@@ -587,15 +587,6 @@ export function FileEditorPane({
           {path && (
             <div className="flex items-center gap-2 min-w-0">
               <span className="max-w-[52vw] truncate text-neutral-100">{path}</span>
-              {dirty && (
-                <span
-                  className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-200"
-                  aria-label="Unsaved changes"
-                  title="Unsaved changes"
-                >
-                  ● Unsaved
-                </span>
-              )}
               {readOnly && (
                 <span
                   className="inline-flex items-center gap-1 rounded-full border border-neutral-600/70 bg-neutral-800/80 px-2 py-0.5 text-[10px] font-semibold text-neutral-200"
@@ -728,9 +719,6 @@ export function FileEditorPane({
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px] text-neutral-400 shrink-0">
         <div className="flex flex-wrap items-center gap-3">
-          <span className={dirty ? 'text-amber-300' : 'text-neutral-400'}>
-            {dirty ? 'Unsaved changes' : 'No changes'}
-          </span>
           <span className="text-neutral-500">Ln {cursorInfo.line}, Col {cursorInfo.column}</span>
         </div>
         <div className="flex flex-wrap items-center gap-3">

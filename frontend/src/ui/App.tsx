@@ -544,17 +544,6 @@ export function App() {
               )}
 
               <div className="flex-1 min-w-0 h-full min-h-0 flex flex-col p-4">
-                {app.fileEditorOpen && app.fileEditorDirty && app.activeFilePath && (
-                  <div className="mb-3 flex items-center justify-end shrink-0">
-                    <span
-                      className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-200"
-                      aria-label="Unsaved changes"
-                      title={`Unsaved changes in ${app.activeFilePath}`}
-                    >
-                      ● Unsaved
-                    </span>
-                  </div>
-                )}
                 <div className="flex-1 min-h-0">
                   {showEditorEmptyState ? (
                     <div className="h-full w-full rounded-lg border border-neutral-800 bg-neutral-950/70 p-6 flex flex-col items-center justify-center text-center gap-4">
