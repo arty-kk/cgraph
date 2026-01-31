@@ -9,4 +9,4 @@ python-multipart==0.0.9
 unidiff==0.7.5
 rich==13.8.0
 tree-sitter==0.25.2
-tree-sitter-languages==1.10.2
+tree-sitter-language-pack==0.13.0
