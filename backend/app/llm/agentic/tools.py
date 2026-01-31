@@ -52,7 +52,7 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                                 "score": {"type": "number"},
                                 "rank": {"type": "integer"},
                             },
-                            "required": ["item", "reason"],
+                            "required": ["item", "reason", "score", "rank"],
                             "anyOf": [
                                 {
                                     "type": "object",
@@ -63,7 +63,7 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                                         "score": {"type": "number"},
                                         "rank": {"type": "integer"},
                                     },
-                                    "required": ["score"],
+                                    "required": ["item", "reason", "score", "rank"],
                                 },
                                 {
                                     "type": "object",
@@ -74,7 +74,7 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                                         "score": {"type": "number"},
                                         "rank": {"type": "integer"},
                                     },
-                                    "required": ["rank"],
+                                    "required": ["item", "reason", "score", "rank"],
                                 },
                             ],
                         },
