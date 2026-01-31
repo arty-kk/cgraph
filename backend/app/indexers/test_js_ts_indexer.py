@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from .js_ts_indexer import DYNAMIC_SPEC_MARKER, JsTsIndexer, _vue_language
+from .tree_sitter_utils import parse_tree
 
 
 class JsTsIndexerImportTest(unittest.TestCase):
@@ -55,6 +56,13 @@ const requireDynamic = require(getName());
 class JsTsIndexerVueLangTest(unittest.TestCase):
     def test_vue_lang_tsx(self) -> None:
         self.assertEqual(_vue_language(' lang="tsx"'), "tsx")
+
+
+class JsTsIndexerTreeSitterTest(unittest.TestCase):
+    def test_parse_tree_tsx(self) -> None:
+        tree, data = parse_tree("tsx", "const App = () => <div />;")
+        self.assertEqual(data, b"const App = () => <div />;")
+        self.assertIsNotNone(tree)
 
 
 if __name__ == "__main__":
