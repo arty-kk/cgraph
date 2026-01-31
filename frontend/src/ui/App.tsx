@@ -158,6 +158,16 @@ export function App() {
     return entry ? entry.content !== entry.original : false
   }, [app.activeFilePath, app.fileEditorsByPath])
 
+  const quickSummaryDisabledReason = React.useMemo(() => {
+    if (!app.activeProject) return 'Select a project to run a quick summary.'
+    if (!app.selectedPath) return 'Select a file to summarize.'
+    if (!app.nodeInfo && !app.contract) return 'Loading file info...'
+    if (app.busy || app.nodeBusy) return 'Please wait for the current operation to finish.'
+    return ''
+  }, [app.activeProject, app.selectedPath, app.nodeInfo, app.contract, app.busy, app.nodeBusy])
+
+  const canQuickSummary = quickSummaryDisabledReason === ''
+
   const canSaveEditor = Boolean(
     app.fileEditorOpen
     && app.activeFilePath
@@ -272,6 +282,9 @@ export function App() {
               onRefresh={app.onRefresh}
               onOpenPalette={() => app.setPaletteOpen(true)}
               notifyInfo={app.notifyInfo}
+              onQuickSummary={app.onQuickSummary}
+              canQuickSummary={canQuickSummary}
+              quickSummaryDisabledReason={quickSummaryDisabledReason}
               compactMode={app.compactMode}
               focusGraph={app.focusGraph}
               setFocusGraph={app.setFocusGraph}

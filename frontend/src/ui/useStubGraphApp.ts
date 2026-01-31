@@ -491,12 +491,20 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     [clearNotificationTimer, dismissNotification]
   )
 
+  const notifyError = useCallback((message: string) => {
+    setError(message)
+    pushNotification('error', message)
+  }, [pushNotification])
+
   const setErrorMessage = useCallback(
     (message: string | null) => {
-      setError(message)
-      if (message) pushNotification('error', message)
+      if (message) {
+        notifyError(message)
+        return
+      }
+      setError(null)
     },
-    [pushNotification]
+    [notifyError]
   )
 
   const notifyInfo = useCallback((message: string) => {
@@ -1722,6 +1730,102 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     queryClient,
   ])
 
+  const onQuickSummary = useCallback(async (path: string) => {
+    if (!activeProject) {
+      notifyInfo('Select a project first.')
+      return
+    }
+    if (!path) {
+      notifyInfo('Select a file first.')
+      return
+    }
+    if (!selectedPath || path !== selectedPath) {
+      notifyInfo('Select the file to load its info before summarizing.')
+      return
+    }
+    if (!contract && !nodeInfo) {
+      notifyInfo('Loading file info, try again in a moment.')
+      return
+    }
+
+    await runOp(async () => {
+      setRunResult(null)
+      setFullPatch(null)
+      setRightPanelOpen(true)
+
+      const clampedPackMaxFiles = clampInt(packMaxFiles, 1, 200)
+      const clampedPackMaxCharsPerFile = clampInt(packMaxCharsPerFile, 1, 200_000)
+      const clampedPackMaxTotalChars = clampInt(packMaxTotalChars, 1, 2_000_000)
+      if (clampedPackMaxFiles !== packMaxFiles) setPackMaxFiles(clampedPackMaxFiles)
+      if (clampedPackMaxCharsPerFile !== packMaxCharsPerFile) setPackMaxCharsPerFile(clampedPackMaxCharsPerFile)
+      if (clampedPackMaxTotalChars !== packMaxTotalChars) setPackMaxTotalChars(clampedPackMaxTotalChars)
+
+      const clampedAgenticMaxCalls = clampInt(agenticMaxCalls, 1, 100)
+      const clampedAgenticMaxFileChars = clampInt(agenticMaxFileChars, 1, 200_000)
+      const clampedAgenticMaxTotalToolOutputChars = clampInt(agenticMaxTotalToolOutputChars, 1, 2_000_000)
+      if (clampedAgenticMaxCalls !== agenticMaxCalls) setAgenticMaxCalls(clampedAgenticMaxCalls)
+      if (clampedAgenticMaxFileChars !== agenticMaxFileChars) setAgenticMaxFileChars(clampedAgenticMaxFileChars)
+      if (clampedAgenticMaxTotalToolOutputChars !== agenticMaxTotalToolOutputChars) {
+        setAgenticMaxTotalToolOutputChars(clampedAgenticMaxTotalToolOutputChars)
+      }
+
+      const body: RunTaskBody = {
+        target_path: path,
+        prompt: '1-абзацное описание: назначение файла, ключевые ответственности/точки входа, важные зависимости; 3–5 предложений, без списков',
+        mode: 'analyze',
+        dep_mode: 'contracts',
+        depth: 1,
+        apply_patch: false,
+        agentic: retrievalMode === 'agentic',
+      }
+
+      if (retrievalMode === 'agentic') {
+        body.agentic_max_calls = clampedAgenticMaxCalls
+        body.agentic_max_file_chars = clampedAgenticMaxFileChars
+        body.agentic_max_total_tool_output_chars = clampedAgenticMaxTotalToolOutputChars
+        body.agentic_temperature = agenticTemperature
+        body.agentic_evidence_mode = agenticEvidenceMode
+      } else {
+        body.pack_max_files = clampedPackMaxFiles
+        body.pack_max_chars_per_file = clampedPackMaxCharsPerFile
+        body.pack_max_total_chars = clampedPackMaxTotalChars
+      }
+
+      const res = await runTask(activeProject.id, body)
+      setRunResult(res)
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+      ])
+    })
+  }, [
+    activeProject,
+    agenticEvidenceMode,
+    agenticMaxCalls,
+    agenticMaxFileChars,
+    agenticMaxTotalToolOutputChars,
+    agenticTemperature,
+    contract,
+    nodeInfo,
+    notifyInfo,
+    packMaxCharsPerFile,
+    packMaxFiles,
+    packMaxTotalChars,
+    queryClient,
+    retrievalMode,
+    runOp,
+    selectedPath,
+    setAgenticMaxCalls,
+    setAgenticMaxFileChars,
+    setAgenticMaxTotalToolOutputChars,
+    setPackMaxCharsPerFile,
+    setPackMaxFiles,
+    setPackMaxTotalChars,
+    setRightPanelOpen,
+  ])
+
   const onRunWithExpandedContext = useCallback(async () => {
     if (!activeProject || !selectedPath) return
 
@@ -2379,6 +2483,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     notifications,
     dismissNotification,
     notifyInfo,
+    notifyError,
     focusGraph,
     setFocusGraph,
     compactMode,
@@ -2424,6 +2529,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     onGraphNodeTap,
     onRun,
     onRunWithExpandedContext,
+    onQuickSummary,
     onDeleteRun,
     onLoadFullPatch,
     onApplyRunPatch,
