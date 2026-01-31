@@ -415,6 +415,8 @@ export function App() {
                         projectFilesBusy={app.projectFilesBusy}
                         pinnedPaths={app.pinnedPaths}
                         showModuleSelect={false}
+                        compact
+                        showOpenEditors={false}
                       />
                     ) : (
                       <div className="space-y-3">
