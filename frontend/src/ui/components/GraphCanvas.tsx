@@ -253,13 +253,6 @@ const UnpinIcon = () => (
   </svg>
 )
 
-const PanelsIcon = () => (
-  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
-    <rect x="4" y="5" width="7" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.6" />
-    <rect x="13" y="5" width="7" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.6" />
-  </svg>
-)
-
 const FocusIcon = () => (
   <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
     <circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="1.6" />
@@ -560,48 +553,6 @@ export function GraphCanvas({
   const [panelOpen, setPanelOpen] = useState(false)
   const [neighborsOpen, setNeighborsOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
-  const [showKeyboardHint, setShowKeyboardHint] = useState(false)
-  const keyboardHintTimerRef = useRef<number | null>(null)
-  const prevFocusGraphRef = useRef(focusGraph)
-
-  useEffect(() => {
-    const wasFocusGraph = prevFocusGraphRef.current
-    prevFocusGraphRef.current = focusGraph
-
-    if (focusGraph && !wasFocusGraph) {
-      setShowKeyboardHint(true)
-      if (keyboardHintTimerRef.current) {
-        window.clearTimeout(keyboardHintTimerRef.current)
-      }
-      keyboardHintTimerRef.current = window.setTimeout(() => {
-        setShowKeyboardHint(false)
-        keyboardHintTimerRef.current = null
-      }, 1800)
-    }
-
-    if (!focusGraph) {
-      setShowKeyboardHint(false)
-      if (keyboardHintTimerRef.current) {
-        window.clearTimeout(keyboardHintTimerRef.current)
-        keyboardHintTimerRef.current = null
-      }
-    }
-
-    return () => {
-      if (keyboardHintTimerRef.current) {
-        window.clearTimeout(keyboardHintTimerRef.current)
-        keyboardHintTimerRef.current = null
-      }
-    }
-  }, [focusGraph])
-
-  // In focus we keep UI minimal (no expanded panels/secondary popups).
-  useEffect(() => {
-    if (!focusGraph) return
-    setPanelOpen(false)
-    setNeighborsOpen(false)
-    setCtxMenu(null)
-  }, [focusGraph])
 
   const panelRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -889,12 +840,6 @@ export function GraphCanvas({
     return graph.nodes.find((n) => n.path === p || n.id === p) ?? null
   }, [ctxMenu?.path, graph?.nodes])
 
-  const selectedNode = useMemo(() => {
-    if (!selectedPath || !graph?.nodes?.length) return null
-    const p = selectedPath
-    return graph.nodes.find((n) => n.path === p || n.id === p) ?? null
-  }, [selectedPath, graph?.nodes])
-
   const ctxPinned = Boolean(ctxMenu?.path && pinnedPaths.includes(ctxMenu.path))
 
   const truncated = Boolean(meta?.truncated)
@@ -1170,82 +1115,7 @@ export function GraphCanvas({
   return (
     <div ref={rootRef} className="relative w-full h-full">
       <div ref={panelRef} className="relative absolute top-3 left-3 z-10">
-        {showKeyboardHint && (
-          <div
-            className="pointer-events-none absolute -top-2 left-0 text-[10px] bg-neutral-950/80 border border-neutral-800 rounded-md px-2 py-0.5 text-neutral-200"
-            title="Keyboard controls active"
-            aria-label="Graph focus active"
-          >
-            Keyboard controls active
-          </div>
-        )}
-        {focusGraph ? (
-          <>
-            <div className="flex items-center gap-2 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => setFocusGraph(false)}
-                disabled={!activeProject}
-                title="Exit focus (Panels)"
-                aria-label="Exit focus (Panels)"
-              >
-                {label(<PanelsIcon />, 'P')}
-              </button>
-              {undoRedoControls}
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => actions.fit()}
-                disabled={!activeProject || !graph}
-                title="Fit"
-                aria-label="Fit"
-              >
-                {label(<FitIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => { if (selectedPath) actions.centerPath(selectedPath) }}
-                disabled={!activeProject || !graph || !selectedPath}
-                title="Center selected"
-                aria-label="Center selected"
-              >
-                {label(<CenterIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={() => actions.relayoutVisible()}
-                disabled={!activeProject || !graph}
-                title="Relayout visible"
-                aria-label="Relayout visible"
-              >
-                {label(<RelayoutIcon />)}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={saveLayout}
-                disabled={!activeProject || !graph}
-                title="Save layout"
-                aria-label="Save layout"
-              >
-                {label(<SaveLayoutIcon />, 'S')}
-              </button>
-              <button
-                type="button"
-                className={btnClass}
-                onClick={resetLayout}
-                disabled={!activeProject || !graph}
-                title="Reset layout"
-                aria-label="Reset layout"
-              >
-                {label(<ResetLayoutIcon />, 'R')}
-              </button>
-            </div>
-          </>
-        ) : !panelOpen ? (
+        {!panelOpen ? (
           <div className="inline-flex flex-col items-start gap-1 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
             <div className="w-max max-w-full shrink-0 relative left-0">
               <div className="flex items-center gap-2 flex-wrap">
@@ -1282,10 +1152,10 @@ export function GraphCanvas({
                   className={btnClass}
                   onClick={() => setFocusGraph(!focusGraph)}
                   disabled={!activeProject}
-                  title="F — Focus, Esc — Back"
-                  aria-label="F — Focus, Esc — Back"
+                  title="F — Focus/Panels"
+                  aria-label="F — Focus/Panels"
                 >
-                  {label(focusGraph ? <PanelsIcon /> : <FocusIcon />, focusGraph ? 'P' : 'F')}
+                  {label(<FocusIcon />, 'F')}
                 </button>
                 {undoRedoControls}
                 <button
@@ -1346,7 +1216,7 @@ export function GraphCanvas({
                   title="Esc — back/clear"
                   aria-label="Esc — back/clear"
                 >
-                  {label(focusGraph ? <BackIcon /> : <ClearIcon />, 'Esc')}
+                  {label(<ClearIcon />, 'Esc')}
                 </button>
                 <button
                   type="button"
@@ -1596,20 +1466,20 @@ export function GraphCanvas({
                 className={btnClass}
                 onClick={() => setFocusGraph(!focusGraph)}
                 disabled={!activeProject}
-                title={focusGraph ? 'Panels' : 'Focus'}
-                aria-label={focusGraph ? 'Panels' : 'Focus'}
+                title="Focus/Panels"
+                aria-label="Focus/Panels"
               >
-                {label(focusGraph ? <PanelsIcon /> : <FocusIcon />, focusGraph ? 'P' : 'F')}
+                {label(<FocusIcon />, 'F')}
               </button>
               <button
                 type="button"
                 className={btnClass}
                 onClick={onEscAction}
                 disabled={!activeProject || (!selectedPath && !focusGraph)}
-                title={focusGraph ? 'Back' : 'Clear'}
-                aria-label={focusGraph ? 'Back' : 'Clear'}
+                title="Esc — back/clear"
+                aria-label="Esc — back/clear"
               >
-                {label(focusGraph ? <BackIcon /> : <ClearIcon />, 'Esc')}
+                {label(<ClearIcon />, 'Esc')}
               </button>
               <div className="text-[11px] text-neutral-400">
                 Showing {stats.visibleNodes} / {stats.totalNodes || returnedNodes} nodes
@@ -2050,17 +1920,6 @@ export function GraphCanvas({
               Relayout
             </button>
           </div>
-          {focusGraph && (
-            <div className="mt-2 px-1">
-              <button
-                type="button"
-                className="w-full rounded-md bg-neutral-800 hover:bg-neutral-700 px-2 py-1 text-[11px] font-semibold"
-                onClick={() => { setFocusGraph(false); setCtxMenu(null) }}
-              >
-                Open Panels
-              </button>
-            </div>
-          )}
         </div>
       )}
       {/* Status bar */}
@@ -2080,34 +1939,32 @@ export function GraphCanvas({
                 </>
               )}
             </div>
-            {!focusGraph && (
-              <div className={['mt-1 flex-wrap items-center gap-2', hoverRevealFlex].join(' ')}>
-                <button
-                  type="button"
-                  className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold"
-                  onClick={() => setPanelOpen(true)}
-                  title="Open filters panel"
-                >
-                  Filters {filtersActiveCount ? `(${filtersActiveCount})` : '(0)'}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold disabled:opacity-50"
-                  onClick={() => { pushUndo(actions.exportSnapshot()); actions.showAll(); notifyInfo('Show all') }}
-                  disabled={editStats.hidden === 0}
-                  title="Show all hidden nodes"
-                >
-                  Hidden {editStats.hidden}
-                </button>
-                <span className="text-neutral-500">Locked {editStats.locked}</span>
-                <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={saveLayout} title="Save layout">
-                  Save layout
-                </button>
-                <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={resetLayout} title="Reset layout">
-                  Reset layout
-                </button>
-              </div>
-            )}
+            <div className={['mt-1 flex-wrap items-center gap-2', hoverRevealFlex].join(' ')}>
+              <button
+                type="button"
+                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold"
+                onClick={() => setPanelOpen(true)}
+                title="Open filters panel"
+              >
+                Filters {filtersActiveCount ? `(${filtersActiveCount})` : '(0)'}
+              </button>
+              <button
+                type="button"
+                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold disabled:opacity-50"
+                onClick={() => { pushUndo(actions.exportSnapshot()); actions.showAll(); notifyInfo('Show all') }}
+                disabled={editStats.hidden === 0}
+                title="Show all hidden nodes"
+              >
+                Hidden {editStats.hidden}
+              </button>
+              <span className="text-neutral-500">Locked {editStats.locked}</span>
+              <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={saveLayout} title="Save layout">
+                Save layout
+              </button>
+              <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={resetLayout} title="Reset layout">
+                Reset layout
+              </button>
+            </div>
             {compactMode && (
               <div className="mt-1 text-[10px] text-neutral-500">
                 Hover for controls
@@ -2116,84 +1973,11 @@ export function GraphCanvas({
           </div>
         </div>
       )}
-      {/* Focus inspector (non-modal) */}
-      {focusGraph && selectedPath && (
-        <div className="absolute top-3 right-3 z-10 w-[320px] max-w-[calc(100vw-24px)] rounded-md bg-neutral-950/80 border border-neutral-800 px-3 py-2 shadow-lg">
-          <div className="text-xs font-semibold text-neutral-100 truncate">{baseName(selectedPath)}</div>
-          <div className="text-[11px] text-neutral-500 truncate">{selectedPath}</div>
-          <div className="mt-1 text-[11px] text-neutral-300">
-            Risk: <span className="text-neutral-100">{selectedNode ? Number(selectedNode.risk ?? 0).toFixed(2) : '—'}</span>
-            {' · '}
-            LOC: <span className="text-neutral-100">{selectedNode != null ? String(selectedNode.loc ?? '—') : '—'}</span>
-            {' · '}
-            In/Out: <span className="text-neutral-100">{selectedNode ? `${selectedNode.fan_in ?? 0}/${selectedNode.fan_out ?? 0}` : '—'}</span>
-          </div>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <button
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-              disabled={!selectedInGraph}
-              title={!selectedInGraph ? 'Selected node is not in the current graph' : 'Center'}
-              onClick={() => {
-                if (!selectedInGraph) return
-                actions.centerPath(selectedPath)
-                notifyInfo('Centered')
-              }}
-            >
-              Center
-            </button>
-            <button
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={async () => {
-                const wasPinned = pinnedPaths.includes(selectedPath)
-                await Promise.resolve(onTogglePinPath(selectedPath))
-                notifyInfo(wasPinned ? 'Unpinned' : 'Pinned')
-              }}
-            >
-              {pinnedPaths.includes(selectedPath) ? 'Unpin' : 'Pin'}
-            </button>
-            <button
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-              disabled={!selectedInGraph}
-              title={!selectedInGraph ? 'Selected node is not in the current graph' : 'Lock/Unlock'}
-              onClick={() => {
-                if (!selectedInGraph) return
-                pushUndo(actions.exportSnapshot())
-                actions.toggleLockPath(selectedPath)
-                notifyInfo('Lock toggled')
-              }}
-            >
-              Lock/Unlock
-            </button>
-            <button
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-              disabled={!selectedInGraph}
-              title={!selectedInGraph ? 'Selected node is not in the current graph' : 'Hide'}
-              onClick={() => {
-                if (!selectedInGraph) return
-                pushUndo(actions.exportSnapshot())
-                actions.hidePath(selectedPath)
-                onClearSelection()
-                notifyInfo('Node hidden')
-              }}
-            >
-              Hide
-            </button>
-          </div>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <button className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-2 py-1 text-[11px] font-semibold" onClick={saveLayout}>Save layout</button>
-            <button className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-2 py-1 text-[11px] font-semibold" onClick={resetLayout}>Reset layout</button>
-          </div>
-          <div className="mt-2 text-[10px] text-neutral-500">
-            Risk Quantiles: p50 {riskQuantiles.p50.toFixed(2)} · p90 {riskQuantiles.p90.toFixed(2)}
-          </div>
-        </div>
-      )}
       <div
         ref={containerRef}
         className="w-full h-full"
         onContextMenu={(e) => e.preventDefault()}
         aria-label={focusGraph ? 'Graph focus active' : undefined}
-        title={showKeyboardHint ? 'Keyboard controls active' : undefined}
       />
     </div>
   )
