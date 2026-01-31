@@ -1019,6 +1019,80 @@ export function GraphCanvas({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [focusGraph, doUndo, doRedo])
 
+  useEffect(() => {
+    if (workspaceView !== 'graph') return
+    const onKey = (e: KeyboardEvent) => {
+      const modalCount = (() => {
+        try {
+          const raw = String(document.body?.dataset?.csModalOpenCount ?? '').trim()
+          const n = Number(raw)
+          return Number.isFinite(n) ? n : 0
+        } catch {
+          return 0
+        }
+      })()
+      if (modalCount > 0) return
+
+      const el = e.target as HTMLElement | null
+      const tag = (el?.tagName || '').toLowerCase()
+      const typing =
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        Boolean((el as any)?.isContentEditable) ||
+        Boolean(el?.closest?.('input, textarea, select, [contenteditable="true"]'))
+      if (typing) return
+
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+
+      const key = e.key
+      if (key === 'ArrowUp' || key === 'ArrowDown') {
+        if (!selectedPath) return
+        const actions = actionsRef.current
+        const neighbors = actions?.getNeighbors?.(selectedPath)
+        const candidates = key === 'ArrowUp' ? neighbors?.inbound : neighbors?.outbound
+        const nextPath =
+          (candidates && candidates[0]) ||
+          actions?.getNextNode?.(selectedPath, { loop: true }) ||
+          null
+        if (!nextPath || nextPath === selectedPath) return
+        e.preventDefault()
+        Promise.resolve(onNodeTap(nextPath)).then(() => actionsRef.current?.centerPath(nextPath))
+        return
+      }
+
+      if (key === 'Enter') {
+        if (!selectedPath) return
+        e.preventDefault()
+        void Promise.resolve(onOpenFileEditor(selectedPath))
+        return
+      }
+
+      const keyLower = key.toLowerCase()
+      if (keyLower === 'p') {
+        if (!selectedPath) return
+        e.preventDefault()
+        void Promise.resolve(onTogglePinSelected())
+        return
+      }
+      if (keyLower === 'h') {
+        if (!selectedPath) return
+        e.preventDefault()
+        actionsRef.current?.hidePath(selectedPath)
+        onClearSelection()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [
+    onClearSelection,
+    onNodeTap,
+    onOpenFileEditor,
+    onTogglePinSelected,
+    selectedPath,
+    workspaceView,
+  ])
+
   const undoRedoControls = (
     <>
       <button
@@ -1704,8 +1778,10 @@ export function GraphCanvas({
               <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">Shortcuts</div>
               <ul className="mt-2 space-y-1 text-neutral-200">
                 <li><span className="font-mono">Ctrl/⌘+K</span> — open search, <span className="font-mono">Enter</span> — open selected file.</li>
+                <li><span className="font-mono">↑/↓</span> — move to inbound/outbound neighbor (fallback to next node).</li>
                 <li><span className="font-mono">Alt+←/→</span> — back/forward selection history.</li>
                 <li><span className="font-mono">Ctrl/⌘+Z</span>/<span className="font-mono">Shift+Z</span> — undo/redo layout edits.</li>
+                <li><span className="font-mono">P</span> — pin/unpin selected, <span className="font-mono">H</span> — hide selected.</li>
                 <li><span className="font-mono">F</span> — focus mode, <span className="font-mono">Esc</span> — clear/exit focus.</li>
               </ul>
             </div>
@@ -1940,7 +2016,7 @@ export function GraphCanvas({
               </button>
               {legendIsCompact ? (
                 <div className="text-[10px] text-neutral-400">
-                  ? · Ctrl/⌘+K · Enter · Alt+←/→
+                  ? · Ctrl/⌘+K · Enter · ↑/↓ · P · H · Alt+←/→
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400">
@@ -1958,6 +2034,12 @@ export function GraphCanvas({
                   <span className="text-neutral-200">Ctrl/⌘+K</span>
                   <span className="text-neutral-500">,</span>
                   <span className="text-neutral-200">Enter</span>
+                  <span className="text-neutral-500">,</span>
+                  <span className="text-neutral-200">↑/↓</span>
+                  <span className="text-neutral-500">,</span>
+                  <span className="text-neutral-200">P</span>
+                  <span className="text-neutral-500">,</span>
+                  <span className="text-neutral-200">H</span>
                   <span className="text-neutral-500">,</span>
                   <span className="text-neutral-200">Alt+←/→</span>
                   <span className="text-neutral-500">,</span>
