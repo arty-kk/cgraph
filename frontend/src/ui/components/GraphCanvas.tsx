@@ -519,6 +519,7 @@ export function GraphCanvas({
   const [edgeDirColors, setEdgeDirColors] = useState<boolean>(() => loadEdgeDir(projectId))
   const [legendCollapsed, setLegendCollapsed] = useState<boolean>(() => loadLegendCollapsed())
   const legendIsCompact = focusGraph || legendCollapsed
+  const isGraphActive = focusGraph || workspaceView === 'graph'
 
   // Load per-project UI settings when project changes (skip persistence during boot)
   useEffect(() => {
@@ -1120,7 +1121,16 @@ export function GraphCanvas({
 
   return (
     <div ref={rootRef} className="relative w-full h-full">
-      <div ref={panelRef} className="absolute top-3 left-3 z-10">
+      <div ref={panelRef} className="relative absolute top-3 left-3 z-10">
+        {isGraphActive && (
+          <div
+            className="pointer-events-none absolute -top-2 left-0 text-[10px] bg-neutral-950/80 border border-neutral-800 rounded-md px-2 py-0.5 text-neutral-200"
+            title="Keyboard controls active"
+            aria-label="Graph focus active"
+          >
+            Keyboard controls active
+          </div>
+        )}
         {focusGraph ? (
           <>
             <div className="flex items-center gap-2 bg-neutral-950/80 border border-neutral-800 rounded-md px-3 py-2 shadow-lg">
@@ -2174,6 +2184,8 @@ export function GraphCanvas({
         ref={containerRef}
         className="w-full h-full"
         onContextMenu={(e) => e.preventDefault()}
+        aria-label={isGraphActive ? 'Graph focus active' : undefined}
+        title={isGraphActive ? 'Keyboard controls active' : undefined}
       />
     </div>
   )
