@@ -12,6 +12,7 @@ export type FileEditorPaneProps = {
   nodeInfo?: NodeInfo | null
   fileMeta?: ProjectFileItem | null
   dependencies?: { in: string[]; out: string[] }
+  showDependencies?: boolean
   totalIn?: number
   totalOut?: number
   original: string
@@ -55,6 +56,7 @@ export function FileEditorPane({
   nodeInfo,
   fileMeta,
   dependencies,
+  showDependencies,
   totalIn,
   totalOut,
   original,
@@ -101,6 +103,13 @@ export function FileEditorPane({
     hasOverflow: false,
     canScrollLeft: false,
     canScrollRight: false,
+  })
+  const [depsOpen, setDepsOpen] = React.useState(() => {
+    try {
+      return (localStorage.getItem('cs.editor.depsOpen') || '') === '1'
+    } catch {
+      return false
+    }
   })
   const lineCount = React.useMemo(() => content.split('\n').length || 1, [content])
   const readOnly = busy || saving || truncated
@@ -187,6 +196,10 @@ export function FileEditorPane({
     target.focus()
     onApplyPendingJump?.()
   }, [busy, editorReadyTick, onApplyPendingJump, path, pendingJump, showDiff])
+
+  React.useEffect(() => {
+    try { localStorage.setItem('cs.editor.depsOpen', depsOpen ? '1' : '0') } catch {}
+  }, [depsOpen])
 
   const updateCursorInfo = React.useCallback((position?: IPosition | null) => {
     if (!position) return
@@ -376,7 +389,7 @@ export function FileEditorPane({
   const depsOut = dependencies?.out ?? []
   const totalInCount = typeof totalIn === 'number' ? totalIn : depsIn.length
   const totalOutCount = typeof totalOut === 'number' ? totalOut : depsOut.length
-  const showDependencies = Boolean(dependencies)
+  const showDependenciesBlock = showDependencies !== false && Boolean(dependencies)
   const depButtonClass =
     'rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50'
 
@@ -455,108 +468,120 @@ export function FileEditorPane({
           )}
         </div>
       )}
-      {showDependencies && (
+      {showDependenciesBlock && (
         <div className="rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px] text-neutral-300">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Dependencies</span>
               <span className="text-[10px] text-neutral-500">In {totalInCount} · Out {totalOutCount}</span>
             </div>
-            <button
-              type="button"
-              className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
-              onClick={() => path && onOpenDependencyInGraph(path)}
-              disabled={!path}
-            >
-              Open in graph
-            </button>
-          </div>
-          <div className="mt-2 grid gap-3 sm:grid-cols-2">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-[10px] text-neutral-500">
-                <span className="uppercase tracking-[0.2em]">In</span>
-                <span className="text-neutral-400">{totalInCount}</span>
-              </div>
-              <div className="space-y-1">
-                {depsIn.slice(0, DEP_LIMIT).map((depPath) => (
-                  <div key={`dep-in-${depPath}`} className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-200" title={depPath}>
-                      {depPath}
-                    </span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        type="button"
-                        className={depButtonClass}
-                        onClick={() => onOpenDependencyInGraph(depPath)}
-                      >
-                        Open in graph
-                      </button>
-                      <button
-                        type="button"
-                        className={depButtonClass}
-                        onClick={() => onOpenDependencyFile(depPath)}
-                      >
-                        Open file
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {!depsIn.length && <div className="text-[11px] text-neutral-500">—</div>}
-              </div>
-              {depsIn.length > DEP_LIMIT && (
-                <button
-                  type="button"
-                  className={depButtonClass}
-                  onClick={() => path && onOpenDependencyInGraph(path)}
-                  disabled={!path}
-                >
-                  Show more…
-                </button>
-              )}
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-[10px] text-neutral-500">
-                <span className="uppercase tracking-[0.2em]">Out</span>
-                <span className="text-neutral-400">{totalOutCount}</span>
-              </div>
-              <div className="space-y-1">
-                {depsOut.slice(0, DEP_LIMIT).map((depPath) => (
-                  <div key={`dep-out-${depPath}`} className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-200" title={depPath}>
-                      {depPath}
-                    </span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        type="button"
-                        className={depButtonClass}
-                        onClick={() => onOpenDependencyInGraph(depPath)}
-                      >
-                        Open in graph
-                      </button>
-                      <button
-                        type="button"
-                        className={depButtonClass}
-                        onClick={() => onOpenDependencyFile(depPath)}
-                      >
-                        Open file
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {!depsOut.length && <div className="text-[11px] text-neutral-500">—</div>}
-              </div>
-              {depsOut.length > DEP_LIMIT && (
-                <button
-                  type="button"
-                  className={depButtonClass}
-                  onClick={() => path && onOpenDependencyInGraph(path)}
-                  disabled={!path}
-                >
-                  Show more…
-                </button>
-              )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className={depButtonClass}
+                onClick={() => setDepsOpen((prev) => !prev)}
+                aria-expanded={depsOpen}
+              >
+                {depsOpen ? 'Hide list' : 'Show list'}
+              </button>
+              <button
+                type="button"
+                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+                onClick={() => path && onOpenDependencyInGraph(path)}
+                disabled={!path}
+              >
+                Open in graph
+              </button>
             </div>
           </div>
+          {depsOpen && (
+            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-[10px] text-neutral-500">
+                  <span className="uppercase tracking-[0.2em]">In</span>
+                  <span className="text-neutral-400">{totalInCount}</span>
+                </div>
+                <div className="space-y-1">
+                  {depsIn.slice(0, DEP_LIMIT).map((depPath) => (
+                    <div key={`dep-in-${depPath}`} className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-200" title={depPath}>
+                        {depPath}
+                      </span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          className={depButtonClass}
+                          onClick={() => onOpenDependencyInGraph(depPath)}
+                        >
+                          Open in graph
+                        </button>
+                        <button
+                          type="button"
+                          className={depButtonClass}
+                          onClick={() => onOpenDependencyFile(depPath)}
+                        >
+                          Open file
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {!depsIn.length && <div className="text-[11px] text-neutral-500">—</div>}
+                </div>
+                {depsIn.length > DEP_LIMIT && (
+                  <button
+                    type="button"
+                    className={depButtonClass}
+                    onClick={() => path && onOpenDependencyInGraph(path)}
+                    disabled={!path}
+                  >
+                    Show more…
+                  </button>
+                )}
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-[10px] text-neutral-500">
+                  <span className="uppercase tracking-[0.2em]">Out</span>
+                  <span className="text-neutral-400">{totalOutCount}</span>
+                </div>
+                <div className="space-y-1">
+                  {depsOut.slice(0, DEP_LIMIT).map((depPath) => (
+                    <div key={`dep-out-${depPath}`} className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-200" title={depPath}>
+                        {depPath}
+                      </span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          className={depButtonClass}
+                          onClick={() => onOpenDependencyInGraph(depPath)}
+                        >
+                          Open in graph
+                        </button>
+                        <button
+                          type="button"
+                          className={depButtonClass}
+                          onClick={() => onOpenDependencyFile(depPath)}
+                        >
+                          Open file
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {!depsOut.length && <div className="text-[11px] text-neutral-500">—</div>}
+                </div>
+                {depsOut.length > DEP_LIMIT && (
+                  <button
+                    type="button"
+                    className={depButtonClass}
+                    onClick={() => path && onOpenDependencyInGraph(path)}
+                    disabled={!path}
+                  >
+                    Show more…
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
       {error && (
