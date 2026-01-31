@@ -215,6 +215,42 @@ export function App() {
   )
   const showEditorEmptyState = !app.fileEditorOpen || !app.activeFilePath || editorTabs.length === 0
 
+  const totalOnboardSteps = 4
+  const onboardSteps = [
+    {
+      title: 'Scan the project',
+      description: 'Index the project so the graph can build relationships.',
+      tip: 'Scan — слева в тулбаре.',
+      action: {
+        label: 'Scan now',
+        onClick: () => void app.onScan(),
+        disabled: !app.activeProject || app.busy,
+        variant: 'primary',
+      },
+    },
+    {
+      title: 'Open the palette',
+      description: 'Pick a file quickly and jump to it.',
+      tip: 'Palette — Ctrl/⌘+K.',
+      action: {
+        label: 'Open palette',
+        onClick: () => app.setPaletteOpen(true),
+        disabled: false,
+        variant: 'secondary',
+      },
+    },
+    {
+      title: 'Explore the graph',
+      description: 'Click a node to center it and highlight its edges.',
+      tip: 'Graph — центр.',
+    },
+    {
+      title: 'Run a task',
+      description: 'Pick a chip or write a prompt, then press Run.',
+      tip: 'Tasks — справа.',
+    },
+  ]
+
   const handleIncreaseFontSize = React.useCallback(() => {
     setEditorFontSize((prev) => clampFontSize(prev + 1))
   }, [clampFontSize])
@@ -935,44 +971,81 @@ export function App() {
 
       <Modal open={onboardOpen && !!app.activeProject} title="Getting started" onClose={() => closeOnboarding(false)}>
         <div className="space-y-3 text-sm">
-          <div className="text-neutral-200">
-            Step {onboardStep + 1}/4
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex-1 space-y-2">
+              <div className="flex items-center gap-2 text-neutral-200">
+                <span>Step {onboardStep + 1}/{totalOnboardSteps}</span>
+                <div className="flex items-center gap-1">
+                  {onboardSteps.map((_, index) => {
+                    const isActive = index === onboardStep
+                    return (
+                      <span
+                        key={`step-dot-${index}`}
+                        className={`h-2 w-2 rounded-full ${isActive ? 'bg-indigo-400' : 'bg-neutral-700'}`}
+                      />
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="h-1 w-full rounded-full bg-neutral-800">
+                <div
+                  className="h-1 rounded-full bg-indigo-500 transition-all"
+                  style={{ width: `${((onboardStep + 1) / totalOnboardSteps) * 100}%` }}
+                />
+              </div>
+            </div>
+            <button
+              className="rounded-md border border-neutral-700 px-3 py-1 text-xs font-semibold text-neutral-200 hover:bg-neutral-900"
+              onClick={() => closeOnboarding(true)}
+            >
+              Don’t show again
+            </button>
           </div>
-          {onboardStep === 0 && (
-            <div className="space-y-2">
-              <div>1) Index the project: <span className="font-mono">Scan</span>.</div>
-              <button
-                className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold disabled:opacity-50"
-                onClick={() => void app.onScan()}
-                disabled={!app.activeProject || app.busy}
-              >
-                Scan now
-              </button>
-            </div>
-          )}
-          {onboardStep === 1 && (
-            <div className="space-y-2">
-              <div>2) Pick a file: <span className="font-mono">Ctrl/⌘+K</span>, type a path, press Enter.</div>
-              <button
-                className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-2 text-sm font-semibold"
-                onClick={() => app.setPaletteOpen(true)}
-              >
-                Open palette
-              </button>
-            </div>
-          )}
-          {onboardStep === 2 && (
-            <div className="space-y-2">
-              <div>3) Click a node to center it and highlight its edges.</div>
-              <div>In focus mode (F), you can hide/pin nodes and save the layout.</div>
-            </div>
-          )}
-          {onboardStep === 3 && (
-            <div className="space-y-2">
-              <div>4) Run a task on the right: pick a chip or write a prompt, then press Run.</div>
-              <div className="text-[12px] text-neutral-400">Run history is in “Recent runs” with filters.</div>
-            </div>
-          )}
+
+          <div className="space-y-2">
+            {onboardSteps.map((step, index) => {
+              const isActive = index === onboardStep
+              const action = step.action
+              return (
+                <div
+                  key={step.title}
+                  className={`rounded-lg border px-3 py-2 ${
+                    isActive
+                      ? 'border-indigo-500/70 bg-indigo-500/10'
+                      : 'border-neutral-800 bg-neutral-900/40'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <span
+                      className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold ${
+                        isActive ? 'bg-indigo-500 text-white' : 'bg-neutral-800 text-neutral-200'
+                      }`}
+                    >
+                      {index + 1}
+                    </span>
+                    <div className="space-y-1">
+                      <div className="font-semibold text-neutral-100">{step.title}</div>
+                      <div className="text-neutral-300">{step.description}</div>
+                      <div className="text-xs text-neutral-400">{step.tip}</div>
+                      {action && (
+                        <button
+                          className={`mt-1 rounded-md px-3 py-1.5 text-xs font-semibold ${
+                            action.variant === 'primary'
+                              ? 'bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50'
+                              : 'bg-neutral-800 text-neutral-100 hover:bg-neutral-700'
+                          }`}
+                          onClick={action.onClick}
+                          disabled={action.disabled}
+                        >
+                          {action.label}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
 
           <div className="flex items-center justify-between gap-2 pt-2">
             <button
@@ -983,12 +1056,6 @@ export function App() {
               Back
             </button>
             <div className="flex gap-2">
-              <button
-                className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-2 text-sm font-semibold"
-                onClick={() => closeOnboarding(true)}
-              >
-                Don’t show again
-              </button>
               <button
                 className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold"
                 onClick={() => {
