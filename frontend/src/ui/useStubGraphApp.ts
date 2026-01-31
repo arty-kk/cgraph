@@ -2050,12 +2050,15 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         return
       }
       setWorkspaceViewState(nextView)
+      if (nextView === 'graph' && activeFilePath) {
+        setSelection(activeFilePath, { pushHistory: false })
+      }
       const nextPath = selectedPathRef.current
       if (nextView === 'editor' && nextPath && nextPath !== activeFilePath) {
         void openFileEditor(nextPath)
       }
     },
-    [activeFilePath, fileEditorsByPath, openFileEditor, workspaceView],
+    [activeFilePath, fileEditorsByPath, openFileEditor, setSelection, workspaceView],
   )
 
   const toggleWorkspaceView = useCallback(() => {
