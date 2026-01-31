@@ -667,9 +667,6 @@ export function App({ showDependencies = true }: AppProps) {
             nodeBusy={app.nodeBusy}
             nodeInfo={app.nodeInfo}
             contract={app.contract}
-            graphPreview={app.graphPreview}
-            graphPreviewBusy={app.graphPreviewBusy}
-            graphPreviewError={app.graphPreviewError}
             busy={app.busy}
             mode={app.mode}
             depth={app.depth}
@@ -711,11 +708,6 @@ export function App({ showDependencies = true }: AppProps) {
             onLoadRun={app.onLoadRun}
             onDeleteRun={app.onDeleteRun}
             runs={app.runs}
-            onOpenFileEditor={(path) => {
-              app.setWorkspaceView('editor')
-              void Promise.resolve(app.openFileEditor(path))
-            }}
-            setWorkspaceView={app.setWorkspaceView}
           />
         )}
       </div>
