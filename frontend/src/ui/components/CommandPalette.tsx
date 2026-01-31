@@ -31,6 +31,9 @@ type Props = {
   onSelectPath: (path: string) => void | Promise<void>
   onTogglePinPath: (path: string) => void | Promise<void>
   onOpenFileEditor?: (path: string) => void | Promise<void>
+  openFilePaths: string[]
+  selectionTrail: string[]
+  pinnedPaths: string[]
 
   onScan: () => void | Promise<void>
   onRefresh: () => void | Promise<void>
@@ -85,6 +88,9 @@ export function CommandPalette({
   onSelectPath,
   onTogglePinPath,
   onOpenFileEditor,
+  openFilePaths,
+  selectionTrail,
+  pinnedPaths,
   onScan,
   onRefresh,
   onOpenDocs,
@@ -608,6 +614,82 @@ export function CommandPalette({
     }))
   }, [activeProject, files, onClose, onOpenFileEditor, onSelectPath])
 
+  const pinnedFiles = useMemo(() => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const path of pinnedPaths || []) {
+      const p = String(path || '').trim()
+      if (!p || seen.has(p)) continue
+      seen.add(p)
+      out.push(p)
+    }
+    return out
+  }, [pinnedPaths])
+
+  const openedFiles = useMemo(() => {
+    const seen = new Set<string>(pinnedFiles)
+    const out: string[] = []
+    for (const path of openFilePaths || []) {
+      const p = String(path || '').trim()
+      if (!p || seen.has(p)) continue
+      seen.add(p)
+      out.push(p)
+    }
+    return out
+  }, [openFilePaths, pinnedFiles])
+
+  const recentFiles = useMemo(() => {
+    const seen = new Set<string>([...pinnedFiles, ...openedFiles])
+    const filtered: string[] = []
+    for (const path of selectionTrail || []) {
+      const p = String(path || '').trim()
+      if (!p || seen.has(p)) continue
+      seen.add(p)
+      filtered.push(p)
+    }
+    return filtered.reverse().slice(0, 10)
+  }, [openedFiles, pinnedFiles, selectionTrail])
+
+  const onSelectFilePath = React.useCallback(async (path: string) => {
+    onClose()
+    if (selectedPath !== path) {
+      await onSelectPath(path)
+    }
+    if (onOpenFileEditor) {
+      await onOpenFileEditor(path)
+    }
+  }, [onClose, onOpenFileEditor, onSelectPath, selectedPath])
+
+  const pinnedItems = useMemo(() => {
+    return pinnedFiles.map((path) => ({
+      key: `pinned.${path}`,
+      kind: 'file' as const,
+      title: path,
+      disabled: false,
+      onSelect: () => onSelectFilePath(path),
+    }))
+  }, [onSelectFilePath, pinnedFiles])
+
+  const openedItems = useMemo(() => {
+    return openedFiles.map((path) => ({
+      key: `opened.${path}`,
+      kind: 'file' as const,
+      title: path,
+      disabled: false,
+      onSelect: () => onSelectFilePath(path),
+    }))
+  }, [onSelectFilePath, openedFiles])
+
+  const recentItems = useMemo(() => {
+    return recentFiles.map((path) => ({
+      key: `recent.${path}`,
+      kind: 'file' as const,
+      title: path,
+      disabled: false,
+      onSelect: () => onSelectFilePath(path),
+    }))
+  }, [onSelectFilePath, recentFiles])
+
   const filteredCommands = useMemo(() => {
     if (!qNorm) return commandItems
     return commandItems.filter((it) => norm([it.group, it.title, it.subtitleText, it.hint].filter(Boolean).join(' ')).includes(qNorm))
@@ -648,6 +730,13 @@ export function CommandPalette({
     }
 
     const wantsFiles = q.length >= 2
+    const showRecent = q.length < 2
+
+    push('pinned', 'Pinned', pinnedItems)
+    push('opened', 'Opened', openedItems)
+    if (showRecent) {
+      push('recent', 'Recent', recentItems)
+    }
     const fileNote =
       !activeProject && wantsFiles
         ? 'Pick a project to search files.'
@@ -662,7 +751,17 @@ export function CommandPalette({
     }
 
     return out
-  }, [activeProject, fileItems, filesBusy, filteredCommands, projectItems, qRaw])
+  }, [
+    activeProject,
+    fileItems,
+    filesBusy,
+    filteredCommands,
+    openedItems,
+    pinnedItems,
+    projectItems,
+    qRaw,
+    recentItems,
+  ])
 
   const itemsFlat: Item[] = useMemo(() => renderSections.flatMap((s) => s.items), [renderSections])
 

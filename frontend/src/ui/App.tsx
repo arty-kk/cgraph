@@ -637,6 +637,9 @@ export function App() {
         selectedPath={app.selectedPath}
         onSelectPath={app.onSelectNodePath}
         onTogglePinPath={app.togglePinPath}
+        openFilePaths={app.openFilePaths}
+        selectionTrail={app.selectionTrail}
+        pinnedPaths={app.pinnedPaths}
         onScan={app.onScan}
         onRefresh={app.onRefresh}
         onOpenDocs={openDocs}
