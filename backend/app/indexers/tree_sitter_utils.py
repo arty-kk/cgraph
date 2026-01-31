@@ -14,7 +14,10 @@ def _get_parser(lang: str) -> Parser | None:
     except Exception:
         return None
     parser = Parser()
-    parser.set_language(language)
+    if hasattr(parser, "set_language"):
+        parser.set_language(language)
+    else:
+        parser.language = language
     return parser
 
 
