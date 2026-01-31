@@ -302,7 +302,7 @@ export function App({ showDependencies = true }: AppProps) {
 
   return (
     <div className="h-screen w-screen overflow-hidden relative bg-neutral-950 text-neutral-100">
-      <div className="h-screen w-screen overflow-x-hidden grid min-w-0" style={{ gridTemplateColumns, gridTemplateRows: '1fr' }}>
+      <div className="h-full w-full min-h-0 overflow-x-hidden grid min-w-0" style={{ gridTemplateColumns, gridTemplateRows: '1fr' }}>
 
       {app.workspaceView === 'graph' && !app.focusGraph && app.leftPanelOpen && (
           <ProjectsSidebar
