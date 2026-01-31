@@ -48,7 +48,7 @@ const DEFAULT_LAYOUT: LayoutOptions = ({
   animate: false,
   fit: false,
   padding: 80,
-  randomize: false,
+  randomize: true,
   componentSpacing: 140,
   nodeOverlap: 10,
   nodeRepulsion: 20000,
