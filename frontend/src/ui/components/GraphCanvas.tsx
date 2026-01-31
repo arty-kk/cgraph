@@ -270,10 +270,12 @@ const PanelsIcon = () => (
 
 const FocusIcon = () => (
   <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
-    <path d="M4 9V4h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M20 9V4h-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M4 15v5h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M20 15v5h-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="1.6" />
+    <circle cx="12" cy="12" r="1.6" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M12 3.5v2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M12 18.5v2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M3.5 12h2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M18.5 12h2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
   </svg>
 )
 
