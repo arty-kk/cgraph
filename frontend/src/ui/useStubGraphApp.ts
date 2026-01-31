@@ -169,7 +169,7 @@ function createFileEditorEntry(path: string, opts: { dirty?: boolean } = {}): Fi
   const dirty = Boolean(opts.dirty)
   return {
     path,
-    content: dirty ? '\n' : '',
+    content: '',
     original: '',
     dirty,
     truncated: false,
@@ -177,6 +177,10 @@ function createFileEditorEntry(path: string, opts: { dirty?: boolean } = {}): Fi
     saving: false,
     error: null,
   }
+}
+
+function isEntryDirty(entry: FileEditorEntry | null | undefined): boolean {
+  return Boolean(entry && entry.content !== entry.original)
 }
 
 export type NotificationKind = 'info' | 'error'
@@ -383,7 +387,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const FILE_EDITOR_MAX_CHARS = 200_000
 
   const hasDirtyEditors = useMemo(() => {
-    return Object.values(fileEditorsByPath).some((entry) => entry.dirty)
+    return Object.values(fileEditorsByPath).some((entry) => isEntryDirty(entry))
   }, [fileEditorsByPath])
 
   useEffect(() => {
@@ -547,15 +551,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
             ? parsed.activeFilePath
             : null
         const nextFileEditors: Record<string, FileEditorEntry> = {}
-        if ('fileEditorsByPath' in parsed && parsed.fileEditorsByPath) {
-          const storedEditors = parsed.fileEditorsByPath as Record<string, { dirty?: boolean }>
-          for (const path of nextOpenFilePaths) {
-            nextFileEditors[path] = createFileEditorEntry(path, { dirty: Boolean(storedEditors?.[path]?.dirty) })
-          }
-        } else {
-          for (const path of nextOpenFilePaths) {
-            nextFileEditors[path] = createFileEditorEntry(path)
-          }
+        for (const path of nextOpenFilePaths) {
+          nextFileEditors[path] = createFileEditorEntry(path)
         }
 
         setGraphMode(asGraphMode(parsed.graphMode, 'limit'))
@@ -1082,27 +1079,17 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       if (!activeProject) return
       const p = String(path || '').trim()
       if (!p) return
-      const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
-      const activeDirty = activeEntry ? activeEntry.content !== activeEntry.original : false
-      if (activeDirty && activeFilePath && p !== activeFilePath) {
-        setConfirmOpen(true)
-        setConfirmReason('switch-tab')
-        setPendingActivePath(p)
-        setPendingClosePath(null)
-        setPendingClosePaths([])
-        setPendingView(null)
-        return
-      }
       setOpenFilePaths((prev) => (prev.includes(p) ? prev : [...prev, p]))
       setActiveFilePath(p)
       updateFileEditorEntry(p, (entry) => entry)
       const existingEntry = fileEditorsByPath[p]
-      const shouldLoad = !existingEntry || (!existingEntry.content && !existingEntry.original && !existingEntry.busy)
+      const shouldLoad =
+        !existingEntry || ((!existingEntry.content || !existingEntry.original) && !existingEntry.busy)
       if (shouldLoad) {
         await loadFileEditor(p)
       }
     },
-    [activeProject, activeFilePath, fileEditorsByPath, loadFileEditor, updateFileEditorEntry],
+    [activeProject, fileEditorsByPath, loadFileEditor, updateFileEditorEntry],
   )
 
   const openFileEditorAt = useCallback(
@@ -1130,7 +1117,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const requestReloadFileEditor = useCallback(async () => {
     if (!activeFilePath) return
     const activeEntry = fileEditorsByPath[activeFilePath]
-    const activeDirty = activeEntry ? activeEntry.dirty : false
+    const activeDirty = isEntryDirty(activeEntry)
     if (activeDirty) {
       setConfirmOpen(true)
       setConfirmReason('reload-file')
@@ -1968,7 +1955,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const p = String(path || '').trim()
       if (!p) return
       const entry = fileEditorsByPath[p]
-      const isDirty = entry ? entry.dirty : false
+      const isDirty = isEntryDirty(entry)
       if (isDirty) {
         setConfirmOpen(true)
         setConfirmReason('close-tab')
@@ -1987,7 +1974,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     if (openFilePaths.length === 0) return
     const dirtyPaths = openFilePaths.filter((path) => {
       const entry = fileEditorsByPath[path]
-      return entry ? entry.dirty : false
+      return isEntryDirty(entry)
     })
     if (dirtyPaths.length > 0) {
       setConfirmOpen(true)
@@ -2008,7 +1995,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     if (targets.length === 0) return
     const dirtyPaths = targets.filter((path) => {
       const entry = fileEditorsByPath[path]
-      return entry ? entry.dirty : false
+      return isEntryDirty(entry)
     })
     if (dirtyPaths.length > 0) {
       setConfirmOpen(true)
@@ -2031,7 +2018,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     if (targets.length === 0) return
     const dirtyPaths = targets.filter((path) => {
       const entry = fileEditorsByPath[path]
-      return entry ? entry.dirty : false
+      return isEntryDirty(entry)
     })
     if (dirtyPaths.length > 0) {
       setConfirmOpen(true)
