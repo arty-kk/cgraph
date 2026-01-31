@@ -408,7 +408,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       version: 3,
       selectedPath,
       pinnedPaths: (pinnedPaths || []).slice(0, PIN_LIMIT),
-      selectionTrail: (selectionTrail || []).slice(-10),
+      selectionTrail: (selectionTrail || []).slice(-3),
       backStack: (backStack || []).slice(-200),
       forwardStack: (forwardStack || []).slice(-200),
       graphMode,
@@ -534,7 +534,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         const parsed = JSON.parse(parsedRaw) as Partial<WorkspaceStateV3> | Partial<WorkspaceStateV2> | Partial<WorkspaceStateV1>
         const nextSelected = asStr(parsed.selectedPath) || null
         const nextPinned = asStrArr(parsed.pinnedPaths, 20).slice(0, PIN_LIMIT)
-        const nextTrail = asStrArr(parsed.selectionTrail, 20).slice(-10)
+        const nextTrail = asStrArr(parsed.selectionTrail, 20).slice(-3)
         const nextBack = asStrArr(parsed.backStack, 300).slice(-200)
         const nextFwd = asStrArr(parsed.forwardStack, 300).slice(-200)
         const nextWorkspaceView =
@@ -635,7 +635,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         const prev = selectionTrailRef.current || []
         const filtered = prev.filter((p) => p !== next)
         const out = [...filtered, next]
-        const trail = out.slice(-10)
+        const trail = out.slice(-3)
         selectionTrailRef.current = trail
         setSelectionTrail(trail)
       }
@@ -717,7 +717,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     if (prev) {
       const t0 = selectionTrailRef.current || []
       const filtered = t0.filter((p) => p !== prev)
-      const t1 = [...filtered, prev].slice(-10)
+      const t1 = [...filtered, prev].slice(-3)
       selectionTrailRef.current = t1
       setSelectionTrail(t1)
     }
@@ -747,7 +747,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     if (next) {
       const t0 = selectionTrailRef.current || []
       const filtered = t0.filter((p) => p !== next)
-      const t1 = [...filtered, next].slice(-10)
+      const t1 = [...filtered, next].slice(-3)
       selectionTrailRef.current = t1
       setSelectionTrail(t1)
     }
