@@ -339,7 +339,8 @@ export function FileEditorPane({
     modified.onDidChangeCursorPosition((e) => updateCursorInfo(e.position))
     modified.onDidChangeModelContent(() => {
       const model = modified.getModel()
-      onChange(model?.getValue() ?? '')
+      if (!model) return
+      onChange(model.getValue())
     })
     modified.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       handleSave()
@@ -734,7 +735,10 @@ export function FileEditorPane({
               height="100%"
               language={language}
               value={content}
-              onChange={(value) => onChange(value ?? '')}
+              onChange={(value) => {
+                if (value === undefined) return
+                onChange(value)
+              }}
               options={editorOptions}
               onMount={handleEditorMount}
               theme="vs-dark"
