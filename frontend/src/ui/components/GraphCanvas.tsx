@@ -519,6 +519,7 @@ export function GraphCanvas({
   const [edgeDirColors, setEdgeDirColors] = useState<boolean>(() => loadEdgeDir(projectId))
   const [legendCollapsed, setLegendCollapsed] = useState<boolean>(() => loadLegendCollapsed())
   const legendIsCompact = focusGraph || legendCollapsed
+  const legendToggleLabel = legendIsCompact ? 'Expand legend' : 'Collapse legend'
   const isGraphActive = focusGraph || workspaceView === 'graph'
 
   // Load per-project UI settings when project changes (skip persistence during boot)
@@ -2048,43 +2049,44 @@ export function GraphCanvas({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                className="flex h-5 w-5 items-center justify-center rounded border border-neutral-700 bg-neutral-900 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800"
+                className="flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800"
                 onClick={() => setLegendCollapsed((prev) => !prev)}
-                title={legendIsCompact ? 'Expand legend' : 'Collapse legend'}
-                aria-label={legendIsCompact ? 'Expand legend' : 'Collapse legend'}
+                title={legendToggleLabel}
+                aria-label={legendToggleLabel}
               >
-                ?
+                <span>Legend</span>
+                <span className="text-neutral-400">Shortcuts</span>
               </button>
               {legendIsCompact ? (
                 <div className="text-[10px] text-neutral-400">
-                  ? · Ctrl/⌘+K · Enter · ↑/↓ · P · H · Alt+←/→
+                  Legend collapsed (click to expand)
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400">
                   <span className="text-neutral-500">Legend:</span>
                   <span className="inline-flex items-center gap-1">
                     <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: EDGE_IN_COLOR }} />
-                    <span className="text-neutral-200">IN</span>
+                    <span className="text-neutral-200">Incoming edges</span>
                   </span>
                   <span className="inline-flex items-center gap-1">
                     <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: EDGE_OUT_COLOR }} />
-                    <span className="text-neutral-200">OUT</span>
+                    <span className="text-neutral-200">Outgoing edges</span>
                   </span>
                   <span className="text-neutral-500">·</span>
                   <span className="text-neutral-500">Shortcuts:</span>
-                  <span className="text-neutral-200">Ctrl/⌘+K</span>
+                  <span className="text-neutral-200">Ctrl/⌘+K — search</span>
                   <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">Enter</span>
+                  <span className="text-neutral-200">Enter — open selected file</span>
                   <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">↑/↓</span>
+                  <span className="text-neutral-200">↑/↓ — move to neighbor</span>
                   <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">P</span>
+                  <span className="text-neutral-200">P — pin/unpin</span>
                   <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">H</span>
+                  <span className="text-neutral-200">H — hide selected</span>
                   <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">Alt+←/→</span>
+                  <span className="text-neutral-200">Alt+←/→ — back/forward history</span>
                   <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">Ctrl/⌘+Z</span>
+                  <span className="text-neutral-200">Ctrl/⌘+Z/Shift+Z — undo/redo layout</span>
                 </div>
               )}
             </div>
