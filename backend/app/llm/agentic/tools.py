@@ -513,22 +513,80 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         },
     ]
 
+    def _normalize_openai_strict_schema(schema: Any) -> None:
+
+        if isinstance(schema, list):
+            for it in schema:
+                _normalize_openai_strict_schema(it)
+            return
+        if not isinstance(schema, dict):
+            return
+
+        # Recurse into composition keywords if present.
+        for kw in ("anyOf", "oneOf", "allOf"):
+            subs = schema.get(kw)
+            if isinstance(subs, list):
+                for sub in subs:
+                    _normalize_openai_strict_schema(sub)
+
+        # Recurse into array items.
+        items = schema.get("items")
+        if isinstance(items, dict):
+            _normalize_openai_strict_schema(items)
+        elif isinstance(items, list):
+            for sub in items:
+                _normalize_openai_strict_schema(sub)
+
+        # Detect object schemas either by type=object (or union incl. object) or presence of properties.
+        type_val = schema.get("type")
+        props = schema.get("properties")
+        is_object = (
+            type_val == "object"
+            or (isinstance(type_val, list) and "object" in type_val)
+            or isinstance(props, dict)
+        )
+        if not is_object:
+            return
+
+        # Ensure object defaults that OpenAI strict mode expects.
+        if type_val is None and isinstance(props, dict):
+            schema["type"] = "object"
+
+        schema["additionalProperties"] = False
+
+        if not isinstance(props, dict):
+            props = {}
+            schema["properties"] = props
+
+        # In strict mode, required must include *all* property keys (nullable types represent optionality).
+        schema["required"] = [k for k in props.keys() if isinstance(k, str)]
+
+        # Recurse into property schemas.
+        for v in props.values():
+            _normalize_openai_strict_schema(v)
+
     for t in tools:
         if not isinstance(t, dict):
             continue
-        if t.get("type") != "function" or t.get("strict") is not True:
+        if t.get("type") != "function":
             continue
         params = t.get("parameters")
         if not isinstance(params, dict):
             continue
         props = params.get("properties")
         if not isinstance(props, dict):
-            continue
+            props = {}
+            params["properties"] = props
         if "reason" not in props:
             props["reason"] = {"type": ["string", "null"], "description": "Optional reason for tool call"}
-        req = params.get("required")
-        if isinstance(req, list):
-            params["required"] = [k for k in req if isinstance(k, str) and k in props]
+
+        if t.get("strict") is True:
+            _normalize_openai_strict_schema(params)
+        else:
+            # Non-strict: keep original behavior (just ensure required keys exist in properties).
+            req = params.get("required")
+            if isinstance(req, list):
+                params["required"] = [k for k in req if isinstance(k, str) and k in props]
 
     return tools
 
