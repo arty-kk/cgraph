@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Iterable, Iterator, Sequence
 
 from tree_sitter import Node, Parser, Tree
-from tree_sitter_languages import get_language
+from tree_sitter_language_pack import get_language
 
 
 @lru_cache(maxsize=16)
