@@ -53,7 +53,30 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                                 "rank": {"type": "integer"},
                             },
                             "required": ["item", "reason"],
-                            "anyOf": [{"required": ["score"]}, {"required": ["rank"]}],
+                            "anyOf": [
+                                {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "item": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                        "score": {"type": "number"},
+                                        "rank": {"type": "integer"},
+                                    },
+                                    "required": ["score"],
+                                },
+                                {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "item": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                        "score": {"type": "number"},
+                                        "rank": {"type": "integer"},
+                                    },
+                                    "required": ["rank"],
+                                },
+                            ],
                         },
                     },
                 },
