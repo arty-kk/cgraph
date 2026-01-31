@@ -132,6 +132,7 @@ export type RunTaskBody = {
   agentic_max_total_tool_output_chars?: number
   agentic_temperature?: number
   agentic_reasoning_effort?: string
+  agentic_evidence_mode?: boolean
 }
 
 export type RunRecord = {
