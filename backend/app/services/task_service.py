@@ -405,6 +405,13 @@ def _ensure_node_exists(project_id: int, target: str, root: Path) -> None:
 
     try:
         with project_lock(project_id):
+            abs_target, rel_norm = resolve_under_root(
+                root, target, max_length=settings.max_rel_path_chars
+            )
+            if not abs_target.exists():
+                raise FileNotFoundError(rel_norm)
+            if not abs_target.is_file():
+                raise ValueError("Цель должна быть файлом")
             scan_files(project_id, root, [target])
             compute_graph_metrics(project_id)
     except Exception as error:  # noqa: BLE001
