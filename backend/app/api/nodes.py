@@ -87,11 +87,19 @@ def node(project_id: int, path: str):
         proj = s.get(Project, project_id)
         if not proj:
             raise NotFoundError("Проект не найден", context={"project_id": project_id})
-        _, rel_norm = resolve_under_root(
-            normalize_project_root(proj.root_path, max_length=settings.max_root_path_chars),
-            path,
-            max_length=settings.max_rel_path_chars,
-        )
+
+    root = normalize_project_root(proj.root_path, max_length=settings.max_root_path_chars)
+    abs_path, rel_norm = resolve_under_root(
+        root,
+        path,
+        max_length=settings.max_rel_path_chars,
+    )
+    if not abs_path.exists():
+        raise NotFoundError("Файл не найден", context={"path": rel_norm})
+    if not abs_path.is_file():
+        raise BadRequestError("Цель должна быть файлом")
+
+    with get_session() as s:
         n = s.exec(
             select(FileNode).where(
                 FileNode.project_id == project_id,
@@ -99,7 +107,27 @@ def node(project_id: int, path: str):
             )
         ).first()
     if not n:
-        raise NotFoundError("Узел не найден", context={"path": rel_norm})
+        with project_lock(project_id):
+            if not abs_path.exists():
+                raise NotFoundError("Файл не найден", context={"path": rel_norm})
+            if not abs_path.is_file():
+                raise BadRequestError("Цель должна быть файлом")
+            reindexed = scan_files(project_id, root, [rel_norm])
+            removed_neighbors = _removed_neighbors(reindexed)
+            update_graph_metrics_incremental(
+                project_id,
+                [rel_norm],
+                removed_edge_neighbors=removed_neighbors,
+            )
+        with get_session() as s:
+            n = s.exec(
+                select(FileNode).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path == rel_norm,
+                )
+            ).first()
+        if not n:
+            raise NotFoundError("Узел не найден", context={"path": rel_norm})
     return {
         "path": n.path, "language": n.language, "loc": n.loc, "complexity": n.complexity,
         "fan_in": n.fan_in, "fan_out": n.fan_out, "scc_id": n.scc_id, "status": n.status
@@ -152,6 +180,10 @@ def update_file(project_id: int, path: str, body: FileUpdate):
         raise BadRequestError("Некорректное содержимое файла")
 
     with project_lock(project_id):
+        if not abs_path.exists():
+            raise NotFoundError("Файл не найден", context={"path": rel_norm})
+        if not abs_path.is_file():
+            raise BadRequestError("Цель должна быть файлом")
         abs_path.write_text(content, encoding="utf-8")
         reindexed = scan_files(project_id, root, [rel_norm])
         removed_neighbors = _removed_neighbors(reindexed)
