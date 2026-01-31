@@ -594,7 +594,7 @@ export function FileEditorPane({
           File is too large — only a fragment is shown. Saving is disabled.
         </div>
       )}
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px] text-neutral-300">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-2 py-1 text-[11px] text-neutral-300">
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-full border border-neutral-700 bg-neutral-900/80 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-neutral-400">
             Editor
@@ -754,7 +754,7 @@ export function FileEditorPane({
       <div className="flex flex-wrap items-center gap-2 shrink-0">
         <button
           type="button"
-          className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+          className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-xs font-semibold disabled:opacity-50"
           onClick={() => void onReload()}
           disabled={busy || saving || !path}
         >
@@ -762,7 +762,7 @@ export function FileEditorPane({
         </button>
         <button
           type="button"
-          className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+          className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-2 py-1 text-xs font-semibold disabled:opacity-50"
           onClick={handleSave}
           disabled={busy || saving || !dirty || truncated || !path}
         >
@@ -770,7 +770,7 @@ export function FileEditorPane({
         </button>
         <button
           type="button"
-          className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+          className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-2 py-1 text-xs font-semibold disabled:opacity-50"
           onClick={onClose}
           disabled={saving}
         >

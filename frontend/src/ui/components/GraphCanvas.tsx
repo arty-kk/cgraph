@@ -13,7 +13,6 @@ const FILTER_STORAGE_KEY = 'cs.graph.filters.v1'
 const LABELS_STORAGE_KEY = 'cs.graph.labels.v1'
 const SPOTLIGHT_STORAGE_KEY = 'cs.graph.spotlight.v1'
 const EDGE_DIR_STORAGE_KEY = 'cs.graph.edgeDir.v1'
-const LEGEND_STORAGE_KEY = 'cs.graph.legend.v1'
 const EDGE_IN_COLOR = '#22c55e'
 const EDGE_OUT_COLOR = '#3b82f6'
 const LEGACY_FILTER_STORAGE_KEY = 'cs.graph.filters'
@@ -108,13 +107,6 @@ function loadEdgeDir(pid: number | null): boolean {
   if (raw === '0') return false
   if (raw === '1') return true
   return true
-}
-
-function loadLegendCollapsed(): boolean {
-  const raw = (safeGet(LEGEND_STORAGE_KEY) || '').trim()
-  if (raw === '1') return true
-  if (raw === '0') return false
-  return false
 }
 
 const EyeIcon = () => (
@@ -519,9 +511,6 @@ export function GraphCanvas({
   const [labelMode, setLabelMode] = useState<LabelMode>(() => loadLabelMode(projectId))
   const [spotlight, setSpotlight] = useState<boolean>(() => loadSpotlight(projectId))
   const [edgeDirColors, setEdgeDirColors] = useState<boolean>(() => loadEdgeDir(projectId))
-  const [legendCollapsed, setLegendCollapsed] = useState<boolean>(() => loadLegendCollapsed())
-  const legendIsCompact = focusGraph || legendCollapsed
-  const legendToggleLabel = legendIsCompact ? 'Expand legend' : 'Collapse legend'
   const isGraphActive = focusGraph || workspaceView === 'graph'
 
   // Load per-project UI settings when project changes (skip persistence during boot)
@@ -567,10 +556,6 @@ export function GraphCanvas({
     const key = pidKey(EDGE_DIR_STORAGE_KEY, Number.isFinite(pid) && pid > 0 ? pid : null)
     try { localStorage.setItem(key, edgeDirColors ? '1' : '0') } catch {}
   }, [edgeDirColors, projectId])
-
-  useEffect(() => {
-    safeSet(LEGEND_STORAGE_KEY, legendCollapsed ? '1' : '0')
-  }, [legendCollapsed])
 
   const [panelOpen, setPanelOpen] = useState(false)
   const [neighborsOpen, setNeighborsOpen] = useState(false)
@@ -2081,52 +2066,6 @@ export function GraphCanvas({
       {/* Status bar */}
       {activeProject && (
         <div className="absolute bottom-3 right-3 z-10 flex max-w-[calc(100%-24px)] flex-wrap items-end gap-2">
-          <div className="rounded-md bg-neutral-950/80 border border-neutral-800 px-3 py-2 shadow-lg text-[11px] text-neutral-300">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800"
-                onClick={() => setLegendCollapsed((prev) => !prev)}
-                title={legendToggleLabel}
-                aria-label={legendToggleLabel}
-              >
-                <span>Legend</span>
-                <span className="text-neutral-400">Shortcuts</span>
-              </button>
-              {legendIsCompact ? (
-                <div className="text-[10px] text-neutral-400">
-                  Legend collapsed (click to expand)
-                </div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-2 text-[10px] text-neutral-400">
-                  <span className="text-neutral-500">Legend:</span>
-                  <span className="inline-flex items-center gap-1">
-                    <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: EDGE_IN_COLOR }} />
-                    <span className="text-neutral-200">Incoming edges</span>
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: EDGE_OUT_COLOR }} />
-                    <span className="text-neutral-200">Outgoing edges</span>
-                  </span>
-                  <span className="text-neutral-500">·</span>
-                  <span className="text-neutral-500">Shortcuts:</span>
-                  <span className="text-neutral-200">Ctrl/⌘+K — search</span>
-                  <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">Enter — open selected file</span>
-                  <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">↑/↓ — move to neighbor</span>
-                  <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">P — pin/unpin</span>
-                  <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">H — hide selected</span>
-                  <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">Alt+←/→ — back/forward history</span>
-                  <span className="text-neutral-500">,</span>
-                  <span className="text-neutral-200">Ctrl/⌘+Z/Shift+Z — undo/redo layout</span>
-                </div>
-              )}
-            </div>
-          </div>
           <div className="group max-w-[calc(100%-24px)] rounded-md bg-neutral-950/80 border border-neutral-800 px-3 py-2 shadow-lg text-[11px] text-neutral-300 break-words">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-neutral-400">Mode:</span> <span className="text-neutral-100 font-semibold">{graphMode}</span>
