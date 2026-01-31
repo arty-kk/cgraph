@@ -856,7 +856,7 @@ export function CommandPalette({
         title={tooltip}
         id={active ? 'cs-cmdp-active' : undefined}
       >
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 flex-wrap max-w-full">
           <div className="min-w-0">
             <div className="text-xs font-semibold text-neutral-100 truncate">{item.title}</div>
             {item.subtitle && <div className="text-[11px] text-neutral-500 truncate">{item.subtitle}</div>}
