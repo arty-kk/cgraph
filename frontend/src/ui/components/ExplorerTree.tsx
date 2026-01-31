@@ -20,6 +20,8 @@ type ExplorerTreeProps = {
   projectFilesMeta: any
   projectFilesBusy: boolean
   showModuleSelect?: boolean
+  compact?: boolean
+  showOpenEditors?: boolean
 }
 
 export function ExplorerTree({
@@ -39,6 +41,8 @@ export function ExplorerTree({
   projectFilesMeta,
   projectFilesBusy,
   showModuleSelect = true,
+  compact = false,
+  showOpenEditors = true,
 }: ExplorerTreeProps) {
   const explorerScrollRef = React.useRef<HTMLDivElement | null>(null)
 
@@ -49,10 +53,18 @@ export function ExplorerTree({
   const fieldLabelClass = 'text-[11px] font-semibold text-neutral-200'
   const inputSmClass = 'w-full h-9 rounded-md bg-neutral-900 border border-neutral-800 px-3 text-sm outline-none disabled:opacity-50'
 
-  const itemBase = 'w-fit max-w-full text-left text-[11px] border rounded-md px-2 py-1.5 leading-tight transition-colors disabled:opacity-50'
+  const itemBase = [
+    'w-fit max-w-full text-left border rounded-md leading-tight transition-colors disabled:opacity-50',
+    compact ? 'text-[10px] px-2 py-1' : 'text-[11px] px-2 py-1.5',
+  ].join(' ')
   const itemIdle = 'bg-neutral-950 border-neutral-800 hover:border-neutral-700'
   const itemSelected = 'bg-indigo-950/40 border-indigo-700'
   const itemActive = 'bg-indigo-950/25 border-indigo-600'
+  const dirButtonClass = [
+    'w-full text-left pr-3 text-xs text-neutral-200 hover:bg-neutral-900',
+    compact ? 'py-1.5' : 'py-2',
+  ].join(' ')
+  const dirChildrenClass = compact ? 'px-2 pb-1 flex flex-col gap-0.5' : 'px-2 pb-1.5 flex flex-col gap-0.5'
 
   const [explorerFilter, setExplorerFilter] = React.useState('')
   const ef = explorerFilter.trim().toLowerCase()
@@ -628,7 +640,7 @@ export function ExplorerTree({
             )}
           </div>
         </button>
-        {canOpenInEditor && (
+        {canOpenInEditor && showOpenEditors && (
           <button
             type="button"
             className="shrink-0 rounded-md border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
@@ -719,7 +731,7 @@ export function ExplorerTree({
         <button
           type="button"
           className={[
-            'w-full text-left py-2 pr-3 text-xs text-neutral-200 hover:bg-neutral-900',
+            dirButtonClass,
             focused ? 'ring-1 ring-indigo-400' : '',
           ].join(' ')}
           onClick={() => {
@@ -750,7 +762,7 @@ export function ExplorerTree({
         </button>
 
         {isOpen && (
-          <div className="px-2 pb-1.5 flex flex-col gap-0.5" role="group">
+          <div className={dirChildrenClass} role="group">
             {shownDirKeys.map((k) => renderDir(d.dirs[k], depth + 1))}
             {dirKeys.length > shownDirKeys.length && (
               <div className="text-[11px] text-neutral-500" style={{ marginLeft: (depth + 1) * 10 }}>
@@ -1150,16 +1162,18 @@ export function ExplorerTree({
       </Modal>
 
       <div className="space-y-2">
-        <div className="space-y-1">
-          <div className="text-[11px] font-semibold text-neutral-300">Open Editors ({openEntries.length})</div>
-          <div className="flex flex-col gap-1">
-            {openEntries.length > 0 ? (
-              openEntries.map((path) => renderQuickEntry(path))
-            ) : (
-              <div className="text-[11px] text-neutral-500">No open editors.</div>
-            )}
+        {showOpenEditors && (
+          <div className="space-y-1">
+            <div className="text-[11px] font-semibold text-neutral-300">Open Editors ({openEntries.length})</div>
+            <div className="flex flex-col gap-1">
+              {openEntries.length > 0 ? (
+                openEntries.map((path) => renderQuickEntry(path))
+              ) : (
+                <div className="text-[11px] text-neutral-500">No open editors.</div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
         <div className="space-y-1">
           <div className="text-[11px] font-semibold text-neutral-300">Pinned ({pinnedEntries.length})</div>
           <div className="flex flex-col gap-1">
