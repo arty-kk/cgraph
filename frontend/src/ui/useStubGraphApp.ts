@@ -282,6 +282,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [nodeInfo, setNodeInfo] = useState<NodeInfo | null>(null)
   const [contract, setContract] = useState<NodeContract | null>(null)
+  const [graphPreview, setGraphPreview] = useState<FileContent | null>(null)
+  const [graphPreviewBusy, setGraphPreviewBusy] = useState(false)
+  const [graphPreviewError, setGraphPreviewError] = useState<string | null>(null)
+  const graphPreviewSeqRef = useRef(0)
 
   const [mode, setMode] = useState<AutoOrMode>('auto')
   const [depth, setDepth] = useState<number>(1)
@@ -511,10 +515,17 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     pushNotification('info', message)
   }, [pushNotification])
 
+  const resetGraphPreview = useCallback(() => {
+    setGraphPreview(null)
+    setGraphPreviewBusy(false)
+    setGraphPreviewError(null)
+  }, [])
+
   const resetForSelectionChange = useCallback(() => {
     nodeSeqRef.current++
     setNodeInfo(null); setContract(null); setRunResult(null); setFullPatch(null); setErrorMessage(null)
-  }, [setErrorMessage])
+    resetGraphPreview()
+  }, [resetGraphPreview, setErrorMessage])
 
   useEffect(() => {
     const pid = Number(activeProject?.id)
@@ -851,6 +862,48 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     }
   }, [nodeQuery.data])
 
+  useEffect(() => {
+    const projectId = activeProject?.id
+    if (workspaceView !== 'graph') {
+      resetGraphPreview()
+      return
+    }
+    if (!projectId || !selectedPath) {
+      resetGraphPreview()
+      return
+    }
+
+    const maxChars = 6000
+    const seq = ++graphPreviewSeqRef.current
+    let active = true
+
+    setGraphPreviewBusy(true)
+    setGraphPreviewError(null)
+    setGraphPreview(null)
+
+    const loadPreview = async () => {
+      try {
+        const preview = await getFileContent(projectId, selectedPath, maxChars)
+        if (!active || graphPreviewSeqRef.current !== seq) return
+        setGraphPreview(preview)
+      } catch (e: any) {
+        if (!active || graphPreviewSeqRef.current !== seq) return
+        const message = extractError(e)
+        setGraphPreviewError(message)
+        notifyError('Failed to load preview')
+      } finally {
+        if (!active || graphPreviewSeqRef.current !== seq) return
+        setGraphPreviewBusy(false)
+      }
+    }
+
+    void loadPreview()
+
+    return () => {
+      active = false
+    }
+  }, [activeProject?.id, notifyError, resetGraphPreview, selectedPath, workspaceView])
+
   const selectProjectLocal = useCallback((p: Project) => {
     if (activeProject?.id) persistWorkspace(activeProject.id)
     workspaceBootingRef.current = true
@@ -866,6 +919,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setSelectedPath(null)
     setNodeInfo(null)
     setContract(null)
+    resetGraphPreview()
     setRunResult(null)
     setFullPatch(null)
     setGraphMode('limit')
@@ -890,7 +944,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setConfirmOpen(false)
     setConfirmReason(null)
     setPendingView(null)
-  }, [activeProject?.id, persistWorkspace])
+  }, [activeProject?.id, persistWorkspace, resetGraphPreview])
 
   const clearActiveProject = useCallback(() => {
     if (activeProject?.id) persistWorkspace(activeProject.id)
@@ -905,6 +959,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setSelectedPath(null)
     setNodeInfo(null)
     setContract(null)
+    resetGraphPreview()
     setRunResult(null)
     setFullPatch(null)
     setPrompt('')
@@ -925,7 +980,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setConfirmOpen(false)
     setConfirmReason(null)
     setPendingView(null)
-  }, [activeProject?.id, persistWorkspace, setErrorMessage])
+  }, [activeProject?.id, persistWorkspace, resetGraphPreview, setErrorMessage])
 
   const projects = projectsQuery.data ?? []
   const runs = runsQuery.data ?? []
@@ -2409,6 +2464,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     selectedInGraph,
     nodeInfo,
     contract,
+    graphPreview,
+    graphPreviewBusy,
+    graphPreviewError,
     mode,
     depth,
     depMode,
