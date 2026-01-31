@@ -46,7 +46,7 @@ import {
   type ProjectFileItem,
   type ProjectDocs,
 } from '../api'
-import { extractError, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '../lib/errors'
+import { extractError, getAppErrorInfo, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '../lib/errors'
 import { clampInt } from '../lib/number'
 
 type AutoOrMode = 'auto' | Mode
@@ -974,6 +974,16 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const d = await getProjectDocs(activeProject.id)
       setDocs(d)
     } catch (e: any) {
+      const info = getAppErrorInfo(e)
+      const message = info?.message?.toLowerCase() ?? ''
+      const isDocsMissing =
+        info?.code === 'not_found' &&
+        ((message.includes('документац') && message.includes('не найден')) ||
+          (message.includes('docs') && (message.includes('not found') || message.includes('missing'))))
+      if (isDocsMissing) {
+        setDocs(null)
+        return
+      }
       setDocs(null)
       setErrorMessage(extractError(e))
     } finally {
