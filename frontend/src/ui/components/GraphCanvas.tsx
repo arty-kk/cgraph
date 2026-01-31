@@ -641,6 +641,8 @@ export function GraphCanvas({
   const [ctxMenu, setCtxMenu] = useState<null | { path: string; x: number; y: number }>(null)
   const [fileButtonPos, setFileButtonPos] = useState<null | { x: number; y: number }>(null)
   const ctxMenuRef = useRef<HTMLDivElement | null>(null)
+  const fileButtonsRef = useRef<HTMLDivElement | null>(null)
+  const fileButtonsSizeRef = useRef({ width: 0, height: 0 })
 
   useEffect(() => {
     if (!ctxMenu) return
@@ -893,12 +895,36 @@ export function GraphCanvas({
         return
       }
       const next = actionsRef.current?.getRenderedPosition?.(path)
+      const root = rootRef.current
+      const container = containerRef.current
+      if (!root || !container) {
+        setFileButtonPos(null)
+        return
+      }
+      const rootRect = root.getBoundingClientRect()
+      const containerRect = container.getBoundingClientRect()
+      const buttonsRect = fileButtonsRef.current?.getBoundingClientRect()
+      if (buttonsRect && Number.isFinite(buttonsRect.width) && Number.isFinite(buttonsRect.height)) {
+        fileButtonsSizeRef.current = { width: buttonsRect.width, height: buttonsRect.height }
+      }
       if (next && Number.isFinite(next.x) && Number.isFinite(next.y)) {
-        const x = next.x + 14
-        const y = next.y - 14
+        const baseX = next.x + (containerRect.left - rootRect.left)
+        const baseY = next.y + (containerRect.top - rootRect.top)
+        const x = baseX + 14
+        const y = baseY - 14
+        const { width: buttonWidth, height: buttonHeight } = fileButtonsSizeRef.current
+        const pad = 8
+        const minX = pad + buttonWidth / 2
+        const minY = pad + buttonHeight / 2
+        const maxX = Math.max(minX, rootRect.width - buttonWidth / 2 - pad)
+        const maxY = Math.max(minY, rootRect.height - buttonHeight / 2 - pad)
+        const nextX = clamp(x, minX, maxX)
+        const nextY = clamp(y, minY, maxY)
         setFileButtonPos((prev) => {
-          if (!prev) return { x, y }
-          if (Math.abs(prev.x - x) > 0.5 || Math.abs(prev.y - y) > 0.5) return { x, y }
+          if (!prev) return { x: nextX, y: nextY }
+          if (Math.abs(prev.x - nextX) > 0.5 || Math.abs(prev.y - nextY) > 0.5) {
+            return { x: nextX, y: nextY }
+          }
           return prev
         })
       } else {
@@ -1818,6 +1844,7 @@ export function GraphCanvas({
       </Modal>
       {fileButtonPos && selectedPath && activeProject && selectedInGraph && (
         <div
+          ref={fileButtonsRef}
           className="absolute z-20 flex items-center gap-1"
           style={{ left: fileButtonPos.x, top: fileButtonPos.y, transform: 'translate(-50%, -50%)' }}
         >
