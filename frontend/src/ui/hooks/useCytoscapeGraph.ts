@@ -992,7 +992,9 @@ export function useCytoscapeGraph({
           starburstRef.current?.(match[0])
         }
 
-        animateCenterTo(match)
+        const centerTarget = match.union(match.connectedEdges())
+        const visibleTarget = centerTarget.filter(':visible')
+        animateCenterTo(visibleTarget.empty() ? match : visibleTarget)
         
         return
       }
@@ -1041,7 +1043,9 @@ export function useCytoscapeGraph({
       if (!cy) return
       const sel = cy.nodes(':selected')
       if (!sel || sel.empty()) return
-      animateCenterTo(sel)
+      const centerTarget = sel.union(sel.connectedEdges())
+      const visibleTarget = centerTarget.filter(':visible')
+      animateCenterTo(visibleTarget.empty() ? sel : visibleTarget)
     } catch {}
   }, [animateCenterTo])
 
@@ -1056,7 +1060,9 @@ export function useCytoscapeGraph({
         if (!cy) return
         const match = cy.nodes().filter((n) => n.data('path') === p || n.id() === p)
         if (match && !match.empty()) {
-          animateCenterTo(match)
+          const centerTarget = match.union(match.connectedEdges())
+          const visibleTarget = centerTarget.filter(':visible')
+          animateCenterTo(visibleTarget.empty() ? match : visibleTarget)
           return
         }
         attempt += 1
