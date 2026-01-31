@@ -1013,7 +1013,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const setActiveFileContent = useCallback(
     (value: string) => {
       if (!activeFilePath) return
-      updateFileEditorEntry(activeFilePath, (entry) => ({ ...entry, content: value, dirty: true }))
+      updateFileEditorEntry(activeFilePath, (entry) => {
+        const nextContent = String(value ?? '')
+        const dirty = nextContent !== entry.original
+        return { ...entry, content: nextContent, dirty }
+      })
     },
     [activeFilePath, updateFileEditorEntry],
   )
@@ -1069,7 +1073,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const p = String(path || '').trim()
       if (!p) return
       const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
-      const activeDirty = activeEntry ? activeEntry.dirty : false
+      const activeDirty = activeEntry ? activeEntry.content !== activeEntry.original : false
       if (activeDirty && activeFilePath && p !== activeFilePath) {
         setConfirmOpen(true)
         setConfirmReason('switch-tab')
@@ -2035,7 +2039,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     (nextView: WorkspaceView) => {
       if (workspaceView === nextView) return
       const activeEntry = activeFilePath ? fileEditorsByPath[activeFilePath] : null
-      const activeDirty = activeEntry ? activeEntry.dirty : false
+      const activeDirty = activeEntry ? activeEntry.content !== activeEntry.original : false
       if (activeDirty && nextView === 'graph') {
         setConfirmOpen(true)
         setConfirmReason('close-editor')
