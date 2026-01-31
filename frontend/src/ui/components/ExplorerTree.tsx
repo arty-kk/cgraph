@@ -49,6 +49,7 @@ export function ExplorerTree({
 
   const [explorerFilter, setExplorerFilter] = React.useState('')
   const ef = explorerFilter.trim().toLowerCase()
+  const [focusedPath, setFocusedPath] = React.useState<string | null>(null)
 
   const MAX_DIRS_PER_NODE = 120
   const MAX_FILES_PER_NODE = 160
@@ -309,6 +310,139 @@ export function ExplorerTree({
     [isFullyVisibleInContainer],
   )
 
+  type VisibleEntry = {
+    path: string
+    type: 'dir' | 'file'
+    isOpen: boolean
+    parentPath: string | null
+    depth: number
+  }
+
+  const visibleEntries = React.useMemo<VisibleEntry[]>(() => {
+    if (ef) {
+      return (projectFiles || [])
+        .filter((f) => String(f.path).toLowerCase().includes(ef))
+        .slice(0, 200)
+        .map((f) => ({
+          path: f.path,
+          type: 'file' as const,
+          isOpen: false,
+          parentPath: f.path.includes('/') ? f.path.split('/').slice(0, -1).join('/') : null,
+          depth: 0,
+        }))
+    }
+
+    const entries: VisibleEntry[] = []
+    const rootFiles = (tree.files || [])
+      .slice()
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .slice(0, 120)
+
+    for (const f of rootFiles) {
+      entries.push({
+        path: f.path,
+        type: 'file',
+        isOpen: false,
+        parentPath: null,
+        depth: 0,
+      })
+    }
+
+    const visitDir = (d: DirNode, depth: number, parentPath: string | null) => {
+      const openDefault = depth === 0
+      const isOpen = (openDirs[d.path] ?? openDefault) === true
+      entries.push({
+        path: d.path,
+        type: 'dir',
+        isOpen,
+        parentPath,
+        depth,
+      })
+
+      if (!isOpen) return
+      const dirKeys = Object.keys(d.dirs).sort()
+      const shownDirKeys = dirKeys.slice(0, MAX_DIRS_PER_NODE)
+      const filesSorted = (d.files || []).slice().sort((a, b) => String(a.path).localeCompare(String(b.path)))
+      const shownFiles = filesSorted.slice(0, MAX_FILES_PER_NODE)
+
+      for (const k of shownDirKeys) {
+        visitDir(d.dirs[k], depth + 1, d.path)
+      }
+
+      for (const f of shownFiles) {
+        entries.push({
+          path: f.path,
+          type: 'file',
+          isOpen: false,
+          parentPath: d.path,
+          depth: depth + 1,
+        })
+      }
+    }
+
+    for (const k of Object.keys(tree.dirs).sort()) {
+      visitDir(tree.dirs[k], 0, null)
+    }
+
+    return entries
+  }, [ef, openDirs, projectFiles, tree])
+
+  const visibleEntryMap = React.useMemo(() => {
+    const map = new Map<string, VisibleEntry>()
+    for (const entry of visibleEntries) {
+      map.set(entry.path, entry)
+    }
+    return map
+  }, [visibleEntries])
+
+  const resolveVisibleFocus = React.useCallback(
+    (candidate: string | null) => {
+      if (!visibleEntries.length) return null
+      if (candidate && visibleEntryMap.has(candidate)) return candidate
+      if (selectedPath && visibleEntryMap.has(selectedPath)) return selectedPath
+      if (candidate) {
+        let cursor = candidate
+        while (cursor.includes('/')) {
+          cursor = cursor.split('/').slice(0, -1).join('/')
+          if (visibleEntryMap.has(cursor)) return cursor
+        }
+      }
+      return visibleEntries[0]?.path ?? null
+    },
+    [selectedPath, visibleEntries, visibleEntryMap],
+  )
+
+  React.useEffect(() => {
+    setFocusedPath((prev) => {
+      const next = resolveVisibleFocus(prev)
+      return next === prev ? prev : next
+    })
+  }, [resolveVisibleFocus])
+
+  const getEntryElement = React.useCallback((path: string) => {
+    try {
+      return document.querySelector(`[data-explorer-path="${CSS.escape(path)}"]`) as HTMLElement | null
+    } catch {
+      return document.querySelector(`[data-explorer-path="${path.replace(/"/g, '\\"')}"]`) as HTMLElement | null
+    }
+  }, [])
+
+  const focusEntry = React.useCallback(
+    (path: string, opts?: { scroll?: boolean }) => {
+      setFocusedPath(path)
+      window.requestAnimationFrame(() => {
+        const container = explorerScrollRef.current
+        const el = getEntryElement(path)
+        if (!el) return
+        if (opts?.scroll && container) {
+          ensureVisibleInContainer(el, container)
+        }
+        el.focus()
+      })
+    },
+    [ensureVisibleInContainer, getEntryElement],
+  )
+
   React.useEffect(() => {
     if (projectFilesBusy) return
     if (ef) return
@@ -415,6 +549,7 @@ export function ExplorerTree({
 
   const renderFile = (f: ProjectFileItem, depth: number, opts?: { showPath?: boolean }) => {
     const selected = isSelectedFile(f.path)
+    const focused = focusedPath === f.path
     const isDirtySelected = selected && !!dirtyPath && dirtyPath === f.path
     const name = f.path.split('/').pop() || f.path
     const showPath = Boolean(opts?.showPath)
@@ -445,17 +580,24 @@ export function ExplorerTree({
           className={[
             itemBase,
             selected ? itemActive : itemIdle,
+            focused ? 'ring-1 ring-indigo-400' : '',
             isDisabled ? 'cursor-not-allowed' : 'cursor-pointer',
             'flex items-center justify-between gap-2 min-w-0',
           ].join(' ')}
+          data-explorer-path={f.path}
+          role="treeitem"
+          aria-level={depth + 1}
+          tabIndex={focused ? 0 : -1}
           onClick={() => {
             if (isDisabled) return
+            setFocusedPath(f.path)
             void Promise.resolve(onSelectPath(f.path))
           }}
           onDoubleClick={() => {
             if (isDisabled || !canOpenInEditor) return
             void Promise.resolve(onOpenFileEditor?.(f.path))
           }}
+          onFocus={() => setFocusedPath(f.path)}
           onMouseDown={(e) => e.preventDefault()}
           disabled={isDisabled}
           title={tooltip}
@@ -495,6 +637,7 @@ export function ExplorerTree({
   const renderDir = (d: DirNode, depth: number) => {
     const openDefault = depth === 0
     const isOpen = (openDirs[d.path] ?? openDefault) === true
+    const focused = focusedPath === d.path
     const pad = 10 + depth * 10
 
     const riskAvg = d.riskCount > 0 ? d.riskSum / d.riskCount : 0
@@ -519,11 +662,23 @@ export function ExplorerTree({
       <div key={d.path} id={dirDomId(d.path)} className="border border-neutral-800 rounded-md bg-neutral-950">
         <button
           type="button"
-          className="w-full text-left py-2 pr-3 text-xs text-neutral-200 hover:bg-neutral-900"
-          onClick={() => toggleDir(d.path)}
+          className={[
+            'w-full text-left py-2 pr-3 text-xs text-neutral-200 hover:bg-neutral-900',
+            focused ? 'ring-1 ring-indigo-400' : '',
+          ].join(' ')}
+          onClick={() => {
+            setFocusedPath(d.path)
+            toggleDir(d.path)
+          }}
           title={dirTooltip}
           style={{ paddingLeft: pad }}
           onMouseDown={(e) => e.preventDefault()}
+          onFocus={() => setFocusedPath(d.path)}
+          data-explorer-path={d.path}
+          role="treeitem"
+          aria-expanded={isOpen}
+          aria-level={depth + 1}
+          tabIndex={focused ? 0 : -1}
         >
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 flex items-center gap-2">
@@ -539,7 +694,7 @@ export function ExplorerTree({
         </button>
 
         {isOpen && (
-          <div className="px-2 pb-1.5 flex flex-col gap-0.5">
+          <div className="px-2 pb-1.5 flex flex-col gap-0.5" role="group">
             {shownDirKeys.map((k) => renderDir(d.dirs[k], depth + 1))}
             {dirKeys.length > shownDirKeys.length && (
               <div className="text-[11px] text-neutral-500" style={{ marginLeft: (depth + 1) * 10 }}>
@@ -612,6 +767,69 @@ export function ExplorerTree({
       setDeleteOpError(message || 'Failed to delete file.')
     }
   }, [deleteDisabled, onDeleteFile, selectedFilePath])
+
+  const handleTreeKeyDown = React.useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!visibleEntries.length) return
+      if (!focusedPath) return
+      const currentIndex = visibleEntries.findIndex((entry) => entry.path === focusedPath)
+      if (currentIndex < 0) return
+      const current = visibleEntries[currentIndex]
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        const next = visibleEntries[currentIndex + 1]
+        if (next) {
+          focusEntry(next.path, { scroll: true })
+        }
+        return
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        const prev = visibleEntries[currentIndex - 1]
+        if (prev) {
+          focusEntry(prev.path, { scroll: true })
+        }
+        return
+      }
+
+      if (event.key === 'ArrowRight' && current.type === 'dir') {
+        event.preventDefault()
+        if (!current.isOpen) {
+          setOpenDirs((prev) => ({ ...prev, [current.path]: true }))
+          return
+        }
+        const next = visibleEntries[currentIndex + 1]
+        if (next && next.parentPath === current.path) {
+          focusEntry(next.path, { scroll: true })
+        }
+        return
+      }
+
+      if (event.key === 'ArrowLeft' && current.type === 'dir') {
+        event.preventDefault()
+        if (current.isOpen) {
+          setOpenDirs((prev) => ({ ...prev, [current.path]: false }))
+          return
+        }
+        if (current.parentPath) {
+          focusEntry(current.parentPath, { scroll: true })
+        }
+        return
+      }
+
+      if (event.key === 'Enter' && current.type === 'file') {
+        event.preventDefault()
+        if (onOpenFileEditor) {
+          void Promise.resolve(onOpenFileEditor(current.path))
+        } else {
+          void Promise.resolve(onSelectPath(current.path))
+        }
+      }
+    },
+    [focusEntry, focusedPath, onOpenFileEditor, onSelectPath, visibleEntries],
+  )
 
   return (
     <div className="flex flex-col gap-2">
@@ -884,7 +1102,13 @@ export function ExplorerTree({
       ) : (projectFiles?.length || 0) === 0 ? (
         <div className="text-xs text-neutral-500">No files yet (run Scan first).</div>
       ) : (
-        <div ref={explorerScrollRef} className="mt-2 max-h-[55vh] overflow-auto flex flex-col gap-0.5">
+        <div
+          ref={explorerScrollRef}
+          className="mt-2 max-h-[55vh] overflow-auto flex flex-col gap-0.5"
+          role="tree"
+          aria-label="Project files"
+          onKeyDown={handleTreeKeyDown}
+        >
           {projectFilesMeta?.truncated && (
             <div className="text-[11px] text-amber-300">
               Explorer truncated: shown {projectFilesMeta.returned} of {projectFilesMeta.total}
