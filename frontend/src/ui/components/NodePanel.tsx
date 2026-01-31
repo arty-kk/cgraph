@@ -2,7 +2,7 @@
 import React, { useMemo } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { DepMode, FileContent, Mode, NodeContract, NodeInfo, Project, RunRecord, RunTaskResult } from '../../api'
+import type { DepMode, Mode, NodeContract, NodeInfo, Project, RunRecord, RunTaskResult } from '../../api'
 import { getTaskStatus } from '../../api'
 import { clampInt } from '../../lib/number'
 import { formatResult } from '../../lib/formatResult'
@@ -25,10 +25,6 @@ type Props = {
   nodeBusy: boolean
   nodeInfo: NodeInfo | null
   contract: NodeContract | null
-  graphPreview: FileContent | null
-  graphPreviewBusy: boolean
-  graphPreviewError: string | null
-
   busy: boolean
   mode: AutoOrMode
   depth: number
@@ -73,8 +69,6 @@ type Props = {
   onLoadRun: (runId: number) => void | Promise<void>
   onDeleteRun: (runId: number) => void | Promise<void>
   runs: RunRecord[]
-  onOpenFileEditor: (path: string) => void | Promise<void>
-  setWorkspaceView: (view: 'graph' | 'editor') => void
 }
 
 export function NodePanel({
@@ -89,9 +83,6 @@ export function NodePanel({
   onScan,
   nodeInfo,
   contract,
-  graphPreview,
-  graphPreviewBusy,
-  graphPreviewError,
   busy,
   mode,
   depth,
@@ -133,14 +124,10 @@ export function NodePanel({
   onLoadRun,
   onDeleteRun,
   runs,
-  onOpenFileEditor,
-  setWorkspaceView,
 }: Props) {
 
   const promptRef = React.useRef<HTMLTextAreaElement | null>(null)
-  const [helpOpen, setHelpOpen] = React.useState<
-    null | 'details' | 'contract' | 'preview' | 'run' | 'runs' | 'ctxSettings'
-  >(null)
+  const [helpOpen, setHelpOpen] = React.useState<null | 'details' | 'contract' | 'run' | 'runs' | 'ctxSettings'>(null)
   const [resultOpen, setResultOpen] = React.useState(false)
   const [activeRunId, setActiveRunId] = React.useState<number | null>(null)
   const [openedRunId, setOpenedRunId] = React.useState<number | null>(null)
@@ -178,13 +165,6 @@ export function NodePanel({
   React.useEffect(() => {
     try { localStorage.setItem('cs.ui.contractOpen', contractOpen ? '1' : '0') } catch {}
   }, [contractOpen])
-
-  const [previewOpen, setPreviewOpen] = React.useState<boolean>(() => {
-    try { return (localStorage.getItem('cs.ui.previewOpen') || '1') !== '0' } catch { return true }
-  })
-  React.useEffect(() => {
-    try { localStorage.setItem('cs.ui.previewOpen', previewOpen ? '1' : '0') } catch {}
-  }, [previewOpen])
 
   const [runsFilterQ, setRunsFilterQ] = React.useState('')
   const [runsFilterMode, setRunsFilterMode] = React.useState<'all' | Mode>('all')
@@ -452,7 +432,7 @@ export function NodePanel({
     topic,
     label,
   }: {
-    topic: 'details' | 'contract' | 'preview' | 'run' | 'runs' | 'ctxSettings'
+    topic: 'details' | 'contract' | 'run' | 'runs' | 'ctxSettings'
     label?: string
   }) => (
     <button
@@ -513,7 +493,7 @@ export function NodePanel({
     actions,
   }: {
     title: string
-    topic: 'details' | 'contract' | 'preview' | 'run' | 'runs' | 'ctxSettings'
+    topic: 'details' | 'contract' | 'run' | 'runs' | 'ctxSettings'
     open?: boolean
     onToggle?: () => void
     toggleTitle?: string
@@ -756,56 +736,6 @@ export function NodePanel({
                   <pre className="mt-1 text-xs bg-neutral-900 border border-neutral-800 rounded-md p-2 overflow-auto max-h-40">
                     {nodeBusy ? 'Loading…' : contract ? JSON.stringify(contract, null, 2) : '—'}
                   </pre>
-                )}
-              </div>
-
-              <div className="mt-3">
-                <SectionHeader
-                  title="Preview"
-                  topic="preview"
-                  open={previewOpen}
-                  onToggle={() => setPreviewOpen((v) => !v)}
-                  toggleTitle="Show/hide preview"
-                />
-                {previewOpen && (
-                  <div className="mt-2 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-                        onClick={() => {
-                          if (!selectedPath) return
-                          setWorkspaceView('editor')
-                          void Promise.resolve(onOpenFileEditor(selectedPath))
-                        }}
-                        disabled={!selectedPath}
-                      >
-                        Open in editor
-                      </button>
-                      {graphPreview?.truncated && (
-                        <span className="text-[10px] text-amber-300">truncated</span>
-                      )}
-                    </div>
-                    {graphPreviewBusy && (
-                      <div className="text-xs text-neutral-400">Loading preview…</div>
-                    )}
-                    {graphPreviewError && (
-                      <div className="text-[11px] text-rose-200 bg-rose-950/40 border border-rose-900/50 rounded-md px-2 py-1">
-                        {graphPreviewError}
-                      </div>
-                    )}
-                    {!graphPreviewBusy && !graphPreviewError && (
-                      graphPreview?.content ? (
-                        <pre className="text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 overflow-auto max-h-56 font-mono">
-                          {graphPreview.content}
-                        </pre>
-                      ) : (
-                        <div className="text-xs text-neutral-500">
-                          {selectedPath ? 'No preview available.' : 'Select a file to preview it.'}
-                        </div>
-                      )
-                    )}
-                  </div>
                 )}
               </div>
 
@@ -1621,8 +1551,6 @@ export function NodePanel({
             :
              helpOpen === 'contract'
               ? 'Help: Contract'
-            : helpOpen === 'preview'
-              ? 'Help: Preview'
             : helpOpen === 'run'
               ? 'Help: Run task'
             : helpOpen === 'runs'
@@ -1648,13 +1576,6 @@ export function NodePanel({
               <div>• Contract — structured description of node API/behavior (what the file/module “promises”).</div>
               <div>• Used for faster/cheaper tasks (especially with dep_mode=contracts).</div>
               <div>• If the contract is empty/stale — run Scan/Refresh.</div>
-            </div>
-          )}
-          {helpOpen === 'preview' && (
-            <div className="space-y-2">
-              <div>• Preview shows the first few thousand characters of the selected file.</div>
-              <div>• If the file is large, it may be marked as <span className="font-mono">truncated</span>.</div>
-              <div>• Use <span className="font-mono">Open in editor</span> for the full file.</div>
             </div>
           )}
           {helpOpen === 'run' && (
