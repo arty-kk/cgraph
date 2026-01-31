@@ -6,8 +6,11 @@ import { Modal } from './Modal'
 type ExplorerTreeProps = {
   activeProject: Project | null
   busy: boolean
+  openFilePaths: string[]
+  activeFilePath: string | null
   selectedPath: string | null
   dirtyPath?: string | null
+  pinnedPaths: string[]
   onSelectPath: (path: string) => void | Promise<void>
   onCreateFile: (path: string) => void | Promise<void>
   onRenameFile: (path: string, newPath: string) => void | Promise<void>
@@ -22,8 +25,11 @@ type ExplorerTreeProps = {
 export function ExplorerTree({
   activeProject,
   busy,
+  openFilePaths = [],
+  activeFilePath = null,
   selectedPath,
   dirtyPath = null,
+  pinnedPaths = [],
   onSelectPath,
   onCreateFile,
   onRenameFile,
@@ -45,7 +51,8 @@ export function ExplorerTree({
 
   const itemBase = 'w-fit max-w-full text-left text-[11px] border rounded-md px-2 py-1.5 leading-tight transition-colors disabled:opacity-50'
   const itemIdle = 'bg-neutral-950 border-neutral-800 hover:border-neutral-700'
-  const itemActive = 'bg-indigo-950/40 border-indigo-700'
+  const itemSelected = 'bg-indigo-950/40 border-indigo-700'
+  const itemActive = 'bg-indigo-950/25 border-indigo-600'
 
   const [explorerFilter, setExplorerFilter] = React.useState('')
   const ef = explorerFilter.trim().toLowerCase()
@@ -529,6 +536,15 @@ export function ExplorerTree({
       .sort((a, b) => String(a.path || '').localeCompare(String(b.path || '')))
   }, [jumpModule, projectFiles])
 
+  const openEntries = React.useMemo(
+    () => (openFilePaths || []).map((p) => String(p || '').trim()).filter(Boolean),
+    [openFilePaths],
+  )
+  const pinnedEntries = React.useMemo(
+    () => (pinnedPaths || []).map((p) => String(p || '').trim()).filter(Boolean),
+    [pinnedPaths],
+  )
+
   React.useEffect(() => {
     if (!showModuleSelect) return
     if (!activeProject) return
@@ -549,8 +565,9 @@ export function ExplorerTree({
 
   const renderFile = (f: ProjectFileItem, depth: number, opts?: { showPath?: boolean }) => {
     const selected = isSelectedFile(f.path)
+    const isActive = Boolean(activeFilePath && activeFilePath === f.path)
     const focused = focusedPath === f.path
-    const isDirtySelected = selected && !!dirtyPath && dirtyPath === f.path
+    const isDirty = !!dirtyPath && dirtyPath === f.path
     const name = f.path.split('/').pop() || f.path
     const showPath = Boolean(opts?.showPath)
     const canOpenInEditor = Boolean(onOpenFileEditor)
@@ -579,7 +596,7 @@ export function ExplorerTree({
           id={selected ? 'cs-explorer-selected' : undefined}
           className={[
             itemBase,
-            selected ? itemActive : itemIdle,
+            selected ? itemSelected : isActive ? itemActive : itemIdle,
             focused ? 'ring-1 ring-indigo-400' : '',
             isDisabled ? 'cursor-not-allowed' : 'cursor-pointer',
             'flex items-center justify-between gap-2 min-w-0',
@@ -604,7 +621,7 @@ export function ExplorerTree({
         >
           <div className="flex items-center gap-2 text-neutral-200 truncate">
             <span className="truncate">{showPath ? f.path : name}</span>
-            {isDirtySelected && (
+            {isDirty && (
               <span className="text-amber-300" aria-label="Unsaved changes" title="Unsaved changes">
                 ●
               </span>
@@ -631,6 +648,45 @@ export function ExplorerTree({
           </button>
         )}
       </div>
+    )
+  }
+
+  const renderQuickEntry = (path: string) => {
+    const name = path.split('/').pop() || path
+    const isActive = Boolean(activeFilePath && activeFilePath === path)
+    const isSelected = isSelectedFile(path)
+    const isDirty = !!dirtyPath && dirtyPath === path
+    const isDisabled = !activeProject || busy
+    const handleOpen = () => {
+      if (isDisabled) return
+      if (onOpenFileEditor) {
+        void Promise.resolve(onOpenFileEditor(path))
+      } else {
+        void Promise.resolve(onSelectPath(path))
+      }
+    }
+
+    return (
+      <button
+        key={path}
+        type="button"
+        className={[
+          itemBase,
+          isSelected ? itemSelected : isActive ? itemActive : itemIdle,
+          isDisabled ? 'cursor-not-allowed' : 'cursor-pointer',
+          'w-full flex items-center justify-between gap-2 min-w-0',
+        ].join(' ')}
+        onClick={handleOpen}
+        disabled={isDisabled}
+        title={path}
+      >
+        <span className="truncate text-neutral-200">{name}</span>
+        {isDirty && (
+          <span className="text-amber-300" aria-label="Unsaved changes" title="Unsaved changes">
+            ●
+          </span>
+        )}
+      </button>
     )
   }
 
@@ -1092,6 +1148,29 @@ export function ExplorerTree({
           </div>
         </div>
       </Modal>
+
+      <div className="space-y-2">
+        <div className="space-y-1">
+          <div className="text-[11px] font-semibold text-neutral-300">Open Editors ({openEntries.length})</div>
+          <div className="flex flex-col gap-1">
+            {openEntries.length > 0 ? (
+              openEntries.map((path) => renderQuickEntry(path))
+            ) : (
+              <div className="text-[11px] text-neutral-500">No open editors.</div>
+            )}
+          </div>
+        </div>
+        <div className="space-y-1">
+          <div className="text-[11px] font-semibold text-neutral-300">Pinned ({pinnedEntries.length})</div>
+          <div className="flex flex-col gap-1">
+            {pinnedEntries.length > 0 ? (
+              pinnedEntries.map((path) => renderQuickEntry(path))
+            ) : (
+              <div className="text-[11px] text-neutral-500">No pinned files.</div>
+            )}
+          </div>
+        </div>
+      </div>
 
       {projectFilesBusy ? (
         <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-400">

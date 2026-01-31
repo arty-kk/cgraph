@@ -11,6 +11,8 @@ type Props = {
   onHidePanel?: () => void
   projects: Project[]
   activeProject: Project | null
+  openFilePaths: string[]
+  activeFilePath: string | null
   selectedPath: string | null
   projectsLoading: boolean
   newName: string
@@ -57,6 +59,7 @@ type Props = {
   projectFiles: ProjectFileItem[]
   projectFilesMeta: any
   projectFilesBusy: boolean
+  pinnedPaths: string[]
 
   onOpenDocs: () => void | Promise<void>
 }
@@ -65,6 +68,8 @@ export function ProjectsSidebar({
   onHidePanel,
   projects,
   activeProject,
+  openFilePaths,
+  activeFilePath,
   selectedPath,
   projectsLoading,
   newName,
@@ -104,6 +109,7 @@ export function ProjectsSidebar({
   projectFiles,
   projectFilesMeta,
   projectFilesBusy,
+  pinnedPaths,
   onOpenDocs,
 }: Props) {
   const [helpOpen, setHelpOpen] = React.useState<null | 'projects' | 'graph' | 'search'>(null)
@@ -273,6 +279,8 @@ export function ProjectsSidebar({
               <ExplorerTree
                 activeProject={activeProject}
                 busy={busy}
+                openFilePaths={openFilePaths}
+                activeFilePath={activeFilePath}
                 selectedPath={selectedPath}
                 onSelectPath={onSelectPath}
                 onCreateFile={onCreateFile}
@@ -282,6 +290,7 @@ export function ProjectsSidebar({
                 projectFiles={projectFiles}
                 projectFilesMeta={projectFilesMeta}
                 projectFilesBusy={projectFilesBusy}
+                pinnedPaths={pinnedPaths}
                 showModuleSelect
               />
             </>

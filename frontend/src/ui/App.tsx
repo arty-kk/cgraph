@@ -258,6 +258,8 @@ export function App() {
             onHidePanel={app.toggleLeftPanel}
             projects={app.projects}
             activeProject={app.activeProject}
+            openFilePaths={app.openFilePaths}
+            activeFilePath={app.activeFilePath}
             selectedPath={app.selectedPath}
             projectsLoading={app.projectsLoading}
             newName={app.newName}
@@ -300,6 +302,7 @@ export function App() {
             projectFiles={app.projectFiles}
             projectFilesMeta={app.projectFilesMeta}
             projectFilesBusy={app.projectFilesBusy}
+            pinnedPaths={app.pinnedPaths}
             onOpenDocs={openDocs}
           />
         )}
@@ -395,6 +398,8 @@ export function App() {
                       <ExplorerTree
                         activeProject={app.activeProject}
                         busy={app.busy}
+                        openFilePaths={app.openFilePaths}
+                        activeFilePath={app.activeFilePath}
                         selectedPath={app.selectedPath}
                         dirtyPath={activeFileDirty ? app.activeFilePath : null}
                         onSelectPath={app.onSelectNodePath}
@@ -408,6 +413,7 @@ export function App() {
                         projectFiles={app.projectFiles}
                         projectFilesMeta={app.projectFilesMeta}
                         projectFilesBusy={app.projectFilesBusy}
+                        pinnedPaths={app.pinnedPaths}
                         showModuleSelect={false}
                       />
                     ) : (
