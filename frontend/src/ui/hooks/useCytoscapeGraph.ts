@@ -78,6 +78,8 @@ const CENTER_RETRY_DELAY_MS = 80
 
 const GRID_SPACING = 90
 const LOCK_BORDER = '#93c5fd'
+const NODE_SIZE_MIN = 14
+const NODE_SIZE_MAX = 28
 
 const STAR_ARC_PAD = Math.PI * 0.15 // отступ от краёв полуокружности
 const STAR_BASE_RADIUS_IN = 100
@@ -99,6 +101,12 @@ function safeStr(v: unknown): string {
 function toFiniteNumber(v: unknown, fallback = 0): number {
   const n = Number(v)
   return Number.isFinite(n) ? n : fallback
+}
+
+function nodeSizeFromRisk(risk: unknown): number {
+  const v = Math.max(0, toFiniteNumber(risk, 0))
+  const t = 1 - Math.exp(-v / 18)
+  return clamp(NODE_SIZE_MIN + (NODE_SIZE_MAX - NODE_SIZE_MIN) * t, NODE_SIZE_MIN, NODE_SIZE_MAX)
 }
 
 function makeUniqueId(base: string, used: Set<string>): string {
@@ -216,11 +224,19 @@ export function useCytoscapeGraph({
       return { n, canonical, pathKey }
     })
 
+    const sortedByRisk = [...normalized].sort(
+      (a, b) => toFiniteNumber(b.n?.risk, 0) - toFiniteNumber(a.n?.risk, 0),
+    )
+
     const importantIds = new Set<string>()
-    ;[...normalized]
-      .sort((a, b) => toFiniteNumber(b.n?.risk, 0) - toFiniteNumber(a.n?.risk, 0))
+    sortedByRisk
       .slice(0, Math.min(18, normalized.length))
       .forEach((x) => importantIds.add(x.canonical))
+
+    const glowIds = new Set<string>()
+    sortedByRisk
+      .slice(0, Math.min(6, normalized.length))
+      .forEach((x) => glowIds.add(x.canonical))
 
     const total = normalized.length
     const cols = Math.max(1, Math.ceil(Math.sqrt(total)))
@@ -238,6 +254,13 @@ export function useCytoscapeGraph({
       const x = ox + col * GRID_SPACING
       const y = oy + row * GRID_SPACING
 
+      const classes = [
+        importantIds.has(canonical) ? 'cs-important' : '',
+        glowIds.has(canonical) ? 'cs-glow' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+
       return {
         data: {
           id: canonical,
@@ -248,7 +271,7 @@ export function useCytoscapeGraph({
           scc: n?.scc_id,
         },
         position: { x, y },
-        classes: importantIds.has(canonical) ? 'cs-important' : '',
+        classes,
       }
     })
 
@@ -637,8 +660,8 @@ export function useCytoscapeGraph({
             style: {
               label: '',
               shape: 'round-rectangle',
-              width: 18,
-              height: 18,
+              width: (ele: { data: (k: string) => any }) => nodeSizeFromRisk(ele.data('risk')),
+              height: (ele: { data: (k: string) => any }) => nodeSizeFromRisk(ele.data('risk')),
               'background-color': (ele: { data: (k: string) => any }) => riskColor(toFiniteNumber(ele.data('risk'), 0)),
               'background-opacity': 0.98,
               'border-width': 1.5,
@@ -658,7 +681,24 @@ export function useCytoscapeGraph({
               'transition-timing-function': 'ease-out',
             },
           },
-          { selector: 'node.cs-important', style: { width: 22, height: 22, 'border-width': 2 } },
+          {
+            selector: 'node.cs-important',
+            style: {
+              'border-width': 2,
+              'border-color': '#e2e8f0',
+              'overlay-color': '#e2e8f0',
+              'overlay-opacity': 0.14,
+              'overlay-padding': 10,
+            },
+          },
+          {
+            selector: 'node.cs-glow',
+            style: {
+              'overlay-color': '#e2e8f0',
+              'overlay-opacity': 0.2,
+              'overlay-padding': 14,
+            },
+          },
           { selector: 'node.cs-dim', style: { opacity: DIM_NODE_OPACITY } },
           { selector: 'node.cs-neighbor', style: { 'border-width': 2, 'border-color': '#64748b' } },
           {
@@ -722,11 +762,11 @@ export function useCytoscapeGraph({
               'text-wrap': 'ellipsis',
               'text-max-width': 320,
               'border-width': 2,
-              'border-color': '#e2e8f0',
+              'border-color': '#f8fafc',
         
               'overlay-color': '#e2e8f0',
-              'overlay-opacity': 0.12,
-              'overlay-padding': 12,
+              'overlay-opacity': 0.18,
+              'overlay-padding': 16,
               ghost: 'yes',
               'ghost-offset-x': 0,
               'ghost-offset-y': 2,
