@@ -2028,7 +2028,7 @@ export function GraphCanvas({
       )}
       <div
         ref={containerRef}
-        className="graph-canvas-bg w-full h-full"
+        className="w-full h-full"
         onContextMenu={(e) => e.preventDefault()}
         aria-label={focusGraph ? 'Graph focus active' : undefined}
       />
