@@ -4,3 +4,14 @@
 
 :root { color-scheme: dark; }
 body { @apply bg-neutral-950 text-neutral-100; }
+
+.graph-canvas-bg {
+  background-color: #0a0a0a;
+  background-image:
+    radial-gradient(circle at 50% 40%, rgba(255, 255, 255, 0.06), rgba(17, 17, 17, 0.55) 45%, rgba(2, 2, 2, 0.95) 80%),
+    radial-gradient(circle at 50% 120%, rgba(20, 20, 20, 0.7), rgba(2, 2, 2, 0.98) 70%),
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: auto, auto, 48px 48px, 48px 48px;
+  background-position: center, center, -1px -1px, -1px -1px;
+}
