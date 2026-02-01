@@ -302,6 +302,25 @@ const ResetFiltersIcon = () => (
   </svg>
 )
 
+const FilterIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
+    <path
+      d="M4 6h16l-6 7v4l-4 2v-6L4 6Z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+)
+
+const LockIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" className="h-3.5 w-3.5" fill="none">
+    <rect x="6" y="11" width="12" height="8" rx="2" stroke="currentColor" strokeWidth="1.6" />
+    <path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3" stroke="currentColor" strokeWidth="1.6" />
+  </svg>
+)
+
 const NeighborsIcon = () => (
   <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none">
     <path d="M7 7h3v3H7z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
@@ -1939,31 +1958,65 @@ export function GraphCanvas({
                 </>
               )}
             </div>
-            <div className={['mt-1 flex-wrap items-center gap-2', hoverRevealFlex].join(' ')}>
-              <button
-                type="button"
-                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold"
-                onClick={() => setPanelOpen(true)}
-                title="Open filters panel"
-              >
-                Filters {filtersActiveCount ? `(${filtersActiveCount})` : '(0)'}
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold disabled:opacity-50"
-                onClick={() => { pushUndo(actions.exportSnapshot()); actions.showAll(); notifyInfo('Show all') }}
-                disabled={editStats.hidden === 0}
-                title="Show all hidden nodes"
-              >
-                Hidden {editStats.hidden}
-              </button>
-              <span className="text-neutral-500">Locked {editStats.locked}</span>
-              <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={saveLayout} title="Save layout">
-                Save layout
-              </button>
-              <button type="button" className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-0.5 text-[10px] font-semibold" onClick={resetLayout} title="Reset layout">
-                Reset layout
-              </button>
+            <div className={['mt-2 flex flex-wrap items-center gap-2 border-t border-neutral-800/70 pt-2', hoverRevealFlex].join(' ')}>
+              <div className="flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 text-[10px] text-neutral-300">
+                <span className="flex items-center gap-1">
+                  <EyeIcon />
+                  <span className="text-neutral-100">{editStats.hidden}</span>
+                </span>
+                <span className="text-neutral-500">·</span>
+                <span className="flex items-center gap-1">
+                  <LockIcon />
+                  <span className="text-neutral-100">{editStats.locked}</span>
+                </span>
+              </div>
+              <span className="h-4 w-px bg-neutral-800/80" aria-hidden="true" />
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => setPanelOpen(true)}
+                  title="Open filters panel"
+                  aria-label="Open filters panel"
+                >
+                  <span className="relative inline-flex items-center">
+                    <FilterIcon />
+                    {filtersActiveCount > 0 && (
+                      <span className="absolute -right-2 -top-2 rounded-full bg-indigo-500 px-1 text-[8px] font-semibold text-white">
+                        {filtersActiveCount}
+                      </span>
+                    )}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={() => { pushUndo(actions.exportSnapshot()); actions.showAll(); notifyInfo('Show all') }}
+                  disabled={editStats.hidden === 0}
+                  title="Show all hidden nodes"
+                  aria-label="Show all hidden nodes"
+                >
+                  {label(<EyeIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={saveLayout}
+                  title="Save layout"
+                  aria-label="Save layout"
+                >
+                  {label(<SaveLayoutIcon />)}
+                </button>
+                <button
+                  type="button"
+                  className={btnClass}
+                  onClick={resetLayout}
+                  title="Reset layout"
+                  aria-label="Reset layout"
+                >
+                  {label(<ResetLayoutIcon />)}
+                </button>
+              </div>
             </div>
             {compactMode && (
               <div className="mt-1 text-[10px] text-neutral-500">
