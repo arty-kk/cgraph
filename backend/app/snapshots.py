@@ -1,10 +1,12 @@
 #backend/app/snapshots.py
 from __future__ import annotations
 
+import shutil
 import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from .config import settings
 from .errors import BadRequestError
@@ -230,6 +232,39 @@ def prepare_snapshot_root(meta: SnapshotMeta) -> Path:
         _extract_tar(archive_path, root_dir)
 
     return root_dir
+
+
+def prepare_project_snapshot_root(meta: SnapshotMeta) -> Path:
+    shared_root = prepare_snapshot_root(meta)
+    project_base = _snapshot_dir(meta.sha256) / "projects" / uuid4().hex
+    project_root = project_base / "repo"
+    project_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(shared_root, project_root)
+    return project_root
+
+
+def _is_project_snapshot_root(root_dir: Path) -> bool:
+    base_dir = (settings.db_dir / "snapshots").resolve()
+    if base_dir not in root_dir.parents:
+        return False
+    try:
+        rel_parts = root_dir.relative_to(base_dir).parts
+    except ValueError:
+        return False
+    return len(rel_parts) >= 4 and rel_parts[1] == "projects"
+
+
+def delete_project_snapshot_root(root_path: str | Path) -> None:
+    root_dir = Path(root_path).resolve()
+    if not _is_project_snapshot_root(root_dir):
+        return
+    if root_dir.exists() and root_dir.is_dir():
+        for path in sorted(root_dir.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                path.rmdir()
+        root_dir.rmdir()
 
 
 def delete_snapshot(meta: SnapshotMeta) -> None:

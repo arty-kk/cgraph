@@ -44,7 +44,8 @@ from ..services.entitlements_service import get_entitlement_bool, get_entitlemen
 from ..services.usage_service import EMBEDDING_QUERY_KIND, check_and_increment
 from ..snapshots import (
     delete_snapshot,
-    prepare_snapshot_root,
+    delete_project_snapshot_root,
+    prepare_project_snapshot_root,
     snapshot_meta_from_dict,
     store_snapshot_blob,
 )
@@ -93,7 +94,7 @@ def create_project_from_snapshot(
     org_id: int,
 ) -> Project:
     meta = store_snapshot_blob(archive_bytes, archive_name)
-    root = prepare_snapshot_root(meta)
+    root = prepare_project_snapshot_root(meta)
     root = normalize_project_root(str(root), max_length=settings.max_root_path_chars)
     with get_session() as session:
         project = Project(name=name, root_path=str(root), org_id=org_id)
@@ -178,6 +179,7 @@ def delete_project(project_id: int, org_id: int) -> None:
             snapshots = session.exec(
                 select(RepoSnapshot).where(RepoSnapshot.project_id == project_id)
             ).all()
+            delete_project_snapshot_root(project.root_path)
             for snap in snapshots:
                 try:
                     payload = json.loads(snap.storage_json or "{}")
