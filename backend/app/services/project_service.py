@@ -195,8 +195,12 @@ def delete_project(project_id: int, org_id: int) -> None:
                                 RepoSnapshot.project_id != project_id,
                             )
                         ).one()
-                        > 0
                     )
+                    has_other_refs = int(
+                        has_other_refs[0]
+                        if isinstance(has_other_refs, (tuple, list))
+                        else has_other_refs
+                    ) > 0
                     if has_other_refs:
                         continue
                     try:
