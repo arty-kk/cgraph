@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Column, Computed, Index, Text, UniqueConstraint
+from sqlalchemy import Column, Computed, Index, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlmodel import Field, SQLModel
 
@@ -348,7 +348,13 @@ class FileText(SQLModel, table=True):
 class TaskJob(SQLModel, table=True):
     __tablename__ = "taskjob"
     __table_args__ = (
-        UniqueConstraint("org_id", "idempotency_key", name="uq_taskjob_org_idempotency_key"),
+        Index(
+            "uq_taskjob_org_idempotency_key_active",
+            "org_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("status IN ('pending','running')"),
+        ),
     )
     id: str = Field(primary_key=True)
     org_id: int = Field(index=True)
