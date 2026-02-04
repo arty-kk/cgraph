@@ -164,6 +164,7 @@ def _find_existing_job_id(org_id: int, idempotency_key: str) -> str | None:
             select(TaskJob.id).where(
                 TaskJob.org_id == org_id,
                 TaskJob.idempotency_key == idempotency_key,
+                TaskJob.status.in_(("pending", "running")),
             )
         ).first()
     if isinstance(existing, str) and existing:
