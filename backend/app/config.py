@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     )
     celery_queue_default: str = Field(default="medium", alias="STUBGRAPH_CELERY_QUEUE_DEFAULT")
 
-    auth_enabled: bool = Field(default=True, alias="STUBGRAPH_AUTH_ENABLED")
+    auth_enabled: bool = Field(default=False, alias="STUBGRAPH_AUTH_ENABLED")
     auth_allow_public_signup: bool = Field(
         default=False,
         alias="STUBGRAPH_AUTH_ALLOW_PUBLIC_SIGNUP",
