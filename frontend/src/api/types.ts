@@ -1,5 +1,10 @@
 // frontend/src/api/types.ts
-export type Project = { id: number; name: string; root_path: string }
+export type Project = {
+  id: number
+  name: string
+  root_path?: string
+  source?: { kind: string; label: string }
+}
 
 export type AgenticRetrievalSettings = {
   complexity_coeff?: number

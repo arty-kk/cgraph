@@ -30,7 +30,8 @@ export type {
 
 export {
   listProjects,
-  createProject,
+  createProjectFromRoot,
+  createProjectFromSnapshot,
   deleteProject,
   scanProject,
   listProjectFiles,

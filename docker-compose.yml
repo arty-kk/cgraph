@@ -1,0 +1,120 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      STUBGRAPH_DB_DIR: /data
+      STUBGRAPH_DATABASE_URL: ${STUBGRAPH_DATABASE_URL:-postgresql+psycopg://stubgraph:stubgraph@db:5432/stubgraph}
+      STUBGRAPH_STORAGE_BACKEND: ${STUBGRAPH_STORAGE_BACKEND:-local}
+      STUBGRAPH_S3_BUCKET: ${STUBGRAPH_S3_BUCKET:-}
+      STUBGRAPH_S3_REGION: ${STUBGRAPH_S3_REGION:-}
+      STUBGRAPH_S3_ENDPOINT_URL: ${STUBGRAPH_S3_ENDPOINT_URL:-}
+      STUBGRAPH_S3_ACCESS_KEY_ID: ${STUBGRAPH_S3_ACCESS_KEY_ID:-}
+      STUBGRAPH_S3_SECRET_ACCESS_KEY: ${STUBGRAPH_S3_SECRET_ACCESS_KEY:-}
+      STUBGRAPH_S3_PREFIX: ${STUBGRAPH_S3_PREFIX:-}
+      STUBGRAPH_S3_SIGNED_URL_TTL_SECONDS: ${STUBGRAPH_S3_SIGNED_URL_TTL_SECONDS:-3600}
+      STUBGRAPH_PATCH_RETENTION_DAYS: ${STUBGRAPH_PATCH_RETENTION_DAYS:-7}
+      STUBGRAPH_CELERY_BROKER_URL: ${STUBGRAPH_CELERY_BROKER_URL:-amqp://guest:guest@rabbitmq:5672//}
+      STUBGRAPH_CELERY_QUEUE_DEFAULT: ${STUBGRAPH_CELERY_QUEUE_DEFAULT:-medium}
+      STUBGRAPH_AUTH_ENABLED: ${STUBGRAPH_AUTH_ENABLED:-true}
+      STUBGRAPH_AUTH_ALLOW_PUBLIC_SIGNUP: ${STUBGRAPH_AUTH_ALLOW_PUBLIC_SIGNUP:-false}
+      STUBGRAPH_AUTH_PASSWORD_PEPPER: ${STUBGRAPH_AUTH_PASSWORD_PEPPER:-stubgraph}
+      STUBGRAPH_AUTH_SESSION_TTL_HOURS: ${STUBGRAPH_AUTH_SESSION_TTL_HOURS:-24}
+      STUBGRAPH_AUTH_API_KEY_TTL_DAYS: ${STUBGRAPH_AUTH_API_KEY_TTL_DAYS:-}
+      STUBGRAPH_REDIS_URL: ${STUBGRAPH_REDIS_URL:-redis://redis:6379/0}
+      STUBGRAPH_CACHE_ENABLED: ${STUBGRAPH_CACHE_ENABLED:-true}
+      STUBGRAPH_CACHE_DEFAULT_TTL_SECONDS: ${STUBGRAPH_CACHE_DEFAULT_TTL_SECONDS:-300}
+      STUBGRAPH_RATE_LIMIT_ENABLED: ${STUBGRAPH_RATE_LIMIT_ENABLED:-true}
+      STUBGRAPH_RATE_LIMIT_REQUESTS_PER_MINUTE: ${STUBGRAPH_RATE_LIMIT_REQUESTS_PER_MINUTE:-600}
+      STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT: ${STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      STUBGRAPH_CORS_ALLOW_ORIGINS: ${STUBGRAPH_CORS_ALLOW_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    volumes:
+      - stubgraph_data:/data
+    depends_on:
+      - db
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+      - rabbitmq
+      - redis
+
+  worker:
+    build:
+      context: ./backend
+    command: ["celery", "-A", "app.celery_app.celery_app", "worker", "-Q", "light,medium,heavy", "--loglevel=INFO"]
+    environment:
+      STUBGRAPH_DB_DIR: /data
+      STUBGRAPH_DATABASE_URL: ${STUBGRAPH_DATABASE_URL:-postgresql+psycopg://stubgraph:stubgraph@db:5432/stubgraph}
+      STUBGRAPH_STORAGE_BACKEND: ${STUBGRAPH_STORAGE_BACKEND:-local}
+      STUBGRAPH_S3_BUCKET: ${STUBGRAPH_S3_BUCKET:-}
+      STUBGRAPH_S3_REGION: ${STUBGRAPH_S3_REGION:-}
+      STUBGRAPH_S3_ENDPOINT_URL: ${STUBGRAPH_S3_ENDPOINT_URL:-}
+      STUBGRAPH_S3_ACCESS_KEY_ID: ${STUBGRAPH_S3_ACCESS_KEY_ID:-}
+      STUBGRAPH_S3_SECRET_ACCESS_KEY: ${STUBGRAPH_S3_SECRET_ACCESS_KEY:-}
+      STUBGRAPH_S3_PREFIX: ${STUBGRAPH_S3_PREFIX:-}
+      STUBGRAPH_S3_SIGNED_URL_TTL_SECONDS: ${STUBGRAPH_S3_SIGNED_URL_TTL_SECONDS:-3600}
+      STUBGRAPH_PATCH_RETENTION_DAYS: ${STUBGRAPH_PATCH_RETENTION_DAYS:-7}
+      STUBGRAPH_CELERY_BROKER_URL: ${STUBGRAPH_CELERY_BROKER_URL:-amqp://guest:guest@rabbitmq:5672//}
+      STUBGRAPH_CELERY_QUEUE_DEFAULT: ${STUBGRAPH_CELERY_QUEUE_DEFAULT:-medium}
+      STUBGRAPH_AUTH_ENABLED: ${STUBGRAPH_AUTH_ENABLED:-true}
+      STUBGRAPH_AUTH_ALLOW_PUBLIC_SIGNUP: ${STUBGRAPH_AUTH_ALLOW_PUBLIC_SIGNUP:-false}
+      STUBGRAPH_AUTH_PASSWORD_PEPPER: ${STUBGRAPH_AUTH_PASSWORD_PEPPER:-stubgraph}
+      STUBGRAPH_AUTH_SESSION_TTL_HOURS: ${STUBGRAPH_AUTH_SESSION_TTL_HOURS:-24}
+      STUBGRAPH_AUTH_API_KEY_TTL_DAYS: ${STUBGRAPH_AUTH_API_KEY_TTL_DAYS:-}
+      STUBGRAPH_REDIS_URL: ${STUBGRAPH_REDIS_URL:-redis://redis:6379/0}
+      STUBGRAPH_CACHE_ENABLED: ${STUBGRAPH_CACHE_ENABLED:-true}
+      STUBGRAPH_CACHE_DEFAULT_TTL_SECONDS: ${STUBGRAPH_CACHE_DEFAULT_TTL_SECONDS:-300}
+      STUBGRAPH_RATE_LIMIT_ENABLED: ${STUBGRAPH_RATE_LIMIT_ENABLED:-true}
+      STUBGRAPH_RATE_LIMIT_REQUESTS_PER_MINUTE: ${STUBGRAPH_RATE_LIMIT_REQUESTS_PER_MINUTE:-600}
+      STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT: ${STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - stubgraph_data:/data
+    depends_on:
+      - db
+      - rabbitmq
+      - redis
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: stubgraph
+      POSTGRES_USER: stubgraph
+      POSTGRES_PASSWORD: stubgraph
+    ports:
+      - "5432:5432"
+    volumes:
+      - stubgraph_pgdata:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3.13-alpine
+    ports:
+      - "5672:5672"
+    volumes:
+      - stubgraph_rabbitmq:/var/lib/rabbitmq
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - stubgraph_redis:/data
+
+volumes:
+  stubgraph_data:
+  stubgraph_pgdata:
+  stubgraph_rabbitmq:
+  stubgraph_redis:

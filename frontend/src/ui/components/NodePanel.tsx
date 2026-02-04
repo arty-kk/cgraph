@@ -240,7 +240,12 @@ export function NodePanel({
               ? 'Example: "If we change <symbol/behavior>, which files/modules are affected?"'
               : 'Describe the task.'
 
-  const runPayload = runResult ? (isRecord(runResult.result) ? runResult.result : { raw: runResult.result }) : null
+  const runPayload = runResult
+    ? {
+        ...(isRecord(runResult.result) ? runResult.result : { raw: runResult.result }),
+        ...(runResult.plan_tz ? { plan_tz: runResult.plan_tz, plan_source: runResult.plan_source } : {}),
+      }
+    : null
   const blockedPaths = useMemo(() => {
     const raw = runResult?.applied?.blocked_paths
     if (!Array.isArray(raw)) return []
@@ -392,9 +397,7 @@ export function NodePanel({
   const promptChips = useMemo(() => {
     return [
       { label: 'Explain', mode: 'analyze' as const, text: 'Explain the file purpose. Point out key functions/classes and responsibilities.' },
-      { label: 'Risks', mode: 'analyze' as const, text: 'Find major risks/bottlenecks: complexity, dependencies, potential bugs. Provide recommendations.' },
-      { label: 'Refactor plan', mode: 'evolve' as const, text: 'Propose a refactor plan: steps, what to touch, risks, and how to validate with tests.' },
-      { label: 'Add tests', mode: 'evolve' as const, text: 'Propose a set of tests (unit/integration) for key logic, including edge cases.' },
+      { label: 'Improve', mode: 'evolve' as const, text: 'Suggest improvements and a refactor plan: steps, risks, and how to validate with tests.' },
       { label: 'Fix', mode: 'fix' as const, text: 'Fix the issue: <description>. Preserve behavior/contract. Add/update tests. Return a patch.' },
       { label: 'Impact', mode: 'impact' as const, text: 'If we change <symbol/behavior>, which files are affected? Return a list and brief reasons.' },
     ]
@@ -804,11 +807,11 @@ export function NodePanel({
 
                     <div className="mt-2">
                       <SectionHeader
-                        title="Context Settings"
+                        title="Advanced settings"
                         topic="ctxSettings"
                         open={ctxAdvancedOpen}
                         onToggle={() => setCtxAdvancedOpen((v) => !v)}
-                        toggleTitle="Show/hide context settings"
+                        toggleTitle="Show/hide advanced settings"
                       />
 
                       {ctxAdvancedOpen && (
@@ -1556,7 +1559,7 @@ export function NodePanel({
             : helpOpen === 'runs'
                ? 'Help: Results'
             : helpOpen === 'ctxSettings'
-              ? 'Help: Context settings'
+              ? 'Help: Advanced settings'
             : 'Help'
           }
           onClose={() => setHelpOpen(null)}
@@ -1582,7 +1585,7 @@ export function NodePanel({
             <div className="space-y-2">
               <div className="text-neutral-200 font-semibold">Run task: how to choose settings</div>
               <div>• Fill in <span className="font-mono">Prompt</span> and pick a preset if needed.</div>
-              <div>• All context settings are now in <span className="font-mono">Context Settings</span> (can be collapsed/expanded).</div>
+              <div>• All advanced context settings are now in <span className="font-mono">Advanced settings</span> (can be collapsed/expanded).</div>
               <div>• By default <span className="font-mono">Apply patch</span> is off — enable it only if you need a diff.</div>
             </div>
           )}
@@ -1595,7 +1598,7 @@ export function NodePanel({
           )}
           {helpOpen === 'ctxSettings' && (
             <div className="space-y-2">
-              <div className="text-neutral-200 font-semibold">Context Settings</div>
+              <div className="text-neutral-200 font-semibold">Advanced settings</div>
               <div>• <span className="font-mono">Context</span>: Agentic — context via tools; Pack — bundled package via graph/contracts.</div>
               <div>• <span className="font-mono">Mode</span>: auto/analyze/evolve/fix/impact — response logic.</div>
               <div>• <span className="font-mono">Depth</span> and <span className="font-mono">Dependencies</span> control depth and dependency types.</div>

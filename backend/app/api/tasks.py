@@ -1,17 +1,18 @@
 #backend/app/api/tasks.py
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel, Field
 
 from ..llm.policy import ProfileName
+from ..policy import require_org_context, require_project_access
 from ..services.task_service import (
     TaskRequest, describe_task,
     apply_run_patch, delete_run, get_run, get_run_patch,
     list_runs, run_task_with_background,
 )
 
-router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 class RunTask(BaseModel):
@@ -64,7 +65,14 @@ class RunTask(BaseModel):
     )
 
 @router.post("/{project_id}/run")
-def run_task(project_id: int, body: RunTask, background_tasks: BackgroundTasks, background: bool = False):
+def run_task(
+    request: Request,
+    project_id: int,
+    body: RunTask,
+    background_tasks: BackgroundTasks,
+    background: bool = False,
+):
+    project = require_project_access(request, project_id, min_role="member")
     provided_fields = set(getattr(body, "model_fields_set", set()))
     request = TaskRequest(
         target_path=body.target_path,
@@ -89,34 +97,46 @@ def run_task(project_id: int, body: RunTask, background_tasks: BackgroundTasks, 
         agentic_reasoning_effort=body.agentic_reasoning_effort,
         provided_fields=provided_fields,
     )
-    return run_task_with_background(project_id, request, background=background, background_tasks=background_tasks)
+    return run_task_with_background(
+        project.id,
+        project.org_id,
+        request,
+        background=background,
+        background_tasks=background_tasks,
+    )
 
 
 @router.get("/{project_id}/runs")
-def list_runs_endpoint(project_id: int, limit: int = 50):
-    return list_runs(project_id, limit=limit)
+def list_runs_endpoint(request: Request, project_id: int, limit: int = 50):
+    project = require_project_access(request, project_id, min_role="viewer")
+    return list_runs(project.id, project.org_id, limit=limit)
 
 
 @router.get("/{project_id}/runs/{run_id}")
-def get_run_endpoint(project_id: int, run_id: int):
-    return get_run(project_id, run_id)
+def get_run_endpoint(request: Request, project_id: int, run_id: int):
+    project = require_project_access(request, project_id, min_role="viewer")
+    return get_run(project.id, project.org_id, run_id)
 
 
 @router.get("/{project_id}/runs/{run_id}/patch")
-def get_run_patch_endpoint(project_id: int, run_id: int):
-    return get_run_patch(project_id, run_id)
+def get_run_patch_endpoint(request: Request, project_id: int, run_id: int):
+    project = require_project_access(request, project_id, min_role="viewer")
+    return get_run_patch(project.id, project.org_id, run_id)
 
 
 @router.post("/{project_id}/runs/{run_id}/apply")
-def apply_run_patch_endpoint(project_id: int, run_id: int):
-    return apply_run_patch(project_id, run_id)
+def apply_run_patch_endpoint(request: Request, project_id: int, run_id: int):
+    project = require_project_access(request, project_id, min_role="member")
+    return apply_run_patch(project.id, project.org_id, run_id)
 
 
 @router.delete("/{project_id}/runs/{run_id}")
-def delete_run_endpoint(project_id: int, run_id: int):
-    return delete_run(project_id, run_id)
+def delete_run_endpoint(request: Request, project_id: int, run_id: int):
+    project = require_project_access(request, project_id, min_role="member")
+    return delete_run(project.id, project.org_id, run_id)
 
 
 @router.get("/status/{task_id}")
-def get_task_status(task_id: str):
-    return describe_task(task_id)
+def get_task_status(request: Request, task_id: str):
+    _, org_id, _ = require_org_context(request, min_role="viewer")
+    return describe_task(task_id, org_id)

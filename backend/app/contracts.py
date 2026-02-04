@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from sqlmodel import select, delete
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .db import get_session
 from .models import ModuleContract
 from .indexers import pick_indexer
@@ -126,7 +126,7 @@ def get_or_build_contract(project_id: int, project_root: Path, rel_path: str) ->
 
     with get_session() as s:
         cj = json.dumps(contract, ensure_ascii=False)
-        stmt = sqlite_insert(ModuleContract).values(
+        stmt = pg_insert(ModuleContract).values(
             project_id=project_id,
             path=rel_norm,
             file_hash=file_hash,

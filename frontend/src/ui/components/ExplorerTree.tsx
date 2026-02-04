@@ -54,17 +54,26 @@ export function ExplorerTree({
   const inputSmClass = 'w-full h-9 rounded-md bg-neutral-900 border border-neutral-800 px-3 text-sm outline-none disabled:opacity-50'
 
   const itemBase = [
-    'w-fit max-w-full text-left border rounded-md leading-tight transition-colors disabled:opacity-50',
-    compact ? 'text-[10px] px-2 py-1' : 'text-[11px] px-2 py-1.5',
+    'w-full max-w-full text-left leading-tight transition-colors disabled:opacity-50',
+    compact ? 'text-[11px] px-2 py-1 rounded-sm' : 'text-[11px] px-2 py-1.5 rounded-md border',
   ].join(' ')
-  const itemIdle = 'bg-neutral-950 border-neutral-800 hover:border-neutral-700'
-  const itemSelected = 'bg-indigo-950/40 border-indigo-700'
-  const itemActive = 'bg-indigo-950/25 border-indigo-600'
+  const itemIdle = compact
+    ? 'bg-transparent hover:bg-neutral-900/70'
+    : 'bg-neutral-950 border-neutral-800 hover:border-neutral-700'
+  const itemSelected = compact
+    ? 'bg-indigo-500/10'
+    : 'bg-indigo-950/40 border-indigo-700'
+  const itemActive = compact
+    ? 'bg-indigo-500/5'
+    : 'bg-indigo-950/25 border-indigo-600'
   const dirButtonClass = [
-    'w-full text-left pr-3 text-xs text-neutral-200 hover:bg-neutral-900',
-    compact ? 'py-1.5' : 'py-2',
+    'w-full text-left pr-3 text-xs text-neutral-200 hover:bg-neutral-900/70',
+    compact ? 'py-1' : 'py-2',
   ].join(' ')
   const dirChildrenClass = compact ? 'px-2 pb-1 flex flex-col gap-0.5' : 'px-2 pb-1.5 flex flex-col gap-0.5'
+  const sectionHeaderClass = compact
+    ? 'text-[10px] uppercase tracking-[0.2em] text-neutral-500'
+    : 'text-[11px] font-semibold text-neutral-300'
 
   const [explorerFilter, setExplorerFilter] = React.useState('')
   const ef = explorerFilter.trim().toLowerCase()
@@ -708,14 +717,64 @@ export function ExplorerTree({
     const focused = focusedPath === d.path
     const pad = 10 + depth * 10
 
-    const riskAvg = d.riskCount > 0 ? d.riskSum / d.riskCount : 0
-    const riskWAvg = d.riskLocDenom > 0 ? d.riskLocSum / d.riskLocDenom : riskAvg
-
     const dirKeys = Object.keys(d.dirs).sort()
     const shownDirKeys = dirKeys.slice(0, MAX_DIRS_PER_NODE)
     const filesSorted = (d.files || []).slice().sort((a, b) => String(a.path).localeCompare(String(b.path)))
     const shownFiles = filesSorted.slice(0, MAX_FILES_PER_NODE)
+    if (compact) {
+      return (
+        <div key={d.path} id={dirDomId(d.path)} className="flex flex-col">
+          <button
+            type="button"
+            className={[
+              dirButtonClass,
+              focused ? 'ring-1 ring-indigo-400' : '',
+            ].join(' ')}
+            onClick={() => {
+              setFocusedPath(d.path)
+              toggleDir(d.path)
+            }}
+            style={{ paddingLeft: pad }}
+            onMouseDown={(e) => e.preventDefault()}
+            onFocus={() => setFocusedPath(d.path)}
+            data-explorer-path={d.path}
+            role="treeitem"
+            aria-expanded={isOpen}
+            aria-level={depth + 1}
+            tabIndex={focused ? 0 : -1}
+          >
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-neutral-200 truncate">
+                {isOpen ? '▾' : '▸'} {d.name}
+              </span>
+              <span className="text-neutral-500 font-normal">({d.fileCount})</span>
+            </div>
+          </button>
 
+          {isOpen && (
+            <div className={dirChildrenClass} role="group">
+              {shownDirKeys.map((k) => renderDir(d.dirs[k], depth + 1))}
+              {dirKeys.length > shownDirKeys.length && (
+                <div className="text-[11px] text-neutral-500" style={{ marginLeft: (depth + 1) * 10 }}>
+                  … {dirKeys.length - shownDirKeys.length} More Dirs
+                </div>
+              )}
+
+              {shownFiles.map((f) => renderFile(f, depth + 1))}
+
+              {filesSorted.length > shownFiles.length && (
+                <div className="text-[11px] text-neutral-500" style={{ marginLeft: (depth + 1) * 10 }}>
+                  … {filesSorted.length - shownFiles.length} More Files
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    const riskAvg = d.riskCount > 0 ? d.riskSum / d.riskCount : 0
+    const riskWAvg = d.riskLocDenom > 0 ? d.riskLocSum / d.riskLocDenom : riskAvg
     const dirTooltip = [
       d.path || '(root)',
       `files: ${d.fileCount}`,
@@ -959,44 +1018,46 @@ export function ExplorerTree({
         title="Local filter for the file tree (path substring). Does not query the backend."
       />
 
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
-          disabled={actionsDisabled}
-          onClick={() => {
-            if (actionsDisabled) return
-            setCreateOpen(true)
-          }}
-          title="Create new file"
-        >
-          Create
-        </button>
-        <button
-          type="button"
-          className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
-          disabled={renameDisabled}
-          onClick={() => {
-            if (renameDisabled) return
-            setRenameOpen(true)
-          }}
-          title="Rename selected file"
-        >
-          Rename
-        </button>
-        <button
-          type="button"
-          className="rounded-md border border-rose-900/70 bg-rose-950/40 px-2 py-1 text-[11px] font-semibold text-rose-100 hover:bg-rose-900/40 disabled:opacity-50"
-          disabled={deleteDisabled}
-          onClick={() => {
-            if (deleteDisabled) return
-            setDeleteOpen(true)
-          }}
-          title="Delete selected file"
-        >
-          Delete
-        </button>
-      </div>
+      {!compact && (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            disabled={actionsDisabled}
+            onClick={() => {
+              if (actionsDisabled) return
+              setCreateOpen(true)
+            }}
+            title="Create new file"
+          >
+            Create
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            disabled={renameDisabled}
+            onClick={() => {
+              if (renameDisabled) return
+              setRenameOpen(true)
+            }}
+            title="Rename selected file"
+          >
+            Rename
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-rose-900/70 bg-rose-950/40 px-2 py-1 text-[11px] font-semibold text-rose-100 hover:bg-rose-900/40 disabled:opacity-50"
+            disabled={deleteDisabled}
+            onClick={() => {
+              if (deleteDisabled) return
+              setDeleteOpen(true)
+            }}
+            title="Delete selected file"
+          >
+            Delete
+          </button>
+        </div>
+      )}
 
       <Modal
         open={createOpen}
@@ -1164,7 +1225,7 @@ export function ExplorerTree({
       <div className="space-y-2">
         {showOpenEditors && (
           <div className="space-y-1">
-            <div className="text-[11px] font-semibold text-neutral-300">Open Editors ({openEntries.length})</div>
+            <div className={sectionHeaderClass}>Open Editors ({openEntries.length})</div>
             <div className="flex flex-col gap-1">
               {openEntries.length > 0 ? (
                 openEntries.map((path) => renderQuickEntry(path))
@@ -1175,7 +1236,7 @@ export function ExplorerTree({
           </div>
         )}
         <div className="space-y-1">
-          <div className="text-[11px] font-semibold text-neutral-300">Pinned ({pinnedEntries.length})</div>
+          <div className={sectionHeaderClass}>Pinned ({pinnedEntries.length})</div>
           <div className="flex flex-col gap-1">
             {pinnedEntries.length > 0 ? (
               pinnedEntries.map((path) => renderQuickEntry(path))
@@ -1197,7 +1258,10 @@ export function ExplorerTree({
       ) : (
         <div
           ref={explorerScrollRef}
-          className="mt-2 max-h-[55vh] overflow-auto flex flex-col gap-0.5"
+          className={[
+            'mt-2 overflow-auto flex flex-col gap-0.5',
+            compact ? 'min-h-0' : 'max-h-[55vh]',
+          ].join(' ')}
           role="tree"
           aria-label="Project files"
           onKeyDown={handleTreeKeyDown}

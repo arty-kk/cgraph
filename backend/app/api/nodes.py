@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
@@ -12,7 +12,8 @@ from ..contracts import get_or_build_contract
 from ..db import get_session
 from ..errors import BadRequestError, NotFoundError
 from ..graph import update_graph_metrics_incremental
-from ..models import FileNode, Project
+from ..models import FileNode
+from ..policy import require_project_access
 from ..scan import scan_files
 from ..utils import normalize_project_root, project_lock, resolve_under_root
 
@@ -57,16 +58,12 @@ def _removed_neighbors(reindexed: object) -> list[str] | None:
         return value if isinstance(value, list) else value
     return None
 
-router = APIRouter(prefix="/api/nodes", tags=["nodes"])
+router = APIRouter(prefix="/nodes", tags=["nodes"])
 
 @router.get("/{project_id}/{path:path}/contract")
-def contract(project_id: int, path: str):
-    with get_session() as s:
-        p = s.get(Project, project_id)
-    if not p:
-        raise NotFoundError("Проект не найден", context={"project_id": project_id})
-
-    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+def contract(request: Request, project_id: int, path: str):
+    project = require_project_access(request, project_id, min_role="viewer")
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     if not abs_path.exists():
         raise NotFoundError("Файл не найден", context={"path": rel_norm})
@@ -82,13 +79,9 @@ def contract(project_id: int, path: str):
         raise BadRequestError("Не удалось собрать контракт", context={"reason": str(e)})
 
 @router.get("/{project_id}/{path:path}/node")
-def node(project_id: int, path: str):
-    with get_session() as s:
-        proj = s.get(Project, project_id)
-        if not proj:
-            raise NotFoundError("Проект не найден", context={"project_id": project_id})
-
-    root = normalize_project_root(proj.root_path, max_length=settings.max_root_path_chars)
+def node(request: Request, project_id: int, path: str):
+    project = require_project_access(request, project_id, min_role="viewer")
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(
         root,
         path,
@@ -112,7 +105,7 @@ def node(project_id: int, path: str):
                 raise NotFoundError("Файл не найден", context={"path": rel_norm})
             if not abs_path.is_file():
                 raise BadRequestError("Цель должна быть файлом")
-            reindexed = scan_files(project_id, root, [rel_norm])
+            reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
             removed_neighbors = _removed_neighbors(reindexed)
             update_graph_metrics_incremental(
                 project_id,
@@ -135,13 +128,9 @@ def node(project_id: int, path: str):
 
 
 @router.get("/{project_id}/{path:path}/file")
-def get_file(project_id: int, path: str, max_chars: int | None = None):
-    with get_session() as s:
-        p = s.get(Project, project_id)
-    if not p:
-        raise NotFoundError("Проект не найден", context={"project_id": project_id})
-
-    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+def get_file(request: Request, project_id: int, path: str, max_chars: int | None = None):
+    project = require_project_access(request, project_id, min_role="viewer")
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     if not abs_path.exists():
         raise NotFoundError("Файл не найден", context={"path": rel_norm})
@@ -162,13 +151,9 @@ def get_file(project_id: int, path: str, max_chars: int | None = None):
 
 
 @router.put("/{project_id}/{path:path}/file")
-def update_file(project_id: int, path: str, body: FileUpdate):
-    with get_session() as s:
-        p = s.get(Project, project_id)
-    if not p:
-        raise NotFoundError("Проект не найден", context={"project_id": project_id})
-
-    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+def update_file(request: Request, project_id: int, path: str, body: FileUpdate):
+    project = require_project_access(request, project_id, min_role="member")
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     if not abs_path.exists():
         raise NotFoundError("Файл не найден", context={"path": rel_norm})
@@ -185,7 +170,7 @@ def update_file(project_id: int, path: str, body: FileUpdate):
         if not abs_path.is_file():
             raise BadRequestError("Цель должна быть файлом")
         abs_path.write_text(content, encoding="utf-8")
-        reindexed = scan_files(project_id, root, [rel_norm])
+        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
         removed_neighbors = _removed_neighbors(reindexed)
         update_graph_metrics_incremental(
             project_id,
@@ -197,13 +182,9 @@ def update_file(project_id: int, path: str, body: FileUpdate):
 
 
 @router.post("/{project_id}/{path:path}/file")
-def create_file(project_id: int, path: str, body: FileCreate):
-    with get_session() as s:
-        p = s.get(Project, project_id)
-    if not p:
-        raise NotFoundError("Проект не найден", context={"project_id": project_id})
-
-    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+def create_file(request: Request, project_id: int, path: str, body: FileCreate):
+    project = require_project_access(request, project_id, min_role="member")
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
 
     content = body.content if isinstance(body.content, str) or body.content is None else None
@@ -221,7 +202,7 @@ def create_file(project_id: int, path: str, body: FileCreate):
             parent.mkdir(parents=True, exist_ok=True)
 
         abs_path.write_text(content, encoding="utf-8")
-        reindexed = scan_files(project_id, root, [rel_norm])
+        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
         removed_neighbors = _removed_neighbors(reindexed)
         update_graph_metrics_incremental(
             project_id,
@@ -233,13 +214,9 @@ def create_file(project_id: int, path: str, body: FileCreate):
 
 
 @router.post("/{project_id}/{path:path}/rename")
-def rename_file(project_id: int, path: str, body: FileRename):
-    with get_session() as s:
-        p = s.get(Project, project_id)
-    if not p:
-        raise NotFoundError("Проект не найден", context={"project_id": project_id})
-
-    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+def rename_file(request: Request, project_id: int, path: str, body: FileRename):
+    project = require_project_access(request, project_id, min_role="member")
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     new_abs, new_rel = resolve_under_root(
         root,
@@ -266,7 +243,7 @@ def rename_file(project_id: int, path: str, body: FileRename):
             raise BadRequestError("Родительский путь должен быть директорией")
 
         abs_path.rename(new_abs)
-        reindexed = scan_files(project_id, root, [rel_norm, new_rel])
+        reindexed = scan_files(project_id, project.org_id, root, [rel_norm, new_rel])
         removed_neighbors = _removed_neighbors(reindexed)
         update_graph_metrics_incremental(
             project_id,
@@ -278,13 +255,9 @@ def rename_file(project_id: int, path: str, body: FileRename):
 
 
 @router.delete("/{project_id}/{path:path}/file")
-def delete_file(project_id: int, path: str):
-    with get_session() as s:
-        p = s.get(Project, project_id)
-    if not p:
-        raise NotFoundError("Проект не найден", context={"project_id": project_id})
-
-    root = normalize_project_root(p.root_path, max_length=settings.max_root_path_chars)
+def delete_file(request: Request, project_id: int, path: str):
+    project = require_project_access(request, project_id, min_role="member")
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
 
     with project_lock(project_id):
@@ -294,7 +267,7 @@ def delete_file(project_id: int, path: str):
             raise BadRequestError("Цель должна быть файлом")
 
         abs_path.unlink()
-        reindexed = scan_files(project_id, root, [rel_norm])
+        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
         removed_neighbors = _removed_neighbors(reindexed)
         update_graph_metrics_incremental(
             project_id,

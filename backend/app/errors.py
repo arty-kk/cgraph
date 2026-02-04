@@ -41,6 +41,16 @@ class NotFoundError(AppError):
     status_code = HTTPStatus.NOT_FOUND
 
 
+class UnauthorizedError(AppError):
+    code = "unauthorized"
+    status_code = HTTPStatus.UNAUTHORIZED
+
+
+class ForbiddenError(AppError):
+    code = "forbidden"
+    status_code = HTTPStatus.FORBIDDEN
+
+
 class LimitExceededError(AppError):
     code = "limit_exceeded"
     status_code = HTTPStatus.BAD_REQUEST

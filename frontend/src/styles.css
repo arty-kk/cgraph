@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root { color-scheme: dark; }
+html, body, #root { height: 100%; overflow: hidden; }
 body { @apply bg-neutral-950 text-neutral-100; }
 
 .graph-canvas-bg {

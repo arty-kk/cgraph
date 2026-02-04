@@ -10,16 +10,16 @@ from pathlib import Path
 from threading import Lock
 from typing import Iterable, Tuple
 from sqlmodel import delete, select
-from sqlalchemy import text as sa_text, bindparam, or_
+from sqlalchemy import bindparam, or_
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .config import settings
 from .db import get_session
 from .logging import get_logger
 from .llm.client import get_openai_client
 from .models import (
     FileNode, FileEdge, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef,
-    FileChunkEmbedding,
+    FileChunkEmbedding, FileText,
 )
 from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
@@ -27,6 +27,9 @@ from .resolve import resolve_spec
 from .utils import resolve_under_root, sha256_text, project_lock
 from .api_map import extract_fastapi_routes, extract_frontend_api_calls, extract_fastapi_includes
 from .api_contracts import extract_backend_route_contract_rows, extract_frontend_call_meta_rows, extract_ts_type_defs
+from .errors import LimitExceededError
+from .services.entitlements_service import get_entitlement_bool, get_entitlement_int
+from .services.usage_service import EMBEDDING_CHUNKS_KIND, check_and_increment
 
 
 PARSE_CACHE_LIMIT = 256
@@ -84,16 +87,19 @@ def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
 
 def _is_missing_table_error(e: Exception, table: str) -> bool:
     msg = str(e).lower()
-    return ("no such table" in msg) and (table.lower() in msg)
+    return (("no such table" in msg) or ("does not exist" in msg) or ("relation" in msg)) and (
+        table.lower() in msg
+    )
 
-def _fts_delete(session, project_id: int, paths: list[str]) -> None:
+def _search_index_delete(session, project_id: int, paths: list[str]) -> None:
     if not paths:
         return
-    stmt = sa_text("DELETE FROM filetext_fts WHERE project_id=:pid AND path IN :paths").bindparams(
-        bindparam("paths", expanding=True)
+    stmt = delete(FileText).where(
+        FileText.project_id == project_id,
+        FileText.path.in_(bindparam("paths", expanding=True)),
     )
     for chunk in _chunks(paths, 400):
-        session.execute(stmt, {"pid": int(project_id), "paths": chunk})
+        session.exec(stmt, {"paths": chunk})
 
 def _delete_embeddings(session, project_id: int, paths: list[str]) -> None:
     if not paths:
@@ -164,7 +170,7 @@ def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
             )
         )
 
-def scan_project(project_id: int, project_root: Path) -> dict:
+def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
     project_root = project_root.resolve()
     with project_lock(project_id):
         with get_session() as s:
@@ -208,7 +214,7 @@ def scan_project(project_id: int, project_root: Path) -> dict:
             if int(prev_size) != int(size) or float(prev_mtime) != float(mtime):
                 candidates.append(rel)
 
-        updated = scan_files(project_id, project_root, candidates, precomputed_stats=stats_map)
+        updated = scan_files(project_id, org_id, project_root, candidates, precomputed_stats=stats_map)
 
         if removed:
             with get_session() as s:
@@ -220,9 +226,9 @@ def scan_project(project_id: int, project_root: Path) -> dict:
                 )
                 s.exec(delete(FileNode).where(FileNode.project_id == project_id, FileNode.path.in_(removed)))
                 try:
-                    _fts_delete(s, project_id, removed)
+                    _search_index_delete(s, project_id, removed)
                 except OperationalError as e:
-                    if not _is_missing_table_error(e, "filetext_fts"):
+                    if not _is_missing_table_error(e, "filetext"):
                         raise
                 try:
                     _delete_embeddings(s, project_id, removed)
@@ -248,6 +254,7 @@ def scan_project(project_id: int, project_root: Path) -> dict:
 
 def scan_files(
     project_id: int,
+    org_id: int,
     project_root: Path,
     rel_paths: Iterable[str],
     precomputed_stats: dict[str, tuple[float, int]] | None = None,
@@ -297,7 +304,7 @@ def scan_files(
 
     node_rows: list[dict] = []
     edge_map: dict[tuple[str, str, str], FileEdge] = {}
-    fts_rows: list[dict] = []
+    search_rows: list[dict] = []
     route_rows: list[dict] = []
     call_rows: list[dict] = []
     include_rows: list[dict] = []
@@ -308,8 +315,10 @@ def scan_files(
     embedding_paths_to_delete: list[str] = []
     embedding_hashes: dict[str, set[str]] = {}
     embedding_warned_missing_key = False
+    embedding_warned_limit = False
 
-    embeddings_enabled = bool(settings.embeddings_enabled)
+    ent_embeddings_enabled = get_entitlement_bool(org_id, "embeddings_enabled")
+    embeddings_enabled = bool(settings.embeddings_enabled) and ent_embeddings_enabled is not False
     if embeddings_enabled and present:
         with get_session() as s:
             try:
@@ -431,10 +440,9 @@ def scan_files(
         loc = sum(1 for line in text.splitlines() if line.strip())
         embed_text_len = len(text)
 
-        try:
-            fts_rows.append({"project_id": int(project_id), "path": rel, "content": text[:SEARCH_INDEX_MAX_CHARS]})
-        except Exception:
-            pass
+        search_rows.append(
+            {"project_id": int(project_id), "path": rel, "content": text[:SEARCH_INDEX_MAX_CHARS]}
+        )
 
         cached = _get_cached_parse(lang, file_hash)
         if cached:
@@ -527,6 +535,23 @@ def scan_files(
                     else:
                         client = get_openai_client()
                         try:
+                            chunk_limit = get_entitlement_int(
+                                org_id, "embeddings_daily_chunk_limit"
+                            )
+                            check_and_increment(
+                                org_id,
+                                EMBEDDING_CHUNKS_KIND,
+                                len(chunks),
+                                chunk_limit if chunk_limit is not None else settings.embeddings_daily_chunk_limit,
+                            )
+                        except LimitExceededError:
+                            if not embedding_warned_limit:
+                                logger.warning(
+                                    "Embeddings daily chunk limit exceeded; skipping embeddings."
+                                )
+                                embedding_warned_limit = True
+                            continue
+                        try:
                             response = client.embeddings.create(
                                 model=settings.embeddings_model,
                                 input=chunks,
@@ -609,9 +634,9 @@ def scan_files(
             to_del = sorted(set((present or []) + (removed or [])))
             if to_del:
                 try:
-                    _fts_delete(s, project_id, to_del)
+                    _search_index_delete(s, project_id, to_del)
                 except OperationalError as e:
-                    if not _is_missing_table_error(e, "filetext_fts"):
+                    if not _is_missing_table_error(e, "filetext"):
                         raise
                 try:
                     _delete_api_indexes(s, project_id, to_del)
@@ -631,25 +656,27 @@ def scan_files(
                 except OperationalError as e:
                     if not _is_missing_table_error(e, "filechunkembedding"):
                         raise
-            if fts_rows:
-                s.execute(
-                    sa_text("INSERT INTO filetext_fts (project_id, path, content) VALUES (:project_id, :path, :content)"),
-                    fts_rows,
+            if search_rows:
+                stmt_text = pg_insert(FileText).values(search_rows)
+                stmt_text = stmt_text.on_conflict_do_update(
+                    index_elements=["project_id", "path"],
+                    set_={"content": stmt_text.excluded.content},
                 )
+                s.exec(stmt_text)
             if route_rows:
-                stmt_r = sqlite_insert(ApiRoute).values(route_rows)
+                stmt_r = pg_insert(ApiRoute).values(route_rows)
                 stmt_r = stmt_r.on_conflict_do_nothing(
                     index_elements=["project_id", "method", "path", "source_path", "handler_name", "lineno"]
                 )
                 s.exec(stmt_r)
             if call_rows:
-                stmt_c = sqlite_insert(ApiCall).values(call_rows)
+                stmt_c = pg_insert(ApiCall).values(call_rows)
                 stmt_c = stmt_c.on_conflict_do_nothing(
                     index_elements=["project_id", "method", "path", "source_path", "lineno"]
                 )
                 s.exec(stmt_c)
             if include_rows:
-                stmt_i = sqlite_insert(ApiInclude).values(include_rows)
+                stmt_i = pg_insert(ApiInclude).values(include_rows)
                 stmt_i = stmt_i.on_conflict_do_nothing(
                     index_elements=[
                         "project_id",
@@ -663,14 +690,14 @@ def scan_files(
                 )
                 s.exec(stmt_i)
             if route_contract_rows:
-                stmt_rc = sqlite_insert(ApiRouteContract).values(route_contract_rows)
+                stmt_rc = pg_insert(ApiRouteContract).values(route_contract_rows)
                 stmt_rc = stmt_rc.on_conflict_do_update(
                     index_elements=["project_id", "method", "path", "source_path", "handler_name", "lineno"],
                     set_={"contract_json": stmt_rc.excluded.contract_json},
                 )
                 s.exec(stmt_rc)
             if call_meta_rows:
-                stmt_cm = sqlite_insert(ApiCallMeta).values(call_meta_rows)
+                stmt_cm = pg_insert(ApiCallMeta).values(call_meta_rows)
                 stmt_cm = stmt_cm.on_conflict_do_update(
                     index_elements=["project_id", "method", "path", "source_path", "lineno"],
                     set_={
@@ -684,7 +711,7 @@ def scan_files(
                 )
                 s.exec(stmt_cm)
             if ts_type_rows:
-                stmt_tt = sqlite_insert(TsTypeDef).values(ts_type_rows)
+                stmt_tt = pg_insert(TsTypeDef).values(ts_type_rows)
                 stmt_tt = stmt_tt.on_conflict_do_update(
                     index_elements=["project_id", "name", "source_path"],
                     set_={
@@ -694,7 +721,7 @@ def scan_files(
                 )
                 s.exec(stmt_tt)
             if embedding_rows:
-                stmt_emb = sqlite_insert(FileChunkEmbedding).values(embedding_rows)
+                stmt_emb = pg_insert(FileChunkEmbedding).values(embedding_rows)
                 stmt_emb = stmt_emb.on_conflict_do_nothing(
                     index_elements=["project_id", "path", "chunk_index", "file_hash"]
                 )
@@ -716,7 +743,7 @@ def scan_files(
             )
 
         if node_rows:
-            stmt = sqlite_insert(FileNode).values(node_rows)
+            stmt = pg_insert(FileNode).values(node_rows)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["project_id", "path"],
                 set_={
@@ -741,7 +768,7 @@ def scan_files(
                 }
                 for e in edge_map.values()
             ]
-            stmt_e = sqlite_insert(FileEdge).values(edge_rows)
+            stmt_e = pg_insert(FileEdge).values(edge_rows)
             stmt_e = stmt_e.on_conflict_do_nothing(index_elements=["project_id", "src_path", "dst_path", "kind"])
             s.exec(stmt_e)
 
