@@ -184,6 +184,19 @@ def delete_project(project_id: int, org_id: int) -> None:
                 except Exception:  # noqa: BLE001
                     payload = {}
                 if isinstance(payload, dict):
+                    has_other_refs = (
+                        session.exec(
+                            select(func.count())
+                            .select_from(RepoSnapshot)
+                            .where(
+                                RepoSnapshot.content_sha256 == snap.content_sha256,
+                                RepoSnapshot.project_id != project_id,
+                            )
+                        ).one()
+                        > 0
+                    )
+                    if has_other_refs:
+                        continue
                     try:
                         delete_snapshot(snapshot_meta_from_dict(payload))
                     except Exception:  # noqa: BLE001
