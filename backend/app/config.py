@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     max_root_path_chars: int = Field(default=500, alias="STUBGRAPH_MAX_ROOT_PATH_CHARS")
     max_rel_path_chars: int = Field(default=1024, alias="STUBGRAPH_MAX_REL_PATH_CHARS")
     max_prompt_chars: int = Field(default=8000, alias="STUBGRAPH_MAX_PROMPT_CHARS")
+    project_lock_timeout_seconds: float = Field(
+        default=30.0,
+        alias="STUBGRAPH_PROJECT_LOCK_TIMEOUT_SECONDS",
+    )
+    project_lock_poll_interval_seconds: float = Field(
+        default=0.25,
+        alias="STUBGRAPH_PROJECT_LOCK_POLL_INTERVAL_SECONDS",
+    )
 
     # Patch application guardrails
     patch_require_in_context: bool = Field(default=True, alias="STUBGRAPH_PATCH_REQUIRE_IN_CONTEXT")
@@ -292,6 +300,12 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_FILE_CHARS должен быть положительным")
         if self.llm_agentic_temperature < 0 or self.llm_agentic_temperature > 2:
             raise ValueError("STUBGRAPH_LLM_AGENTIC_TEMPERATURE должен быть в диапазоне 0..2")
+        if self.project_lock_timeout_seconds < 0:
+            raise ValueError("STUBGRAPH_PROJECT_LOCK_TIMEOUT_SECONDS должен быть неотрицательным")
+        if self.project_lock_poll_interval_seconds <= 0:
+            raise ValueError(
+                "STUBGRAPH_PROJECT_LOCK_POLL_INTERVAL_SECONDS должен быть положительным"
+            )
         if (
             self.task_queue_completed_ttl_seconds is not None
             and self.task_queue_completed_ttl_seconds <= 0

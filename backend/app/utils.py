@@ -2,17 +2,23 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Tuple
 
 from sqlalchemy import text
 
+from .config import settings
 from .db import engine
 from .errors import PathValidationError
 from .logging import get_logger
 
 logger = get_logger("stubgraph.utils")
+
+
+class ProjectLockTimeout(RuntimeError):
+    pass
 
 
 def sha256_text(text: str) -> str:
@@ -47,7 +53,36 @@ def project_lock(project_id: int) -> Iterator[None]:
 
     conn = engine.connect()
     try:
-        conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": int(project_id)})
+        timeout_seconds = float(getattr(settings, "project_lock_timeout_seconds", 30.0))
+        poll_interval = float(getattr(settings, "project_lock_poll_interval_seconds", 0.25))
+        if timeout_seconds < 0:
+            timeout_seconds = 0.0
+        if poll_interval <= 0:
+            poll_interval = 0.1
+
+        start = time.monotonic()
+        locked = False
+        while not locked:
+            locked = bool(
+                conn.execute(
+                    text("SELECT pg_try_advisory_lock(:key)"),
+                    {"key": int(project_id)},
+                ).scalar()
+            )
+            if locked:
+                break
+            elapsed = time.monotonic() - start
+            if elapsed >= timeout_seconds:
+                logger.warning(
+                    "Project lock timeout",
+                    extra={
+                        "project_id": int(project_id),
+                        "timeout_seconds": timeout_seconds,
+                        "poll_interval": poll_interval,
+                    },
+                )
+                raise ProjectLockTimeout("Timeout while waiting for project lock")
+            time.sleep(min(poll_interval, max(0.0, timeout_seconds - elapsed)))
         try:
             yield
         finally:

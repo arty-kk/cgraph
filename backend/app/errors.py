@@ -50,6 +50,11 @@ class ForbiddenError(AppError):
     status_code = HTTPStatus.FORBIDDEN
 
 
+class LockedError(AppError):
+    code = "project_locked"
+    status_code = HTTPStatus.LOCKED
+
+
 class LimitExceededError(AppError):
     code = "limit_exceeded"
     status_code = HTTPStatus.BAD_REQUEST

@@ -10,7 +10,7 @@ from sqlmodel import delete, select
 
 from ..config import settings
 from ..db import get_session
-from ..errors import BadRequestError, ForbiddenError, NotFoundError
+from ..errors import BadRequestError, ForbiddenError, LockedError, NotFoundError
 from ..graph import (
     compute_graph_metrics,
     graph_payload,
@@ -49,7 +49,7 @@ from ..snapshots import (
     snapshot_meta_from_dict,
     store_snapshot_blob,
 )
-from ..utils import normalize_project_root, project_lock, resolve_under_root
+from ..utils import ProjectLockTimeout, normalize_project_root, project_lock, resolve_under_root
 from .task_queue import get_scan_idempotency_key, task_queue
 
 
@@ -128,82 +128,89 @@ def get_latest_snapshots(project_ids: list[int]) -> dict[int, RepoSnapshot]:
 
 
 def delete_project(project_id: int, org_id: int) -> None:
-    with project_lock(project_id):
-        with get_session() as session:
-            project = session.exec(
-                select(Project).where(Project.id == project_id, Project.org_id == org_id)
-            ).first()
-            if not project:
-                raise NotFoundError("Проект не найден", context={"project_id": project_id})
-
-            session.exec(delete(FileEdge).where(FileEdge.project_id == project_id))
-            session.exec(delete(FileNode).where(FileNode.project_id == project_id))
-            session.exec(delete(ModuleContract).where(ModuleContract.project_id == project_id))
-            session.exec(delete(ApiRoute).where(ApiRoute.project_id == project_id))
-            session.exec(delete(ApiCall).where(ApiCall.project_id == project_id))
-            session.exec(delete(ApiInclude).where(ApiInclude.project_id == project_id))
-            session.exec(delete(ApiRouteContract).where(ApiRouteContract.project_id == project_id))
-            session.exec(delete(ApiCallMeta).where(ApiCallMeta.project_id == project_id))
-            session.exec(delete(TsTypeDef).where(TsTypeDef.project_id == project_id))
-            session.exec(
-                delete(FileChunkEmbedding).where(FileChunkEmbedding.project_id == project_id)
-            )
-            runs = session.exec(
-                select(AnalysisRun).where(AnalysisRun.project_id == project_id)
-            ).all()
-            shas: set[str] = set()
-            for run in runs:
-                try:
-                    data = json.loads(run.result_json or "{}")
-                except Exception:  # noqa: BLE001
-                    data = {}
-                if not isinstance(data, dict):
-                    continue
-                meta = data.get("patch_unified_diff_meta")
-                if isinstance(meta, dict):
-                    sha = meta.get("sha256")
-                    if isinstance(sha, str) and sha:
-                        shas.add(sha)
-            for sha in shas:
-                delete_patch_blob_for_sha(sha)
-            session.exec(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
-            session.exec(delete(ProjectDoc).where(ProjectDoc.project_id == project_id))
-            session.exec(delete(FileText).where(FileText.project_id == project_id))
-            snapshots = session.exec(
-                select(RepoSnapshot).where(RepoSnapshot.project_id == project_id)
-            ).all()
-            delete_project_snapshot_root(project.root_path)
-            for snap in snapshots:
-                try:
-                    payload = json.loads(snap.storage_json or "{}")
-                except Exception:  # noqa: BLE001
-                    payload = {}
-                if isinstance(payload, dict):
-                    has_other_refs = session.exec(
-                        select(func.count())
-                        .select_from(RepoSnapshot)
-                        .where(
-                            RepoSnapshot.content_sha256 == snap.content_sha256,
-                            RepoSnapshot.project_id != project_id,
-                        )
-                    ).one()
-                    has_other_refs = (
-                        int(
-                            has_other_refs[0]
-                            if isinstance(has_other_refs, (tuple, list))
-                            else has_other_refs
-                        )
-                        > 0
-                    )
-                    if has_other_refs:
-                        continue
+    try:
+        with project_lock(project_id):
+            with get_session() as session:
+                project = session.exec(
+                    select(Project).where(Project.id == project_id, Project.org_id == org_id)
+                ).first()
+                if not project:
+                    raise NotFoundError("Проект не найден", context={"project_id": project_id})
+                session.exec(delete(FileEdge).where(FileEdge.project_id == project_id))
+                session.exec(delete(FileNode).where(FileNode.project_id == project_id))
+                session.exec(delete(ModuleContract).where(ModuleContract.project_id == project_id))
+                session.exec(delete(ApiRoute).where(ApiRoute.project_id == project_id))
+                session.exec(delete(ApiCall).where(ApiCall.project_id == project_id))
+                session.exec(delete(ApiInclude).where(ApiInclude.project_id == project_id))
+                session.exec(
+                    delete(ApiRouteContract).where(ApiRouteContract.project_id == project_id)
+                )
+                session.exec(delete(ApiCallMeta).where(ApiCallMeta.project_id == project_id))
+                session.exec(delete(TsTypeDef).where(TsTypeDef.project_id == project_id))
+                session.exec(
+                    delete(FileChunkEmbedding).where(FileChunkEmbedding.project_id == project_id)
+                )
+                runs = session.exec(
+                    select(AnalysisRun).where(AnalysisRun.project_id == project_id)
+                ).all()
+                shas: set[str] = set()
+                for run in runs:
                     try:
-                        delete_snapshot(snapshot_meta_from_dict(payload))
+                        data = json.loads(run.result_json or "{}")
                     except Exception:  # noqa: BLE001
-                        pass
-            session.exec(delete(RepoSnapshot).where(RepoSnapshot.project_id == project_id))
-            session.exec(delete(Project).where(Project.id == project_id))
-            session.commit()
+                        data = {}
+                    if not isinstance(data, dict):
+                        continue
+                    meta = data.get("patch_unified_diff_meta")
+                    if isinstance(meta, dict):
+                        sha = meta.get("sha256")
+                        if isinstance(sha, str) and sha:
+                            shas.add(sha)
+                for sha in shas:
+                    delete_patch_blob_for_sha(sha)
+                session.exec(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
+                session.exec(delete(ProjectDoc).where(ProjectDoc.project_id == project_id))
+                session.exec(delete(FileText).where(FileText.project_id == project_id))
+                snapshots = session.exec(
+                    select(RepoSnapshot).where(RepoSnapshot.project_id == project_id)
+                ).all()
+                delete_project_snapshot_root(project.root_path)
+                for snap in snapshots:
+                    try:
+                        payload = json.loads(snap.storage_json or "{}")
+                    except Exception:  # noqa: BLE001
+                        payload = {}
+                    if isinstance(payload, dict):
+                        has_other_refs = session.exec(
+                            select(func.count())
+                            .select_from(RepoSnapshot)
+                            .where(
+                                RepoSnapshot.content_sha256 == snap.content_sha256,
+                                RepoSnapshot.project_id != project_id,
+                            )
+                        ).one()
+                        has_other_refs = (
+                            int(
+                                has_other_refs[0]
+                                if isinstance(has_other_refs, (tuple, list))
+                                else has_other_refs
+                            )
+                            > 0
+                        )
+                        if has_other_refs:
+                            continue
+                        try:
+                            delete_snapshot(snapshot_meta_from_dict(payload))
+                        except Exception:  # noqa: BLE001
+                            pass
+                session.exec(delete(RepoSnapshot).where(RepoSnapshot.project_id == project_id))
+                session.exec(delete(Project).where(Project.id == project_id))
+                session.commit()
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
     cache_invalidate_prefix([f"project:{project_id}"])
 
 
@@ -293,8 +300,14 @@ def _scan_and_update_graph(project_id: int, org_id: int) -> dict:
     project = get_project(project_id, org_id=org_id)
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     stats = scan_project(project_id, org_id, root)
-    with project_lock(project_id):
-        compute_graph_metrics(project_id)
+    try:
+        with project_lock(project_id):
+            compute_graph_metrics(project_id)
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
     cache_invalidate_prefix([f"project:{project_id}"])
     return {"ok": True, "stats": stats}
 

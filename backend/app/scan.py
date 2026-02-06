@@ -28,7 +28,7 @@ from .api_map import (
 )
 from .config import settings
 from .db import get_session
-from .errors import LimitExceededError
+from .errors import LimitExceededError, LockedError
 from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
 from .llm.client import get_openai_client
@@ -48,7 +48,7 @@ from .models import (
 from .resolve import resolve_spec
 from .services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from .services.usage_service import EMBEDDING_CHUNKS_KIND, check_and_increment
-from .utils import _chunk_text, project_lock, resolve_under_root, sha256_text
+from .utils import ProjectLockTimeout, _chunk_text, project_lock, resolve_under_root, sha256_text
 
 PARSE_CACHE_LIMIT = 256
 _parse_cache: OrderedDict[Tuple[str, str, str], tuple[int, list[dict]]] = OrderedDict()
@@ -239,13 +239,14 @@ def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
 
 def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
     project_root = project_root.resolve()
-    with project_lock(project_id):
-        with get_session() as s:
-            existing = s.exec(
-                select(
-                    FileNode.path, FileNode.file_mtime, FileNode.file_size, FileNode.file_hash
-                ).where(FileNode.project_id == project_id)
-            ).all()
+    try:
+        with project_lock(project_id):
+            with get_session() as s:
+                existing = s.exec(
+                    select(
+                        FileNode.path, FileNode.file_mtime, FileNode.file_size, FileNode.file_hash
+                    ).where(FileNode.project_id == project_id)
+                ).all()
 
         existing_map: dict[str, tuple[float, int, str]] = {}
         for row in existing:
@@ -327,13 +328,19 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
                     ):
                         raise
                 s.commit()
+    except ProjectLockTimeout as exc:
+        logger.warning("Project lock timeout during scan", extra={"project_id": project_id})
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
 
-        return {
-            "nodes": len(current_paths),
-            "changed": len(candidates),
-            "removed": len(removed),
-            **updated,
-        }
+    return {
+        "nodes": len(current_paths),
+        "changed": len(candidates),
+        "removed": len(removed),
+        **updated,
+    }
 
 
 def scan_files(

@@ -20,6 +20,7 @@ from ..errors import (
     ExternalServiceError,
     ForbiddenError,
     LimitExceededError,
+    LockedError,
     NotFoundError,
     ServerError,
 )
@@ -34,7 +35,7 @@ from ..scan import scan_files
 from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from ..services.usage_service import LLM_REQUESTS_KIND, check_and_increment
 from ..storage import StorageError, get_patch_download_url, read_patch_blob, store_patch_blob
-from ..utils import normalize_project_root, project_lock, resolve_under_root
+from ..utils import ProjectLockTimeout, normalize_project_root, project_lock, resolve_under_root
 from .project_service import get_project, scan_with_background
 from .task_queue import TaskState, task_queue
 
@@ -287,6 +288,11 @@ def _apply_patch_and_record(
                         node.status = "patched"
                         session.add(node)
                     session.commit()
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
     except PatchApplyError as error:
         applied = {"error": str(error)}
 
@@ -412,6 +418,11 @@ def _ensure_node_exists(project_id: int, org_id: int, target: str, root: Path) -
                 raise ValueError("Цель должна быть файлом")
             scan_files(project_id, org_id, root, [target])
             compute_graph_metrics(project_id)
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
     except Exception as error:  # noqa: BLE001
         raise ServerError(
             "Не удалось проиндексировать целевой файл", context={"reason": str(error)}
