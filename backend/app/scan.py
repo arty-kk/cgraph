@@ -1,10 +1,9 @@
 #backend/app/scan.py
 from __future__ import annotations
 
+import json
 import os
 import time
-import json
-
 from collections import OrderedDict
 from pathlib import Path
 from threading import Lock
@@ -13,16 +12,42 @@ from sqlmodel import delete, select
 from sqlalchemy import bindparam, or_
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from sqlalchemy import bindparam, or_
+from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import OperationalError
+from sqlmodel import delete, select
+
+from .api_contracts import (
+    extract_backend_route_contract_rows,
+    extract_frontend_call_meta_rows,
+    extract_ts_type_defs,
+)
+from .api_map import (
+    extract_fastapi_includes,
+    extract_fastapi_routes,
+    extract_frontend_api_calls,
+)
 from .config import settings
 from .db import get_session
-from .logging import get_logger
+from .indexers import pick_indexer
+from .indexers.infra_indexer import is_infra_file
 from .llm.client import get_openai_client
+from .logging import get_logger
 from .models import (
     FileNode, FileEdge, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef,
     FileChunkEmbedding, FileText,
+    ApiCall,
+    ApiCallMeta,
+    ApiInclude,
+    ApiRoute,
+    ApiRouteContract,
+    FileChunkEmbedding,
+    FileEdge,
+    FileNode,
+    TsTypeDef,
 )
-from .indexers import pick_indexer
-from .indexers.infra_indexer import is_infra_file
 from .resolve import resolve_spec
 from .utils import resolve_under_root, sha256_text, project_lock
 from .api_map import extract_fastapi_routes, extract_frontend_api_calls, extract_fastapi_includes
@@ -31,23 +56,30 @@ from .errors import LimitExceededError
 from .services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from .services.usage_service import EMBEDDING_CHUNKS_KIND, check_and_increment
 
+from .utils import project_lock, resolve_under_root, sha256_text
 
 PARSE_CACHE_LIMIT = 256
-_parse_cache: OrderedDict[Tuple[str, str], tuple[int, list[dict]]] = OrderedDict()
+_parse_cache: OrderedDict[Tuple[str, str, str], tuple[int, list[dict]]] = OrderedDict()
 _parse_cache_lock = Lock()
 logger = get_logger("stubgraph.scan")
 
 
-def _get_cached_parse(lang: str, file_hash: str) -> tuple[int, list[dict]] | None:
-    key = (lang, file_hash)
+def _get_cached_parse(lang: str, file_hash: str, file_suffix: str) -> tuple[int, list[dict]] | None:
+    key = (lang, file_hash, file_suffix)
     with _parse_cache_lock:
         cached = _parse_cache.get(key)
         if cached:
             _parse_cache.move_to_end(key)
         return cached
 
-def _store_cached_parse(lang: str, file_hash: str, complexity: int, imports: list[dict]) -> None:
-    key = (lang, file_hash)
+def _store_cached_parse(
+    lang: str,
+    file_hash: str,
+    file_suffix: str,
+    complexity: int,
+    imports: list[dict],
+) -> None:
+    key = (lang, file_hash, file_suffix)
     with _parse_cache_lock:
         _parse_cache[key] = (complexity, imports)
         _parse_cache.move_to_end(key)
@@ -149,24 +181,40 @@ def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
         return
     for chunk in _chunks(paths, 400):
         session.exec(
-            delete(ApiRoute).where(ApiRoute.project_id == project_id, ApiRoute.source_path.in_(chunk))
+            delete(ApiRoute).where(
+                ApiRoute.project_id == project_id,
+                ApiRoute.source_path.in_(chunk),
+            )
         )
         session.exec(
-            delete(ApiCall).where(ApiCall.project_id == project_id, ApiCall.source_path.in_(chunk))
+            delete(ApiCall).where(
+                ApiCall.project_id == project_id,
+                ApiCall.source_path.in_(chunk),
+            )
         )
         session.exec(
-            delete(ApiRouteContract).where(ApiRouteContract.project_id == project_id, ApiRouteContract.source_path.in_(chunk))
+            delete(ApiRouteContract).where(
+                ApiRouteContract.project_id == project_id,
+                ApiRouteContract.source_path.in_(chunk),
+            )
         )
         session.exec(
-            delete(ApiCallMeta).where(ApiCallMeta.project_id == project_id, ApiCallMeta.source_path.in_(chunk))
+            delete(ApiCallMeta).where(
+                ApiCallMeta.project_id == project_id,
+                ApiCallMeta.source_path.in_(chunk),
+            )
         )
         session.exec(
-            delete(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.source_path.in_(chunk))
+            delete(TsTypeDef).where(
+                TsTypeDef.project_id == project_id,
+                TsTypeDef.source_path.in_(chunk),
+            )
         )
         session.exec(
             delete(ApiInclude).where(
                 ApiInclude.project_id == project_id,
-                (ApiInclude.parent_source_path.in_(chunk)) | (ApiInclude.child_source_path.in_(chunk)),
+                (ApiInclude.parent_source_path.in_(chunk))
+                | (ApiInclude.child_source_path.in_(chunk)),
             )
         )
 
@@ -224,7 +272,12 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
                         (FileEdge.src_path.in_(removed)) | (FileEdge.dst_path.in_(removed)),
                     )
                 )
-                s.exec(delete(FileNode).where(FileNode.project_id == project_id, FileNode.path.in_(removed)))
+                s.exec(
+                    delete(FileNode).where(
+                        FileNode.project_id == project_id,
+                        FileNode.path.in_(removed),
+                    )
+                )
                 try:
                     _search_index_delete(s, project_id, removed)
                 except OperationalError as e:
@@ -249,7 +302,12 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
                         raise
                 s.commit()
 
-        return {"nodes": len(current_paths), "changed": len(candidates), "removed": len(removed), **updated}
+        return {
+            "nodes": len(current_paths),
+            "changed": len(candidates),
+            "removed": len(removed),
+            **updated,
+        }
 
 
 def scan_files(
@@ -294,7 +352,12 @@ def scan_files(
                     (FileEdge.src_path.in_(removed)) | (FileEdge.dst_path.in_(removed)),
                 )
             )
-            s.exec(delete(FileNode).where(FileNode.project_id == project_id, FileNode.path.in_(removed)))
+            s.exec(
+                delete(FileNode).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path.in_(removed),
+                )
+            )
             try:
                 _delete_embeddings(s, project_id, removed)
             except OperationalError as e:
@@ -421,7 +484,8 @@ def scan_files(
             except Exception:
                 pass
 
-            # TS typedefs are used for API contract comparison/fixes; do not rely on naming conventions.
+            # TS typedefs are used for API contract comparison/fixes.
+            # Do not rely on naming conventions.
             if rel_l.endswith(TS_TYPEDEF_EXTS):
                 try:
                     rows = extract_ts_type_defs(project_id, rel, text) or []
@@ -437,14 +501,25 @@ def scan_files(
         idx = pick_indexer(rel)
         lang = idx.language()
         file_hash = sha256_text(text)
+        file_suffix = p.suffix.lower()
         loc = sum(1 for line in text.splitlines() if line.strip())
         embed_text_len = len(text)
 
         search_rows.append(
             {"project_id": int(project_id), "path": rel, "content": text[:SEARCH_INDEX_MAX_CHARS]}
         )
+        try:
+            fts_rows.append(
+                {
+                    "project_id": int(project_id),
+                    "path": rel,
+                    "content": text[:SEARCH_INDEX_MAX_CHARS],
+                }
+            )
+        except Exception:
+            pass
 
-        cached = _get_cached_parse(lang, file_hash)
+        cached = _get_cached_parse(lang, file_hash, file_suffix)
         if cached:
             complexity, cached_imports = cached
         else:
@@ -464,7 +539,7 @@ def scan_files(
                     )
             except Exception:
                 cached_imports = []
-            _store_cached_parse(lang, file_hash, complexity, cached_imports)
+            _store_cached_parse(lang, file_hash, file_suffix, complexity, cached_imports)
         if precomputed_stats and rel in precomputed_stats:
             stat_mtime, stat_size = precomputed_stats[rel]
         else:
@@ -530,7 +605,10 @@ def scan_files(
                 if chunks:
                     if not settings.openai_api_key:
                         if not embedding_warned_missing_key:
-                            logger.warning("Embeddings enabled but OPENAI_API_KEY is not set; skipping embeddings.")
+                            logger.warning(
+                                "Embeddings enabled but OPENAI_API_KEY is not set; "
+                                "skipping embeddings."
+                            )
                             embedding_warned_missing_key = True
                     else:
                         client = get_openai_client()
@@ -661,12 +739,26 @@ def scan_files(
                 stmt_text = stmt_text.on_conflict_do_update(
                     index_elements=["project_id", "path"],
                     set_={"content": stmt_text.excluded.content},
+            if fts_rows:
+                s.execute(
+                    sa_text(
+                        "INSERT INTO filetext_fts (project_id, path, content) "
+                        "VALUES (:project_id, :path, :content)"
+                    ),
+                    fts_rows,
                 )
                 s.exec(stmt_text)
             if route_rows:
                 stmt_r = pg_insert(ApiRoute).values(route_rows)
                 stmt_r = stmt_r.on_conflict_do_nothing(
-                    index_elements=["project_id", "method", "path", "source_path", "handler_name", "lineno"]
+                    index_elements=[
+                        "project_id",
+                        "method",
+                        "path",
+                        "source_path",
+                        "handler_name",
+                        "lineno",
+                    ]
                 )
                 s.exec(stmt_r)
             if call_rows:
@@ -692,7 +784,14 @@ def scan_files(
             if route_contract_rows:
                 stmt_rc = pg_insert(ApiRouteContract).values(route_contract_rows)
                 stmt_rc = stmt_rc.on_conflict_do_update(
-                    index_elements=["project_id", "method", "path", "source_path", "handler_name", "lineno"],
+                    index_elements=[
+                        "project_id",
+                        "method",
+                        "path",
+                        "source_path",
+                        "handler_name",
+                        "lineno",
+                    ],
                     set_={"contract_json": stmt_rc.excluded.contract_json},
                 )
                 s.exec(stmt_rc)
@@ -770,6 +869,10 @@ def scan_files(
             ]
             stmt_e = pg_insert(FileEdge).values(edge_rows)
             stmt_e = stmt_e.on_conflict_do_nothing(index_elements=["project_id", "src_path", "dst_path", "kind"])
+            stmt_e = sqlite_insert(FileEdge).values(edge_rows)
+            stmt_e = stmt_e.on_conflict_do_nothing(
+                index_elements=["project_id", "src_path", "dst_path", "kind"]
+            )
             s.exec(stmt_e)
 
         s.commit()

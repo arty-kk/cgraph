@@ -124,12 +124,11 @@ export function App({ showDependencies = true }: AppProps) {
     return app.projectFiles?.find((file) => file.path === app.activeFilePath) ?? null
   }, [app.activeFilePath, app.projectFiles])
 
-  const activeFileDependencies = React.useMemo(() => {
-    const inSet = new Set<string>()
-    const outSet = new Set<string>()
-    if (!app.graph || !app.activeFilePath) return { in: [] as string[], out: [] as string[] }
-
+  const graphDependencies = React.useMemo(() => {
     const keyToPath = new Map<string, string>()
+    const edgesByKey = new Map<string, { in: Set<string>; out: Set<string> }>()
+    if (!app.graph) return { keyToPath, deps: new Map<string, { in: string[]; out: string[] }>() }
+
     for (const n of app.graph.nodes || []) {
       const id = typeof (n as any)?.id === 'string' ? String((n as any).id) : ''
       const path = typeof (n as any)?.path === 'string' ? String((n as any).path) : ''
@@ -138,25 +137,61 @@ export function App({ showDependencies = true }: AppProps) {
       if (id && !keyToPath.has(id)) keyToPath.set(id, id)
     }
 
-    const selNode =
-      (app.graph.nodes || []).find((n: any) => n?.path === app.activeFilePath || n?.id === app.activeFilePath) ?? null
-    const selId = selNode && typeof (selNode as any).id === 'string' ? String((selNode as any).id) : null
+    const ensureEntry = (key: string) => {
+      let entry = edgesByKey.get(key)
+      if (!entry) {
+        entry = { in: new Set<string>(), out: new Set<string>() }
+        edgesByKey.set(key, entry)
+      }
+      return entry
+    }
 
-    const isSel = (k: string) => k === app.activeFilePath || (selId != null && k === selId)
     const toPath = (k: string) => keyToPath.get(k) || k
 
     for (const e of app.graph.edges || []) {
       const s = typeof (e as any)?.source === 'string' ? String((e as any).source) : ''
       const t = typeof (e as any)?.target === 'string' ? String((e as any).target) : ''
       if (!s || !t) continue
-      if (isSel(t)) inSet.add(toPath(s))
-      if (isSel(s)) outSet.add(toPath(t))
+      const source = toPath(s)
+      const target = toPath(t)
+      ensureEntry(source).out.add(target)
+      ensureEntry(target).in.add(source)
+    }
+
+    const deps = new Map<string, { in: string[]; out: string[] }>()
+    for (const [key, entry] of edgesByKey.entries()) {
+      const inbound = Array.from(entry.in).filter(Boolean).sort()
+      const outbound = Array.from(entry.out).filter(Boolean).sort()
+      deps.set(key, { in: inbound, out: outbound })
+    }
+
+    return { keyToPath, deps }
+  }, [app.graph])
+
+  const activeFileDependencies = React.useMemo(() => {
+    if (!app.graph || !app.activeFilePath) return { in: [] as string[], out: [] as string[] }
+
+    const selNode =
+      (app.graph.nodes || []).find((n: any) => n?.path === app.activeFilePath || n?.id === app.activeFilePath) ?? null
+    const selId = selNode && typeof (selNode as any).id === 'string' ? String((selNode as any).id) : null
+
+    const toPath = (k: string) => graphDependencies.keyToPath.get(k) || k
+
+    const selectedKeys = [app.activeFilePath, selId].filter(Boolean) as string[]
+    const selectedPaths = Array.from(new Set(selectedKeys.map((k) => toPath(k)).filter(Boolean)))
+
+    const inSet = new Set<string>()
+    const outSet = new Set<string>()
+    for (const key of selectedPaths) {
+      const entry = graphDependencies.deps.get(key) || { in: [] as string[], out: [] as string[] }
+      for (const dep of entry.in) inSet.add(dep)
+      for (const dep of entry.out) outSet.add(dep)
     }
 
     const inbound = Array.from(inSet).filter(Boolean).sort()
     const outbound = Array.from(outSet).filter(Boolean).sort()
     return { in: inbound, out: outbound }
-  }, [app.activeFilePath, app.graph])
+  }, [app.activeFilePath, app.graph, graphDependencies])
 
   const totalIn = activeFileDependencies.in.length
   const totalOut = activeFileDependencies.out.length
