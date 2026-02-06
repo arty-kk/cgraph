@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from threading import Lock
 
 from fastapi import BackgroundTasks
 from sqlalchemy import func
@@ -35,6 +34,7 @@ from ..models import (
     Project,
     ProjectDoc,
     RepoSnapshot,
+    TaskJob,
     TsTypeDef,
 )
 from ..patches import delete_patch_blob_for_sha
@@ -50,29 +50,22 @@ from ..snapshots import (
     store_snapshot_blob,
 )
 from ..utils import normalize_project_root, project_lock, resolve_under_root
-from .task_queue import task_queue
-
-_scan_tasks: dict[int, str] = {}
-_scan_tasks_lock = Lock()
+from .task_queue import get_scan_idempotency_key, task_queue
 
 
-def _get_active_scan_task(project_id: int) -> tuple[str | None, str | None]:
-    with _scan_tasks_lock:
-        task_id = _scan_tasks.get(project_id)
-    if not task_id:
+def _get_active_scan_task(project_id: int, org_id: int) -> tuple[str | None, str | None]:
+    idempotency_key = get_scan_idempotency_key(org_id, project_id)
+    with get_session() as session:
+        job = session.exec(
+            select(TaskJob).where(
+                TaskJob.org_id == org_id,
+                TaskJob.idempotency_key == idempotency_key,
+                TaskJob.status.in_(("pending", "running")),
+            )
+        ).first()
+    if not job:
         return None, None
-    state = task_queue.get(task_id)
-    if not state:
-        with _scan_tasks_lock:
-            if _scan_tasks.get(project_id) == task_id:
-                _scan_tasks.pop(project_id, None)
-        return None, None
-    if state.status in ("pending", "running"):
-        return task_id, state.status
-    with _scan_tasks_lock:
-        if _scan_tasks.get(project_id) == task_id:
-            _scan_tasks.pop(project_id, None)
-    return task_id, state.status
+    return job.id, job.status
 
 
 def create_project(name: str, root_path: str, org_id: int) -> Project:
@@ -313,13 +306,11 @@ def scan_with_background(
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
     if background:
-        task_id, status = _get_active_scan_task(project_id)
+        task_id, status = _get_active_scan_task(project_id, org_id)
         if task_id and status in ("pending", "running"):
             return {"task_id": task_id, "status": status}
 
         task_id = task_queue.submit_scan(project_id, org_id)
-        with _scan_tasks_lock:
-            _scan_tasks[project_id] = task_id
         if background_tasks is not None:
             background_tasks.add_task(lambda: None)
         return {"task_id": task_id, "status": "pending"}
