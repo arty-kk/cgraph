@@ -37,9 +37,11 @@ def _set_job_status(
             session.add(job)
         job.status = status
         job.updated_at = now
+        if status == "running":
+            _touch_inflight(job.queue, job.id)
         if status in {"succeeded", "failed"}:
             job.completed_at = now
-            _decrement_inflight(job.queue)
+            _decrement_inflight(job.queue, job.id)
         if error is not None:
             job.error = error
         if result is not None:
@@ -88,11 +90,27 @@ def run_task_job(job_id: str, project_id: int, org_id: int, payload: dict) -> No
     _set_job_status(job_id, "succeeded", org_id=org_id, result=result)
 
 
-def _decrement_inflight(queue: str) -> None:
+def _touch_inflight(queue: str, job_id: str) -> None:
     if queue != "heavy":
         return
     try:
         client = get_redis_client()
-        client.decr("stubgraph:queue:heavy:inflight")
+        key = "stubgraph:queue:heavy:inflight"
+        ttl_seconds = 60 * 10
+        client.sadd(key, job_id)
+        client.set(f"{key}:job:{job_id}", "1", ex=ttl_seconds)
+        client.expire(key, ttl_seconds)
+    except RedisError as exc:
+        logger.warning("Failed to refresh inflight job TTL", extra={"reason": str(exc)})
+
+
+def _decrement_inflight(queue: str, job_id: str) -> None:
+    if queue != "heavy":
+        return
+    try:
+        client = get_redis_client()
+        key = "stubgraph:queue:heavy:inflight"
+        client.srem(key, job_id)
+        client.delete(f"{key}:job:{job_id}")
     except RedisError as exc:
         logger.warning("Failed to decrement inflight counter", extra={"reason": str(exc)})
