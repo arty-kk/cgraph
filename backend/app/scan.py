@@ -248,86 +248,86 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
                     ).where(FileNode.project_id == project_id)
                 ).all()
 
-        existing_map: dict[str, tuple[float, int, str]] = {}
-        for row in existing:
-            if isinstance(row, tuple) and len(row) >= 4:
-                path, mtime, size, h = row[0], row[1], row[2], row[3]
-            else:
-                path = getattr(row, "path", "")
-                mtime = getattr(row, "file_mtime", 0)
-                size = getattr(row, "file_size", 0)
-                h = getattr(row, "file_hash", "")
-            if isinstance(path, str) and path:
-                existing_map[path] = (float(mtime or 0), int(size or 0), str(h or ""))
+            existing_map: dict[str, tuple[float, int, str]] = {}
+            for row in existing:
+                if isinstance(row, tuple) and len(row) >= 4:
+                    path, mtime, size, h = row[0], row[1], row[2], row[3]
+                else:
+                    path = getattr(row, "path", "")
+                    mtime = getattr(row, "file_mtime", 0)
+                    size = getattr(row, "file_size", 0)
+                    h = getattr(row, "file_hash", "")
+                if isinstance(path, str) and path:
+                    existing_map[path] = (float(mtime or 0), int(size or 0), str(h or ""))
 
-        current_paths: list[str] = []
-        stats_map: dict[str, tuple[float, int]] = {}
-        for p in iter_code_files(project_root):
-            rel = p.relative_to(project_root).as_posix()
-            try:
-                st = p.stat()
-                stats_map[rel] = (st.st_mtime, st.st_size)
-            except Exception:
-                stats_map[rel] = (time.time(), 0)
-            current_paths.append(rel)
+            current_paths: list[str] = []
+            stats_map: dict[str, tuple[float, int]] = {}
+            for p in iter_code_files(project_root):
+                rel = p.relative_to(project_root).as_posix()
+                try:
+                    st = p.stat()
+                    stats_map[rel] = (st.st_mtime, st.st_size)
+                except Exception:
+                    stats_map[rel] = (time.time(), 0)
+                current_paths.append(rel)
 
-        removed = sorted(set(existing_map.keys()) - set(current_paths))
-        candidates: list[str] = []
-        for rel in current_paths:
-            mtime, size = stats_map.get(rel, (0.0, 0))
-            prev = existing_map.get(rel)
-            if not prev:
-                candidates.append(rel)
-                continue
-            prev_mtime, prev_size, _prev_hash = prev
-            if int(prev_size) != int(size) or float(prev_mtime) != float(mtime):
-                candidates.append(rel)
+            removed = sorted(set(existing_map.keys()) - set(current_paths))
+            candidates: list[str] = []
+            for rel in current_paths:
+                mtime, size = stats_map.get(rel, (0.0, 0))
+                prev = existing_map.get(rel)
+                if not prev:
+                    candidates.append(rel)
+                    continue
+                prev_mtime, prev_size, _prev_hash = prev
+                if int(prev_size) != int(size) or float(prev_mtime) != float(mtime):
+                    candidates.append(rel)
 
-        updated = scan_files(
-            project_id,
-            org_id,
-            project_root,
-            candidates,
-            precomputed_stats=stats_map,
-        )
+            updated = scan_files(
+                project_id,
+                org_id,
+                project_root,
+                candidates,
+                precomputed_stats=stats_map,
+            )
 
-        if removed:
-            with get_session() as s:
-                s.exec(
-                    delete(FileEdge).where(
-                        FileEdge.project_id == project_id,
-                        (FileEdge.src_path.in_(removed)) | (FileEdge.dst_path.in_(removed)),
+            if removed:
+                with get_session() as s:
+                    s.exec(
+                        delete(FileEdge).where(
+                            FileEdge.project_id == project_id,
+                            (FileEdge.src_path.in_(removed)) | (FileEdge.dst_path.in_(removed)),
+                        )
                     )
-                )
-                s.exec(
-                    delete(FileNode).where(
-                        FileNode.project_id == project_id,
-                        FileNode.path.in_(removed),
+                    s.exec(
+                        delete(FileNode).where(
+                            FileNode.project_id == project_id,
+                            FileNode.path.in_(removed),
+                        )
                     )
-                )
-                try:
-                    _search_index_delete(s, project_id, removed)
-                except OperationalError as e:
-                    if not _is_missing_table_error(e, "filetext"):
-                        raise
-                try:
-                    _delete_embeddings(s, project_id, removed)
-                except OperationalError as e:
-                    if not _is_missing_table_error(e, "filechunkembedding"):
-                        raise
-                try:
-                    _delete_api_indexes(s, project_id, removed)
-                except OperationalError as e:
-                    if not (
-                        _is_missing_table_error(e, "apiroute")
-                        or _is_missing_table_error(e, "apicall")
-                        or _is_missing_table_error(e, "apiinclude")
-                        or _is_missing_table_error(e, "apiroutecontract")
-                        or _is_missing_table_error(e, "apicallmeta")
-                        or _is_missing_table_error(e, "tstypedef")
-                    ):
-                        raise
-                s.commit()
+                    try:
+                        _search_index_delete(s, project_id, removed)
+                    except OperationalError as e:
+                        if not _is_missing_table_error(e, "filetext"):
+                            raise
+                    try:
+                        _delete_embeddings(s, project_id, removed)
+                    except OperationalError as e:
+                        if not _is_missing_table_error(e, "filechunkembedding"):
+                            raise
+                    try:
+                        _delete_api_indexes(s, project_id, removed)
+                    except OperationalError as e:
+                        if not (
+                            _is_missing_table_error(e, "apiroute")
+                            or _is_missing_table_error(e, "apicall")
+                            or _is_missing_table_error(e, "apiinclude")
+                            or _is_missing_table_error(e, "apiroutecontract")
+                            or _is_missing_table_error(e, "apicallmeta")
+                            or _is_missing_table_error(e, "tstypedef")
+                        ):
+                            raise
+                    s.commit()
     except ProjectLockTimeout as exc:
         logger.warning("Project lock timeout during scan", extra={"project_id": project_id})
         raise LockedError(
