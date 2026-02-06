@@ -1,4 +1,4 @@
-#backend/app/infra/redis_client.py
+# backend/app/infra/redis_client.py
 from __future__ import annotations
 
 import redis

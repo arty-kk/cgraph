@@ -1,4 +1,4 @@
-#backend/app/config.py
+# backend/app/config.py
 from __future__ import annotations
 
 import os
@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     rate_limit_requests_per_minute: int = Field(
         default=600, alias="STUBGRAPH_RATE_LIMIT_REQUESTS_PER_MINUTE"
     )
+    trusted_proxy_cidrs: str = Field(default="", alias="STUBGRAPH_TRUSTED_PROXY_CIDRS")
     task_queue_inflight_heavy_limit: int | None = Field(
         default=None, alias="STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT"
     )
@@ -230,9 +231,7 @@ class Settings(BaseSettings):
             self.task_queue_inflight_heavy_limit is not None
             and self.task_queue_inflight_heavy_limit <= 0
         ):
-            raise ValueError(
-                "STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT должен быть положительным"
-            )
+            raise ValueError("STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT должен быть положительным")
         if self.default_depth < 0:
             raise ValueError("STUBGRAPH_DEFAULT_DEPTH должен быть неотрицательным")
         if self.max_root_path_chars <= 0:
@@ -286,16 +285,22 @@ class Settings(BaseSettings):
         if self.llm_agentic_max_calls <= 0:
             raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_CALLS должен быть положительным")
         if self.llm_agentic_max_total_tool_output_chars <= 0:
-            raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS должен быть положительным")
+            raise ValueError(
+                "STUBGRAPH_LLM_AGENTIC_MAX_TOTAL_TOOL_OUTPUT_CHARS должен быть положительным"
+            )
         if self.llm_agentic_max_file_chars <= 0:
             raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_FILE_CHARS должен быть положительным")
         if self.llm_agentic_temperature < 0 or self.llm_agentic_temperature > 2:
             raise ValueError("STUBGRAPH_LLM_AGENTIC_TEMPERATURE должен быть в диапазоне 0..2")
-        if self.task_queue_completed_ttl_seconds is not None and self.task_queue_completed_ttl_seconds <= 0:
+        if (
+            self.task_queue_completed_ttl_seconds is not None
+            and self.task_queue_completed_ttl_seconds <= 0
+        ):
             raise ValueError("STUBGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS должен быть положительным")
         if self.task_queue_max_completed is not None and self.task_queue_max_completed <= 0:
             raise ValueError("STUBGRAPH_TASK_QUEUE_MAX_COMPLETED должен быть положительным")
         return self
+
 
 settings = Settings()
 settings.db_dir.mkdir(parents=True, exist_ok=True)

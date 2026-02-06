@@ -1,22 +1,28 @@
-#backend/app/llm/orchestrator.py
+# backend/app/llm/orchestrator.py
 from __future__ import annotations
 
 import json
-import openai
 from typing import Any
-from .client import get_openai_client
-from .schemas import TRIAGE_SCHEMA, ANALYZE_SCHEMA, FIX_SCHEMA, DOCS_SCHEMA, PLAN_TZ_SCHEMA
-from .policy import ModelPolicy, DEFAULT_POLICY
-from .model_caps import supports_reasoning, supports_temperature
-from ..config import settings
 
-SYSTEM_INSTRUCTIONS = """Ты — StubGraph: сверхточный кодовый архитектор. Твоя цель — давать полезный, проверяемый результат с минимальным радиусом изменений.
-Правила:
-- Опирайся только на предоставленный код/контракты/запрос.
-- Если данных недостаточно — явно укажи допущения.
-- Для фикса: предложи unified diff. Не выдумывай файлы, которых нет.
-- Сохраняй поведение и исходную стилистику, если пользователь не просит менять публичный API.
-"""
+import openai
+
+from ..config import settings
+from .client import get_openai_client
+from .model_caps import supports_reasoning, supports_temperature
+from .policy import DEFAULT_POLICY, ModelPolicy
+from .schemas import ANALYZE_SCHEMA, DOCS_SCHEMA, FIX_SCHEMA, PLAN_TZ_SCHEMA, TRIAGE_SCHEMA
+
+SYSTEM_INSTRUCTIONS = (
+    "Ты — StubGraph: сверхточный кодовый архитектор. Твоя цель — давать полезный, "
+    "проверяемый результат с минимальным радиусом изменений.\n"
+    "Правила:\n"
+    "- Опирайся только на предоставленный код/контракты/запрос.\n"
+    "- Если данных недостаточно — явно укажи допущения.\n"
+    "- Для фикса: предложи unified diff. Не выдумывай файлы, которых нет.\n"
+    "- Сохраняй поведение и исходную стилистику, если пользователь не просит менять "
+    "публичный API.\n"
+)
+
 
 def _normalize_responses_json_schema(schema: dict) -> dict:
     if not isinstance(schema, dict):
@@ -31,6 +37,7 @@ def _normalize_responses_json_schema(schema: dict) -> dict:
     if not isinstance(strict, bool):
         raise ValueError("schema.strict must be a bool")
     return {"type": "json_schema", "name": name, "schema": inner, "strict": strict}
+
 
 def _extract_refusal(resp: Any) -> str | None:
     out = getattr(resp, "output", None)
@@ -58,6 +65,7 @@ def _extract_refusal(resp: Any) -> str | None:
                 if isinstance(txt, str) and txt.strip():
                     return txt.strip()
     return None
+
 
 def _extract_output_text(resp: Any) -> str:
     txt = getattr(resp, "output_text", None)
@@ -91,6 +99,7 @@ def _extract_output_text(resp: Any) -> str:
                     return inner_text.strip()
     return ""
 
+
 def _json_call(
     model: str,
     schema: dict,
@@ -110,9 +119,15 @@ def _json_call(
     kwargs["store"] = bool(settings.openai_store)
     if temperature is not None and supports_temperature(model):
         kwargs["temperature"] = float(temperature)
-    if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
+    if (
+        isinstance(settings.openai_prompt_cache_key, str)
+        and settings.openai_prompt_cache_key.strip()
+    ):
         kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
-        if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
+        if (
+            isinstance(settings.openai_prompt_cache_retention, str)
+            and settings.openai_prompt_cache_retention.strip()
+        ):
             kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
     if reasoning_effort and supports_reasoning(model):
         kwargs["reasoning"] = {"effort": reasoning_effort}
@@ -162,7 +177,7 @@ def _json_call(
         end = txt.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
-                data = json.loads(txt[start:end+1])
+                data = json.loads(txt[start : end + 1])
                 if isinstance(data, dict):
                     return data
             except Exception:
@@ -172,6 +187,7 @@ def _json_call(
             raise RuntimeError(f"Model refusal: {refusal}") from e
         raise RuntimeError(f"Failed to parse model JSON output: {e}\nRaw: {txt[:4000]}") from e
 
+
 def triage(
     user_prompt: str,
     policy: ModelPolicy = DEFAULT_POLICY,
@@ -180,7 +196,14 @@ def triage(
     temperature: float | None = None,
 ) -> dict:
     items = [
-        {"role": "user", "content": f"Сконфигурируй задачу по запросу пользователя. Запрос: {user_prompt!r}\n\nВерни: task_kind, depth, dep_mode, needs_patch, notes."},
+        {
+            "role": "user",
+            "content": (
+                "Сконфигурируй задачу по запросу пользователя. Запрос: "
+                f"{user_prompt!r}\n\n"
+                "Верни: task_kind, depth, dep_mode, needs_patch, notes."
+            ),
+        },
     ]
     return _json_call(
         policy.triage_model,
@@ -190,6 +213,7 @@ def triage(
         instructions=instructions,
         temperature=temperature,
     )
+
 
 def analyze(
     packed_context: dict,
@@ -201,7 +225,13 @@ def analyze(
 ) -> dict:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
-        {"role": "user", "content": f"Задача: ANALYZE. Пользовательский запрос: {user_prompt}\n\nКонтекст (JSON):\n{ctx}"},
+        {
+            "role": "user",
+            "content": (
+                f"Задача: ANALYZE. Пользовательский запрос: {user_prompt}\n\n"
+                f"Контекст (JSON):\n{ctx}"
+            ),
+        },
     ]
     return _json_call(
         policy.analysis_model,
@@ -211,6 +241,7 @@ def analyze(
         instructions=instructions,
         temperature=temperature,
     )
+
 
 def evolve(
     packed_context: dict,
@@ -222,7 +253,15 @@ def evolve(
 ) -> dict:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
-        {"role": "user", "content": f"Задача: EVOLUTION POINTS. Найди точки эволюции бизнес-логики/домена, узкие места API, места частых изменений.\nПользовательский запрос: {user_prompt}\n\nКонтекст (JSON):\n{ctx}"},
+        {
+            "role": "user",
+            "content": (
+                "Задача: EVOLUTION POINTS. Найди точки эволюции бизнес-логики/домена, "
+                "узкие места API, места частых изменений.\n"
+                f"Пользовательский запрос: {user_prompt}\n\n"
+                f"Контекст (JSON):\n{ctx}"
+            ),
+        },
     ]
     return _json_call(
         policy.analysis_model,
@@ -232,6 +271,7 @@ def evolve(
         instructions=instructions,
         temperature=temperature,
     )
+
 
 def plan_task(
     knowledge: dict,
@@ -265,6 +305,7 @@ def plan_task(
         temperature=temperature,
     )
 
+
 def fix(
     packed_context: dict,
     user_prompt: str,
@@ -275,12 +316,17 @@ def fix(
 ) -> dict:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
-        {"role": "user", "content": (
-            f"Задача: FIX. Требование пользователя: {user_prompt}\n\n"
-            "Сгенерируй минимальный безопасный unified diff (patch_unified_diff). Если нужно изменить поведение — делай это ровно по ТЗ.\n"
-            "Поле tests обязательно: верни непустой список конкретных тестов или ручных шагов проверки. Отсутствие проверок недопустимо.\n\n"
-            f"Контекст (JSON):\n{ctx}"
-        )},
+        {
+            "role": "user",
+            "content": (
+                f"Задача: FIX. Требование пользователя: {user_prompt}\n\n"
+                "Сгенерируй минимальный безопасный unified diff (patch_unified_diff). "
+                "Если нужно изменить поведение — делай это ровно по ТЗ.\n"
+                "Поле tests обязательно: верни непустой список конкретных тестов или "
+                "ручных шагов проверки. Отсутствие проверок недопустимо.\n\n"
+                f"Контекст (JSON):\n{ctx}"
+            ),
+        },
     ]
     return _json_call(
         policy.patch_model,
@@ -291,6 +337,7 @@ def fix(
         temperature=temperature,
     )
 
+
 def generate_docs(
     facts: dict,
     policy: ModelPolicy = DEFAULT_POLICY,
@@ -300,18 +347,26 @@ def generate_docs(
 ) -> dict:
     ctx = json.dumps(facts, ensure_ascii=False)
     items = [
-        {"role": "user", "content": (
-            "Задача: PROJECT DOCS.\n"
-            "Сгенерируй полезную документацию по проекту в Markdown.\n"
-            "Критично: используй ТОЛЬКО предоставленные факты. Если данных недостаточно — явно укажи это.\n"
-            "Структура: Overview, Architecture, Key modules, Hotspots, How to run (если можно вывести), Next steps.\n"
-            "Подсказка: в фактах могут быть api_summary (API индекс из Scan), module_map (агрегаты по папкам),\n"
-            "tree_outline (дерево файлов), contracts_sample (контракты файлов), key_files (snippets),\n"
-            "hotspots/hubs_by_fan_in (таблицы рисков), run_hints (команды/таргеты), counts/languages.\n"
-            "Если данные есть — используй их в соответствующих разделах.\n"
-            "Если этих данных нет — так и напиши, не додумывай.\n\n"
-            f"Факты (JSON):\n{ctx}"
-        )},
+        {
+            "role": "user",
+            "content": (
+                "Задача: PROJECT DOCS.\n"
+                "Сгенерируй полезную документацию по проекту в Markdown.\n"
+                "Критично: используй ТОЛЬКО предоставленные факты. Если данных недостаточно — "
+                "явно укажи это.\n"
+                "Структура: Overview, Architecture, Key modules, Hotspots, How to run "
+                "(если можно вывести), Next steps.\n"
+                "Подсказка: в фактах могут быть api_summary (API индекс из Scan), module_map "
+                "(агрегаты по папкам),\n"
+                "tree_outline (дерево файлов), contracts_sample (контракты файлов), "
+                "key_files (snippets),\n"
+                "hotspots/hubs_by_fan_in (таблицы рисков), run_hints (команды/таргеты), "
+                "counts/languages.\n"
+                "Если данные есть — используй их в соответствующих разделах.\n"
+                "Если этих данных нет — так и напиши, не додумывай.\n\n"
+                f"Факты (JSON):\n{ctx}"
+            ),
+        },
     ]
     return _json_call(
         policy.analysis_model,

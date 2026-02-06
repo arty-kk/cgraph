@@ -1,4 +1,4 @@
-#backend/app/main.py
+# backend/app/main.py
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
@@ -35,6 +35,7 @@ app.add_middleware(
 
 app.middleware("http")(log_requests)
 
+
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
     if not allow_request(request):
@@ -61,6 +62,7 @@ async def auth_guard(request: Request, call_next):
         get_user_from_token(token)
     return await call_next(request)
 
+
 app.include_router(projects_router, prefix="/api")
 app.include_router(nodes_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
@@ -71,6 +73,7 @@ app.include_router(nodes_router, prefix="/api/v1")
 app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(orgs_router, prefix="/api/v1")
+
 
 @app.get("/health")
 def health():

@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
 
 from sqlmodel import select
+
 from ...config import settings
 from ...contracts import get_or_build_contract
 from ...db import get_session
-from ...models import FileEdge, FileNode, ApiRoute, ApiCall
+from ...models import ApiCall, ApiRoute, FileEdge, FileNode
 from ...utils import resolve_under_root
-
 
 _FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
@@ -32,7 +31,7 @@ def _neighbors_limited(
     frontier: list[str] = [start]
 
     def _chunks(seq: list[str], size: int) -> list[list[str]]:
-        return [seq[i:i+size] for i in range(0, len(seq), size)]
+        return [seq[i : i + size] for i in range(0, len(seq), size)]
 
     SQLITE_IN_CHUNK = 400
 
@@ -85,8 +84,12 @@ def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
     return " AND ".join([f'"{t}"' for t in esc if t])
 
 
-def _seed_context(project_id: int, root: Path, target_rel: str, depth: int, *, max_file_chars: int) -> dict:
-    abs_target, target_norm = resolve_under_root(root, target_rel, max_length=settings.max_rel_path_chars)
+def _seed_context(
+    project_id: int, root: Path, target_rel: str, depth: int, *, max_file_chars: int
+) -> dict:
+    abs_target, target_norm = resolve_under_root(
+        root, target_rel, max_length=settings.max_rel_path_chars
+    )
     target_text = ""
     try:
         target_text = abs_target.read_text(encoding="utf-8", errors="replace")
@@ -134,7 +137,14 @@ def _seed_context(project_id: int, root: Path, target_rel: str, depth: int, *, m
             ).all()
             for row in rr:
                 if isinstance(row, (tuple, list)) and len(row) >= 4:
-                    routes_in_file.append({"method": row[0], "path": row[1], "handler_name": row[2], "lineno": int(row[3] or 0)})
+                    routes_in_file.append(
+                        {
+                            "method": row[0],
+                            "path": row[1],
+                            "handler_name": row[2],
+                            "lineno": int(row[3] or 0),
+                        }
+                    )
 
             cc = s.exec(
                 select(ApiCall.method, ApiCall.path, ApiCall.client, ApiCall.lineno)
@@ -144,14 +154,23 @@ def _seed_context(project_id: int, root: Path, target_rel: str, depth: int, *, m
             ).all()
             for row in cc:
                 if isinstance(row, (tuple, list)) and len(row) >= 4:
-                    calls_in_file.append({"method": row[0], "path": row[1], "client": row[2], "lineno": int(row[3] or 0)})
+                    calls_in_file.append(
+                        {
+                            "method": row[0],
+                            "path": row[1],
+                            "client": row[2],
+                            "lineno": int(row[3] or 0),
+                        }
+                    )
     except Exception:
         routes_in_file = []
         calls_in_file = []
 
     out_depth = max(0, min(depth, 6))
     in_depth = max(0, min(depth, 2))
-    outbound = _neighbors_limited(project_id, target_norm, direction="out", depth=out_depth, limit=200)
+    outbound = _neighbors_limited(
+        project_id, target_norm, direction="out", depth=out_depth, limit=200
+    )
     inbound = _neighbors_limited(project_id, target_norm, direction="in", depth=in_depth, limit=200)
 
     return {

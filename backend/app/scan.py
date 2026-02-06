@@ -1,4 +1,4 @@
-#backend/app/scan.py
+# backend/app/scan.py
 from __future__ import annotations
 
 import json
@@ -64,6 +64,7 @@ def _get_cached_parse(lang: str, file_hash: str, file_suffix: str) -> tuple[int,
             _parse_cache.move_to_end(key)
         return cached
 
+
 def _store_cached_parse(
     lang: str,
     file_hash: str,
@@ -78,42 +79,77 @@ def _store_cached_parse(
         if len(_parse_cache) > PARSE_CACHE_LIMIT:
             _parse_cache.popitem(last=False)
 
+
 IGNORE_DIRS = {
-    ".git", "node_modules", "dist", "build", ".venv", "venv", "__pycache__",
-    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".next", ".turbo", ".nuxt", ".output"
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".next",
+    ".turbo",
+    ".nuxt",
+    ".output",
 }
 
 CODE_EXTS = {
-    ".py", ".pyi",
-    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".vue",
-    ".go", ".java", ".kt", ".rs", ".rb", ".php", ".c", ".cc", ".cpp", ".h", ".hpp"
+    ".py",
+    ".pyi",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".mjs",
+    ".cjs",
+    ".mts",
+    ".cts",
+    ".vue",
+    ".go",
+    ".java",
+    ".kt",
+    ".rs",
+    ".rb",
+    ".php",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".h",
+    ".hpp",
 }
 
 TS_TYPEDEF_EXTS = (".ts", ".tsx", ".mts", ".cts")
 
 SEARCH_INDEX_MAX_CHARS = 200_000
 
+
 def _is_supported_file(path: Path) -> bool:
     return path.suffix.lower() in CODE_EXTS or is_infra_file(path)
 
+
 def iter_code_files(root: Path) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")
-        )
+        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS and not d.startswith("."))
         for fn in sorted(filenames):
             p = Path(dirpath) / fn
             if _is_supported_file(p) and p.is_file():
                 yield p
 
+
 def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
-    return [seq[i:i+size] for i in range(0, len(seq), size)]
+    return [seq[i : i + size] for i in range(0, len(seq), size)]
+
 
 def _is_missing_table_error(e: Exception, table: str) -> bool:
     msg = str(e).lower()
     return (("no such table" in msg) or ("does not exist" in msg) or ("relation" in msg)) and (
         table.lower() in msg
     )
+
 
 def _search_index_delete(session, project_id: int, paths: list[str]) -> None:
     if not paths:
@@ -124,6 +160,7 @@ def _search_index_delete(session, project_id: int, paths: list[str]) -> None:
     )
     for chunk in _chunks(paths, 400):
         session.exec(stmt, {"paths": chunk})
+
 
 def _delete_embeddings(session, project_id: int, paths: list[str]) -> None:
     if not paths:
@@ -136,6 +173,7 @@ def _delete_embeddings(session, project_id: int, paths: list[str]) -> None:
             )
         )
 
+
 def _symbol_chunks(text: str, symbols: Iterable[object]) -> list[dict]:
     lines = text.splitlines(keepends=True)
     chunks: list[dict] = []
@@ -144,7 +182,7 @@ def _symbol_chunks(text: str, symbols: Iterable[object]) -> list[dict]:
         end_line = int(getattr(sym, "end_line", 0) or 0)
         chunk_text = ""
         if start_line > 0 and end_line >= start_line:
-            chunk_text = "".join(lines[start_line - 1:end_line])
+            chunk_text = "".join(lines[start_line - 1 : end_line])
         chunks.append(
             {
                 "text": chunk_text,
@@ -154,6 +192,7 @@ def _symbol_chunks(text: str, symbols: Iterable[object]) -> list[dict]:
             }
         )
     return chunks
+
 
 def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
     if not paths:
@@ -197,13 +236,15 @@ def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
             )
         )
 
+
 def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
     project_root = project_root.resolve()
     with project_lock(project_id):
         with get_session() as s:
             existing = s.exec(
-                select(FileNode.path, FileNode.file_mtime, FileNode.file_size, FileNode.file_hash)
-                .where(FileNode.project_id == project_id)
+                select(
+                    FileNode.path, FileNode.file_mtime, FileNode.file_size, FileNode.file_hash
+                ).where(FileNode.project_id == project_id)
             ).all()
 
         existing_map: dict[str, tuple[float, int, str]] = {}
@@ -302,7 +343,6 @@ def scan_files(
     rel_paths: Iterable[str],
     precomputed_stats: dict[str, tuple[float, int]] | None = None,
 ) -> dict:
-
     project_root = project_root.resolve()
     norm_paths: list[str] = []
     for rp in rel_paths:
@@ -318,7 +358,7 @@ def scan_files(
     present: list[str] = []
     removed: list[str] = []
     for rel in norm_paths:
-        p = (project_root / rel)
+        p = project_root / rel
         if not p.exists():
             removed.append(rel)
             continue
@@ -512,7 +552,7 @@ def scan_files(
             complexity = idx.naive_complexity(text)
             cached_imports = []
             try:
-                for imp in (idx.parse_imports(p, text) or []):
+                for imp in idx.parse_imports(p, text) or []:
                     spec = str(getattr(imp, "spec", "") or "").strip()
                     if not spec:
                         continue
@@ -534,16 +574,18 @@ def scan_files(
                 stat_mtime, stat_size = st.st_mtime, st.st_size
             except OSError:
                 stat_mtime, stat_size = 0.0, 0
-        node_rows.append({
-            "project_id": project_id,
-            "path": rel,
-            "language": lang,
-            "loc": loc,
-            "complexity": complexity,
-            "file_hash": file_hash,
-            "file_mtime": float(stat_mtime),
-            "file_size": int(stat_size),
-        })
+        node_rows.append(
+            {
+                "project_id": project_id,
+                "path": rel,
+                "language": lang,
+                "loc": loc,
+                "complexity": complexity,
+                "file_hash": file_hash,
+                "file_mtime": float(stat_mtime),
+                "file_size": int(stat_size),
+            }
+        )
 
         if embeddings_enabled:
             existing_hashes = embedding_hashes.get(rel, set())

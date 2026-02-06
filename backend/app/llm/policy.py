@@ -1,9 +1,11 @@
-#backend/app/llm/policy.py
+# backend/app/llm/policy.py
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+
 from ..config import settings
+
 
 @dataclass(frozen=True)
 class ModelPolicy:
@@ -14,6 +16,7 @@ class ModelPolicy:
     triage_effort: str = settings.reasoning_effort_triage
     analysis_effort: str = settings.reasoning_effort_analysis
     patch_effort: str = settings.reasoning_effort_patch
+
 
 DEFAULT_POLICY = ModelPolicy()
 
@@ -38,7 +41,8 @@ class ProfileParams:
 
 
 SURGICAL_INSTRUCTIONS = (
-    "Ты — StubGraph: хирургический режим. Твоя цель — точечные изменения с минимальным радиусом влияния.\n"
+    "Ты — StubGraph: хирургический режим. Твоя цель — точечные изменения с минимальным "
+    "радиусом влияния.\n"
     "Правила:\n"
     "- Сохраняй текущие контракты и поведение, если пользователь не требует обратного.\n"
     "- Избегай широких правок и предположений; запрашивай только нужный контекст.\n"
@@ -46,7 +50,8 @@ SURGICAL_INSTRUCTIONS = (
 )
 
 INCIDENT_INSTRUCTIONS = (
-    "Ты — StubGraph: режим инцидента. Твоя цель — быстрое и безопасное восстановление работоспособности.\n"
+    "Ты — StubGraph: режим инцидента. Твоя цель — быстрое и безопасное восстановление "
+    "работоспособности.\n"
     "Правила:\n"
     "- Приоритет: локализация проблемы, минимизация риска, обратимость изменений.\n"
     "- Предлагай краткий план диагностики и минимальный безопасный diff.\n"

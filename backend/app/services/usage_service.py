@@ -1,4 +1,5 @@
 """Org usage metering helpers (daily quotas)."""
+
 from __future__ import annotations
 
 from datetime import date, datetime, timezone

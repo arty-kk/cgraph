@@ -1,4 +1,4 @@
-#backend/app/api/nodes.py
+# backend/app/api/nodes.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -58,7 +58,9 @@ def _removed_neighbors(reindexed: object) -> list[str] | None:
         return value if isinstance(value, list) else value
     return None
 
+
 router = APIRouter(prefix="/nodes", tags=["nodes"])
+
 
 @router.get("/{project_id}/{path:path}/contract")
 def contract(request: Request, project_id: int, path: str):
@@ -77,6 +79,7 @@ def contract(request: Request, project_id: int, path: str):
         raise NotFoundError("Файл не найден", context={"path": rel_norm})
     except Exception as e:
         raise BadRequestError("Не удалось собрать контракт", context={"reason": str(e)})
+
 
 @router.get("/{project_id}/{path:path}/node")
 def node(request: Request, project_id: int, path: str):
@@ -122,8 +125,14 @@ def node(request: Request, project_id: int, path: str):
         if not n:
             raise NotFoundError("Узел не найден", context={"path": rel_norm})
     return {
-        "path": n.path, "language": n.language, "loc": n.loc, "complexity": n.complexity,
-        "fan_in": n.fan_in, "fan_out": n.fan_out, "scc_id": n.scc_id, "status": n.status
+        "path": n.path,
+        "language": n.language,
+        "loc": n.loc,
+        "complexity": n.complexity,
+        "fan_in": n.fan_in,
+        "fan_out": n.fan_out,
+        "scc_id": n.scc_id,
+        "status": n.status,
     }
 
 

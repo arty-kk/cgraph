@@ -8,18 +8,33 @@ from typing import Any
 from sqlmodel import select
 
 from ...api_contracts import build_backend_contract_for_route
-from ...api_map import split_skeleton, patterns_compatible, static_match_score, backend_path_skeleton
-from ...api_scaffold import suggest_frontend_module_file, build_frontend_snippet
+from ...api_map import (
+    backend_path_skeleton,
+    patterns_compatible,
+    split_skeleton,
+    static_match_score,
+)
+from ...api_scaffold import build_frontend_snippet, suggest_frontend_module_file
 from ...config import settings
 from ...contracts import get_or_build_contract
 from ...db import get_session
 from ...graph import search_nodes, search_semantic
-from ...models import FileNode, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef, ModuleContract
+from ...models import (
+    ApiCall,
+    ApiCallMeta,
+    ApiInclude,
+    ApiRoute,
+    ApiRouteContract,
+    FileNode,
+    ModuleContract,
+    TsTypeDef,
+)
 from ...py_edits import py_add_keys_to_function_return_dicts
 from ...scan import SEARCH_INDEX_MAX_CHARS
 from ...search import search_text_paths
 from ...services.docs_service import _compute_project_summary_facts, _tree_outline
-from ...ts_edits import unified_diff as _unified_diff, ts_add_fields_to_typedef, ts_patch_wrapper_function
+from ...ts_edits import ts_add_fields_to_typedef, ts_patch_wrapper_function
+from ...ts_edits import unified_diff as _unified_diff
 from ...utils import resolve_under_root
 from .context import _neighbors_limited
 from .dispatch import _clamp_int, _tool_error, _tool_ok
@@ -80,20 +95,33 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                         },
                     },
                 },
-                "required": ["goal", "hypotheses", "search_steps", "read_steps", "candidate_ranking"],
+                "required": [
+                    "goal",
+                    "hypotheses",
+                    "search_steps",
+                    "read_steps",
+                    "candidate_ranking",
+                ],
             },
             "strict": True,
         },
         {
             "type": "function",
             "name": "get_file",
-            "description": "Read a text file under the project root. Use when you need exact code. Prefer get_contract first if exports are enough.",
+            "description": (
+                "Read a text file under the project root. Use when you need exact code. "
+                "Prefer get_contract first if exports are enough."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
                     "path": {"type": "string", "description": "Path relative to project root"},
-                    "max_chars": {"type": ["integer", "null"], "minimum": 1, "maximum": max_file_chars},
+                    "max_chars": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "maximum": max_file_chars,
+                    },
                 },
                 "required": ["path", "max_chars"],
             },
@@ -102,15 +130,29 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "get_file_lines",
-            "description": "Read a line-range from a text file under the project root (precise snippet).",
+            "description": (
+                "Read a line-range from a text file under the project root (precise snippet)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
                     "path": {"type": "string", "description": "Path relative to project root"},
-                    "start_line": {"type": "integer", "minimum": 1, "description": "1-based start line"},
-                    "end_line": {"type": "integer", "minimum": 1, "description": "1-based end line (inclusive)"},
-                    "max_chars": {"type": ["integer", "null"], "minimum": 1, "maximum": max_file_chars},
+                    "start_line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "1-based start line",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "1-based end line (inclusive)",
+                    },
+                    "max_chars": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "maximum": max_file_chars,
+                    },
                 },
                 "required": ["path", "start_line", "end_line", "max_chars"],
             },
@@ -119,13 +161,14 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "get_contract",
-            "description": "Get a lightweight module contract (language, exports) for a file under project root.",
+            "description": (
+                "Get a lightweight module contract (language, exports) for a file under "
+                "project root."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
-                "properties": {
-                    "path": {"type": "string"}
-                },
+                "properties": {"path": {"type": "string"}},
                 "required": ["path"],
             },
             "strict": True,
@@ -133,7 +176,10 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "get_symbol",
-            "description": "Get a symbol definition from the module contract (requires contract v2 with symbols).",
+            "description": (
+                "Get a symbol definition from the module contract (requires contract v2 with "
+                "symbols)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
@@ -148,13 +194,13 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "get_node",
-            "description": "Get graph metrics for a file node (loc, complexity, fan_in/out, status).",
+            "description": (
+                "Get graph metrics for a file node (loc, complexity, fan_in/out, status)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
-                "properties": {
-                    "path": {"type": "string"}
-                    },
+                "properties": {"path": {"type": "string"}},
                 "required": ["path"],
             },
             "strict": True,
@@ -194,7 +240,10 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "search_tests",
-            "description": "Search test files by standard patterns (tests/, __tests__/, *.spec.*, *.test.*, test_*.py, *_test.*).",
+            "description": (
+                "Search test files by standard patterns (tests/, __tests__/, *.spec.*, *.test.*, "
+                "test_*.py, *_test.*)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
@@ -217,7 +266,10 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "prefix": {"type": ["string", "null"], "description": "Optional folder/path prefix to scope the tree"},
+                    "prefix": {
+                        "type": ["string", "null"],
+                        "description": "Optional folder/path prefix to scope the tree",
+                    },
                     "max_lines": {"type": ["integer", "null"], "minimum": 100, "maximum": 2000},
                     "max_depth": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
                 },
@@ -228,7 +280,9 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "project_summary",
-            "description": "Get project-level summary facts (counts, hotspots, hubs by fan-in, module map).",
+            "description": (
+                "Get project-level summary facts (counts, hotspots, hubs by fan-in, module map)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
@@ -240,16 +294,24 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             "type": "function",
             "name": "search_symbols",
             "description": (
-                "Search symbols and exports from module contracts. Faster and more precise than search_text "
-                "for navigating definitions and exports."
+                "Search symbols and exports from module contracts. Faster and more precise than "
+                "search_text for navigating definitions and exports."
             ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
                     "query": {"type": "string", "description": "Symbol name to search for"},
-                    "exported_only": {"type": ["boolean", "null"], "description": "Only return exported symbols"},
-                    "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500, "default": 100},
+                    "exported_only": {
+                        "type": ["boolean", "null"],
+                        "description": "Only return exported symbols",
+                    },
+                    "limit": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "maximum": 500,
+                        "default": 100,
+                    },
                     "match": {"type": ["string", "null"], "enum": ["exact", "contains", "prefix"]},
                     "case_sensitive": {"type": ["boolean", "null"], "default": False},
                 },
@@ -261,21 +323,34 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             "type": "function",
             "name": "search_text",
             "description": (
-                "Search for a substring in indexed project files and return small snippets with locations. "
-                "Use to quickly find symbol usage before fetching full files."
+                "Search for a substring in indexed project files and return small snippets with "
+                "locations. Use to quickly find symbol usage before fetching full files."
             ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
                     "query": {"type": "string", "description": "Substring to search for"},
-                    "prefix": {"type": ["string", "null"], "description": "Optional path prefix filter (folder)"},
-                    "case_sensitive": {"type": ["boolean", "null"], "description": "Case-sensitive match"},
+                    "prefix": {
+                        "type": ["string", "null"],
+                        "description": "Optional path prefix filter (folder)",
+                    },
+                    "case_sensitive": {
+                        "type": ["boolean", "null"],
+                        "description": "Case-sensitive match",
+                    },
                     "max_files": {"type": ["integer", "null"], "minimum": 1, "maximum": 2000},
                     "max_matches": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
                     "context_chars": {"type": ["integer", "null"], "minimum": 40, "maximum": 400},
                 },
-                "required": ["query", "prefix", "case_sensitive", "max_files", "max_matches", "context_chars"],
+                "required": [
+                    "query",
+                    "prefix",
+                    "case_sensitive",
+                    "max_files",
+                    "max_matches",
+                    "context_chars",
+                ],
             },
             "strict": True,
         },
@@ -292,7 +367,10 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                 "properties": {
                     "query": {"type": "string", "description": "Natural-language query"},
                     "max_results": {"type": ["integer", "null"], "minimum": 1, "maximum": 200},
-                    "prefix": {"type": ["string", "null"], "description": "Optional path prefix filter (folder)"},
+                    "prefix": {
+                        "type": ["string", "null"],
+                        "description": "Optional path prefix filter (folder)",
+                    },
                 },
                 "required": ["query", "max_results", "prefix"],
             },
@@ -301,13 +379,23 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "search_routes",
-            "description": "Search backend FastAPI routes indexed from scan (method/path/handler/source).",
+            "description": (
+                "Search backend FastAPI routes indexed from scan (method/path/handler/source)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "query": {"type": "string", "description": "Substring to search in route path or handler name (empty = all)"},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter (GET/POST/...)"},
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Substring to search in route path or handler name (empty = all)"
+                        ),
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter (GET/POST/...)",
+                    },
                     "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
                 },
                 "required": ["query", "method", "limit"],
@@ -322,8 +410,14 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "query": {"type": "string", "description": "Substring to search in call path (empty = all)"},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter"},
+                    "query": {
+                        "type": "string",
+                        "description": "Substring to search in call path (empty = all)",
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter",
+                    },
                     "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
                 },
                 "required": ["query", "method", "limit"],
@@ -333,13 +427,22 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "route_usages",
-            "description": "Find frontend calls that likely hit a backend route by template-compatibility (supports {param} and {param:path}).",
+            "description": (
+                "Find frontend calls that likely hit a backend route by template-compatibility "
+                "(supports {param} and {param:path})."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "path": {"type": "string", "description": "Backend route path (full) or a substring to search routes"},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter"},
+                    "path": {
+                        "type": "string",
+                        "description": "Backend route path (full) or a substring to search routes",
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter",
+                    },
                     "route_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
                     "call_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 50},
                 },
@@ -350,12 +453,18 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "suggest_endpoint_location",
-            "description": "Suggest where to implement a new backend endpoint (best matching backend/app/api/*.py and router instance).",
+            "description": (
+                "Suggest where to implement a new backend endpoint (best matching "
+                "backend/app/api/*.py and router instance)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "path": {"type": "string", "description": "Desired backend path, e.g. /api/projects/{project_id}/foo"},
+                    "path": {
+                        "type": "string",
+                        "description": "Desired backend path, e.g. /api/projects/{project_id}/foo",
+                    },
                     "method": {"type": ["string", "null"], "description": "Optional HTTP method"},
                     "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
                 },
@@ -366,13 +475,22 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "suggest_frontend_client",
-            "description": "Suggest frontend API wrapper for a backend route (file/module/function and TS snippet).",
+            "description": (
+                "Suggest frontend API wrapper for a backend route (file/module/function and "
+                "TS snippet)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "path": {"type": "string", "description": "Backend path (can be full or partial)."},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter."},
+                    "path": {
+                        "type": "string",
+                        "description": "Backend path (can be full or partial).",
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter.",
+                    },
                     "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 10},
                 },
                 "required": ["path", "method", "limit"],
@@ -390,10 +508,28 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "old_path": {"type": "string", "description": "Current external route path (full), e.g. /api/projects/{project_id}/scan"},
-                    "new_path": {"type": "string", "description": "New external route path (full), e.g. /api/projects/{project_id}/export"},
-                    "old_method": {"type": ["string", "null"], "description": "Optional old method (GET/POST/...)"},
-                    "new_method": {"type": ["string", "null"], "description": "Optional new method (GET/POST/...)"},
+                    "old_path": {
+                        "type": "string",
+                        "description": (
+                            "Current external route path (full), e.g. "
+                            "/api/projects/{project_id}/scan"
+                        ),
+                    },
+                    "new_path": {
+                        "type": "string",
+                        "description": (
+                            "New external route path (full), e.g. "
+                            "/api/projects/{project_id}/export"
+                        ),
+                    },
+                    "old_method": {
+                        "type": ["string", "null"],
+                        "description": "Optional old method (GET/POST/...)",
+                    },
+                    "new_method": {
+                        "type": ["string", "null"],
+                        "description": "Optional new method (GET/POST/...)",
+                    },
                     "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
                 },
                 "required": ["old_path", "new_path", "old_method", "new_method", "limit"],
@@ -403,13 +539,22 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "api_coverage_summary",
-            "description": "Compute backend↔frontend API coverage summary using indexed routes/calls (includes include_router resolution).",
+            "description": (
+                "Compute backend↔frontend API coverage summary using indexed routes/calls "
+                "(includes include_router resolution)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "prefix": {"type": ["string", "null"], "description": "Optional path prefix filter (default: /api)"},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter"},
+                    "prefix": {
+                        "type": ["string", "null"],
+                        "description": "Optional path prefix filter (default: /api)",
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter",
+                    },
                     "limit_examples": {"type": ["integer", "null"], "minimum": 0, "maximum": 50},
                 },
                 "required": ["prefix", "method", "limit_examples"],
@@ -419,13 +564,22 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "unmatched_routes",
-            "description": "List backend routes that do not match any frontend calls (template-based matching, includes include_router).",
+            "description": (
+                "List backend routes that do not match any frontend calls "
+                "(template-based matching, includes include_router)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "prefix": {"type": ["string", "null"], "description": "Optional path prefix filter (default: /api)"},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter"},
+                    "prefix": {
+                        "type": ["string", "null"],
+                        "description": "Optional path prefix filter (default: /api)",
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter",
+                    },
                     "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
                 },
                 "required": ["prefix", "method", "limit"],
@@ -435,13 +589,22 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
         {
             "type": "function",
             "name": "unmatched_calls",
-            "description": "List frontend HTTP calls that do not match any backend routes (template-based matching, includes include_router).",
+            "description": (
+                "List frontend HTTP calls that do not match any backend routes "
+                "(template-based matching, includes include_router)."
+            ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "prefix": {"type": ["string", "null"], "description": "Optional path prefix filter (default: /api)"},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter"},
+                    "prefix": {
+                        "type": ["string", "null"],
+                        "description": "Optional path prefix filter (default: /api)",
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter",
+                    },
                     "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
                 },
                 "required": ["prefix", "method", "limit"],
@@ -452,15 +615,18 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             "type": "function",
             "name": "compare_api_contract",
             "description": (
-                "Compare backend route request/response contract with matching frontend calls and TS types "
-                "(best-effort, based on indexed contracts/types)."
+                "Compare backend route request/response contract with matching frontend calls "
+                "and TS types (best-effort, based on indexed contracts/types)."
             ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
                     "path": {"type": "string", "description": "Backend path (full or partial)."},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter."},
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter.",
+                    },
                     "route_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 10},
                     "call_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 50},
                 },
@@ -472,15 +638,22 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             "type": "function",
             "name": "suggest_contract_fix",
             "description": (
-                "Generate minimal unified diffs to fix frontend wrapper/types to match backend API contract "
-                "(based on compare_api_contract + indexed TS types). Best-effort, additive changes."
+                "Generate minimal unified diffs to fix frontend wrapper/types to match backend "
+                "API contract (based on compare_api_contract + indexed TS types). Best-effort, "
+                "additive changes."
             ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "path": {"type": "string", "description": "Backend route path (full or partial)."},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter."},
+                    "path": {
+                        "type": "string",
+                        "description": "Backend route path (full or partial).",
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter.",
+                    },
                     "route_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
                     "call_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 10},
                     "max_patches": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
@@ -493,28 +666,46 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             "type": "function",
             "name": "suggest_api_fix",
             "description": (
-                "Generate a single multi-file unified diff that fixes frontend wrapper/types AND (optionally) backend literal dict responses "
-                "to align contracts. Backend changes are additive and only apply to literal `return {...}` dicts."
+                "Generate a single multi-file unified diff that fixes frontend wrapper/types "
+                "AND (optionally) backend literal dict responses to align contracts. Backend "
+                "changes are additive and only apply to literal `return {...}` dicts."
             ),
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "path": {"type": "string", "description": "Backend route path (full or partial)."},
-                    "method": {"type": ["string", "null"], "description": "Optional HTTP method filter."},
+                    "path": {
+                        "type": "string",
+                        "description": "Backend route path (full or partial).",
+                    },
+                    "method": {
+                        "type": ["string", "null"],
+                        "description": "Optional HTTP method filter.",
+                    },
                     "route_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 3},
                     "call_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
-                    "include_backend_response": {"type": ["boolean", "null"], "description": "If true: add missing response keys to backend literal dict returns."},
+                    "include_backend_response": {
+                        "type": ["boolean", "null"],
+                        "description": (
+                            "If true: add missing response keys to backend literal dict returns."
+                        ),
+                    },
                     "max_files": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
                 },
-                "required": ["path", "method", "route_limit", "call_limit", "include_backend_response", "max_files"],
+                "required": [
+                    "path",
+                    "method",
+                    "route_limit",
+                    "call_limit",
+                    "include_backend_response",
+                    "max_files",
+                ],
             },
             "strict": True,
         },
     ]
 
     def _normalize_openai_strict_schema(schema: Any) -> None:
-
         if isinstance(schema, list):
             for it in schema:
                 _normalize_openai_strict_schema(it)
@@ -537,7 +728,8 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             for sub in items:
                 _normalize_openai_strict_schema(sub)
 
-        # Detect object schemas either by type=object (or union incl. object) or presence of properties.
+        # Detect object schemas either by type=object (or union incl. object) or presence
+        # of properties.
         type_val = schema.get("type")
         props = schema.get("properties")
         is_object = (
@@ -558,7 +750,8 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             props = {}
             schema["properties"] = props
 
-        # In strict mode, required must include *all* property keys (nullable types represent optionality).
+        # In strict mode, required must include *all* property keys (nullable types
+        # represent optionality).
         schema["required"] = [k for k in props.keys() if isinstance(k, str)]
 
         # Recurse into property schemas.
@@ -578,7 +771,10 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
             props = {}
             params["properties"] = props
         if "reason" not in props:
-            props["reason"] = {"type": ["string", "null"], "description": "Optional reason for tool call"}
+            props["reason"] = {
+                "type": ["string", "null"],
+                "description": "Optional reason for tool call",
+            }
 
         if t.get("strict") is True:
             _normalize_openai_strict_schema(params)
@@ -599,7 +795,9 @@ def _check_indexed(project_id: int) -> dict | None:
     return None
 
 
-def _tool_get_file(project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int) -> dict:
+def _tool_get_file(
+    project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int
+) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return _tool_error("bad_args", "path is required")
@@ -618,14 +816,20 @@ def _tool_get_file(project_id: int, root: Path, meta: AgenticMeta, args: dict, *
         with abs_path.open(encoding="utf-8", errors="replace") as f:
             text = f.read(max_chars + 1)
     except Exception as e:
-        return _tool_error("read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)})
+        return _tool_error(
+            "read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)}
+        )
     truncated = len(text) > max_chars
     text = text[:max_chars]
     meta.full_file_paths.add(rel_norm)
-    return _tool_ok({"path": rel_norm, "content": text, "truncated": truncated, "max_chars": max_chars})
+    return _tool_ok(
+        {"path": rel_norm, "content": text, "truncated": truncated, "max_chars": max_chars}
+    )
 
 
-def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int) -> dict:
+def _tool_get_file_lines(
+    project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int
+) -> dict:
     path = args.get("path")
     start_line = args.get("start_line")
     end_line = args.get("end_line")
@@ -659,7 +863,9 @@ def _tool_get_file_lines(project_id: int, root: Path, meta: AgenticMeta, args: d
                 if line_num >= e_ln:
                     break
     except Exception as e:
-        return _tool_error("read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)})
+        return _tool_error(
+            "read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)}
+        )
     snippet = "".join(buffer)
     truncated = len(snippet) > max_chars
     if truncated:
@@ -688,7 +894,9 @@ def _tool_get_contract(project_id: int, root: Path, meta: AgenticMeta, args: dic
     try:
         contract = get_or_build_contract(project_id, root, rel_norm)
     except Exception as e:
-        return _tool_error("contract_failed", "failed to build contract", {"path": rel_norm, "reason": str(e)})
+        return _tool_error(
+            "contract_failed", "failed to build contract", {"path": rel_norm, "reason": str(e)}
+        )
     meta.full_file_paths.add(rel_norm)
     if not isinstance(contract, dict):
         return _tool_error("contract_failed", "contract is not a dict", {"path": rel_norm})
@@ -709,13 +917,17 @@ def _tool_get_symbol(project_id: int, root: Path, meta: AgenticMeta, args: dict)
     try:
         c = get_or_build_contract(project_id, root, rel_norm)
     except Exception as e:
-        return _tool_error("contract_failed", "failed to build contract", {"path": rel_norm, "reason": str(e)})
+        return _tool_error(
+            "contract_failed", "failed to build contract", {"path": rel_norm, "reason": str(e)}
+        )
     meta.full_file_paths.add(rel_norm)
     if not isinstance(c, dict):
         return _tool_error("contract_failed", "contract is not a dict", {"path": rel_norm})
     syms = c.get("symbols")
     if not isinstance(syms, list):
-        return _tool_error("no_symbols", "contract has no symbols (need contract v2)", {"path": rel_norm})
+        return _tool_error(
+            "no_symbols", "contract has no symbols (need contract v2)", {"path": rel_norm}
+        )
     needle = name.strip()
     for item in syms:
         if isinstance(item, dict) and str(item.get("name") or "") == needle:
@@ -766,7 +978,13 @@ def _tool_get_neighbors(project_id: int, root: Path, args: dict) -> dict:
         return _tool_error("invalid_path", str(e))
     neigh = _neighbors_limited(project_id, rel_norm, direction=direction, depth=depth, limit=limit)
     return _tool_ok(
-        {"path": rel_norm, "direction": direction, "depth": depth, "neighbors": neigh, "count": len(neigh)}
+        {
+            "path": rel_norm,
+            "direction": direction,
+            "depth": depth,
+            "neighbors": neigh,
+            "count": len(neigh),
+        }
     )
 
 
@@ -859,7 +1077,9 @@ def _tool_search_symbols(project_id: int, args: dict) -> dict:
         return _tool_error("bad_args", "query is required")
     needle = query.strip()
     match = args.get("match")
-    match_mode = match if isinstance(match, str) and match in ("exact", "prefix", "contains") else None
+    match_mode = (
+        match if isinstance(match, str) and match in ("exact", "prefix", "contains") else None
+    )
     if match_mode is None:
         match_mode = "contains"
 
@@ -939,9 +1159,15 @@ def _tool_search_symbols(project_id: int, args: dict) -> dict:
                         "path": path,
                         "name": name,
                         "kind": item.get("kind") if item.get("kind") is not None else None,
-                        "signature": item.get("signature") if item.get("signature") is not None else None,
-                        "start_line": item.get("start_line") if item.get("start_line") is not None else None,
-                        "end_line": item.get("end_line") if item.get("end_line") is not None else None,
+                        "signature": item.get("signature")
+                        if item.get("signature") is not None
+                        else None,
+                        "start_line": item.get("start_line")
+                        if item.get("start_line") is not None
+                        else None,
+                        "end_line": item.get("end_line")
+                        if item.get("end_line") is not None
+                        else None,
                         "exported": exported,
                         "source": "symbol",
                         "_match": match_type,
@@ -1044,7 +1270,15 @@ def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
 def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
     with get_session() as s:
         nodes = s.exec(
-            select(FileNode.path, FileNode.language, FileNode.loc, FileNode.complexity, FileNode.fan_in, FileNode.fan_out, FileNode.status)
+            select(
+                FileNode.path,
+                FileNode.language,
+                FileNode.loc,
+                FileNode.complexity,
+                FileNode.fan_in,
+                FileNode.fan_out,
+                FileNode.status,
+            )
             .where(FileNode.project_id == project_id)
             .order_by(FileNode.path)
         ).all()
@@ -1089,7 +1323,8 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
     max_matches = _clamp_int(args.get("max_matches"), 50, 1, 500)
     context_chars = _clamp_int(args.get("context_chars"), 160, 40, 400)
 
-    # Cap per-file read for search to avoid heavy IO (second pass limited by max_file_chars/SEARCH_INDEX_MAX_CHARS).
+    # Cap per-file read for search to avoid heavy IO (second pass limited by
+    # max_file_chars/SEARCH_INDEX_MAX_CHARS).
     scan_max_chars = max(1, min(int(max_file_chars), 200_000))
     index_scan_max_chars = min(SEARCH_INDEX_MAX_CHARS, scan_max_chars)
 
@@ -1260,7 +1495,9 @@ def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_c
             fallback_args["max_matches"] = args.get("max_matches")
         if args.get("context_chars") is not None:
             fallback_args["context_chars"] = args.get("context_chars")
-        text_result = _tool_search_text(project_id, root, fallback_args, max_file_chars=max_file_chars)
+        text_result = _tool_search_text(
+            project_id, root, fallback_args, max_file_chars=max_file_chars
+        )
         if not text_result.get("ok"):
             return text_result
         text_out = text_result["data"]
@@ -1288,7 +1525,7 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
         query = ""
     query = query.strip()
     method = args.get("method")
-    method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     limit = _clamp_int(args.get("limit"), 50, 1, 500)
 
     try:
@@ -1298,7 +1535,11 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
                 q = q.where(ApiRoute.method == method_norm)
             if query:
                 like = f"%{query}%"
-                q = q.where((ApiRoute.path.like(like)) | (ApiRoute.handler_name.like(like)) | (ApiRoute.source_path.like(like)))
+                q = q.where(
+                    (ApiRoute.path.like(like))
+                    | (ApiRoute.handler_name.like(like))
+                    | (ApiRoute.source_path.like(like))
+                )
             q = q.order_by(ApiRoute.path.asc(), ApiRoute.method.asc()).limit(int(limit))
             rows = s.exec(q).all()
     except Exception as e:
@@ -1315,7 +1556,15 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
         }
         for r in rows
     ]
-    return _tool_ok({"query": query, "method": method_norm, "limit": int(limit), "count": len(out), "routes": out})
+    return _tool_ok(
+        {
+            "query": query,
+            "method": method_norm,
+            "limit": int(limit),
+            "count": len(out),
+            "routes": out,
+        }
+    )
 
 
 def _tool_search_api_calls(project_id: int, args: dict) -> dict:
@@ -1324,7 +1573,7 @@ def _tool_search_api_calls(project_id: int, args: dict) -> dict:
         query = ""
     query = query.strip()
     method = args.get("method")
-    method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     limit = _clamp_int(args.get("limit"), 50, 1, 500)
 
     try:
@@ -1350,7 +1599,15 @@ def _tool_search_api_calls(project_id: int, args: dict) -> dict:
         }
         for c in rows
     ]
-    return _tool_ok({"query": query, "method": method_norm, "limit": int(limit), "count": len(out), "calls": out})
+    return _tool_ok(
+        {
+            "query": query,
+            "method": method_norm,
+            "limit": int(limit),
+            "count": len(out),
+            "calls": out,
+        }
+    )
 
 
 def _tool_route_usages(project_id: int, args: dict) -> dict:
@@ -1359,7 +1616,7 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
         return _tool_error("bad_args", "path is required")
     path_q = path_q.strip()
     method = args.get("method")
-    method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     route_limit = _clamp_int(args.get("route_limit"), 5, 1, 20)
     call_limit = _clamp_int(args.get("call_limit"), 12, 1, 50)
 
@@ -1374,7 +1631,11 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
             routes = list(exact)
             if not routes:
                 like = f"%{path_q}%"
-                routes = s.exec(q.where(ApiRoute.path.like(like)).order_by(ApiRoute.path.asc()).limit(int(route_limit))).all()
+                routes = s.exec(
+                    q.where(ApiRoute.path.like(like))
+                    .order_by(ApiRoute.path.asc())
+                    .limit(int(route_limit))
+                ).all()
     except Exception as e:
         return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
 
@@ -1386,7 +1647,9 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
 
     # 2) for each route, find compatible frontend calls
     for r in routes:
-        inst = (str(r.decorator or "").split(".", 1)[0] if isinstance(r.decorator, str) else "") or ""
+        inst = (
+            str(r.decorator or "").split(".", 1)[0] if isinstance(r.decorator, str) else ""
+        ) or ""
         node_key = (str(r.source_path or ""), inst)
         candidate_prefixes = prefix_map.get(node_key) or [""]
 
@@ -1437,7 +1700,9 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
                 if prefix_str:
                     qc = qc.where(ApiCall.path.like(prefix_str + "%"))
                 call_rows = s.exec(
-                    qc.order_by(ApiCall.path.asc(), ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(candidate_limit))
+                    qc.order_by(
+                        ApiCall.path.asc(), ApiCall.source_path.asc(), ApiCall.lineno.asc()
+                    ).limit(int(candidate_limit))
                 ).all()
         except Exception as e:
             results.append(
@@ -1475,7 +1740,12 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
             if best_score < 0:
                 continue
 
-            key = (str(c.source_path or ""), int(c.lineno or 0), str(c.path or ""), str(c.method or ""))
+            key = (
+                str(c.source_path or ""),
+                int(c.lineno or 0),
+                str(c.path or ""),
+                str(c.method or ""),
+            )
             prev = best_by_call.get(key)
             if (prev is None) or (int(prev.get("score", -1)) < best_score):
                 best_by_call[key] = {
@@ -1596,14 +1866,19 @@ def _candidate_keys_from_static_prefix(tokens: list[str]) -> list[str]:
     return keys
 
 
-def _build_call_index(project_id: int, *, prefix: str, method_filter: str = "") -> tuple[list[ApiCall], dict[str, dict[str, list[dict]]]]:
-    # returns (calls, index[method][key] = list of {id, tokens, path_norm, source_path, lineno, path})
+def _build_call_index(
+    project_id: int, *, prefix: str, method_filter: str = ""
+) -> tuple[list[ApiCall], dict[str, dict[str, list[dict]]]]:
+    # returns (calls, index[method][key] = list of {id, tokens, path_norm,
+    # source_path, lineno, path})
     MAX_CALLS = 50_000
     with get_session() as s:
         q = select(ApiCall).where(ApiCall.project_id == project_id)
         if method_filter:
             q = q.where(ApiCall.method == method_filter)
-        rows = s.exec(q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(MAX_CALLS))).all()
+        rows = s.exec(
+            q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(MAX_CALLS))
+        ).all()
 
     idx: dict[str, dict[str, list[dict]]] = {}
     filtered: list[ApiCall] = []
@@ -1651,7 +1926,9 @@ def _build_route_patterns(
     # included set: (child_source_path, child_instance)
     with get_session() as s:
         inc_rows = s.exec(
-            select(ApiInclude.child_source_path, ApiInclude.child_instance).where(ApiInclude.project_id == project_id)
+            select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
+                ApiInclude.project_id == project_id
+            )
         ).all()
     included: set[tuple[str, str]] = set()
     for row in inc_rows:
@@ -1666,7 +1943,9 @@ def _build_route_patterns(
         q = select(ApiRoute).where(ApiRoute.project_id == project_id)
         if method_filter:
             q = q.where(ApiRoute.method == method_filter)
-        routes = s.exec(q.order_by(ApiRoute.source_path.asc(), ApiRoute.lineno.asc()).limit(int(MAX_ROUTES))).all()
+        routes = s.exec(
+            q.order_by(ApiRoute.source_path.asc(), ApiRoute.lineno.asc()).limit(int(MAX_ROUTES))
+        ).all()
 
     patterns_by_route: dict[int, list[dict]] = {}
     pindex: dict[str, dict[str, list[dict]]] = {}
@@ -1748,7 +2027,9 @@ def _pattern_matches_any_call(pattern_tokens: list[str], candidates: list[dict])
 
 def _compute_api_coverage(project_id: int, *, prefix: str, method_filter: str = "") -> dict:
     calls, call_index = _build_call_index(project_id, prefix=prefix, method_filter=method_filter)
-    routes, patterns_by_route, pattern_index = _build_route_patterns(project_id, prefix=prefix, method_filter=method_filter)
+    routes, patterns_by_route, pattern_index = _build_route_patterns(
+        project_id, prefix=prefix, method_filter=method_filter
+    )
 
     # matched calls
     matched_call_ids: set[int] = set()
@@ -1781,7 +2062,7 @@ def _compute_api_coverage(project_id: int, *, prefix: str, method_filter: str = 
                 continue
             # gather call candidates by keys
             candidates_calls: list[dict] = []
-            for k in (v.get("static_keys") or [""]):
+            for k in v.get("static_keys") or [""]:
                 candidates_calls.extend(call_index.get(method, {}).get(k, []))
             # fallback: allow broader match if no keyed candidates
             if not candidates_calls:
@@ -1817,8 +2098,16 @@ def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
 
     total_routes = len(routes)
     total_calls = len(calls)
-    unmatched_routes_ids = [int(getattr(r, "id", 0) or 0) for r in routes if int(getattr(r, "id", 0) or 0) not in matched_routes]
-    unmatched_calls_ids = [int(getattr(c, "id", 0) or 0) for c in calls if int(getattr(c, "id", 0) or 0) not in matched_calls]
+    unmatched_routes_ids = [
+        int(getattr(r, "id", 0) or 0)
+        for r in routes
+        if int(getattr(r, "id", 0) or 0) not in matched_routes
+    ]
+    unmatched_calls_ids = [
+        int(getattr(c, "id", 0) or 0)
+        for c in calls
+        if int(getattr(c, "id", 0) or 0) not in matched_calls
+    ]
 
     examples_routes: list[dict] = []
     if limit_examples > 0:
@@ -1834,8 +2123,12 @@ def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
                     "source_path": str(r.source_path or ""),
                     "handler_name": str(r.handler_name or ""),
                     "lineno": int(r.lineno or 0),
-                    "resolved_full_paths": [v.get("full_path") for v in vars[:5] if isinstance(v, dict)],
-                    "reachable_hint": any(bool(v.get("reachable")) for v in vars if isinstance(v, dict)),
+                    "resolved_full_paths": [
+                        v.get("full_path") for v in vars[:5] if isinstance(v, dict)
+                    ],
+                    "reachable_hint": any(
+                        bool(v.get("reachable")) for v in vars if isinstance(v, dict)
+                    ),
                 }
             )
             if len(examples_routes) >= limit_examples:
@@ -1877,8 +2170,9 @@ def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
                 "examples_limit": int(limit_examples),
             },
             "notes": (
-                "Matching is template-based. For backend routes, include_router resolution is best-effort. "
-                "Routes may be legitimately server-only; unmatched does not always mean a bug."
+                "Matching is template-based. For backend routes, include_router resolution is "
+                "best-effort. Routes may be legitimately server-only; unmatched does not always "
+                "mean a bug."
             ),
         }
     )
@@ -1900,13 +2194,19 @@ def _tool_unmatched_routes(project_id: int, args: dict) -> dict:
         if rid in matched_routes:
             continue
         vars = patterns_by_route.get(rid) or []
-        resolved = [v.get("full_path") for v in vars if isinstance(v, dict) and isinstance(v.get("full_path"), str)]
+        resolved = [
+            v.get("full_path")
+            for v in vars
+            if isinstance(v, dict) and isinstance(v.get("full_path"), str)
+        ]
         resolved = list(dict.fromkeys([x for x in resolved if x]))
         reachable_hint = any(bool(v.get("reachable")) for v in vars if isinstance(v, dict))
         # small scaffold hint
         full_for_hint = resolved[0] if resolved else str(r.path or "")
         try:
-            tpl = build_frontend_snippet(str(r.method or "GET"), str(full_for_hint), handler_name=str(r.handler_name or ""))
+            tpl = build_frontend_snippet(
+                str(r.method or "GET"), str(full_for_hint), handler_name=str(r.handler_name or "")
+            )
             scaffold = {
                 "path_template": tpl.get("path_template"),
                 "function_name": tpl.get("function_name"),
@@ -1933,7 +2233,13 @@ def _tool_unmatched_routes(project_id: int, args: dict) -> dict:
             break
 
     return _tool_ok(
-        {"prefix": prefix, "method_filter": method_filter, "count": len(out), "limit": int(limit), "routes": out}
+        {
+            "prefix": prefix,
+            "method_filter": method_filter,
+            "count": len(out),
+            "limit": int(limit),
+            "routes": out,
+        }
     )
 
 
@@ -1965,7 +2271,13 @@ def _tool_unmatched_calls(project_id: int, args: dict) -> dict:
             break
 
     return _tool_ok(
-        {"prefix": prefix, "method_filter": method_filter, "count": len(out), "limit": int(limit), "calls": out}
+        {
+            "prefix": prefix,
+            "method_filter": method_filter,
+            "count": len(out),
+            "limit": int(limit),
+            "calls": out,
+        }
     )
 
 
@@ -2048,14 +2360,20 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
         path = "/" + path
 
     method = args.get("method")
-    method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     limit = _clamp_int(args.get("limit"), 8, 1, 20)
 
     # heuristic: reuse existing module file where similar routes exist
-    like = f"%{path.split('/', 3)[2]}%" if path.startswith("/api/") and len(path.split("/")) > 2 else "%"
+    like = (
+        f"%{path.split('/', 3)[2]}%"
+        if path.startswith("/api/") and len(path.split("/")) > 2
+        else "%"
+    )
 
     with get_session() as s:
-        q = select(ApiRoute.source_path, ApiRoute.decorator, ApiRoute.path).where(ApiRoute.project_id == project_id)
+        q = select(ApiRoute.source_path, ApiRoute.decorator, ApiRoute.path).where(
+            ApiRoute.project_id == project_id
+        )
         if method_norm:
             q = q.where(ApiRoute.method == method_norm)
         # prefer exact prefix match when /api/<module>
@@ -2096,7 +2414,11 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
 
     # include coverage hint: is this router included anywhere?
     with get_session() as s:
-        inc_rows = s.exec(select(ApiInclude.child_source_path, ApiInclude.child_instance).where(ApiInclude.project_id == project_id)).all()
+        inc_rows = s.exec(
+            select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
+                ApiInclude.project_id == project_id
+            )
+        ).all()
     included = set()
     for r in inc_rows:
         if isinstance(r, (tuple, list)) and len(r) >= 2:
@@ -2121,7 +2443,9 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
             }
         )
 
-    return _tool_ok({"path": path, "method": method_norm, "candidates": candidates, "count": len(candidates)})
+    return _tool_ok(
+        {"path": path, "method": method_norm, "candidates": candidates, "count": len(candidates)}
+    )
 
 
 def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> dict:
@@ -2132,8 +2456,8 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
     if not path_q.startswith("/"):
         path_q = "/" + path_q
     method = args.get("method")
-    method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
-    limit = _clamp_int(args.get("limit"), 5, 1, 10)
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
+    _clamp_int(args.get("limit"), 5, 1, 10)
 
     # Find candidate routes (cheap prefilter by tokens)
     tokens = [t for t in path_q.split("/") if t and not t.startswith("{")]
@@ -2164,7 +2488,9 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
     best_score = -1
     best_full = ""
     for r in routes:
-        inst = (str(r.decorator or "").split(".", 1)[0] if isinstance(r.decorator, str) else "") or ""
+        inst = (
+            str(r.decorator or "").split(".", 1)[0] if isinstance(r.decorator, str) else ""
+        ) or ""
         node_key = (str(r.source_path or ""), inst)
         prefs = prefix_map.get(node_key) or [""]
         for pfx in prefs:
@@ -2191,7 +2517,9 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
     suggested_file = suggest_frontend_module_file(best_full)
     file_exists = False
     try:
-        abs_p, rel_norm = resolve_under_root(root, suggested_file, max_length=settings.max_rel_path_chars)
+        abs_p, rel_norm = resolve_under_root(
+            root, suggested_file, max_length=settings.max_rel_path_chars
+        )
         file_exists = abs_p.exists() and abs_p.is_file()
     except Exception:
         file_exists = False
@@ -2217,7 +2545,8 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
                 "path_params": snippet_info.get("path_params"),
                 "snippet": snippet_info.get("snippet"),
                 "note": (
-                    "Snippet is a scaffold. To apply, modify the suggested file and export it from frontend/src/api/index.ts if needed."
+                    "Snippet is a scaffold. To apply, modify the suggested file and export it "
+                    "from frontend/src/api/index.ts if needed."
                 ),
             },
         }
@@ -2240,8 +2569,16 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
 
     old_method = args.get("old_method")
     new_method = args.get("new_method")
-    old_m = (str(old_method).strip().upper() if isinstance(old_method, str) and old_method.strip() else "")
-    new_m = (str(new_method).strip().upper() if isinstance(new_method, str) and new_method.strip() else "")
+    old_m = (
+        str(old_method).strip().upper()
+        if isinstance(old_method, str) and old_method.strip()
+        else ""
+    )
+    new_m = (
+        str(new_method).strip().upper()
+        if isinstance(new_method, str) and new_method.strip()
+        else ""
+    )
     limit = _clamp_int(args.get("limit"), 200, 1, 500)
 
     old_skel = backend_path_skeleton(old_path)
@@ -2265,7 +2602,11 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
                 q = q.where(ApiCall.method == old_m)
             if prefix_str:
                 q = q.where(ApiCall.path.like(prefix_str + "%"))
-            calls = s.exec(q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(candidate_limit))).all()
+            calls = s.exec(
+                q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(
+                    int(candidate_limit)
+                )
+            ).all()
     except Exception as e:
         return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
 
@@ -2290,7 +2631,7 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
         matches_new = patterns_compatible(new_tokens, call_tokens)
         method_ok = True
         if new_m:
-            method_ok = (call_m == new_m)
+            method_ok = call_m == new_m
 
         score_old = static_match_score(old_tokens, call_tokens)
         score_new = static_match_score(new_tokens, call_tokens) if matches_new else 0
@@ -2350,7 +2691,12 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
 
     return _tool_ok(
         {
-            "input": {"old_path": old_path, "new_path": new_path, "old_method": old_m, "new_method": new_m},
+            "input": {
+                "old_path": old_path,
+                "new_path": new_path,
+                "old_method": old_m,
+                "new_method": new_m,
+            },
             "skeletons": {"old": old_skel, "new": new_skel},
             "counts": {
                 "candidate_calls_scanned": int(len(calls)),
@@ -2396,21 +2742,37 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
     method = args.get("method")
-    method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     route_limit = _clamp_int(args.get("route_limit"), 1, 1, 3)
     call_limit = _clamp_int(args.get("call_limit"), 3, 1, 5)
-    include_backend = bool(args.get("include_backend_response")) if args.get("include_backend_response") is not None else True
+    include_backend = (
+        bool(args.get("include_backend_response"))
+        if args.get("include_backend_response") is not None
+        else True
+    )
     max_files = _clamp_int(args.get("max_files"), 12, 1, 20)
 
     report_result = _tool_compare_api_contract(
-        project_id, root, {"path": path_q, "method": method_norm or None, "route_limit": route_limit, "call_limit": call_limit}
+        project_id,
+        root,
+        {
+            "path": path_q,
+            "method": method_norm or None,
+            "route_limit": route_limit,
+            "call_limit": call_limit,
+        },
     )
     if not report_result.get("ok"):
         return report_result
     report = report_result["data"]
     if not isinstance(report.get("routes"), list) or not report["routes"]:
         return _tool_ok(
-            {"input": {"path": path_q, "method": method_norm}, "patch_unified_diff": "", "files": [], "notes": ["no_routes_or_calls_found"]}
+            {
+                "input": {"path": path_q, "method": method_norm},
+                "patch_unified_diff": "",
+                "files": [],
+                "notes": ["no_routes_or_calls_found"],
+            }
         )
 
     # In-memory file edit buffers
@@ -2492,7 +2854,12 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                 if not full_path:
                     full_path = str(route.get("path") or "")
 
-                tpl = str(build_frontend_snippet(r_method, full_path, handler_name=wrapper_name).get("path_template") or "")
+                tpl = str(
+                    build_frontend_snippet(r_method, full_path, handler_name=wrapper_name).get(
+                        "path_template"
+                    )
+                    or ""
+                )
                 add_params = []
                 for pp in missing_pp:
                     if not isinstance(pp, dict):
@@ -2502,7 +2869,15 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                     nm = fe or be
                     if not nm:
                         continue
-                    ts_type = "number" if (be.lower().endswith("id") or be.lower() == "id" or nm.lower().endswith("id")) else "string"
+                    ts_type = (
+                        "number"
+                        if (
+                            be.lower().endswith("id")
+                            or be.lower() == "id"
+                            or nm.lower().endswith("id")
+                        )
+                        else "string"
+                    )
                     add_params.append({"name": nm, "type": ts_type})
 
                 fp = ensure_loaded(c_src)
@@ -2523,11 +2898,18 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
             # ---- FRONTEND body type fix (missing required fields)
             body = comp.get("body") if isinstance(comp, dict) else None
             if isinstance(body, dict) and wrapper_body_type:
-                missing_body = body.get("missing_in_frontend") if isinstance(body.get("missing_in_frontend"), list) else []
+                missing_body = (
+                    body.get("missing_in_frontend")
+                    if isinstance(body.get("missing_in_frontend"), list)
+                    else []
+                )
                 if missing_body:
                     with get_session() as s:
                         td = s.exec(
-                            select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name == wrapper_body_type)
+                            select(TsTypeDef).where(
+                                TsTypeDef.project_id == project_id,
+                                TsTypeDef.name == wrapper_body_type,
+                            )
                         ).first()
                     if td and isinstance(td.source_path, str) and td.source_path:
                         fp = ensure_loaded(td.source_path)
@@ -2535,23 +2917,36 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 cur[fp],
                                 wrapper_body_type,
-                                [{"name": k, "type": ""} for k in missing_body if isinstance(k, str) and k],
+                                [
+                                    {"name": k, "type": ""}
+                                    for k in missing_body
+                                    if isinstance(k, str) and k
+                                ],
                                 optional=False,
                             )
                             if changed:
                                 cur[fp] = new_txt
-                                mark_reason(fp, f"frontend_body_type_add_missing:{wrapper_body_type}")
+                                mark_reason(
+                                    fp, f"frontend_body_type_add_missing:{wrapper_body_type}"
+                                )
                     else:
                         notes.append(f"typedef_not_found_for_body_type:{wrapper_body_type}")
 
             # ---- FRONTEND response type fix (backend keys missing in TS)
             resp = comp.get("response") if isinstance(comp, dict) else None
             if isinstance(resp, dict) and wrapper_resp_type:
-                missing_resp = resp.get("missing_in_frontend") if isinstance(resp.get("missing_in_frontend"), list) else []
+                missing_resp = (
+                    resp.get("missing_in_frontend")
+                    if isinstance(resp.get("missing_in_frontend"), list)
+                    else []
+                )
                 if missing_resp:
                     with get_session() as s:
                         td = s.exec(
-                            select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name == wrapper_resp_type)
+                            select(TsTypeDef).where(
+                                TsTypeDef.project_id == project_id,
+                                TsTypeDef.name == wrapper_resp_type,
+                            )
                         ).first()
                     if td and isinstance(td.source_path, str) and td.source_path:
                         fp = ensure_loaded(td.source_path)
@@ -2559,25 +2954,39 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 cur[fp],
                                 wrapper_resp_type,
-                                [{"name": k, "type": ""} for k in missing_resp if isinstance(k, str) and k],
+                                [
+                                    {"name": k, "type": ""}
+                                    for k in missing_resp
+                                    if isinstance(k, str) and k
+                                ],
                                 optional=True,
                             )
                             if changed:
                                 cur[fp] = new_txt
-                                mark_reason(fp, f"frontend_response_type_add_missing_optional:{wrapper_resp_type}")
+                                mark_reason(
+                                    fp,
+                                    f"frontend_response_type_add_missing_optional:{wrapper_resp_type}",
+                                )
                     else:
                         notes.append(f"typedef_not_found_for_response_type:{wrapper_resp_type}")
 
             # ---- BACKEND response fix (frontend expects extra keys not present in backend)
             if include_backend and isinstance(resp, dict) and r_src and r_handler:
-                extra_front = resp.get("extra_in_frontend") if isinstance(resp.get("extra_in_frontend"), list) else []
+                extra_front = (
+                    resp.get("extra_in_frontend")
+                    if isinstance(resp.get("extra_in_frontend"), list)
+                    else []
+                )
                 if extra_front:
                     # get field types from TS response typedef if possible
                     field_types: dict[str, str] = {}
                     if wrapper_resp_type:
                         with get_session() as s:
                             td = s.exec(
-                                select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name == wrapper_resp_type)
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_resp_type,
+                                )
                             ).first()
                         if td and isinstance(td.fields_json, str):
                             try:
@@ -2672,19 +3081,32 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
     method = args.get("method")
-    method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     route_limit = _clamp_int(args.get("route_limit"), 1, 1, 5)
     call_limit = _clamp_int(args.get("call_limit"), 3, 1, 10)
     max_patches = _clamp_int(args.get("max_patches"), 10, 1, 20)
 
     report_result = _tool_compare_api_contract(
-        project_id, root, {"path": path_q, "method": method_norm or None, "route_limit": route_limit, "call_limit": call_limit}
+        project_id,
+        root,
+        {
+            "path": path_q,
+            "method": method_norm or None,
+            "route_limit": route_limit,
+            "call_limit": call_limit,
+        },
     )
     if not report_result.get("ok"):
         return report_result
     report = report_result["data"]
     if not isinstance(report.get("routes"), list) or not report["routes"]:
-        return _tool_ok({"input": {"path": path_q, "method": method_norm}, "patches": [], "notes": ["no_routes_or_calls_found"]})
+        return _tool_ok(
+            {
+                "input": {"path": path_q, "method": method_norm},
+                "patches": [],
+                "notes": ["no_routes_or_calls_found"],
+            }
+        )
 
     patches: list[dict] = []
     notes: list[str] = []
@@ -2734,7 +3156,7 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
             if not isinstance(call, dict):
                 continue
             c_src = str(call.get("source_path") or "")
-            c_line = int(call.get("lineno") or 0)
+            int(call.get("lineno") or 0)
             c_method = str(call.get("method") or "").upper()
             wrapper_name = ""
             wrapper_body_type = ""
@@ -2762,7 +3184,15 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
                     nm = fe or be
                     if not nm:
                         continue
-                    ts_type = "number" if (be.lower().endswith("id") or be.lower() == "id" or fe.lower().endswith("id")) else "string"
+                    ts_type = (
+                        "number"
+                        if (
+                            be.lower().endswith("id")
+                            or be.lower() == "id"
+                            or fe.lower().endswith("id")
+                        )
+                        else "string"
+                    )
                     add_params.append({"name": nm, "type": ts_type})
 
                 rr = _read_text_under_root(root, c_src)
@@ -2789,13 +3219,24 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
             if isinstance(comp, dict) and isinstance(comp.get("body"), dict):
                 body = comp["body"]
             if body and wrapper_body_type:
-                missing_body = body.get("missing_in_frontend") if isinstance(body.get("missing_in_frontend"), list) else []
-                backend_fields = body.get("backend_fields") if isinstance(body.get("backend_fields"), list) else []
+                missing_body = (
+                    body.get("missing_in_frontend")
+                    if isinstance(body.get("missing_in_frontend"), list)
+                    else []
+                )
+                backend_fields = (
+                    body.get("backend_fields")
+                    if isinstance(body.get("backend_fields"), list)
+                    else []
+                )
                 if missing_body and backend_fields:
                     # locate typedef
                     with get_session() as s:
                         td = s.exec(
-                            select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name == wrapper_body_type)
+                            select(TsTypeDef).where(
+                                TsTypeDef.project_id == project_id,
+                                TsTypeDef.name == wrapper_body_type,
+                            )
                         ).first()
                     if td and isinstance(td.source_path, str) and td.source_path:
                         rr = _read_text_under_root(root, td.source_path)
@@ -2806,7 +3247,11 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 old_txt,
                                 wrapper_body_type,
-                                [{"name": k, "type": ""} for k in missing_body if isinstance(k, str) and k],
+                                [
+                                    {"name": k, "type": ""}
+                                    for k in missing_body
+                                    if isinstance(k, str) and k
+                                ],
                                 optional=False,
                             )
                             if changed:
@@ -2817,16 +3262,24 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
                     else:
                         notes.append(f"typedef_not_found_for_body_type:{wrapper_body_type}")
 
-            # ---- C) Patch TS response type (response) when backend response keys missing in frontend type
+            # ---- C) Patch TS response type (response) when backend response keys
+            # missing in frontend type
             resp = {}
             if isinstance(comp, dict) and isinstance(comp.get("response"), dict):
                 resp = comp["response"]
             if resp and wrapper_resp_type:
-                missing_resp = resp.get("missing_in_frontend") if isinstance(resp.get("missing_in_frontend"), list) else []
+                missing_resp = (
+                    resp.get("missing_in_frontend")
+                    if isinstance(resp.get("missing_in_frontend"), list)
+                    else []
+                )
                 if missing_resp:
                     with get_session() as s:
                         td = s.exec(
-                            select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name == wrapper_resp_type)
+                            select(TsTypeDef).where(
+                                TsTypeDef.project_id == project_id,
+                                TsTypeDef.name == wrapper_resp_type,
+                            )
                         ).first()
                     if td and isinstance(td.source_path, str) and td.source_path:
                         rr = _read_text_under_root(root, td.source_path)
@@ -2837,12 +3290,20 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 old_txt,
                                 wrapper_resp_type,
-                                [{"name": k, "type": ""} for k in missing_resp if isinstance(k, str) and k],
+                                [
+                                    {"name": k, "type": ""}
+                                    for k in missing_resp
+                                    if isinstance(k, str) and k
+                                ],
                                 optional=True,
                             )
                             if changed:
                                 diff = _unified_diff(rel_norm, old_txt, new_txt)
-                                add_patch(rel_norm, diff, "frontend_response_type_add_missing_keys_optional")
+                                add_patch(
+                                    rel_norm,
+                                    diff,
+                                    "frontend_response_type_add_missing_keys_optional",
+                                )
                         else:
                             notes.append(f"typedef_source_not_readable:{td.source_path}")
                     else:
@@ -2906,14 +3367,19 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
         return _tool_error("bad_args", "path is required")
     path_q = path_q.strip()
     method = args.get("method")
-    method_norm = (str(method).strip().upper() if isinstance(method, str) and method.strip() else "")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     route_limit = _clamp_int(args.get("route_limit"), 3, 1, 10)
     call_limit = _clamp_int(args.get("call_limit"), 10, 1, 50)
 
     # Reuse route_usages logic to find best matching routes + frontend calls
     ru_result = _tool_route_usages(
         project_id,
-        {"path": path_q, "method": method_norm or None, "route_limit": route_limit, "call_limit": call_limit},
+        {
+            "path": path_q,
+            "method": method_norm or None,
+            "route_limit": route_limit,
+            "call_limit": call_limit,
+        },
     )
     if not ru_result.get("ok"):
         return ru_result
@@ -2921,7 +3387,11 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
     routes = ru.get("routes") if isinstance(ru, dict) else None
     if not isinstance(routes, list) or not routes:
         return _tool_ok(
-            {"input": {"path": path_q, "method": method_norm}, "routes": [], "note": "No routes found. Ensure Scan ran and path query is correct."}
+            {
+                "input": {"path": path_q, "method": method_norm},
+                "routes": [],
+                "note": "No routes found. Ensure Scan ran and path query is correct.",
+            }
         )
 
     result_routes: list[dict] = []
@@ -2960,18 +3430,26 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
         if backend_contract is None:
             # on the fly
             try:
-                abs_p, rel_norm = resolve_under_root(root, r_src, max_length=settings.max_rel_path_chars)
+                abs_p, rel_norm = resolve_under_root(
+                    root, r_src, max_length=settings.max_rel_path_chars
+                )
                 txt = abs_p.read_text(encoding="utf-8", errors="replace")
                 backend_contract = build_backend_contract_for_route(
                     txt,
-                    {"method": r_method, "path": r_local, "handler_name": r_handler, "source_path": r_src, "lineno": r_line},
+                    {
+                        "method": r_method,
+                        "path": r_local,
+                        "handler_name": r_handler,
+                        "source_path": r_src,
+                        "lineno": r_line,
+                    },
                 )
             except Exception as e:
                 backend_contract = {"version": 1, "warnings": [f"contract_build_failed:{e}"]}
 
         # Backend facets
         bp = backend_contract.get("path_params") if isinstance(backend_contract, dict) else []
-        bq = backend_contract.get("query_params") if isinstance(backend_contract, dict) else []
+        backend_contract.get("query_params") if isinstance(backend_contract, dict) else []
         bb = backend_contract.get("body") if isinstance(backend_contract, dict) else None
         br = backend_contract.get("response") if isinstance(backend_contract, dict) else {}
 
@@ -3055,7 +3533,9 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
         # Now compute comparisons per meta record
         for meta in metas:
             mobj = meta.get("meta") if isinstance(meta.get("meta"), dict) else {}
-            wparams = mobj.get("wrapper_params") if isinstance(mobj.get("wrapper_params"), list) else []
+            wparams = (
+                mobj.get("wrapper_params") if isinstance(mobj.get("wrapper_params"), list) else []
+            )
             wparam_names = set()
             for p in wparams:
                 if isinstance(p, dict):
@@ -3077,12 +3557,16 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
                 if "_" in nm:
                     parts = [x for x in nm.split("_") if x]
                     if parts:
-                        camel = parts[0].lower() + "".join([x[:1].upper() + x[1:] for x in parts[1:]])
+                        camel = parts[0].lower() + "".join(
+                            [x[:1].upper() + x[1:] for x in parts[1:]]
+                        )
                 if camel not in wparam_names and nm not in wparam_names:
                     missing_path_params.append({"backend": nm, "frontend_expected": camel})
 
             # Body compare
-            backend_body_fields = [str(f.get("name") or "") for f in body_fields if isinstance(f, dict)]
+            backend_body_fields = [
+                str(f.get("name") or "") for f in body_fields if isinstance(f, dict)
+            ]
             backend_body_fields = [x for x in backend_body_fields if x]
 
             frontend_body_keys = []
@@ -3093,7 +3577,9 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
             if (not frontend_body_keys) and body_t and body_t in type_defs:
                 flds = type_defs[body_t].get("fields") or []
                 if isinstance(flds, list):
-                    frontend_body_keys = [str(x.get("name") or "") for x in flds if isinstance(x, dict)]
+                    frontend_body_keys = [
+                        str(x.get("name") or "") for x in flds if isinstance(x, dict)
+                    ]
                     frontend_body_keys = [x for x in frontend_body_keys if x]
 
             missing_body = []
@@ -3110,7 +3596,9 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
             if resp_t and resp_t in type_defs:
                 flds = type_defs[resp_t].get("fields") or []
                 if isinstance(flds, list):
-                    frontend_resp_keys = [str(x.get("name") or "") for x in flds if isinstance(x, dict)]
+                    frontend_resp_keys = [
+                        str(x.get("name") or "") for x in flds if isinstance(x, dict)
+                    ]
                     frontend_resp_keys = [x for x in frontend_resp_keys if x]
 
             missing_resp = []
@@ -3131,7 +3619,8 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
                     "missing_in_frontend": missing_body,
                     "extra_in_frontend": extra_body,
                     "note": (
-                        "Body comparison is best-effort. If frontend sends an inline object with computed keys, it may not be detected."
+                        "Body comparison is best-effort. If frontend sends an inline object with "
+                        "computed keys, it may not be detected."
                     ),
                 },
                 "response": {
@@ -3141,7 +3630,8 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
                     "missing_in_frontend": missing_resp,
                     "extra_in_frontend": extra_resp,
                     "note": (
-                        "Response comparison uses literal dict keys in backend returns and TS object type fields."
+                        "Response comparison uses literal dict keys in backend returns and TS "
+                        "object type fields."
                     ),
                 },
             }
@@ -3149,7 +3639,9 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
         result_routes.append(
             {
                 "route": route_info,
-                "resolved_full_paths": item.get("resolved_full_paths") if isinstance(item.get("resolved_full_paths"), list) else [],
+                "resolved_full_paths": item.get("resolved_full_paths")
+                if isinstance(item.get("resolved_full_paths"), list)
+                else [],
                 "backend_contract": backend_contract,
                 "frontend_calls": metas,
             }
@@ -3157,11 +3649,17 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
 
     return _tool_ok(
         {
-            "input": {"path": path_q, "method": method_norm, "route_limit": int(route_limit), "call_limit": int(call_limit)},
+            "input": {
+                "path": path_q,
+                "method": method_norm,
+                "route_limit": int(route_limit),
+                "call_limit": int(call_limit),
+            },
             "routes": result_routes,
             "notes": (
-                "This is a best-effort static comparison. It does not execute code, and it cannot fully infer dynamic bodies/responses. "
-                "Run Scan after changes to refresh indexes."
+                "This is a best-effort static comparison. It does not execute code, and it "
+                "cannot fully infer dynamic bodies/responses. Run Scan after changes to "
+                "refresh indexes."
             ),
         }
     )

@@ -1,4 +1,4 @@
-#backend/app/api/tasks.py
+# backend/app/api/tasks.py
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Request
@@ -7,9 +7,14 @@ from pydantic import BaseModel, Field
 from ..llm.policy import ProfileName
 from ..policy import require_org_context, require_project_access
 from ..services.task_service import (
-    TaskRequest, describe_task,
-    apply_run_patch, delete_run, get_run, get_run_patch,
-    list_runs, run_task_with_background,
+    TaskRequest,
+    apply_run_patch,
+    delete_run,
+    describe_task,
+    get_run,
+    get_run_patch,
+    list_runs,
+    run_task_with_background,
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -18,7 +23,9 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 class RunTask(BaseModel):
     target_path: str = Field(..., description="Path relative to project root")
     prompt: str = Field(..., description="Any natural language request")
-    mode: str | None = Field(default=None, description="analyze|evolve|fix|impact (if omitted: auto-triage)")
+    mode: str | None = Field(
+        default=None, description="analyze|evolve|fix|impact (if omitted: auto-triage)"
+    )
     profile: ProfileName | None = Field(
         default=None,
         description="LLM profile: architect|surgical|incident (if omitted: architect)",
@@ -51,18 +58,36 @@ class RunTask(BaseModel):
         description="Allow patch to extend context with diff paths",
     )
 
-    pack_max_files: int | None = Field(default=None, ge=1, le=80, description="Max files in pack_context")
-    pack_max_chars_per_file: int | None = Field(default=None, ge=1, le=200_000, description="Max chars per file in pack_context")
-    pack_max_total_chars: int | None = Field(default=None, ge=1, le=2_000_000, description="Max total chars in pack_context")
+    pack_max_files: int | None = Field(
+        default=None, ge=1, le=80, description="Max files in pack_context"
+    )
+    pack_max_chars_per_file: int | None = Field(
+        default=None, ge=1, le=200_000, description="Max chars per file in pack_context"
+    )
+    pack_max_total_chars: int | None = Field(
+        default=None, ge=1, le=2_000_000, description="Max total chars in pack_context"
+    )
 
-    agentic_max_calls: int | None = Field(default=None, ge=1, le=100, description="Max tool calls in agentic mode")
-    agentic_max_file_chars: int | None = Field(default=None, ge=1, le=200_000, description="Max chars per get_file in agentic mode")
-    agentic_max_total_tool_output_chars: int | None = Field(default=None, ge=1, le=2_000_000, description="Total tool output char budget in agentic mode")
-    agentic_temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="Temperature override for agentic mode")
+    agentic_max_calls: int | None = Field(
+        default=None, ge=1, le=100, description="Max tool calls in agentic mode"
+    )
+    agentic_max_file_chars: int | None = Field(
+        default=None, ge=1, le=200_000, description="Max chars per get_file in agentic mode"
+    )
+    agentic_max_total_tool_output_chars: int | None = Field(
+        default=None,
+        ge=1,
+        le=2_000_000,
+        description="Total tool output char budget in agentic mode",
+    )
+    agentic_temperature: float | None = Field(
+        default=None, ge=0.0, le=2.0, description="Temperature override for agentic mode"
+    )
     agentic_reasoning_effort: str | None = Field(
         default=None,
         description="Reasoning effort override for agentic mode (low|medium|high)",
     )
+
 
 @router.post("/{project_id}/run")
 def run_task(

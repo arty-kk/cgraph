@@ -1,18 +1,21 @@
-#backend/app/indexers/js_ts_indexer.py
+# backend/app/indexers/js_ts_indexer.py
 from __future__ import annotations
 
 import re
 from pathlib import Path
+
 from .base import ImportRef, SymbolDef
 from .tree_sitter_utils import iter_nodes, node_text, parse_tree
 
 JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 JS_LINE_COMMENT_RE = re.compile(r"//.*?$", re.MULTILINE)
 
+
 def _strip_js_comments(text: str) -> str:
     text = JS_BLOCK_COMMENT_RE.sub("", text)
     text = JS_LINE_COMMENT_RE.sub("", text)
     return text
+
 
 STATIC_FROM_RE = re.compile(
     r"""(?mx)
@@ -40,12 +43,11 @@ DYNAMIC_IMPORT_RE = re.compile(
     r"""(?x)(?<![\w$])import\s*\(\s*(?:'(?P<dyn_sq>[^']+)'|"(?P<dyn_dq>[^"]+)"|`(?P<dyn_tpl>[^`]+)`)\s*\)"""
 )
 REQUIRE_RE = re.compile(r"""(?x)(?<![\w$])require\s*\(\s*['"](?P<req>[^'"]+)['"]\s*\)""")
-DYNAMIC_CALL_RE = re.compile(
-    r"""(?x)(?<![\w$])(?P<fn>import|require)\s*\(\s*(?P<arg>[^)]+)\)"""
-)
+DYNAMIC_CALL_RE = re.compile(r"""(?x)(?<![\w$])(?P<fn>import|require)\s*\(\s*(?P<arg>[^)]+)\)""")
 DYNAMIC_SPEC_MARKER = "<dynamic>"
 
-EXPORT_RE = re.compile(r"""(?x)
+EXPORT_RE = re.compile(
+    r"""(?x)
     ^\s*export\s+
     (?:
       default\s+(?:async\s+)?function\s+(?P<d_fn>[A-Za-z_$][\w$]*) |
@@ -63,19 +65,21 @@ EXPORT_RE = re.compile(r"""(?x)
       \*\s*as\s+(?P<star_as>[A-Za-z_$][\w$]*) |
       (?:type\s+)?\{\s*(?P<brace>[^}]+)\s*\}
     )
-""", re.MULTILINE)
-
-VUE_SCRIPT_TAG_RE = re.compile(
-    r"""(?is)<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>"""
+""",
+    re.MULTILINE,
 )
+
+VUE_SCRIPT_TAG_RE = re.compile(r"""(?is)<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>""")
 VUE_SCRIPT_LANG_RE = re.compile(r"""(?i)\blang\s*=\s*["']?([A-Za-z0-9_-]+)["']?""")
 VUE_SCRIPT_SRC_RE = re.compile(r"""(?i)\bsrc\s*=\s*["']([^"']+)["']""")
+
 
 def _strip_quotes(s: str) -> str:
     s = (s or "").strip()
     if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"', "`"):
         return s[1:-1]
     return s
+
 
 def _js_ts_language(path: Path) -> str:
     suf = (path.suffix or "").lower()
@@ -84,6 +88,7 @@ def _js_ts_language(path: Path) -> str:
     if suf in (".tsx",):
         return "tsx"
     return "javascript"
+
 
 def _vue_language(attrs: str) -> str | None:
     if not attrs:
@@ -97,6 +102,7 @@ def _vue_language(attrs: str) -> str | None:
     if lang in ("ts", "tsx", "typescript"):
         return "typescript"
     return "javascript"
+
 
 def _extract_vue_scripts(text: str) -> tuple[str, list[str], str]:
     if not text:
@@ -121,11 +127,13 @@ def _extract_vue_scripts(text: str) -> tuple[str, list[str], str]:
             lang = "typescript"
     return "\n".join(bodies).strip(), srcs, lang
 
+
 def _prepare_js_source(file_path: Path, text: str) -> tuple[str, str, list[str]]:
     if file_path.suffix.lower() == ".vue":
         script_text, srcs, lang = _extract_vue_scripts(text)
         return lang, script_text, srcs
     return _js_ts_language(file_path), text, []
+
 
 def _string_literal_value(node_text_raw: str) -> str:
     if not node_text_raw:
@@ -133,6 +141,7 @@ def _string_literal_value(node_text_raw: str) -> str:
     if "${" in node_text_raw:
         return ""
     return _strip_quotes(node_text_raw)
+
 
 def _template_literal_value(node_text_raw: str) -> str:
     if not node_text_raw:
@@ -143,6 +152,7 @@ def _template_literal_value(node_text_raw: str) -> str:
     if len(raw) >= 2 and raw[0] == raw[-1] == "`":
         return raw[1:-1]
     return ""
+
 
 def _all_type_only_specifiers(raw: str) -> bool:
     match = re.search(r"\{([^}]*)\}", raw)
@@ -156,6 +166,7 @@ def _all_type_only_specifiers(raw: str) -> bool:
         if not spec_norm.startswith("type "):
             return False
     return True
+
 
 def _first_call_string_arg(node, data: bytes, *, allow_template: bool = False) -> str:
     args = None
@@ -176,6 +187,7 @@ def _first_call_string_arg(node, data: bytes, *, allow_template: bool = False) -
             return ""
     return ""
 
+
 def _first_call_arg(node):
     args = None
     for ch in node.children:
@@ -191,6 +203,7 @@ def _first_call_arg(node):
             return ch
     return None
 
+
 def _is_dynamic_call_arg(node, data: bytes, *, allow_template: bool) -> bool:
     first_arg = _first_call_arg(node)
     if first_arg is None:
@@ -203,6 +216,7 @@ def _is_dynamic_call_arg(node, data: bytes, *, allow_template: bool) -> bool:
         return _template_literal_value(node_text(first_arg, data)) == ""
     return True
 
+
 def _first_string_literal(node, data: bytes) -> str:
     if node is None:
         return ""
@@ -210,6 +224,7 @@ def _first_string_literal(node, data: bytes) -> str:
         if ch.type in ("string", "string_literal", "template_string", "template_literal"):
             return _string_literal_value(node_text(ch, data))
     return ""
+
 
 class JsTsIndexer:
     def language(self) -> str:
@@ -248,7 +263,9 @@ class JsTsIndexer:
                         raw = node_text(node, data).strip()
                         spec = _string_literal_value(node_text(source, data))
                         raw_l = raw.lstrip()
-                        is_type_only = raw_l.startswith("export type") or _all_type_only_specifiers(raw)
+                        is_type_only = raw_l.startswith("export type") or _all_type_only_specifiers(
+                            raw
+                        )
                         kind = "type_reexport" if is_type_only else "reexport"
                         _add(raw, spec, kind)
                     continue
@@ -279,7 +296,11 @@ class JsTsIndexer:
                     continue
                 raw = m.group(0).strip()
                 is_export = raw.lstrip().startswith("export")
-                is_type = bool(m.group("import_type") or m.group("export_type") or _all_type_only_specifiers(raw))
+                is_type = bool(
+                    m.group("import_type")
+                    or m.group("export_type")
+                    or _all_type_only_specifiers(raw)
+                )
                 if is_export:
                     kind = "type_reexport" if is_type else "reexport"
                 else:
@@ -450,7 +471,7 @@ class JsTsIndexer:
             snippets = [(source_text, 1)]
 
         for snippet, ln in snippets:
-            sig = _line_text(ln)
+            _line_text(ln)
 
             for m in EXPORT_RE.finditer(snippet):
                 if m.group("d_fn") or m.group("fn"):
@@ -489,14 +510,24 @@ class JsTsIndexer:
                             _add(p.split(":")[0].strip(), "reexport", ln)
         return out
 
-
     def naive_complexity(self, text: str) -> int:
         source_text = text
         if isinstance(text, str):
             source_text, _vue_srcs, _lang = _extract_vue_scripts(text)
             if not source_text:
                 source_text = text
-        keywords = ["if(", "if (", "for(", "for (", "while(", "while (", "&&", "||", "catch", "case "]
+        keywords = [
+            "if(",
+            "if (",
+            "for(",
+            "for (",
+            "while(",
+            "while (",
+            "&&",
+            "||",
+            "catch",
+            "case ",
+        ]
         c = 1
         low = source_text.lower()
         for k in keywords:

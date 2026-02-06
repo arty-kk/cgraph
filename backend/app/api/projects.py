@@ -1,4 +1,4 @@
-#backend/app/api/projects.py
+# backend/app/api/projects.py
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
@@ -151,6 +151,7 @@ def search(request: Request, project_id: int, q: str, limit: int = 20):
     project = require_project_access(request, project_id, min_role="viewer")
     return search_project_nodes(project.id, project.org_id, q, limit=limit)
 
+
 @router.get("/{project_id}/search/semantic")
 def search_semantic(
     request: Request,
@@ -161,6 +162,7 @@ def search_semantic(
 ):
     project = require_project_access(request, project_id, min_role="viewer")
     return search_project_semantic(project.id, project.org_id, q, limit=limit, prefix=prefix)
+
 
 @router.get("/{project_id}/search/text")
 def search_text(
@@ -185,10 +187,12 @@ def search_text(
         case_sensitive=case_sensitive,
     )
 
+
 @router.get("/{project_id}/files")
 def files(request: Request, project_id: int, prefix: str | None = None, limit: int = 50_000):
     project = require_project_access(request, project_id, min_role="viewer")
     return list_project_files(project.id, project.org_id, prefix=prefix, limit=limit)
+
 
 @router.post("/{project_id}/docs/build")
 def build_docs(
@@ -204,6 +208,7 @@ def build_docs(
             background_tasks.add_task(lambda: None)
         return {"task_id": task_id, "status": "pending"}
     return build_project_docs(project.id, project.org_id)
+
 
 @router.get("/{project_id}/docs")
 def get_docs(request: Request, project_id: int, kind: str = "overview"):

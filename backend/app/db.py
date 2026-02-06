@@ -1,4 +1,4 @@
-#backend/app/db.py
+# backend/app/db.py
 from __future__ import annotations
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,12 +12,14 @@ engine = create_engine(
     pool_pre_ping=True,
 )
 
+
 def init_db() -> None:
     try:
         with engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
     except SQLAlchemyError as e:
         raise RuntimeError(f"DB init failed: {e}") from e
+
 
 def get_session() -> Session:
     return Session(engine)

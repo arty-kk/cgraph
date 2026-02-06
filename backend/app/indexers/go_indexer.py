@@ -1,4 +1,4 @@
-#backend/app/indexers/go_indexer.py
+# backend/app/indexers/go_indexer.py
 from __future__ import annotations
 
 import os
@@ -7,10 +7,11 @@ import re
 import shlex
 import sys
 from pathlib import Path
-from .base import ImportRef, SymbolDef
-from .tree_sitter_utils import iter_nodes, node_text, parse_tree
+
 from ..config import settings
 from ..logging import get_logger
+from .base import ImportRef, SymbolDef
+from .tree_sitter_utils import iter_nodes, node_text, parse_tree
 
 LOGGER = get_logger("stubgraph.indexer.go")
 
@@ -30,6 +31,7 @@ def _extract_identifier_list(node, data: bytes) -> list[str]:
     if node.type == "identifier_list":
         return [node_text(ch, data) for ch in node.children if ch.type == "identifier"]
     return []
+
 
 _GO_BUILD_TOKEN_RE = re.compile(r"\s*([()!]|&&|\|\||[A-Za-z0-9_\.]+)")
 
@@ -100,7 +102,7 @@ def _eval_go_build(expr: str, tags: set[str]) -> bool:
     tokens: list[str] = []
     last_end = 0
     for match in _GO_BUILD_TOKEN_RE.finditer(expr):
-        if expr[last_end:match.start()].strip():
+        if expr[last_end : match.start()].strip():
             raise ValueError("invalid go:build expression")
         tokens.append(match.group(1))
         last_end = match.end()

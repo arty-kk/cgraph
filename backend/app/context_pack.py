@@ -1,19 +1,23 @@
-#backend/app/context_pack.py
+# backend/app/context_pack.py
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
+
 from sqlmodel import select
+
+from .contracts import get_or_build_contract
 from .db import get_session
 from .models import FileEdge, FileNode
-from .contracts import get_or_build_contract
+
 
 @dataclass
 class PackedContext:
     target_path: str
     files: list[dict]
     graph: dict
+
 
 def _neighbors(project_id: int, start: str, depth: int, direction: str = "out") -> list[str]:
     if depth <= 0:
@@ -52,6 +56,7 @@ def _neighbors(project_id: int, start: str, depth: int, direction: str = "out") 
                 nxt.append(candidate)
             frontier = nxt
     return ordered
+
 
 def pack_context(
     project_id: int,
@@ -127,8 +132,14 @@ def pack_context(
                 .order_by(FileNode.fan_in.desc())
                 .limit(200)
             ).all()
-        candidates = [r[0] if isinstance(r, (tuple, list)) else getattr(r, "path", "") for r in nodes]
-        candidates = [c for c in candidates if isinstance(c, str) and c and c not in prioritized and c != target_rel]
+        candidates = [
+            r[0] if isinstance(r, (tuple, list)) else getattr(r, "path", "") for r in nodes
+        ]
+        candidates = [
+            c
+            for c in candidates
+            if isinstance(c, str) and c and c not in prioritized and c != target_rel
+        ]
         for c in candidates:
             try:
                 # Limit scan size: heuristic mentions are usually near file headers/usages.

@@ -1,4 +1,4 @@
-#backend/app/api/auth.py
+# backend/app/api/auth.py
 from __future__ import annotations
 
 from fastapi import APIRouter, Request

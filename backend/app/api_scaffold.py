@@ -1,8 +1,7 @@
-#backend/app/api_scaffold.py
+# backend/app/api_scaffold.py
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from typing import Any
 
 PATH_PARAM_RE = re.compile(r"\{([^}]+)\}")
@@ -127,7 +126,10 @@ def suggest_function_name(method: str, backend_path: str, handler_name: str | No
         return "delete" + base
     return snake_to_camel(m.lower() + "_" + (last_static or "call"), lower_first=True)
 
-def build_frontend_snippet(method: str, backend_path: str, handler_name: str | None = None) -> dict[str, Any]:
+
+def build_frontend_snippet(
+    method: str, backend_path: str, handler_name: str | None = None
+) -> dict[str, Any]:
     m = (method or "").strip().upper() or "GET"
     fn = suggest_function_name(m, backend_path, handler_name=handler_name)
     tpl, params = build_ts_path_template(backend_path)
@@ -156,11 +158,15 @@ def build_frontend_snippet(method: str, backend_path: str, handler_name: str | N
     if uses_encode:
         imports.append("import { encodePath } from './utils'")
 
-    snippet = "\n".join(imports) + "\n\n" + (
-        f"export async function {fn}({', '.join(ts_params)}): Promise<unknown> {{\n"
-        f"{call_line}\n"
-        f"  return r.data\n"
-        f"}}\n"
+    snippet = (
+        "\n".join(imports)
+        + "\n\n"
+        + (
+            f"export async function {fn}({', '.join(ts_params)}): Promise<unknown> {{\n"
+            f"{call_line}\n"
+            f"  return r.data\n"
+            f"}}\n"
+        )
     )
 
     return {

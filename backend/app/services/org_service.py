@@ -2,15 +2,16 @@
 
 Use create_org/create_org_for_user to bootstrap an org and assign membership.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from sqlmodel import select
 
-from ..errors import BadRequestError, NotFoundError
-from ..models import OrgMembership, Organization, User
 from ..db import get_session
+from ..errors import BadRequestError, NotFoundError
+from ..models import Organization, OrgMembership, User
 from ..rbac import ORG_ROLES
 
 

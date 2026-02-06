@@ -2,16 +2,23 @@ from __future__ import annotations
 
 from .call import _agentic_json_call
 from .context import _FTS_TOKEN_RE, _fts_query_from_substring, _neighbors_limited, _seed_context
-from .dispatch import _clamp_float, _clamp_int, _dispatch_tool, _tool_error, _tool_ok, _validate_tool_result
+from .dispatch import (
+    _clamp_float,
+    _clamp_int,
+    _dispatch_tool,
+    _tool_error,
+    _tool_ok,
+    _validate_tool_result,
+)
 from .public import analyze_agentic, evolve_agentic, fix_agentic
 from .schema import _extract_refusal, _normalize_responses_json_schema, _parse_model_json
 from .self_check import _run_self_check
 from .tools import (
     _build_call_index,
     _build_route_patterns,
+    _call_matches_any_pattern,
     _candidate_keys_from_path,
     _candidate_keys_from_static_prefix,
-    _call_matches_any_pattern,
     _compute_api_coverage,
     _compute_prefix_map,
     _join,

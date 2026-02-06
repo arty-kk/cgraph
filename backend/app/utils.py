@@ -1,4 +1,4 @@
-#backend/app/utils.py
+# backend/app/utils.py
 from __future__ import annotations
 
 import hashlib
@@ -18,6 +18,7 @@ def sha256_text(text: str) -> str:
     h.update(text.encode("utf-8"))
     return h.hexdigest()
 
+
 def sha256_bytes(data: bytes) -> str:
     h = hashlib.sha256()
     h.update(data)
@@ -34,7 +35,6 @@ def sha256_file(path: Path) -> str:
 
 @contextmanager
 def project_lock(project_id: int) -> Iterator[None]:
-
     with _LOCK_GUARD:
         lock = _PROJECT_LOCKS.setdefault(project_id, threading.Lock())
 
@@ -58,7 +58,9 @@ def _normalize_rel_path(rel_path: str, max_length: int | None = None) -> str:
     return rel
 
 
-def resolve_under_root(project_root: Path, rel_path: str, *, max_length: int | None = None) -> Tuple[Path, str]:
+def resolve_under_root(
+    project_root: Path, rel_path: str, *, max_length: int | None = None
+) -> Tuple[Path, str]:
     root = project_root.resolve()
 
     rel = _normalize_rel_path(rel_path, max_length=max_length)

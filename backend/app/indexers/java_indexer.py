@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 from .base import ImportRef, SymbolDef
 from .tree_sitter_utils import iter_nodes, node_text, parse_tree
 
@@ -10,9 +11,9 @@ def _clean_import(raw: str) -> tuple[str, str]:
     kind = "import"
     if s.startswith("import static"):
         kind = "static_import"
-        s = s[len("import static"):].strip()
+        s = s[len("import static") :].strip()
     elif s.startswith("import"):
-        s = s[len("import"):].strip()
+        s = s[len("import") :].strip()
     s = s.rstrip(";").strip()
     return s, kind
 
@@ -122,7 +123,18 @@ class JavaIndexer:
         return out
 
     def naive_complexity(self, text: str) -> int:
-        keywords = ["if(", "if (", "for(", "for (", "while(", "while (", "&&", "||", "catch", "case "]
+        keywords = [
+            "if(",
+            "if (",
+            "for(",
+            "for (",
+            "while(",
+            "while (",
+            "&&",
+            "||",
+            "catch",
+            "case ",
+        ]
         c = 1
         low = text.lower()
         for k in keywords:

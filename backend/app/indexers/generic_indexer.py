@@ -1,11 +1,13 @@
-#backend/app/indexers/generic_indexer.py
+# backend/app/indexers/generic_indexer.py
 from __future__ import annotations
 
 import re
 from pathlib import Path
+
 from .base import ImportRef, SymbolDef
 
-GEN_IMPORT_RE = re.compile(r"""(?x)
+GEN_IMPORT_RE = re.compile(
+    r"""(?x)
 ^\s*(?:
     import\s+.+?from\s+['"](?P<js>[^'"]+)['"] |
     from\s+(?P<py>[\w\.\/]+)\s+import\s+ |
@@ -14,7 +16,9 @@ GEN_IMPORT_RE = re.compile(r"""(?x)
     # Java/Kotlin
     import\s+(?P<java>[\w\.]+)\s*;?
 )
-""", re.MULTILINE)
+""",
+    re.MULTILINE,
+)
 
 GO_IMPORT_BLOCK_RE = re.compile(
     r"""(?msx)
@@ -35,6 +39,7 @@ GO_IMPORT_SINGLE_RE = re.compile(
 
 GO_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 GO_LINE_COMMENT_RE = re.compile(r"//.*?$", re.MULTILINE)
+
 
 class GenericIndexer:
     def language(self) -> str:
@@ -80,7 +85,7 @@ class GenericIndexer:
 
         for m in GEN_IMPORT_RE.finditer(text_wo_blocks):
             raw = m.group(0).strip()
-            spec = (m.group("js") or m.group("py") or m.group("inc") or m.group("java") or "")
+            spec = m.group("js") or m.group("py") or m.group("inc") or m.group("java") or ""
             if spec:
                 _add(raw=raw, spec=spec, kind="import")
 

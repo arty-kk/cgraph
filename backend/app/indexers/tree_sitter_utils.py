@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Sequence, cast
 
 from tree_sitter import Node, Parser, Tree
 from tree_sitter_language_pack import get_language
@@ -10,7 +10,7 @@ from tree_sitter_language_pack import get_language
 @lru_cache(maxsize=16)
 def _get_parser(lang: str) -> Parser | None:
     try:
-        language = get_language(lang)
+        language = get_language(cast(Any, lang))
     except Exception:
         return None
     parser = Parser()
@@ -36,14 +36,14 @@ def node_text(node: Node | None, data: bytes) -> str:
     if node is None:
         return ""
     try:
-        return data[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return data[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
     except Exception:
         return ""
 
 
 def iter_nodes(root: Node | None) -> Iterator[Node]:
     if root is None:
-        return iter(())
+        return
     stack: list[Node] = [root]
     while stack:
         node = stack.pop()

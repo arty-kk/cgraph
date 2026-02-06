@@ -7,8 +7,8 @@ from typing import Any
 
 import openai
 
-from ..client import get_openai_client
 from ...config import settings
+from ..client import get_openai_client
 from ..model_caps import supports_reasoning, supports_temperature
 from ..orchestrator import SYSTEM_INSTRUCTIONS
 from .dispatch import _clamp_float, _clamp_int, _dispatch_tool
@@ -47,7 +47,12 @@ def _agentic_json_call(
     eff_calls = min(_clamp_int(max_calls, srv_calls, 1, 100), srv_calls)
     eff_total = min(_clamp_int(max_total_tool_output_chars, srv_total, 1, 2_000_000), srv_total)
     eff_file = min(_clamp_int(max_file_chars, srv_file, 1, 200_000), srv_file)
-    eff_temp = _clamp_int(int(10 * _clamp_float(temperature, srv_temp, 0.0, 2.0)), int(10 * srv_temp), 0, 20) / 10.0
+    eff_temp = (
+        _clamp_int(
+            int(10 * _clamp_float(temperature, srv_temp, 0.0, 2.0)), int(10 * srv_temp), 0, 20
+        )
+        / 10.0
+    )
 
     tools = _tool_definitions(eff_file)
     meta = AgenticMeta()
@@ -57,14 +62,19 @@ def _agentic_json_call(
         "Tooling rules:\n"
         "- First call plan_retrieval before using any other tool.\n"
         "- Use tools sparingly. Prefer get_contract before get_file.\n"
-        "- For definition/export lookups, use search_symbols first (faster and more precise). If no results, fall back to search_text.\n"
+        "- For definition/export lookups, use search_symbols first (faster and more precise). "
+        "If no results, fall back to search_text.\n"
         "- Prefer search_semantic for conceptual queries; if no results, use search_text.\n"
         "- Prefer search_text to locate occurrences before fetching many files.\n"
-        "- When locating or updating relevant tests, use search_tests to find test files by standard patterns.\n"
-        "- Use get_file only after search_paths, search_symbols, search_text, or search_semantic for the current task.\n"
+        "- When locating or updating relevant tests, use search_tests "
+        "to find test files by standard patterns.\n"
+        "- Use get_file only after search_paths, search_symbols, search_text, or "
+        "search_semantic for the current task.\n"
         "- Never assume missing code; fetch it.\n"
-        "- Keep changes minimal; for fixes, only propose changes you can justify from retrieved context.\n"
-        "- For FIX responses, tests must be a non-empty list of concrete tests or manual verification steps; missing tests are not allowed.\n"
+        "- Keep changes minimal; for fixes, only propose changes you can justify from retrieved "
+        "context.\n"
+        "- For FIX responses, tests must be a non-empty list of concrete tests or manual "
+        "verification steps; missing tests are not allowed.\n"
     )
     if evidence_mode:
         tool_rules += (
@@ -73,7 +83,13 @@ def _agentic_json_call(
         )
 
     input_list: list[Any] = [
-        {"role": "user", "content": f"{tool_rules}\nUser prompt:\n{user_prompt}\n\nSeed context (JSON):\n{json.dumps(seed, ensure_ascii=False)}"}
+        {
+            "role": "user",
+            "content": (
+                f"{tool_rules}\nUser prompt:\n{user_prompt}\n\nSeed context (JSON):\n"
+                f"{json.dumps(seed, ensure_ascii=False)}"
+            ),
+        }
     ]
 
     max_calls_budget = eff_calls
@@ -145,12 +161,16 @@ def _agentic_json_call(
             attempts += 1
             changed = False
             if isinstance(payload.get("matches"), list):
-                changed = shrink_snippets(payload["matches"], max(40, 160 // (attempts + 1))) or changed
+                changed = (
+                    shrink_snippets(payload["matches"], max(40, 160 // (attempts + 1))) or changed
+                )
                 if len(payload["matches"]) > 5:
                     payload["matches"] = payload["matches"][: max(5, len(payload["matches"]) // 2)]
                     changed = True
             if isinstance(payload.get("results"), list):
-                changed = shrink_snippets(payload["results"], max(60, 200 // (attempts + 1))) or changed
+                changed = (
+                    shrink_snippets(payload["results"], max(60, 200 // (attempts + 1))) or changed
+                )
                 if len(payload["results"]) > 3:
                     payload["results"] = payload["results"][: max(3, len(payload["results"]) // 2)]
                     changed = True
@@ -174,9 +194,15 @@ def _agentic_json_call(
         }
         if supports_temperature(model):
             kwargs["temperature"] = float(eff_temp)
-        if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
+        if (
+            isinstance(settings.openai_prompt_cache_key, str)
+            and settings.openai_prompt_cache_key.strip()
+        ):
             kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
-            if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
+            if (
+                isinstance(settings.openai_prompt_cache_retention, str)
+                and settings.openai_prompt_cache_retention.strip()
+            ):
                 kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
         if reasoning_effort and supports_reasoning(model):
             kwargs["reasoning"] = {"effort": reasoning_effort}
@@ -185,7 +211,13 @@ def _agentic_json_call(
             resp = client.responses.create(**kwargs)
         except TypeError as e:
             msg = str(e)
-            for k in ("prompt_cache_key", "prompt_cache_retention", "store", "temperature", "parallel_tool_calls"):
+            for k in (
+                "prompt_cache_key",
+                "prompt_cache_retention",
+                "store",
+                "temperature",
+                "parallel_tool_calls",
+            ):
                 if k in msg:
                     kwargs.pop(k, None)
             resp = client.responses.create(**kwargs)
@@ -204,12 +236,24 @@ def _agentic_json_call(
         function_calls: list[tuple[str, str, str]] = []
         if isinstance(out_items, list):
             for item in out_items:
-                item_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
+                item_type = (
+                    getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
+                )
                 if item_type != "function_call":
                     continue
-                name = getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
-                call_id = getattr(item, "call_id", None) if not isinstance(item, dict) else item.get("call_id")
-                arguments = getattr(item, "arguments", None) if not isinstance(item, dict) else item.get("arguments")
+                name = (
+                    getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
+                )
+                call_id = (
+                    getattr(item, "call_id", None)
+                    if not isinstance(item, dict)
+                    else item.get("call_id")
+                )
+                arguments = (
+                    getattr(item, "arguments", None)
+                    if not isinstance(item, dict)
+                    else item.get("arguments")
+                )
                 if not isinstance(name, str) or not isinstance(call_id, str):
                     continue
                 if not isinstance(arguments, str) or not arguments.strip():
@@ -278,10 +322,11 @@ def _agentic_json_call(
                         "Missing context:\n- " + "\n- ".join(meta.self_check_missing_context)
                     )
                 if meta.self_check_notes:
-                    extra_sections.append(
-                        "Issues:\n- " + "\n- ".join(meta.self_check_notes)
-                    )
-                extra_prompt = "Self-check обнаружил проблемы. Используй инструменты, чтобы собрать недостающий контекст."
+                    extra_sections.append("Issues:\n- " + "\n- ".join(meta.self_check_notes))
+                extra_prompt = (
+                    "Self-check обнаружил проблемы. Используй инструменты, чтобы собрать "
+                    "недостающий контекст."
+                )
                 if extra_sections:
                     extra_prompt = f"{extra_prompt}\n\n" + "\n\n".join(extra_sections)
                 retry_prompt = f"{user_prompt}\n\n{extra_prompt}"
@@ -364,7 +409,9 @@ def _agentic_json_call(
                     meta.cache_hits += 1
                     out = tool_cache[cache_key]
                 else:
-                    out = _dispatch_tool(project_id, root, meta, name, args, max_file_chars=eff_file)
+                    out = _dispatch_tool(
+                        project_id, root, meta, name, args, max_file_chars=eff_file
+                    )
                     if isinstance(out, dict):
                         err = out.get("error") if isinstance(out, dict) else None
                         err_code = err.get("code") if isinstance(err, dict) else None
