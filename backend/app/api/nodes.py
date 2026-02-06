@@ -28,6 +28,7 @@ class FileCreate(BaseModel):
 
 class FileRename(BaseModel):
     new_path: str = Field(..., description="New file path under project root")
+    create_dirs: bool = Field(True, description="Create parent directories if missing")
 
 
 def _clamp_int(v: int | None, default: int, lo: int, hi: int) -> int:
@@ -244,10 +245,13 @@ def rename_file(request: Request, project_id: int, path: str, body: FileRename):
             raise BadRequestError("Файл уже существует", context={"path": new_rel})
         new_parent = new_abs.parent
         if not new_parent.exists():
-            raise BadRequestError(
-                "Родительская директория не существует",
-                context={"path": new_rel},
-            )
+            if body.create_dirs:
+                new_parent.mkdir(parents=True, exist_ok=True)
+            else:
+                raise BadRequestError(
+                    "Родительская директория не существует",
+                    context={"path": new_rel},
+                )
         if not new_parent.is_dir():
             raise BadRequestError("Родительский путь должен быть директорией")
 
