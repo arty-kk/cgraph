@@ -12,7 +12,7 @@ from .db import get_session
 from .models import FileNode, FileEdge, FileChunkEmbedding
 from .config import settings
 from .llm.client import get_openai_client
-from .utils import resolve_under_root
+from .utils import _chunk_text, resolve_under_root
 import networkx as nx
 
 logger = logging.getLogger(__name__)
@@ -573,20 +573,6 @@ def search_nodes(project_id: int, query: str, limit: int = 20) -> list[dict]:
             }
         )
     return out
-
-
-def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
-    if size <= 0:
-        return []
-    overlap = max(0, min(overlap, size - 1))
-    step = max(1, size - overlap)
-    chunks: list[str] = []
-    for start in range(0, len(text), step):
-        end = start + size
-        chunk = text[start:end]
-        if chunk:
-            chunks.append(chunk)
-    return chunks
 
 
 def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:

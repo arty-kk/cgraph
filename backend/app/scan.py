@@ -48,7 +48,7 @@ from .models import (
 from .resolve import resolve_spec
 from .services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from .services.usage_service import EMBEDDING_CHUNKS_KIND, check_and_increment
-from .utils import project_lock, resolve_under_root, sha256_text
+from .utils import _chunk_text, project_lock, resolve_under_root, sha256_text
 
 PARSE_CACHE_LIMIT = 256
 _parse_cache: OrderedDict[Tuple[str, str, str], tuple[int, list[dict]]] = OrderedDict()
@@ -135,19 +135,6 @@ def _delete_embeddings(session, project_id: int, paths: list[str]) -> None:
                 FileChunkEmbedding.path.in_(chunk),
             )
         )
-
-def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
-    if size <= 0:
-        return []
-    overlap = max(0, min(overlap, size - 1))
-    step = max(1, size - overlap)
-    chunks: list[str] = []
-    for start in range(0, len(text), step):
-        end = start + size
-        chunk = text[start:end]
-        if chunk:
-            chunks.append(chunk)
-    return chunks
 
 def _symbol_chunks(text: str, symbols: Iterable[object]) -> list[dict]:
     lines = text.splitlines(keepends=True)

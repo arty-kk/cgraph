@@ -83,3 +83,17 @@ def normalize_project_root(root_path: str, *, max_length: int | None = None) -> 
     if not root.is_dir():
         raise PathValidationError("Корневой путь должен указывать на директорию")
     return root
+
+
+def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
+    if size <= 0:
+        return []
+    overlap = max(0, min(overlap, size - 1))
+    step = max(1, size - overlap)
+    chunks: list[str] = []
+    for start in range(0, len(text), step):
+        end = start + size
+        chunk = text[start:end]
+        if chunk:
+            chunks.append(chunk)
+    return chunks
