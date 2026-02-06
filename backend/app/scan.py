@@ -8,13 +8,10 @@ from collections import OrderedDict
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Tuple
-from sqlmodel import delete, select
-from sqlalchemy import bindparam, or_
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sqlalchemy import bindparam, or_
 from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
 from sqlmodel import delete, select
@@ -31,13 +28,12 @@ from .api_map import (
 )
 from .config import settings
 from .db import get_session
+from .errors import LimitExceededError
 from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
 from .llm.client import get_openai_client
 from .logging import get_logger
 from .models import (
-    FileNode, FileEdge, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef,
-    FileChunkEmbedding, FileText,
     ApiCall,
     ApiCallMeta,
     ApiInclude,
@@ -46,16 +42,12 @@ from .models import (
     FileChunkEmbedding,
     FileEdge,
     FileNode,
+    FileText,
     TsTypeDef,
 )
 from .resolve import resolve_spec
-from .utils import resolve_under_root, sha256_text, project_lock
-from .api_map import extract_fastapi_routes, extract_frontend_api_calls, extract_fastapi_includes
-from .api_contracts import extract_backend_route_contract_rows, extract_frontend_call_meta_rows, extract_ts_type_defs
-from .errors import LimitExceededError
 from .services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from .services.usage_service import EMBEDDING_CHUNKS_KIND, check_and_increment
-
 from .utils import project_lock, resolve_under_root, sha256_text
 
 PARSE_CACHE_LIMIT = 256
@@ -262,7 +254,13 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
             if int(prev_size) != int(size) or float(prev_mtime) != float(mtime):
                 candidates.append(rel)
 
-        updated = scan_files(project_id, org_id, project_root, candidates, precomputed_stats=stats_map)
+        updated = scan_files(
+            project_id,
+            org_id,
+            project_root,
+            candidates,
+            precomputed_stats=stats_map,
+        )
 
         if removed:
             with get_session() as s:
@@ -368,6 +366,7 @@ def scan_files(
     node_rows: list[dict] = []
     edge_map: dict[tuple[str, str, str], FileEdge] = {}
     search_rows: list[dict] = []
+    fts_rows: list[dict] = []
     route_rows: list[dict] = []
     call_rows: list[dict] = []
     include_rows: list[dict] = []
@@ -620,7 +619,9 @@ def scan_files(
                                 org_id,
                                 EMBEDDING_CHUNKS_KIND,
                                 len(chunks),
-                                chunk_limit if chunk_limit is not None else settings.embeddings_daily_chunk_limit,
+                                chunk_limit
+                                if chunk_limit is not None
+                                else settings.embeddings_daily_chunk_limit,
                             )
                         except LimitExceededError:
                             if not embedding_warned_limit:
@@ -739,6 +740,7 @@ def scan_files(
                 stmt_text = stmt_text.on_conflict_do_update(
                     index_elements=["project_id", "path"],
                     set_={"content": stmt_text.excluded.content},
+                )
             if fts_rows:
                 s.execute(
                     sa_text(
@@ -868,7 +870,9 @@ def scan_files(
                 for e in edge_map.values()
             ]
             stmt_e = pg_insert(FileEdge).values(edge_rows)
-            stmt_e = stmt_e.on_conflict_do_nothing(index_elements=["project_id", "src_path", "dst_path", "kind"])
+            stmt_e = stmt_e.on_conflict_do_nothing(
+                index_elements=["project_id", "src_path", "dst_path", "kind"]
+            )
             stmt_e = sqlite_insert(FileEdge).values(edge_rows)
             stmt_e = stmt_e.on_conflict_do_nothing(
                 index_elements=["project_id", "src_path", "dst_path", "kind"]
