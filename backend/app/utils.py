@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import hashlib
-import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Tuple
 
-from .errors import PathValidationError
+from sqlalchemy import text
 
-_PROJECT_LOCKS: dict[int, threading.Lock] = {}
-_LOCK_GUARD = threading.Lock()
+from .db import engine
+from .errors import PathValidationError
+from .logging import get_logger
+
+logger = get_logger("stubgraph.utils")
 
 
 def sha256_text(text: str) -> str:
@@ -35,21 +37,23 @@ def sha256_file(path: Path) -> str:
 
 @contextmanager
 def project_lock(project_id: int) -> Iterator[None]:
-    with _LOCK_GUARD:
-        lock = _PROJECT_LOCKS.setdefault(project_id, threading.Lock())
+    if engine.dialect.name != "postgresql":
+        message = (
+            "project_lock requires PostgreSQL advisory locks; "
+            f"current dialect is {engine.dialect.name}"
+        )
+        logger.error(message, extra={"dialect": engine.dialect.name})
+        raise RuntimeError(message)
 
-    lock.acquire()
+    conn = engine.connect()
     try:
-        yield
+        conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": int(project_id)})
+        try:
+            yield
+        finally:
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": int(project_id)})
     finally:
-        lock.release()
-
-
-def release_project_lock(project_id: int) -> None:
-    with _LOCK_GUARD:
-        lock = _PROJECT_LOCKS.get(project_id)
-        if lock and not lock.locked():
-            _PROJECT_LOCKS.pop(project_id, None)
+        conn.close()
 
 
 def _normalize_rel_path(rel_path: str, max_length: int | None = None) -> str:
