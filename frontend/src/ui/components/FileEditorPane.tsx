@@ -397,7 +397,7 @@ export function FileEditorPane({
   return (
     <div className="flex flex-col gap-3 h-full min-h-0">
       {tabs.length > 0 && (
-        <div className="flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950/80 px-3 py-2 text-[11px]">
+        <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950/80 px-2 py-1 text-[11px]">
           {tabOverflowState.hasOverflow && tabOverflowState.canScrollLeft && (
             <button
               type="button"
@@ -421,8 +421,8 @@ export function FileEditorPane({
                 <div
                   key={tab.path}
                   className={[
-                    'flex shrink-0 items-center gap-2 rounded-md border px-2 py-1 min-w-0',
-                    active ? 'border-indigo-500/70 bg-indigo-500/10' : 'border-neutral-800 bg-neutral-900/60',
+                    'flex shrink-0 items-center gap-2 px-2 py-1 min-w-0 border-b-2',
+                    active ? 'border-indigo-500/80 bg-neutral-900/80' : 'border-transparent text-neutral-400',
                   ].join(' ')}
                 >
                   <button

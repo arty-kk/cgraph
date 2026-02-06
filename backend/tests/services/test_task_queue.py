@@ -1,67 +1,46 @@
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlmodel import select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.services.task_queue import TaskQueue, TaskState  # noqa: E402
+from app.db import get_session  # noqa: E402
+from app.models import TaskJob  # noqa: E402
+from app.services.task_queue import task_queue  # noqa: E402
 
 
-class TestTaskQueueRetention(unittest.TestCase):
-    def test_purge_removes_expired_completed_tasks(self) -> None:
-        queue = TaskQueue(completed_ttl_seconds=10)
-        now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        with queue._lock:
-            queue._tasks["expired"] = TaskState(
-                status="succeeded",
-                completed_at=now - timedelta(seconds=20),
-            )
-            queue._tasks["recent"] = TaskState(
-                status="failed",
-                completed_at=now - timedelta(seconds=5),
-            )
-            queue._tasks["pending"] = TaskState(status="pending")
-            queue._tasks["running"] = TaskState(status="running")
-            queue._purge(now)
-            self.assertNotIn("expired", queue._tasks)
-            self.assertIn("recent", queue._tasks)
-            self.assertIn("pending", queue._tasks)
-            self.assertIn("running", queue._tasks)
+class TestTaskQueueStatus(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            with get_session() as session:
+                session.exec(select(1)).first()
+        except SQLAlchemyError:
+            self.skipTest("Postgres is not available for task queue tests")
 
-    def test_purge_enforces_max_completed_tasks(self) -> None:
-        queue = TaskQueue(max_completed_tasks=2)
-        now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        with queue._lock:
-            queue._tasks["oldest"] = TaskState(
-                status="succeeded",
-                completed_at=now - timedelta(seconds=30),
-            )
-            queue._tasks["middle"] = TaskState(
-                status="failed",
-                completed_at=now - timedelta(seconds=20),
-            )
-            queue._tasks["newest"] = TaskState(
-                status="succeeded",
-                completed_at=now - timedelta(seconds=10),
-            )
-            queue._tasks["running"] = TaskState(status="running")
-            queue._purge(now)
-            self.assertNotIn("oldest", queue._tasks)
-            self.assertIn("middle", queue._tasks)
-            self.assertIn("newest", queue._tasks)
-            self.assertIn("running", queue._tasks)
-
-    def test_get_keeps_recent_completed_tasks(self) -> None:
-        queue = TaskQueue(completed_ttl_seconds=60)
+    def test_get_returns_job_state(self) -> None:
+        job_id = uuid4().hex
         now = datetime.now(timezone.utc)
-        with queue._lock:
-            queue._tasks["recent"] = TaskState(
+        with get_session() as session:
+            job = TaskJob(
+                id=job_id,
+                org_id=1,
                 status="succeeded",
-                result={"ok": True},
-                completed_at=now - timedelta(seconds=30),
+                queue="light",
+                result_json='{"ok": true}',
+                error=None,
+                created_at=now,
+                updated_at=now,
+                completed_at=now,
             )
-        state = queue.get("recent")
+            session.add(job)
+            session.commit()
+
+        state = task_queue.get(job_id)
         self.assertIsNotNone(state)
         assert state is not None
         self.assertEqual(state.status, "succeeded")

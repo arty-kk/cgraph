@@ -17,6 +17,7 @@ from ..contracts import get_or_build_contract
 from ..errors import (
     BadRequestError,
     ExternalServiceError,
+    ForbiddenError,
     LimitExceededError,
     NotFoundError,
     ServerError,
@@ -25,17 +26,19 @@ from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.orchestrator import analyze, evolve, fix, triage, plan_task
 from ..llm.agentic import analyze_agentic, evolve_agentic, fix_agentic, AgenticMeta
 from ..llm.policy import ProfileName, ProfileParams, resolve_profile, DEFAULT_POLICY
-from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract
+from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract, TaskJob
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
+from ..storage import StorageError, get_patch_download_url, read_patch_blob, store_patch_blob
 from ..scan import scan_files
-from ..utils import normalize_project_root, project_lock, resolve_under_root, sha256_text
+from ..utils import normalize_project_root, project_lock, resolve_under_root
 from ..db import get_session
 from ..logging import get_logger
+from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
+from ..services.usage_service import LLM_REQUESTS_KIND, check_and_increment
 from .project_service import get_project, scan_with_background
 from .task_queue import TaskState, task_queue
 
 MAX_PATCH_STORE_CHARS = 50_000
-PATCH_BLOB_DIRNAME = "patches"
 MAX_GRAPH_DEPS_FOR_LLM = 500
 MAX_GRAPH_INBOUND_FOR_LLM = 200
 MAX_GRAPH_OUTBOUND_FOR_LLM = 200
@@ -146,27 +149,11 @@ SELF_CHECK_RETRY_TEMP_DELTA = 0.05
 SELF_CHECK_RETRY_REASONING_STEPS = 1
 
 def _store_patch_blob(patch_text: str) -> dict:
-    sha = sha256_text(patch_text)
-    base = Path(settings.db_dir).resolve()
-    patches_dir = base / PATCH_BLOB_DIRNAME
-    patches_dir.mkdir(parents=True, exist_ok=True)
-    fp = (patches_dir / f"{sha}.diff").resolve()
-
-    if base not in fp.parents and fp != base:
-        raise RuntimeError("Refusing to write patch blob outside db_dir")
-    try:
-        with fp.open("x", encoding="utf-8") as f:
-            f.write(patch_text)
-    except FileExistsError:
-        pass
-    return {
-        "omitted": True,
-        "chars": len(patch_text),
-        "sha256": sha,
-        "storage": "file",
-        "file": f"{PATCH_BLOB_DIRNAME}/{sha}.diff",
-        "store_limit_chars": MAX_PATCH_STORE_CHARS,
-    }
+    meta = store_patch_blob(patch_text)
+    meta["omitted"] = True
+    meta["chars"] = len(patch_text)
+    meta["store_limit_chars"] = MAX_PATCH_STORE_CHARS
+    return meta
 
 
 def _parse_diff_paths(root: Path, diff_text: str) -> list[str]:
@@ -195,6 +182,7 @@ def _parse_diff_paths(root: Path, diff_text: str) -> list[str]:
 
 def _apply_patch_and_record(
     project_id: int,
+    org_id: int,
     run_id: int,
     root: Path,
     patch_text: str,
@@ -238,7 +226,7 @@ def _apply_patch_and_record(
 
             if applied and "modified" in applied:
                 try:
-                    applied["reindexed"] = scan_files(project_id, root, modified)
+                    applied["reindexed"] = scan_files(project_id, org_id, root, modified)
                     removed_edge_neighbors = None
                     if isinstance(applied.get("reindexed"), dict):
                         removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
@@ -390,7 +378,7 @@ def _impact(
     return sorted(visited), truncated
 
 
-def _ensure_node_exists(project_id: int, target: str, root: Path) -> None:
+def _ensure_node_exists(project_id: int, org_id: int, target: str, root: Path) -> None:
     def _has_node() -> bool:
         with get_session() as session:
             return (
@@ -415,7 +403,7 @@ def _ensure_node_exists(project_id: int, target: str, root: Path) -> None:
                 raise FileNotFoundError(rel_norm)
             if not abs_target.is_file():
                 raise ValueError("Цель должна быть файлом")
-            scan_files(project_id, root, [target])
+            scan_files(project_id, org_id, root, [target])
             compute_graph_metrics(project_id)
     except Exception as error:  # noqa: BLE001
         raise ServerError(
@@ -514,8 +502,21 @@ def _plan_tz_skipped(reason: str) -> dict:
     return skipped
 
 
-def run_task(project_id: int, request: TaskRequest) -> dict:
-    project = get_project(project_id)
+def _enforce_llm_entitlements(org_id: int) -> None:
+    ent_llm_enabled = get_entitlement_bool(org_id, "llm_enabled")
+    if ent_llm_enabled is False:
+        raise ForbiddenError("LLM недоступен по плану")
+    limit = get_entitlement_int(org_id, "llm_daily_request_limit")
+    check_and_increment(
+        org_id,
+        LLM_REQUESTS_KIND,
+        1,
+        limit if limit is not None else settings.llm_daily_request_limit,
+    )
+
+
+def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
+    project = get_project(project_id, org_id=org_id)
 
     if len(request.prompt) > settings.max_prompt_chars:
         raise LimitExceededError(
@@ -532,11 +533,11 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
     if not abs_target.is_file():
         raise BadRequestError("Цель должна быть файлом")
 
-    _ensure_node_exists(project_id, target, root)
+    _ensure_node_exists(project_id, org_id, target, root)
     warning = _graph_warning(project_id)
     graph_scan_task: dict | None = None
     if warning == GRAPH_NOT_READY_WARNING:
-        graph_scan_task = scan_with_background(project_id, background=True)
+        graph_scan_task = scan_with_background(project_id, org_id, background=True)
     graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
     graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 
@@ -559,6 +560,9 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             "Укажи mode=impact или настрой ключ.",
             context={"mode": mode or "auto"},
         )
+
+    if mode in ("analyze", "evolve", "fix") or mode is None:
+        _enforce_llm_entitlements(org_id)
 
     if mode is None:
         try:
@@ -1058,8 +1062,12 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
                         retrieval_settings["agentic"]["reasoning_effort"] = agentic_reasoning_effort
                         retrieval_settings["agentic"]["tool_calls_used"] = int(agentic_meta.tool_calls)
                         retrieval_settings["agentic"]["tool_output_chars_used"] = int(agentic_meta.total_tool_output_chars)
-                        retrieval_settings["agentic"]["cache_hits"] = int(getattr(agentic_meta, "cache_hits", 0))
-                        retrieval_settings["agentic"]["files_read"] = int(len(agentic_meta.full_file_paths or []))
+                        retrieval_settings["agentic"]["cache_hits"] = int(
+                            getattr(agentic_meta, "cache_hits", 0)
+                        )
+                        retrieval_settings["agentic"]["files_read"] = int(
+                            len(agentic_meta.full_file_paths or [])
+                        )
                         retrieval_settings["agentic"]["self_check_ok"] = agentic_meta.self_check_ok
                         retrieval_settings["agentic"]["self_check_notes"] = list(
                             agentic_meta.self_check_notes or []
@@ -1255,6 +1263,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
 
     with get_session() as session:
         run = AnalysisRun(
+            org_id=org_id,
             project_id=project_id,
             target_path=target,
             mode=mode,
@@ -1286,6 +1295,7 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
             patch_text = result_full.get("patch_unified_diff")
         applied = _apply_patch_and_record(
             project_id,
+            org_id,
             run.id,
             root,
             patch_text if isinstance(patch_text, str) else "",
@@ -1312,24 +1322,34 @@ def run_task(project_id: int, request: TaskRequest) -> dict:
 
 
 def run_task_with_background(
-    project_id: int, request: TaskRequest, background: bool = False, background_tasks: BackgroundTasks | None = None
+    project_id: int,
+    org_id: int,
+    request: TaskRequest,
+    background: bool = False,
+    background_tasks: BackgroundTasks | None = None,
 ) -> dict:
     if background:
-        task_id = task_queue.submit(lambda: run_task(project_id, request))
+        task_id = task_queue.submit_run(project_id, org_id, _serialize_request(request))
         if background_tasks is not None:
             background_tasks.add_task(lambda: None)
         return {"task_id": task_id, "status": "pending"}
-    return run_task(project_id, request)
+    return run_task(project_id, org_id, request)
 
 
-def list_runs(project_id: int, limit: int = 50) -> list[dict]:
+def _serialize_request(request: TaskRequest) -> dict:
+    payload = dict(request.__dict__)
+    payload["provided_fields"] = sorted(request.provided_fields)
+    return payload
+
+
+def list_runs(project_id: int, org_id: int, limit: int = 50) -> list[dict]:
     if limit < 1 or limit > 200:
         raise BadRequestError("limit должен быть в диапазоне 1..200")
     with get_session() as session:
         runs = (
             session.exec(
                 select(AnalysisRun)
-                .where(AnalysisRun.project_id == project_id)
+                .where(AnalysisRun.project_id == project_id, AnalysisRun.org_id == org_id)
                 .order_by(AnalysisRun.id.desc())
                 .limit(limit)
             ).all()
@@ -1347,11 +1367,14 @@ def list_runs(project_id: int, limit: int = 50) -> list[dict]:
     ]
 
 
-def get_run(project_id: int, run_id: int) -> dict:
+def get_run(project_id: int, org_id: int, run_id: int) -> dict:
     with get_session() as session:
         run = session.get(AnalysisRun, run_id)
-    if not run or run.project_id != project_id:
-        raise NotFoundError("Запуск не найден", context={"run_id": run_id, "project_id": project_id})
+    if not run or run.project_id != project_id or run.org_id != org_id:
+        raise NotFoundError(
+            "Запуск не найден",
+            context={"run_id": run_id, "project_id": project_id},
+        )
 
     try:
         result: Any = json.loads(run.result_json or "{}")
@@ -1371,7 +1394,7 @@ def get_run(project_id: int, run_id: int) -> dict:
     warning = _graph_warning(project_id)
     graph_scan_task: dict | None = None
     if warning == GRAPH_NOT_READY_WARNING:
-        graph_scan_task = scan_with_background(project_id, background=True)
+        graph_scan_task = scan_with_background(project_id, org_id, background=True)
     graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
     graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 
@@ -1396,10 +1419,10 @@ def get_run(project_id: int, run_id: int) -> dict:
     }
 
 
-def get_run_patch(project_id: int, run_id: int) -> dict:
+def get_run_patch(project_id: int, org_id: int, run_id: int) -> dict:
     with get_session() as session:
         run = session.get(AnalysisRun, run_id)
-    if not run or run.project_id != project_id:
+    if not run or run.project_id != project_id or run.org_id != org_id:
         raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
 
     try:
@@ -1416,31 +1439,40 @@ def get_run_patch(project_id: int, run_id: int) -> dict:
         if isinstance(meta, dict):
             sha = meta.get("sha256")
             if isinstance(sha, str) and sha:
-                base = Path(settings.db_dir).resolve()
-                fp = (base / PATCH_BLOB_DIRNAME / f"{sha}.diff").resolve()
-                if base not in fp.parents and fp != base:
-                    raise BadRequestError("Некорректный путь к сохранённому патчу")
-                if not fp.exists() or not fp.is_file():
-                    raise NotFoundError("Сохранённый патч не найден", context={"sha": sha})
                 try:
-                    text = fp.read_text(encoding="utf-8", errors="replace")
+                    text = read_patch_blob(meta)
+                except StorageError as error:
+                    raise NotFoundError(
+                        "Сохранённый патч не найден",
+                        context={"reason": str(error)},
+                    )
                 except Exception as error:  # noqa: BLE001
-                    raise BadRequestError("Не удалось прочитать патч", context={"reason": str(error)})
-                return {"patch_unified_diff": text}
+                    raise BadRequestError(
+                        "Не удалось прочитать патч",
+                        context={"reason": str(error)},
+                    )
+                payload = {"patch_unified_diff": text}
+                url = get_patch_download_url(meta)
+                if url:
+                    payload["download_url"] = url
+                expires_at = meta.get("expires_at") if isinstance(meta, dict) else None
+                if isinstance(expires_at, str) and expires_at:
+                    payload["expires_at"] = expires_at
+                return payload
 
     raise NotFoundError("Патч не найден", context={"run_id": run_id})
 
 
-def apply_run_patch(project_id: int, run_id: int) -> dict:
-    project = get_project(project_id)
+def apply_run_patch(project_id: int, org_id: int, run_id: int) -> dict:
+    project = get_project(project_id, org_id=org_id)
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
 
     with get_session() as session:
         run = session.get(AnalysisRun, run_id)
-    if not run or run.project_id != project_id:
+    if not run or run.project_id != project_id or run.org_id != org_id:
         raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
 
-    patch_payload = get_run_patch(project_id, run_id)
+    patch_payload = get_run_patch(project_id, org_id, run_id)
     patch_text = patch_payload.get("patch_unified_diff") if isinstance(patch_payload, dict) else ""
 
     allowed_patch_paths: set[str] | None = None
@@ -1455,6 +1487,7 @@ def apply_run_patch(project_id: int, run_id: int) -> dict:
 
     applied = _apply_patch_and_record(
         project_id,
+        org_id,
         run_id,
         root,
         patch_text if isinstance(patch_text, str) else "",
@@ -1464,11 +1497,14 @@ def apply_run_patch(project_id: int, run_id: int) -> dict:
     return {"applied": applied}
 
 
-def delete_run(project_id: int, run_id: int) -> dict:
+def delete_run(project_id: int, org_id: int, run_id: int) -> dict:
     with get_session() as session:
         run = session.get(AnalysisRun, run_id)
-        if not run or run.project_id != project_id:
-            raise NotFoundError("Запуск не найден", context={"run_id": run_id, "project_id": project_id})
+        if not run or run.project_id != project_id or run.org_id != org_id:
+            raise NotFoundError(
+                "Запуск не найден",
+                context={"run_id": run_id, "project_id": project_id},
+            )
         try:
             data = json.loads(run.result_json or "{}")
         except Exception:  # noqa: BLE001
@@ -1484,9 +1520,13 @@ def delete_run(project_id: int, run_id: int) -> dict:
     return {"ok": True}
 
 
-def describe_task(task_id: str) -> dict:
+def describe_task(task_id: str, org_id: int) -> dict:
     state: TaskState | None = task_queue.get(task_id)
     if not state:
+        raise NotFoundError("Задача не найдена", context={"task_id": task_id})
+    with get_session() as session:
+        job = session.get(TaskJob, task_id)
+    if not job or job.org_id != org_id:
         raise NotFoundError("Задача не найдена", context={"task_id": task_id})
     payload: dict[str, Any] = {"task_id": task_id, "status": state.status}
     if state.error:

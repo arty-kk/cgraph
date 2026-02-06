@@ -18,6 +18,11 @@ def sha256_text(text: str) -> str:
     h.update(text.encode("utf-8"))
     return h.hexdigest()
 
+def sha256_bytes(data: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(data)
+    return h.hexdigest()
+
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()

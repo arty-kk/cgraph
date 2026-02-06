@@ -2,18 +2,16 @@
 from __future__ import annotations
 
 import json
-import re
+from dataclasses import asdict
 from threading import Lock
-from typing import Any
 
 from fastapi import BackgroundTasks
 from sqlalchemy import func
-from sqlalchemy import text as sa_text
 from sqlmodel import delete, select
 
 from ..config import settings
 from ..db import get_session
-from ..errors import BadRequestError, NotFoundError
+from ..errors import BadRequestError, ForbiddenError, NotFoundError
 from ..graph import (
     compute_graph_metrics,
     graph_payload,
@@ -21,6 +19,7 @@ from ..graph import (
     search_nodes,
     search_semantic,
 )
+from ..infra.cache import cache_get_json, cache_invalidate_prefix, cache_set_json
 from ..models import (
     AnalysisRun,
     ApiCall,
@@ -31,31 +30,30 @@ from ..models import (
     FileChunkEmbedding,
     FileEdge,
     FileNode,
+    FileText,
     ModuleContract,
     Project,
     ProjectDoc,
+    RepoSnapshot,
     TsTypeDef,
 )
 from ..patches import delete_patch_blob_for_sha
 from ..scan import SEARCH_INDEX_MAX_CHARS, scan_project
+from ..search import search_text_paths
+from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
+from ..services.usage_service import EMBEDDING_QUERY_KIND, check_and_increment
+from ..snapshots import (
+    delete_snapshot,
+    delete_project_snapshot_root,
+    prepare_project_snapshot_root,
+    snapshot_meta_from_dict,
+    store_snapshot_blob,
+)
 from ..utils import normalize_project_root, project_lock, resolve_under_root
 from .task_queue import task_queue
 
 _scan_tasks: dict[int, str] = {}
 _scan_tasks_lock = Lock()
-
-_FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
-
-
-def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
-    tokens = [t for t in _FTS_TOKEN_RE.findall(q or "") if t]
-    if not tokens:
-        return None
-    tokens = tokens[: max(1, int(max_tokens))]
-    esc = []
-    for t in tokens:
-        esc.append(t.replace('"', '""'))
-    return " AND ".join([f'"{t}"' for t in esc if t])
 
 
 def _get_active_scan_task(project_id: int) -> tuple[str | None, str | None]:
@@ -77,25 +75,71 @@ def _get_active_scan_task(project_id: int) -> tuple[str | None, str | None]:
     return task_id, state.status
 
 
-def create_project(name: str, root_path: str) -> Project:
+def create_project(name: str, root_path: str, org_id: int) -> Project:
+    if not settings.allow_local_root_path:
+        raise BadRequestError("Локальные root_path отключены. Используй загрузку snapshot.")
     root = normalize_project_root(root_path, max_length=settings.max_root_path_chars)
     with get_session() as session:
-        project = Project(name=name, root_path=str(root))
+        project = Project(name=name, root_path=str(root), org_id=org_id)
         session.add(project)
         session.commit()
         session.refresh(project)
     return project
 
 
-def list_projects() -> list[Project]:
+def create_project_from_snapshot(
+    name: str,
+    archive_bytes: bytes,
+    archive_name: str,
+    org_id: int,
+) -> Project:
+    meta = store_snapshot_blob(archive_bytes, archive_name)
+    root = prepare_project_snapshot_root(meta)
+    root = normalize_project_root(str(root), max_length=settings.max_root_path_chars)
     with get_session() as session:
-        return session.exec(select(Project)).all()
+        project = Project(name=name, root_path=str(root), org_id=org_id)
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        snapshot = RepoSnapshot(
+            org_id=org_id,
+            project_id=project.id,
+            content_sha256=meta.sha256,
+            archive_name=meta.archive_name,
+            storage_json=json.dumps(asdict(meta), ensure_ascii=False),
+        )
+        session.add(snapshot)
+        session.commit()
+    return project
 
 
-def delete_project(project_id: int) -> None:
+def list_projects(org_id: int) -> list[Project]:
+    with get_session() as session:
+        return session.exec(select(Project).where(Project.org_id == org_id)).all()
+
+
+def get_latest_snapshots(project_ids: list[int]) -> dict[int, RepoSnapshot]:
+    if not project_ids:
+        return {}
+    with get_session() as session:
+        rows = session.exec(
+            select(RepoSnapshot)
+            .where(RepoSnapshot.project_id.in_(project_ids))
+            .order_by(RepoSnapshot.project_id.asc(), RepoSnapshot.created_at.desc())
+        ).all()
+    latest: dict[int, RepoSnapshot] = {}
+    for row in rows:
+        if row.project_id not in latest:
+            latest[row.project_id] = row
+    return latest
+
+
+def delete_project(project_id: int, org_id: int) -> None:
     with project_lock(project_id):
         with get_session() as session:
-            project = session.get(Project, project_id)
+            project = session.exec(
+                select(Project).where(Project.id == project_id, Project.org_id == org_id)
+            ).first()
             if not project:
                 raise NotFoundError("Проект не найден", context={"project_id": project_id})
 
@@ -131,19 +175,51 @@ def delete_project(project_id: int) -> None:
                 delete_patch_blob_for_sha(sha)
             session.exec(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
             session.exec(delete(ProjectDoc).where(ProjectDoc.project_id == project_id))
-            try:
-                session.execute(
-                    sa_text("DELETE FROM filetext_fts WHERE project_id=:pid"),
-                    {"pid": int(project_id)},
-                )
-            except Exception:
-                pass
+            session.exec(delete(FileText).where(FileText.project_id == project_id))
+            snapshots = session.exec(
+                select(RepoSnapshot).where(RepoSnapshot.project_id == project_id)
+            ).all()
+            delete_project_snapshot_root(project.root_path)
+            for snap in snapshots:
+                try:
+                    payload = json.loads(snap.storage_json or "{}")
+                except Exception:  # noqa: BLE001
+                    payload = {}
+                if isinstance(payload, dict):
+                    has_other_refs = (
+                        session.exec(
+                            select(func.count())
+                            .select_from(RepoSnapshot)
+                            .where(
+                                RepoSnapshot.content_sha256 == snap.content_sha256,
+                                RepoSnapshot.project_id != project_id,
+                            )
+                        ).one()
+                    )
+                    has_other_refs = int(
+                        has_other_refs[0]
+                        if isinstance(has_other_refs, (tuple, list))
+                        else has_other_refs
+                    ) > 0
+                    if has_other_refs:
+                        continue
+                    try:
+                        delete_snapshot(snapshot_meta_from_dict(payload))
+                    except Exception:  # noqa: BLE001
+                        pass
+            session.exec(delete(RepoSnapshot).where(RepoSnapshot.project_id == project_id))
             session.exec(delete(Project).where(Project.id == project_id))
             session.commit()
+    cache_invalidate_prefix([f"project:{project_id}"])
 
 
-def list_project_files(project_id: int, prefix: str | None = None, limit: int = 50_000) -> dict:
-    get_project(project_id)
+def list_project_files(
+    project_id: int,
+    org_id: int,
+    prefix: str | None = None,
+    limit: int = 50_000,
+) -> dict:
+    get_project(project_id, org_id=org_id)
     if limit < 1 or limit > 200_000:
         raise BadRequestError("limit должен быть в диапазоне 1..200000")
 
@@ -206,25 +282,32 @@ def list_project_files(project_id: int, prefix: str | None = None, limit: int = 
     }
 
 
-def get_project(project_id: int) -> Project:
+def get_project(project_id: int, org_id: int | None = None) -> Project:
     with get_session() as session:
-        project = session.get(Project, project_id)
+        if org_id is None:
+            project = session.get(Project, project_id)
+        else:
+            project = session.exec(
+                select(Project).where(Project.id == project_id, Project.org_id == org_id)
+            ).first()
     if not project:
         raise NotFoundError("Проект не найден", context={"project_id": project_id})
     return project
 
 
-def _scan_and_update_graph(project_id: int) -> dict:
-    project = get_project(project_id)
+def _scan_and_update_graph(project_id: int, org_id: int) -> dict:
+    project = get_project(project_id, org_id=org_id)
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    stats = scan_project(project_id, root)
+    stats = scan_project(project_id, org_id, root)
     with project_lock(project_id):
         compute_graph_metrics(project_id)
+    cache_invalidate_prefix([f"project:{project_id}"])
     return {"ok": True, "stats": stats}
 
 
 def scan_with_background(
     project_id: int,
+    org_id: int,
     background: bool = False,
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
@@ -233,28 +316,29 @@ def scan_with_background(
         if task_id and status in ("pending", "running"):
             return {"task_id": task_id, "status": status}
 
-        task_id = task_queue.submit(lambda: _scan_and_update_graph(project_id))
+        task_id = task_queue.submit_scan(project_id, org_id)
         with _scan_tasks_lock:
             _scan_tasks[project_id] = task_id
         if background_tasks is not None:
             background_tasks.add_task(lambda: None)
         return {"task_id": task_id, "status": "pending"}
-    return _scan_and_update_graph(project_id)
+    return _scan_and_update_graph(project_id, org_id)
 
 
-def load_graph(project_id: int, limit_nodes: int | None = None) -> dict:
-    get_project(project_id)
+def load_graph(project_id: int, org_id: int, limit_nodes: int | None = None) -> dict:
+    get_project(project_id, org_id=org_id)
     return graph_payload(project_id, limit_nodes=limit_nodes)
 
 
 def load_local_graph(
     project_id: int,
+    org_id: int,
     path: str,
     hops: int,
     max_nodes: int,
     max_edges: int,
 ) -> dict:
-    project = get_project(project_id)
+    project = get_project(project_id, org_id=org_id)
     if hops < 0:
         raise BadRequestError("Количество шагов не может быть отрицательным")
     if max_nodes <= 0 or max_edges <= 0:
@@ -265,27 +349,46 @@ def load_local_graph(
     return local_subgraph(project_id, rel_norm, hops=hops, max_nodes=max_nodes, max_edges=max_edges)
 
 
-def search_project_nodes(project_id: int, query: str, limit: int = 20) -> list[dict]:
-    get_project(project_id)
+def search_project_nodes(project_id: int, org_id: int, query: str, limit: int = 20) -> list[dict]:
+    get_project(project_id, org_id=org_id)
     if not isinstance(query, str) or not query.strip():
         raise BadRequestError("Параметр q обязателен")
     if limit < 1 or limit > 200:
         raise BadRequestError("Лимит выдачи должен быть между 1 и 200")
-    return search_nodes(project_id, query.strip(), limit=limit)
+    cache_key = [f"project:{project_id}", "search_nodes", query.strip(), str(limit)]
+    cached = cache_get_json(cache_key)
+    if isinstance(cached, list):
+        return cached
+    result = search_nodes(project_id, query.strip(), limit=limit)
+    cache_set_json(cache_key, result)
+    return result
 
 
 def search_project_semantic(
     project_id: int,
+    org_id: int,
     query: str,
     *,
     limit: int = 20,
     prefix: str | None = None,
 ) -> dict:
-    project = get_project(project_id)
+    project = get_project(project_id, org_id=org_id)
     if not isinstance(query, str) or not query.strip():
         raise BadRequestError("Параметр q обязателен")
     if limit < 1 or limit > 200:
         raise BadRequestError("Лимит выдачи должен быть между 1 и 200")
+
+    ent_embeddings_enabled = get_entitlement_bool(org_id, "embeddings_enabled")
+    if settings.embeddings_enabled and ent_embeddings_enabled is not False:
+        query_limit = get_entitlement_int(org_id, "embeddings_daily_query_limit")
+        check_and_increment(
+            org_id,
+            EMBEDDING_QUERY_KIND,
+            1,
+            query_limit if query_limit is not None else settings.embeddings_daily_query_limit,
+        )
+    elif ent_embeddings_enabled is False:
+        raise ForbiddenError("Семантический поиск недоступен по плану")
 
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     response = search_semantic(project_id, root, query.strip(), max_results=limit, prefix=prefix)
@@ -302,6 +405,7 @@ def search_project_semantic(
 
 def search_project_text(
     project_id: int,
+    org_id: int,
     query: str,
     *,
     limit_files: int = 200,
@@ -310,7 +414,7 @@ def search_project_text(
     prefix: str | None = None,
     case_sensitive: bool = False,
 ) -> dict:
-    project = get_project(project_id)
+    project = get_project(project_id, org_id=org_id)
     if not isinstance(query, str) or not query.strip():
         raise BadRequestError("Параметр q обязателен")
     if limit_files < 1 or limit_files > 2000:
@@ -321,6 +425,19 @@ def search_project_text(
         raise BadRequestError("context_chars должен быть в диапазоне 40..400")
 
     needle = query.strip()
+    cache_key = [
+        f"project:{project_id}",
+        "search_text",
+        needle,
+        str(limit_files),
+        str(limit_matches),
+        str(context_chars),
+        str(prefix or ""),
+        "1" if case_sensitive else "0",
+    ]
+    cached = cache_get_json(cache_key)
+    if isinstance(cached, dict):
+        return cached
 
     prefix_norm: str | None = None
     if isinstance(prefix, str) and prefix.strip():
@@ -333,7 +450,7 @@ def search_project_text(
             select(FileNode.id).where(FileNode.project_id == project_id).limit(1)
         ).first()
     if not row:
-        return {
+        result = {
             "matches": [],
             "meta": {
                 "query": needle,
@@ -349,6 +466,8 @@ def search_project_text(
                 "message": "Проект не проиндексирован. Запустите Scan.",
             },
         }
+        cache_set_json(cache_key, result)
+        return result
 
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
 
@@ -357,25 +476,15 @@ def search_project_text(
 
     paths: list[str] = []
 
-    fts_query = _fts_query_from_substring(needle)
-    if fts_query:
-        try:
-            sql = "SELECT path FROM filetext_fts WHERE filetext_fts MATCH :q AND project_id = :pid"
-            params: dict[str, Any] = {"q": fts_query, "pid": int(project_id)}
-            if prefix_norm:
-                params["prefix"] = prefix_norm
-                params["like"] = f"{prefix_norm}/%"
-                sql += " AND (path = :prefix OR path LIKE :like)"
-            sql += " ORDER BY bm25(filetext_fts) LIMIT :lim"
-            params["lim"] = int(limit_files)
-            with get_session() as s:
-                rows = s.execute(sa_text(sql), params).all()
-            for row in rows:
-                p = row[0] if isinstance(row, (tuple, list)) else row
-                if isinstance(p, str) and p:
-                    paths.append(p)
-        except Exception:
-            paths = []
+    try:
+        paths = search_text_paths(
+            project_id,
+            needle,
+            limit=limit_files,
+            prefix=prefix_norm,
+        )
+    except Exception:
+        paths = []
 
     if not paths:
         with get_session() as s:
@@ -469,7 +578,7 @@ def search_project_text(
         if truncated:
             truncated_files += 1
 
-    return {
+    result = {
         "matches": matches,
         "meta": {
             "query": needle,
@@ -484,3 +593,5 @@ def search_project_text(
             "truncated_files": int(truncated_files),
         },
     }
+    cache_set_json(cache_key, result)
+    return result

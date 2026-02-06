@@ -837,8 +837,8 @@ def _api_summary_md(api_summary: dict) -> str:
     return "\n".join(out).strip() + "\n"
 
 
-def build_project_docs(project_id: int) -> dict:
-    project = get_project(project_id)
+def build_project_docs(project_id: int, org_id: int) -> dict:
+    project = get_project(project_id, org_id=org_id)
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
 
     with get_session() as s:
@@ -1028,8 +1028,8 @@ def build_project_docs(project_id: int) -> dict:
     return {"project_id": project_id, "kind": "overview", "created_at": doc.created_at.isoformat(), "markdown": final_md}
 
 
-def get_latest_project_doc(project_id: int, kind: str = "overview") -> dict:
-    get_project(project_id)
+def get_latest_project_doc(project_id: int, org_id: int, kind: str = "overview") -> dict:
+    get_project(project_id, org_id=org_id)
     with get_session() as s:
         doc = s.exec(
             select(ProjectDoc)

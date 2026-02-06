@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from sqlmodel import select
-from sqlalchemy import text as sa_text
 
 from ...api_contracts import build_backend_contract_for_route
 from ...api_map import split_skeleton, patterns_compatible, static_match_score, backend_path_skeleton
@@ -18,10 +17,11 @@ from ...graph import search_nodes, search_semantic
 from ...models import FileNode, ApiRoute, ApiCall, ApiInclude, ApiRouteContract, ApiCallMeta, TsTypeDef, ModuleContract
 from ...py_edits import py_add_keys_to_function_return_dicts
 from ...scan import SEARCH_INDEX_MAX_CHARS
+from ...search import search_text_paths
 from ...services.docs_service import _compute_project_summary_facts, _tree_outline
 from ...ts_edits import unified_diff as _unified_diff, ts_add_fields_to_typedef, ts_patch_wrapper_function
 from ...utils import resolve_under_root
-from .context import _neighbors_limited, _fts_query_from_substring
+from .context import _neighbors_limited
 from .dispatch import _clamp_int, _tool_error, _tool_ok
 from .types import AgenticMeta
 
@@ -1095,25 +1095,15 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
 
     paths: list[str] = []
 
-    fts_query = _fts_query_from_substring(needle)
-    if fts_query:
-        try:
-            sql = "SELECT path FROM filetext_fts WHERE filetext_fts MATCH :q AND project_id = :pid"
-            params: dict[str, Any] = {"q": fts_query, "pid": int(project_id)}
-            if prefix_norm:
-                params["prefix"] = prefix_norm
-                params["like"] = f"{prefix_norm}/%"
-                sql += " AND (path = :prefix OR path LIKE :like)"
-            sql += " ORDER BY bm25(filetext_fts) LIMIT :lim"
-            params["lim"] = int(max_files)
-            with get_session() as s:
-                rows = s.execute(sa_text(sql), params).all()
-            for row in rows:
-                p = row[0] if isinstance(row, (tuple, list)) else row
-                if isinstance(p, str) and p:
-                    paths.append(p)
-        except Exception:
-            paths = []
+    try:
+        paths = search_text_paths(
+            project_id,
+            needle,
+            limit=max_files,
+            prefix=prefix_norm,
+        )
+    except Exception:
+        paths = []
 
     if not paths:
         with get_session() as s:

@@ -1,17 +1,129 @@
 #backend/app/models.py
 from __future__ import annotations
 
-from sqlmodel import SQLModel, Field, Relationship
+from datetime import date, datetime
 from typing import Optional
-from datetime import datetime
-from sqlalchemy import UniqueConstraint
+
+from sqlalchemy import Column, Computed, Index, Text, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlmodel import Field, SQLModel
 
 class Project(SQLModel, table=True):
     __tablename__ = "project"
     id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(index=True)
     name: str
     root_path: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class User(SQLModel, table=True):
+    __tablename__ = "user"
+    __table_args__ = (
+        UniqueConstraint("email", name="uq_user_email"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True)
+    password_hash: str
+    is_active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+class Organization(SQLModel, table=True):
+    __tablename__ = "organization"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+class OrgMembership(SQLModel, table=True):
+    __tablename__ = "orgmembership"
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", name="uq_orgmembership_org_user"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(index=True)
+    user_id: int = Field(index=True)
+    role: str = Field(default="member", index=True)
+    is_active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+class OrgUsage(SQLModel, table=True):
+    __tablename__ = "orgusage"
+    __table_args__ = (
+        UniqueConstraint("org_id", "day", "kind", name="uq_orgusage_org_day_kind"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(index=True)
+    day: date = Field(index=True)
+    kind: str = Field(index=True)
+    count: int = Field(default=0)
+
+class Plan(SQLModel, table=True):
+    __tablename__ = "plan"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_plan_name"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    llm_enabled: bool = Field(default=True)
+    embeddings_enabled: bool = Field(default=True)
+    llm_daily_request_limit: int | None = Field(default=None)
+    embeddings_daily_chunk_limit: int | None = Field(default=None)
+    embeddings_daily_query_limit: int | None = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+class OrgSubscription(SQLModel, table=True):
+    __tablename__ = "orgsubscription"
+    __table_args__ = (
+        UniqueConstraint("org_id", name="uq_orgsubscription_org_id"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(index=True)
+    plan_id: int = Field(index=True)
+    status: str = Field(default="active", index=True)
+    current_period_start: datetime = Field(index=True)
+    current_period_end: datetime = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+class OrgEntitlement(SQLModel, table=True):
+    __tablename__ = "orgentitlement"
+    __table_args__ = (
+        UniqueConstraint("org_id", "key", name="uq_orgentitlement_org_key"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(index=True)
+    key: str = Field(index=True)
+    value_int: int | None = Field(default=None)
+    value_bool: bool | None = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+class UserSession(SQLModel, table=True):
+    __tablename__ = "usersession"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    token_hash: str = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    expires_at: datetime = Field(index=True)
+    revoked_at: datetime | None = Field(default=None, index=True)
+
+class ApiKey(SQLModel, table=True):
+    __tablename__ = "apikey"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(index=True)
+    name: str = Field(default="default")
+    token_prefix: str = Field(index=True)
+    token_hash: str = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    expires_at: datetime | None = Field(default=None, index=True)
+    revoked_at: datetime | None = Field(default=None, index=True)
+
+class RepoSnapshot(SQLModel, table=True):
+    __tablename__ = "reposnapshot"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(index=True)
+    project_id: int = Field(index=True)
+    content_sha256: str = Field(index=True)
+    archive_name: str
+    storage_json: str
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 class FileNode(SQLModel, table=True):
     __tablename__ = "filenode"
@@ -60,6 +172,7 @@ class AnalysisRun(SQLModel, table=True):
     # Store run parameters in explicit nullable columns for easier querying; keep
     # nested settings in JSON text fields for forward-compatible payloads.
     id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(index=True)
     project_id: int = Field(index=True)
     target_path: str
     mode: str
@@ -212,3 +325,44 @@ class FileChunkEmbedding(SQLModel, table=True):
     symbol_name: str = Field(default="")
     symbol_start_line: int = Field(default=0)
     symbol_end_line: int = Field(default=0)
+
+
+class FileText(SQLModel, table=True):
+    __tablename__ = "filetext"
+    __table_args__ = (
+        UniqueConstraint("project_id", "path", name="uq_filetext_project_path"),
+        Index("ix_filetext_search", "search", postgresql_using="gin"),
+    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(index=True)
+    path: str = Field(index=True)
+    content: str = Field(sa_column=Column(Text, nullable=False))
+    search: str | None = Field(
+        sa_column=Column(
+            TSVECTOR,
+            Computed("to_tsvector('simple', content)", persisted=True),
+        )
+    )
+
+
+class TaskJob(SQLModel, table=True):
+    __tablename__ = "taskjob"
+    __table_args__ = (
+        Index(
+            "uq_taskjob_org_idempotency_key_active",
+            "org_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("status IN ('pending','running')"),
+        ),
+    )
+    id: str = Field(primary_key=True)
+    org_id: int = Field(index=True)
+    status: str = Field(index=True)
+    queue: str = Field(default="medium", index=True)
+    idempotency_key: str | None = Field(default=None, index=True)
+    result_json: str | None = Field(default=None)
+    error: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: datetime | None = Field(default=None, index=True)

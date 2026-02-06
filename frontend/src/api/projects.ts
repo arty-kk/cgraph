@@ -13,7 +13,15 @@ export async function listProjects(): Promise<Project[]> {
   return r.data
 }
 
-export async function createProject(name: string, root_path: string): Promise<Project> {
+export async function createProjectFromSnapshot(name: string, archive: File): Promise<Project> {
+  const data = new FormData()
+  data.append('name', name)
+  data.append('archive', archive)
+  const r = await api.post('/api/projects/from-snapshot', data)
+  return r.data
+}
+
+export async function createProjectFromRoot(name: string, root_path: string): Promise<Project> {
   const r = await api.post('/api/projects', { name, root_path })
   return r.data
 }

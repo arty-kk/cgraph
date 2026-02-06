@@ -16,11 +16,13 @@ type Props = {
   selectedPath: string | null
   projectsLoading: boolean
   newName: string
+  newArchive: File | null
   newPath: string
   busy: boolean
   error: string | null
 
   setNewName: (v: string) => void
+  setNewArchive: (v: File | null) => void
   setNewPath: (v: string) => void
 
   onDeleteActiveProject: () => void | Promise<void>
@@ -72,10 +74,12 @@ export function ProjectsSidebar({
   selectedPath,
   projectsLoading,
   newName,
+  newArchive,
   newPath,
   busy,
   error,
   setNewName,
+  setNewArchive,
   setNewPath,
   onDeleteActiveProject,
   graphMode,
@@ -336,8 +340,11 @@ export function ProjectsSidebar({
           )}
 
           {activeProject && (
-            <div className="text-xs text-neutral-400 truncate" title={activeProject.root_path}>
-              {activeProject.root_path}
+            <div
+              className="text-xs text-neutral-400 truncate"
+              title={activeProject.source?.label ?? activeProject.root_path ?? ''}
+            >
+              {activeProject.source?.label ?? activeProject.root_path}
             </div>
           )}
 
@@ -352,20 +359,36 @@ export function ProjectsSidebar({
           />
           <input
             className={inputSmClass}
+            type="file"
+            accept=".zip,.tar,.tar.gz,.tgz"
+            onChange={(e) => setNewArchive(e.target.files?.[0] ?? null)}
+            disabled={busy}
+            title="Upload repository snapshot (.zip/.tar/.tar.gz/.tgz)"
+          />
+          <div className="text-xs text-neutral-500 leading-relaxed">
+            Upload snapshot archive (zip/tar).
+          </div>
+          {newArchive && (
+            <div className="text-xs text-neutral-500 truncate" title={newArchive.name}>
+              Selected: {newArchive.name}
+            </div>
+          )}
+          <input
+            className={inputSmClass}
             placeholder="/absolute/path/to/repo"
             value={newPath}
             onChange={(e) => setNewPath(e.target.value)}
-            disabled={busy}
-            title="Absolute path to the repository on the machine running the backend"
+            disabled={busy || Boolean(newArchive)}
+            title="Absolute path on the backend machine (local-only)"
           />
           <div className="text-xs text-neutral-500 leading-relaxed">
-            Path must be absolute
+            Local root_path works only when enabled on the backend.
           </div>
           <button
             className={buttonPrimary}
             onClick={() => onCreateProject()}
-            disabled={!newName.trim() || !newPath.trim() || busy}
-            title="Create project and save root_path"
+            disabled={!newName.trim() || (!newArchive && !newPath.trim()) || busy}
+            title="Create project from snapshot or local root_path"
           >
             Create Project
           </button>
@@ -600,7 +623,7 @@ export function ProjectsSidebar({
             {helpOpen === 'projects' && (
               <div className="space-y-2">
                 <div className="text-neutral-200 font-semibold">How projects work</div>
-                <div>• Project is the repository root (<span className="font-mono">root_path</span>) on the machine running the backend.</div>
+                <div>• Project is created from a repository snapshot (zip/tar) or a local root_path (dev only).</div>
                 <div>• Explorer shows the file tree (local filter by path substring).</div>
                 <div>• Manage lets you select/create/delete projects, manage the graph, and search files via the backend.</div>
                 <div>• Delete removes the project and all related data (graph, contracts, run history). This is irreversible.</div>

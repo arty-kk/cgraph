@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  createProject,
+  createProjectFromRoot,
+  createProjectFromSnapshot,
   deleteProject,
   getContract,
   getGraph,
@@ -210,6 +211,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const searchSeqRef = useRef(0)
 
   const [newName, setNewName] = useState('my-project')
+  const [newArchive, setNewArchive] = useState<File | null>(null)
   const [newPath, setNewPath] = useState('')
 
   const [graphMode, setGraphMode] = useState<GraphMode>('limit')
@@ -1365,12 +1367,32 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const onCreateProject = useCallback(async () => {
     await runOp(async () => {
       const name = newName.trim()
+      if (newArchive) {
+        const p = await createProjectFromSnapshot(name, newArchive)
+        selectProjectLocal(p)
+        setNewArchive(null)
+        await queryClient.invalidateQueries({ queryKey: ['projects'] })
+        return
+      }
       const root = newPath.trim()
-      const p = await createProject(name, root)
+      if (!root) {
+        throw new Error('Укажи архив или root_path')
+      }
+      const p = await createProjectFromRoot(name, root)
       selectProjectLocal(p)
+      setNewPath('')
       await queryClient.invalidateQueries({ queryKey: ['projects'] })
     })
-  }, [newName, newPath, queryClient, runOp, selectProjectLocal])
+  }, [
+    newArchive,
+    newName,
+    newPath,
+    queryClient,
+    runOp,
+    selectProjectLocal,
+    setNewArchive,
+    setNewPath,
+  ])
 
   const onDeleteActiveProject = useCallback(async () => {
     const pid = Number(activeProject?.id)
@@ -2411,6 +2433,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     clearPendingJump,
     runs,
     newName,
+    newArchive,
     newPath,
     selectedPath,
     selectedInGraph,
@@ -2443,6 +2466,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
     // setters (UI)
     setNewName,
+    setNewArchive,
     setNewPath,
     setGraphMode,
     setGraphLimitN,

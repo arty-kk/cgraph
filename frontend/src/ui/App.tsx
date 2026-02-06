@@ -349,6 +349,7 @@ export function App({ showDependencies = true }: AppProps) {
             selectedPath={app.selectedPath}
             projectsLoading={app.projectsLoading}
             newName={app.newName}
+            newArchive={app.newArchive}
             newPath={app.newPath}
             busy={app.busy}
             error={app.error}
@@ -358,6 +359,7 @@ export function App({ showDependencies = true }: AppProps) {
             onScan={app.onScan}
             onRefresh={app.onRefresh}
             setNewName={app.setNewName}
+            setNewArchive={app.setNewArchive}
             setNewPath={app.setNewPath}
             onCreateFile={app.onCreateFile}
             onRenameFile={app.onRenameFile}
@@ -439,32 +441,7 @@ export function App({ showDependencies = true }: AppProps) {
               {app.workspaceView === 'editor' && editorExplorerOpen && (
                 <div className="w-72 shrink-0 border-r border-neutral-800 bg-neutral-950/70 flex flex-col">
                   <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-neutral-800">
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        className={[
-                          'rounded-md px-2 py-1 text-[11px] font-semibold',
-                          editorLeftTab === 'explorer'
-                            ? 'bg-neutral-800 text-neutral-100'
-                            : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200',
-                        ].join(' ')}
-                        onClick={() => setEditorLeftTab('explorer')}
-                      >
-                        Explorer
-                      </button>
-                      <button
-                        type="button"
-                        className={[
-                          'rounded-md px-2 py-1 text-[11px] font-semibold',
-                          editorLeftTab === 'search'
-                            ? 'bg-neutral-800 text-neutral-100'
-                            : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200',
-                        ].join(' ')}
-                        onClick={() => setEditorLeftTab('search')}
-                      >
-                        Search
-                      </button>
-                    </div>
+                    <div className="text-[11px] tracking-[0.25em] text-neutral-500">EXPLORER</div>
                     <button
                       type="button"
                       className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] font-semibold text-neutral-200 hover:bg-neutral-800"
@@ -473,6 +450,32 @@ export function App({ showDependencies = true }: AppProps) {
                       title="Hide explorer"
                     >
                       {'<'}
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1 px-3 py-2 border-b border-neutral-800">
+                    <button
+                      type="button"
+                      className={[
+                        'rounded-md px-2 py-1 text-[11px] font-semibold',
+                        editorLeftTab === 'explorer'
+                          ? 'bg-neutral-800 text-neutral-100'
+                          : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200',
+                      ].join(' ')}
+                      onClick={() => setEditorLeftTab('explorer')}
+                    >
+                      Explorer
+                    </button>
+                    <button
+                      type="button"
+                      className={[
+                        'rounded-md px-2 py-1 text-[11px] font-semibold',
+                        editorLeftTab === 'search'
+                          ? 'bg-neutral-800 text-neutral-100'
+                          : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200',
+                      ].join(' ')}
+                      onClick={() => setEditorLeftTab('search')}
+                    >
+                      Search
                     </button>
                   </div>
                   <div className="p-3 overflow-auto">
@@ -498,7 +501,7 @@ export function App({ showDependencies = true }: AppProps) {
                         pinnedPaths={app.pinnedPaths}
                         showModuleSelect={false}
                         compact
-                        showOpenEditors={false}
+                        showOpenEditors
                       />
                     ) : (
                       <div className="space-y-3">

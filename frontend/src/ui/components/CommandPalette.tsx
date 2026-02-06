@@ -573,18 +573,21 @@ export function CommandPalette({
     const list = projects
       .slice()
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((p) => ({
-        key: `proj.${p.id}`,
-        kind: 'project' as const,
-        title: p.name,
-        subtitle: p.root_path,
-        subtitleText: p.root_path,
-        disabled: Boolean(activeProject && p.id === activeProject.id),
-        onSelect: async () => {
-          onClose()
-          await onPickProject(p)
-        },
-      }))
+      .map((p) => {
+        const sourceLabel = p.source?.label ?? p.root_path ?? ''
+        return {
+          key: `proj.${p.id}`,
+          kind: 'project' as const,
+          title: p.name,
+          subtitle: sourceLabel,
+          subtitleText: sourceLabel,
+          disabled: Boolean(activeProject && p.id === activeProject.id),
+          onSelect: async () => {
+            onClose()
+            await onPickProject(p)
+          },
+        }
+      })
 
     if (!qNorm) return list.slice(0, 10)
     return list.filter((it) => norm(it.title + ' ' + (it.subtitleText || '')).includes(qNorm)).slice(0, 10)
