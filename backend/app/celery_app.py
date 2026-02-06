@@ -1,4 +1,4 @@
-#backend/app/celery_app.py
+# backend/app/celery_app.py
 from __future__ import annotations
 
 from celery import Celery

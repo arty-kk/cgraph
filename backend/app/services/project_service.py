@@ -1,4 +1,4 @@
-#backend/app/services/project_service.py
+# backend/app/services/project_service.py
 from __future__ import annotations
 
 import json
@@ -43,8 +43,8 @@ from ..search import search_text_paths
 from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from ..services.usage_service import EMBEDDING_QUERY_KIND, check_and_increment
 from ..snapshots import (
-    delete_snapshot,
     delete_project_snapshot_root,
+    delete_snapshot,
     prepare_project_snapshot_root,
     snapshot_meta_from_dict,
     store_snapshot_blob,
@@ -186,21 +186,22 @@ def delete_project(project_id: int, org_id: int) -> None:
                 except Exception:  # noqa: BLE001
                     payload = {}
                 if isinstance(payload, dict):
+                    has_other_refs = session.exec(
+                        select(func.count())
+                        .select_from(RepoSnapshot)
+                        .where(
+                            RepoSnapshot.content_sha256 == snap.content_sha256,
+                            RepoSnapshot.project_id != project_id,
+                        )
+                    ).one()
                     has_other_refs = (
-                        session.exec(
-                            select(func.count())
-                            .select_from(RepoSnapshot)
-                            .where(
-                                RepoSnapshot.content_sha256 == snap.content_sha256,
-                                RepoSnapshot.project_id != project_id,
-                            )
-                        ).one()
+                        int(
+                            has_other_refs[0]
+                            if isinstance(has_other_refs, (tuple, list))
+                            else has_other_refs
+                        )
+                        > 0
                     )
-                    has_other_refs = int(
-                        has_other_refs[0]
-                        if isinstance(has_other_refs, (tuple, list))
-                        else has_other_refs
-                    ) > 0
                     if has_other_refs:
                         continue
                     try:

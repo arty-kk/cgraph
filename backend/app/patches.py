@@ -1,9 +1,10 @@
-#backend/app/patches.py
+# backend/app/patches.py
 from __future__ import annotations
 
 import ast
 import tempfile
 from pathlib import Path
+
 from unidiff import PatchSet
 
 from .logging import get_logger
@@ -60,7 +61,9 @@ def apply_unified_diff(
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             original_lines: list[str] = []
         else:
-            original_lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+            original_lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines(
+                keepends=True
+            )
 
         new_lines = _apply_file_patch(original_lines, f)
         new_contents[abs_path] = new_lines
@@ -75,7 +78,9 @@ def apply_unified_diff(
 
     for abs_path, lines in new_contents.items():
         abs_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(abs_path.parent), prefix=abs_path.name + ".tmp.")
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            dir=str(abs_path.parent), prefix=abs_path.name + ".tmp."
+        )
         tmp_path = Path(tmp_name)
         try:
             with open(tmp_fd, "w", encoding="utf-8") as fh:

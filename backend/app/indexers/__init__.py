@@ -1,16 +1,17 @@
-#backend/app/indexers/__init__.py
+# backend/app/indexers/__init__.py
 from __future__ import annotations
 
-from .base import Indexer, ImportRef
-from .python_indexer import PythonIndexer
-from .js_ts_indexer import JsTsIndexer
-from .go_indexer import GoIndexer
-from .java_indexer import JavaIndexer
-from .php_indexer import PhpIndexer
+from .base import ImportRef, Indexer
 from .generic_indexer import GenericIndexer
+from .go_indexer import GoIndexer
 from .infra_indexer import InfraIndexer, is_infra_file
+from .java_indexer import JavaIndexer
+from .js_ts_indexer import JsTsIndexer
+from .php_indexer import PhpIndexer
+from .python_indexer import PythonIndexer
 
 __all__ = ["Indexer", "ImportRef", "pick_indexer"]
+
 
 def pick_indexer(path: str) -> Indexer:
     p = (path or "").lower()

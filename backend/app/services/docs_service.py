@@ -1,4 +1,4 @@
-#backend/app/services/docs_service.py
+# backend/app/services/docs_service.py
 from __future__ import annotations
 
 import heapq
@@ -17,13 +17,15 @@ from ..db import get_session
 from ..errors import BadRequestError, ExternalServiceError, NotFoundError
 from ..llm.orchestrator import generate_docs
 from ..models import (
-    ApiCall, ApiInclude,
-    ApiRoute, FileEdge,
-    FileNode, ProjectDoc,
+    ApiCall,
+    ApiInclude,
+    ApiRoute,
+    FileEdge,
+    FileNode,
+    ProjectDoc,
 )
 from ..services.project_service import get_project
 from ..utils import normalize_project_root, resolve_under_root
-
 
 _KEY_FILE_MAX_CHARS = 4_000
 _MAX_KEY_FILES = 14
@@ -98,6 +100,7 @@ _RUN_HINT_PREFIXES: tuple[str, ...] = (
     "mage ",
 )
 
+
 def _risk_row(path: str, loc: int, complexity: int, fan_in: int, fan_out: int, status: str) -> dict:
     risk = (0.3 * float(complexity)) + (0.7 * float(fan_in)) + (0.1 * float(fan_out))
     return {
@@ -148,7 +151,11 @@ def _compute_project_summary_facts(
     hubs = heapq.nlargest(
         int(hubs_limit),
         risks,
-        key=lambda x: (int(x.get("fan_in", 0)), float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
+        key=lambda x: (
+            int(x.get("fan_in", 0)),
+            float(x.get("risk", 0.0)),
+            _invert_str(x.get("path", "")),
+        ),
     )
 
     # Module map: top-level folders -> aggregated stats + top hotspots
@@ -184,7 +191,11 @@ def _compute_project_summary_facts(
 
     module_rows = sorted(
         module_map.values(),
-        key=lambda x: (-float(x.get("risk_max") or 0.0), -int(x.get("files") or 0), str(x.get("module") or "")),
+        key=lambda x: (
+            -float(x.get("risk_max") or 0.0),
+            -int(x.get("files") or 0),
+            str(x.get("module") or ""),
+        ),
     )
 
     return {
@@ -233,36 +244,44 @@ def _tree_outline(paths: list[str], max_lines: int = 1200) -> dict:
     walk(root, "", 0)
     return {"lines": lines, "truncated": truncated, "max_lines": max_lines}
 
+
 def _path_depth(p: str) -> int:
     if not isinstance(p, str) or not p:
         return 10**9
     return len([x for x in p.split("/") if x])
+
 
 def _path_dir(p: str) -> str:
     if not isinstance(p, str) or not p:
         return ""
     return p.rsplit("/", 1)[0] if "/" in p else ""
 
+
 def _basename(p: str) -> str:
     if not isinstance(p, str) or not p:
         return ""
     return p.rsplit("/", 1)[-1] if "/" in p else p
+
 
 def _invert_str(value: str) -> tuple[int, ...]:
     if not isinstance(value, str):
         value = str(value or "")
     return tuple(-ord(c) for c in value) + (1,)
 
+
 def _best_paths(paths: list[str], *, limit: int) -> list[str]:
     uniq = list(dict.fromkeys([p for p in paths if isinstance(p, str) and p.strip()]))
     uniq.sort(key=lambda x: (_path_depth(x), x))
     return uniq[: max(0, int(limit))]
 
+
 def _read_text_under_root(root: Path, rel_path: str, *, max_chars: int) -> dict | None:
     if not isinstance(rel_path, str) or not rel_path.strip():
         return None
     try:
-        abs_path, rel_norm = resolve_under_root(root, rel_path, max_length=settings.max_rel_path_chars)
+        abs_path, rel_norm = resolve_under_root(
+            root, rel_path, max_length=settings.max_rel_path_chars
+        )
     except Exception:
         return None
     if not abs_path.exists() or not abs_path.is_file():
@@ -274,18 +293,27 @@ def _read_text_under_root(root: Path, rel_path: str, *, max_chars: int) -> dict 
     truncated = len(text) > int(max_chars)
     if truncated:
         text = text[: int(max_chars)]
-    return {"path": rel_norm, "content": text, "truncated": bool(truncated), "max_chars": int(max_chars)}
+    return {
+        "path": rel_norm,
+        "content": text,
+        "truncated": bool(truncated),
+        "max_chars": int(max_chars),
+    }
+
 
 def _normalize_existing_file_under_root(root: Path, rel_path: str) -> str | None:
     if not isinstance(rel_path, str) or not rel_path.strip():
         return None
     try:
-        abs_path, rel_norm = resolve_under_root(root, rel_path, max_length=settings.max_rel_path_chars)
+        abs_path, rel_norm = resolve_under_root(
+            root, rel_path, max_length=settings.max_rel_path_chars
+        )
     except Exception:
         return None
     if not abs_path.exists() or not abs_path.is_file():
         return None
     return rel_norm
+
 
 def _extract_make_targets(text: str, *, max_targets: int = 40) -> list[str]:
     if not isinstance(text, str) or not text:
@@ -326,6 +354,7 @@ def _extract_package_json_scripts(text: str, *, max_scripts: int = 30) -> dict[s
             break
     return out
 
+
 def _starts_with_run_prefix(low: str) -> bool:
     if not isinstance(low, str) or not low:
         return False
@@ -343,6 +372,7 @@ def _starts_with_run_prefix(low: str) -> bool:
         if s == p or s.startswith(p + " ") or s.startswith(p + "\t"):
             return True
     return False
+
 
 def _extract_run_hints(text: str, *, max_hints: int = _MAX_RUN_HINTS) -> list[str]:
     if not isinstance(text, str) or not text:
@@ -455,13 +485,33 @@ def _route_prefix(path: str) -> str:
 def _build_api_summary(project_id: int) -> dict:
     try:
         with get_session() as s:
-            routes_total_row = s.exec(select(func.count()).select_from(ApiRoute).where(ApiRoute.project_id == project_id)).one()
-            calls_total_row = s.exec(select(func.count()).select_from(ApiCall).where(ApiCall.project_id == project_id)).one()
-            includes_total_row = s.exec(select(func.count()).select_from(ApiInclude).where(ApiInclude.project_id == project_id)).one()
+            routes_total_row = s.exec(
+                select(func.count()).select_from(ApiRoute).where(ApiRoute.project_id == project_id)
+            ).one()
+            calls_total_row = s.exec(
+                select(func.count()).select_from(ApiCall).where(ApiCall.project_id == project_id)
+            ).one()
+            includes_total_row = s.exec(
+                select(func.count())
+                .select_from(ApiInclude)
+                .where(ApiInclude.project_id == project_id)
+            ).one()
 
-            routes_total = int(routes_total_row[0] if isinstance(routes_total_row, (tuple, list)) else routes_total_row)
-            calls_total = int(calls_total_row[0] if isinstance(calls_total_row, (tuple, list)) else calls_total_row)
-            includes_total = int(includes_total_row[0] if isinstance(includes_total_row, (tuple, list)) else includes_total_row)
+            routes_total = int(
+                routes_total_row[0]
+                if isinstance(routes_total_row, (tuple, list))
+                else routes_total_row
+            )
+            calls_total = int(
+                calls_total_row[0]
+                if isinstance(calls_total_row, (tuple, list))
+                else calls_total_row
+            )
+            includes_total = int(
+                includes_total_row[0]
+                if isinstance(includes_total_row, (tuple, list))
+                else includes_total_row
+            )
 
             route_methods_rows = s.exec(
                 select(ApiRoute.method, func.count())
@@ -478,8 +528,12 @@ def _build_api_summary(project_id: int) -> dict:
 
             ROUTE_SAMPLE = 20_000
             CALL_SAMPLE = 20_000
-            route_paths_rows = s.exec(select(ApiRoute.path).where(ApiRoute.project_id == project_id).limit(ROUTE_SAMPLE)).all()
-            call_paths_rows = s.exec(select(ApiCall.path).where(ApiCall.project_id == project_id).limit(CALL_SAMPLE)).all()
+            route_paths_rows = s.exec(
+                select(ApiRoute.path).where(ApiRoute.project_id == project_id).limit(ROUTE_SAMPLE)
+            ).all()
+            call_paths_rows = s.exec(
+                select(ApiCall.path).where(ApiCall.project_id == project_id).limit(CALL_SAMPLE)
+            ).all()
     except Exception as e:
         return {"error": "api_summary_failed", "message": str(e)}
 
@@ -519,13 +573,18 @@ def _build_api_summary(project_id: int) -> dict:
     top_call_prefixes = sorted(pref_calls.items(), key=lambda x: (-x[1], x[0]))[:20]
 
     return {
-        "counts": {"routes": int(routes_total), "calls": int(calls_total), "includes": int(includes_total)},
+        "counts": {
+            "routes": int(routes_total),
+            "calls": int(calls_total),
+            "includes": int(includes_total),
+        },
         "routes_by_method": routes_by_method,
         "calls_by_method": calls_by_method,
         "top_route_prefixes": [{"prefix": k, "count": int(v)} for k, v in top_route_prefixes],
         "top_call_prefixes": [{"prefix": k, "count": int(v)} for k, v in top_call_prefixes],
         "notes": (
-            "Routes are stored as local decorator paths. include_router prefixes are not expanded in this summary."
+            "Routes are stored as local decorator paths. include_router prefixes "
+            "are not expanded in this summary."
         ),
     }
 
@@ -577,7 +636,13 @@ def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict]
             rp_norm = _normalize_existing_file_under_root(root, rel_path)
             if not rp_norm:
                 return
-            rec = {"path": rp_norm, "content": "", "truncated": False, "max_chars": 0, "content_omitted": True}
+            rec = {
+                "path": rp_norm,
+                "content": "",
+                "truncated": False,
+                "max_chars": 0,
+                "content_omitted": True,
+            }
 
         rp = str(rec.get("path") or "")
         if not rp or rp in seen:
@@ -597,7 +662,9 @@ def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict]
             pm = _detect_node_pm(d)
             parsed.setdefault("node_packages", [])
             if isinstance(parsed["node_packages"], list) and len(parsed["node_packages"]) < 4:
-                parsed["node_packages"].append({"path": rp, "dir": d, "package_manager": pm, "scripts": scripts})
+                parsed["node_packages"].append(
+                    {"path": rp, "dir": d, "package_manager": pm, "scripts": scripts}
+                )
         key_files.append(rec)
 
     specs: list[dict[str, Any]] = [
@@ -613,7 +680,6 @@ def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict]
         {"role": "docker", "basename": "compose.yml", "max": 2},
         {"role": "docker", "basename": "compose.yaml", "max": 2},
         {"role": "docker", "basename": "Dockerfile", "max": 2},
-
         # python
         {"role": "python_project", "basename": "pyproject.toml", "max": 2},
         {"role": "python_project", "basename": "requirements.txt", "max": 2},
@@ -622,35 +688,27 @@ def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict]
         {"role": "python_project", "basename": "setup.py", "max": 1},
         {"role": "python_project", "basename": "setup.cfg", "max": 1},
         {"role": "python_project", "basename": "tox.ini", "max": 1},
-
         # node
         {"role": "node_project", "basename": "package.json", "max": 3},
-
         # go
         {"role": "go_project", "basename": "go.mod", "max": 2},
         {"role": "go_project", "basename": "go.work", "max": 1},
-
         # rust
         {"role": "rust_project", "basename": "Cargo.toml", "max": 2},
-
         # java/kotlin
         {"role": "java_project", "basename": "pom.xml", "max": 2},
         {"role": "java_project", "basename": "build.gradle", "max": 2},
         {"role": "java_project", "basename": "build.gradle.kts", "max": 2},
         {"role": "java_project", "basename": "settings.gradle", "max": 1},
         {"role": "java_project", "basename": "settings.gradle.kts", "max": 1},
-
         # dotnet
         {"role": "dotnet_project", "suffix": ".csproj", "max": 2},
         {"role": "dotnet_project", "suffix": ".fsproj", "max": 1},
         {"role": "dotnet_solution", "suffix": ".sln", "max": 1},
-
         # ruby
         {"role": "ruby_project", "basename": "Gemfile", "max": 2},
-
         # php
         {"role": "php_project", "basename": "composer.json", "max": 2},
-
         # elixir
         {"role": "elixir_project", "basename": "mix.exs", "max": 1},
     ]
@@ -675,17 +733,35 @@ def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict]
 
     entry_names = (
         # python
-        "main.py", "__main__.py", "app.py", "wsgi.py", "asgi.py", "manage.py",
+        "main.py",
+        "__main__.py",
+        "app.py",
+        "wsgi.py",
+        "asgi.py",
+        "manage.py",
         # node
-        "index.ts", "index.js", "main.ts", "main.js", "server.ts", "server.js", "app.ts", "app.js",
+        "index.ts",
+        "index.js",
+        "main.ts",
+        "main.js",
+        "server.ts",
+        "server.js",
+        "app.ts",
+        "app.js",
         # go / rust
-        "main.go", "main.rs",
+        "main.go",
+        "main.rs",
         # dotnet
         "Program.cs",
         # java/kotlin (conventional names)
-        "Main.java", "Application.java", "Main.kt", "Application.kt",
+        "Main.java",
+        "Application.java",
+        "Main.kt",
+        "Application.kt",
     )
-    entry_candidates = [p for p in (project_paths or []) if isinstance(p, str) and p.endswith(entry_names)]
+    entry_candidates = [
+        p for p in (project_paths or []) if isinstance(p, str) and p.endswith(entry_names)
+    ]
     entry_candidates = sorted(entry_candidates, key=lambda x: (len(x.split("/")), x))[:6]
     for p in entry_candidates:
         add("entrypoint", p)
@@ -765,7 +841,7 @@ def _api_summary_md(api_summary: dict) -> str:
     routes = int(counts.get("routes") or 0)
     calls = int(counts.get("calls") or 0)
     includes = int(counts.get("includes") or 0)
- 
+
     if routes == 0 and calls == 0 and includes == 0:
         return (
             "> No API map data available (Scan produced zero routes/calls/includes). "
@@ -779,7 +855,11 @@ def _api_summary_md(api_summary: dict) -> str:
         "",
     ]
 
-    rbm = api_summary.get("routes_by_method") if isinstance(api_summary.get("routes_by_method"), list) else []
+    rbm = (
+        api_summary.get("routes_by_method")
+        if isinstance(api_summary.get("routes_by_method"), list)
+        else []
+    )
     if rbm:
         out += [
             "**Routes by method**",
@@ -792,7 +872,11 @@ def _api_summary_md(api_summary: dict) -> str:
                 out.append(f"| `{str(r.get('method') or '')}` | {int(r.get('count') or 0)} |")
         out.append("")
 
-    cbm = api_summary.get("calls_by_method") if isinstance(api_summary.get("calls_by_method"), list) else []
+    cbm = (
+        api_summary.get("calls_by_method")
+        if isinstance(api_summary.get("calls_by_method"), list)
+        else []
+    )
     if cbm:
         out += [
             "**Calls by method**",
@@ -805,7 +889,11 @@ def _api_summary_md(api_summary: dict) -> str:
                 out.append(f"| `{str(r.get('method') or '')}` | {int(r.get('count') or 0)} |")
         out.append("")
 
-    trp = api_summary.get("top_route_prefixes") if isinstance(api_summary.get("top_route_prefixes"), list) else []
+    trp = (
+        api_summary.get("top_route_prefixes")
+        if isinstance(api_summary.get("top_route_prefixes"), list)
+        else []
+    )
     if trp:
         out += [
             "**Top route prefixes**",
@@ -818,7 +906,11 @@ def _api_summary_md(api_summary: dict) -> str:
                 out.append(f"| `{str(r.get('prefix') or '')}` | {int(r.get('count') or 0)} |")
         out.append("")
 
-    tcp = api_summary.get("top_call_prefixes") if isinstance(api_summary.get("top_call_prefixes"), list) else []
+    tcp = (
+        api_summary.get("top_call_prefixes")
+        if isinstance(api_summary.get("top_call_prefixes"), list)
+        else []
+    )
     if tcp:
         out += [
             "**Top call prefixes**",
@@ -843,14 +935,24 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
 
     with get_session() as s:
         nodes = s.exec(
-            select(FileNode.path, FileNode.language, FileNode.loc, FileNode.complexity, FileNode.fan_in, FileNode.fan_out, FileNode.status)
+            select(
+                FileNode.path,
+                FileNode.language,
+                FileNode.loc,
+                FileNode.complexity,
+                FileNode.fan_in,
+                FileNode.fan_out,
+                FileNode.status,
+            )
             .where(FileNode.project_id == project_id)
             .order_by(FileNode.path)
         ).all()
         edges_total_row = s.exec(
             select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
         ).one()
-        edges_total = int(edges_total_row[0] if isinstance(edges_total_row, (tuple, list)) else edges_total_row)
+        edges_total = int(
+            edges_total_row[0] if isinstance(edges_total_row, (tuple, list)) else edges_total_row
+        )
 
     if not nodes:
         raise BadRequestError("Проект не проиндексирован. Сначала сделай Scan.")
@@ -871,7 +973,8 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
     for m in module_rows[:30]:
         hs = ", ".join([f"`{p}`" for _, p in (m.get("top_hotspots") or [])])
         module_table.append(
-            f"| `{m['module']}` | {int(m['files'])} | {int(m['loc'])} | {float(m['risk_max']):.2f} | {hs} |"
+            f"| `{m['module']}` | {int(m['files'])} | {int(m['loc'])} | "
+            f"{float(m['risk_max']):.2f} | {hs} |"
         )
 
     # Contracts for top hotspots (lightweight)
@@ -894,22 +997,42 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
     top_fan_out = heapq.nlargest(
         8,
         risks,
-        key=lambda x: (int(x.get("fan_out", 0)), float(x.get("risk", 0.0)), _invert_str(x.get("path", ""))),
+        key=lambda x: (
+            int(x.get("fan_out", 0)),
+            float(x.get("risk", 0.0)),
+            _invert_str(x.get("path", "")),
+        ),
     )
     for item in top_fan_out:
         _push_path(str(item.get("path") or ""))
 
     entry_names = (
         # python
-        "main.py", "__main__.py", "app.py", "wsgi.py", "asgi.py", "manage.py",
+        "main.py",
+        "__main__.py",
+        "app.py",
+        "wsgi.py",
+        "asgi.py",
+        "manage.py",
         # node
-        "index.ts", "index.js", "main.ts", "main.js", "server.ts", "server.js", "app.ts", "app.js",
+        "index.ts",
+        "index.js",
+        "main.ts",
+        "main.js",
+        "server.ts",
+        "server.js",
+        "app.ts",
+        "app.js",
         # go / rust
-        "main.go", "main.rs",
+        "main.go",
+        "main.rs",
         # dotnet
         "Program.cs",
         # java/kotlin
-        "Main.java", "Application.java", "Main.kt", "Application.kt",
+        "Main.java",
+        "Application.java",
+        "Main.kt",
+        "Application.kt",
     )
     entry_candidates = [p for p in paths if isinstance(p, str) and p.endswith(entry_names)]
     for p in sorted(entry_candidates, key=lambda x: (len(x.split("/")), x))[:4]:
@@ -931,7 +1054,8 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
     ]
     for i, h in enumerate(hotspots, start=1):
         hotspots_table.append(
-            f"| {i} | `{h['path']}` | {h['risk']:.2f} | {h['loc']} | {h['fan_in']} | {h['fan_out']} | {h['complexity']} | {h['status']} |"
+            f"| {i} | `{h['path']}` | {h['risk']:.2f} | {h['loc']} | {h['fan_in']} | "
+            f"{h['fan_out']} | {h['complexity']} | {h['status']} |"
         )
 
     api_summary = _build_api_summary(project_id)
@@ -946,7 +1070,10 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
             "edges": edges_total,
             "loc": total_loc,
         },
-        "languages": [{"language": k, "files": v} for k, v in sorted(lang_count.items(), key=lambda x: (-x[1], x[0]))],
+        "languages": [
+            {"language": k, "files": v}
+            for k, v in sorted(lang_count.items(), key=lambda x: (-x[1], x[0]))
+        ],
         "hotspots": hotspots,
         "hubs_by_fan_in": hubs,
         "module_map": summary["module_map"],
@@ -995,7 +1122,10 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
                     rows.append(f"- `{p}`{suffix}")
         key_files_md = "\n".join(rows).strip() + "\n"
     else:
-        key_files_md = "> No key files (README/Makefile/compose/pyproject/package.json) were found under the project root.\n"
+        key_files_md = (
+            "> No key files (README/Makefile/compose/pyproject/package.json) were found "
+            "under the project root.\n"
+        )
 
     final_md = (
         f"# {project.name}\n\n"
@@ -1025,7 +1155,12 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
         s.commit()
         s.refresh(doc)
 
-    return {"project_id": project_id, "kind": "overview", "created_at": doc.created_at.isoformat(), "markdown": final_md}
+    return {
+        "project_id": project_id,
+        "kind": "overview",
+        "created_at": doc.created_at.isoformat(),
+        "markdown": final_md,
+    }
 
 
 def get_latest_project_doc(project_id: int, org_id: int, kind: str = "overview") -> dict:
@@ -1037,5 +1172,12 @@ def get_latest_project_doc(project_id: int, org_id: int, kind: str = "overview")
             .order_by(ProjectDoc.id.desc())
         ).first()
     if not doc:
-        raise NotFoundError("Документация не найдена. Сначала нажми Build docs.", context={"kind": kind})
-    return {"project_id": project_id, "kind": doc.kind, "created_at": doc.created_at.isoformat(), "markdown": doc.content_md}
+        raise NotFoundError(
+            "Документация не найдена. Сначала нажми Build docs.", context={"kind": kind}
+        )
+    return {
+        "project_id": project_id,
+        "kind": doc.kind,
+        "created_at": doc.created_at.isoformat(),
+        "markdown": doc.content_md,
+    }

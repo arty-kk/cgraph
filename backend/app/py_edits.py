@@ -1,4 +1,4 @@
-#backend/app/py_edits.py
+# backend/app/py_edits.py
 from __future__ import annotations
 
 import ast
@@ -30,7 +30,7 @@ def _safe_existing_keys(d: ast.Dict) -> set[str]:
         if isinstance(k, ast.Constant) and isinstance(k.value, str):
             keys.add(k.value)
         elif isinstance(k, ast.Str):
-            keys.add(k.s)
+            keys.add(str(k.s))
     return keys
 
 
@@ -70,7 +70,6 @@ def py_add_keys_to_function_return_dicts(
     function_name: str,
     keys_to_add: dict[str, str],
 ) -> tuple[str, bool, list[str]]:
-
     if not isinstance(text, str) or not text:
         return (text, False, ["empty_text"])
     fn_name = (function_name or "").strip()
@@ -111,7 +110,12 @@ def py_add_keys_to_function_return_dicts(
                 end_col = getattr(v, "end_col_offset", None)
                 start_ln = getattr(v, "lineno", None)
                 start_col = getattr(v, "col_offset", None)
-                if not (isinstance(end_ln, int) and isinstance(end_col, int) and isinstance(start_ln, int) and isinstance(start_col, int)):
+                if not (
+                    isinstance(end_ln, int)
+                    and isinstance(end_col, int)
+                    and isinstance(start_ln, int)
+                    and isinstance(start_col, int)
+                ):
                     warnings.append("dict_missing_end_positions")
                     return
 
@@ -137,7 +141,9 @@ def py_add_keys_to_function_return_dicts(
                     inserts.append((close_abs, ins))
                 else:
                     # multiline: insert new lines before closing brace
-                    elem_indent = _infer_element_indent(lines, int(start_ln), int(end_ln), int(end_col))
+                    elem_indent = _infer_element_indent(
+                        lines, int(start_ln), int(end_ln), int(end_col)
+                    )
                     add_lines = []
                     for k in missing:
                         lit = keys_to_add.get(k, "None")
@@ -159,5 +165,5 @@ def py_add_keys_to_function_return_dicts(
         p = max(0, min(len(new_text), int(pos)))
         new_text = new_text[:p] + ins + new_text[p:]
 
-    changed = (new_text != text)
+    changed = new_text != text
     return (new_text, changed, warnings)

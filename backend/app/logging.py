@@ -1,4 +1,4 @@
-#backend/app/logging.py
+# backend/app/logging.py
 from __future__ import annotations
 
 import logging
@@ -24,7 +24,10 @@ def setup_logging() -> None:
             "version": 1,
             "formatters": {
                 "default": {
-                    "format": "%(asctime)s [%(levelname)s] %(name)s — %(message)s request_id=%(request_id)s",
+                    "format": (
+                        "%(asctime)s [%(levelname)s] %(name)s — %(message)s "
+                        "request_id=%(request_id)s"
+                    ),
                 }
             },
             "handlers": {
@@ -52,7 +55,9 @@ def get_logger(name: str = "stubgraph") -> logging.Logger:
     return logging.getLogger(name)
 
 
-async def log_requests(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+async def log_requests(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     started = time.perf_counter()
     request_id = (request.headers.get("x-request-id") or "").strip() or uuid.uuid4().hex
     request.state.request_id = request_id

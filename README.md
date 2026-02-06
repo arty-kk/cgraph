@@ -183,6 +183,7 @@ Entitlements на организацию хранятся в `orgentitlement` и
 - `STUBGRAPH_CACHE_DEFAULT_TTL_SECONDS` — TTL кеша (в секундах).
 - `STUBGRAPH_RATE_LIMIT_ENABLED` — включить rate limit по IP.
 - `STUBGRAPH_RATE_LIMIT_REQUESTS_PER_MINUTE` — лимит запросов в минуту на IP.
+- `STUBGRAPH_TRUSTED_PROXY_CIDRS` — список CIDR доверенных прокси (через запятую); без него заголовок `X-Forwarded-For` игнорируется.
 - `STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT` — лимит одновременных heavy задач (если не задан, лимита нет).
 - `STUBGRAPH_CELERY_BROKER_URL` — строка подключения к RabbitMQ (например, `amqp://guest:guest@localhost:5672//`).
 - `STUBGRAPH_CELERY_QUEUE_DEFAULT` — очередь по умолчанию (обычно `medium`).

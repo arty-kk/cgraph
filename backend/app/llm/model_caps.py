@@ -1,4 +1,4 @@
-#backend/app/llm/model_caps.py
+# backend/app/llm/model_caps.py
 from __future__ import annotations
 
 import re

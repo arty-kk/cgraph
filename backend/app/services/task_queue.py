@@ -1,4 +1,4 @@
-#backend/app/services/task_queue.py
+# backend/app/services/task_queue.py
 from __future__ import annotations
 
 import json
@@ -43,6 +43,7 @@ class TaskQueue:
         )
         if created:
             from ..celery_tasks import scan_task
+
             scan_task.apply_async(args=[task_id, project_id, org_id], queue="medium")
         return task_id
 
@@ -61,6 +62,7 @@ class TaskQueue:
         )
         if created:
             from ..celery_tasks import docs_task
+
             docs_task.apply_async(args=[task_id, project_id, org_id], queue="light")
         return task_id
 
@@ -83,6 +85,7 @@ class TaskQueue:
         )
         if created:
             from ..celery_tasks import run_task_job
+
             run_task_job.apply_async(
                 args=[task_id, project_id, org_id, payload],
                 queue="heavy",

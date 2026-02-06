@@ -1,4 +1,4 @@
-#backend/app/errors.py
+# backend/app/errors.py
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,6 @@ LOGGER = logging.getLogger("stubgraph.api")
 
 
 class AppError(Exception):
-
     status_code: int = HTTPStatus.BAD_REQUEST
     code: str = "bad_request"
 
@@ -118,7 +117,6 @@ async def _handle_unexpected_error(request: Request, exc: Exception) -> Response
 
 
 def install_exception_handlers(app: FastAPI) -> None:
-
     app.add_exception_handler(AppError, _handle_app_error)
     app.add_exception_handler(Exception, _handle_unexpected_error)
 

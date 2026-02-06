@@ -1,7 +1,7 @@
 import os
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from ..config import settings
 from .go_indexer import GoIndexer, _build_context_tags, _is_build_context_active, _runtime_go_env

@@ -1,12 +1,14 @@
-#backend/app/indexers/python_indexer.py
+# backend/app/indexers/python_indexer.py
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+
 from .base import ImportRef, SymbolDef
 
 _TYPE_CHECKING_MODULES = {"typing", "typing_extensions"}
 _IMPORTLIB_MODULES = {"importlib"}
+
 
 def _is_type_checking_test(
     test: ast.AST,
@@ -21,6 +23,7 @@ def _is_type_checking_test(
         if isinstance(v, ast.Name) and v.id in typing_names:
             return True
     return False
+
 
 def _collect_type_checking_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
     typing_names = set(_TYPE_CHECKING_MODULES)
@@ -41,6 +44,7 @@ def _collect_type_checking_aliases(tree: ast.Module) -> tuple[set[str], set[str]
 
     return typing_names, type_checking_names
 
+
 def _collect_importlib_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
     module_names = set(_IMPORTLIB_MODULES)
     import_module_names = {"import_module"}
@@ -59,6 +63,7 @@ def _collect_importlib_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
 
     return module_names, import_module_names
 
+
 def _collect_assigned_names(t: ast.AST) -> list[str]:
     if isinstance(t, ast.Name):
         return [t.id]
@@ -68,6 +73,7 @@ def _collect_assigned_names(t: ast.AST) -> list[str]:
             out.extend(_collect_assigned_names(elt))
         return out
     return []
+
 
 def _literal_str_seq(node: ast.AST) -> list[str] | None:
     try:
@@ -83,12 +89,14 @@ def _literal_str_seq(node: ast.AST) -> list[str] | None:
         out.append(x)
     return out
 
+
 def _literal_str(node: ast.AST) -> str | None:
     try:
         v = ast.literal_eval(node)
     except Exception:
         return None
     return v if isinstance(v, str) else None
+
 
 def _extract_dunder_all(tree: ast.Module) -> list[str] | None:
     # Only return when we can confidently evaluate __all__ as literals.
@@ -101,7 +109,11 @@ def _extract_dunder_all(tree: ast.Module) -> list[str] | None:
                 if seq is not None:
                     values = list(seq)
         elif isinstance(stmt, ast.AnnAssign):
-            if isinstance(stmt.target, ast.Name) and stmt.target.id == "__all__" and stmt.value is not None:
+            if (
+                isinstance(stmt.target, ast.Name)
+                and stmt.target.id == "__all__"
+                and stmt.value is not None
+            ):
                 seq = _literal_str_seq(stmt.value)
                 if seq is not None:
                     values = list(seq)
@@ -120,7 +132,11 @@ def _extract_dunder_all(tree: ast.Module) -> list[str] | None:
                 continue
             call = stmt.value
             func = call.func
-            if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "__all__"):
+            if not (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "__all__"
+            ):
                 continue
             if func.attr == "extend" and call.args:
                 seq = _literal_str_seq(call.args[0])
@@ -141,7 +157,10 @@ def _extract_dunder_all(tree: ast.Module) -> list[str] | None:
             out.append(x)
     return out
 
-def _safe_unparse(node: ast.AST) -> str:
+
+def _safe_unparse(node: ast.AST | None) -> str:
+    if node is None:
+        return ""
     unparse = getattr(ast, "unparse", None)
     if callable(unparse):
         try:
@@ -150,11 +169,12 @@ def _safe_unparse(node: ast.AST) -> str:
             return ""
     return ""
 
+
 def _dynamic_kind(kind: str) -> str:
     return "type_dynamic" if kind == "type" else "dynamic"
 
-def _format_function_signature(node: ast.AST) -> str:
 
+def _format_function_signature(node: ast.AST) -> str:
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return ""
     args = node.args
@@ -200,11 +220,12 @@ def _format_function_signature(node: ast.AST) -> str:
 
     ret = ""
     if getattr(node, "returns", None) is not None:
-        rr = _safe_unparse(node.returns)  # type: ignore[arg-type]
+        rr = _safe_unparse(node.returns)
         if rr:
             ret = f" -> {rr}"
     prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
     return f"{prefix}{node.name}({', '.join([p for p in parts if p])}){ret}"
+
 
 def _format_class_signature(node: ast.AST) -> str:
     if not isinstance(node, ast.ClassDef):
@@ -217,6 +238,7 @@ def _format_class_signature(node: ast.AST) -> str:
     if bases:
         return f"{node.name}({', '.join(bases)})"
     return node.name
+
 
 class PythonIndexer:
     def language(self) -> str:
@@ -247,7 +269,9 @@ class PythonIndexer:
             if isinstance(n, ast.Import):
                 for alias in n.names:
                     if alias.name:
-                        imports.append(ImportRef(raw=f"import {alias.name}", spec=alias.name, kind=kind))
+                        imports.append(
+                            ImportRef(raw=f"import {alias.name}", spec=alias.name, kind=kind)
+                        )
                 return
 
             if isinstance(n, ast.ImportFrom):
@@ -264,30 +288,44 @@ class PythonIndexer:
                             continue
                         if name == "*":
                             spec = prefix or "."
-                            imports.append(ImportRef(raw=f"from {spec} import *", spec=spec, kind=kind))
+                            imports.append(
+                                ImportRef(raw=f"from {spec} import *", spec=spec, kind=kind)
+                            )
                         else:
                             spec = prefix + name
-                            raw_prefix = (prefix or ".")
-                            imports.append(ImportRef(raw=f"from {raw_prefix} import {name}", spec=spec, kind=kind))
+                            raw_prefix = prefix or "."
+                            imports.append(
+                                ImportRef(
+                                    raw=f"from {raw_prefix} import {name}", spec=spec, kind=kind
+                                )
+                            )
                 return
 
             if isinstance(n, ast.Call):
                 func = n.func
-                spec = _literal_str(n.args[0]) if n.args else None
-                if spec:
+                spec_value = _literal_str(n.args[0]) if n.args else None
+                if spec_value:
                     if isinstance(func, ast.Name):
                         if func.id in import_module_names or func.id == "__import__":
                             raw = _safe_unparse(n) or f"{func.id}(...)"
-                            imports.append(ImportRef(raw=raw, spec=spec, kind=_dynamic_kind(kind)))
+                            imports.append(
+                                ImportRef(raw=raw, spec=spec_value, kind=_dynamic_kind(kind))
+                            )
                     elif isinstance(func, ast.Attribute):
                         if func.attr == "import_module":
                             v = func.value
                             if isinstance(v, ast.Name) and v.id in importlib_module_names:
                                 raw = _safe_unparse(n) or "importlib.import_module(...)"
-                                imports.append(ImportRef(raw=raw, spec=spec, kind=_dynamic_kind(kind)))
+                                imports.append(
+                                    ImportRef(
+                                        raw=raw,
+                                        spec=spec_value,
+                                        kind=_dynamic_kind(kind),
+                                    )
+                                )
 
-            for ch in ast.iter_child_nodes(n):
-                _walk(ch, kind=kind)
+            for child in ast.iter_child_nodes(n):
+                _walk(child, kind=kind)
 
         _walk(tree, kind="runtime")
         return imports
@@ -397,7 +435,11 @@ class PythonIndexer:
                     nm = ""
                 start = int(getattr(node, "lineno", 0) or 0)
                 end = int(getattr(node, "end_lineno", start) or start)
-                add(SymbolDef(name=nm, kind="type", signature=nm, doc="", start_line=start, end_line=end))
+                add(
+                    SymbolDef(
+                        name=nm, kind="type", signature=nm, doc="", start_line=start, end_line=end
+                    )
+                )
                 continue
 
             if isinstance(node, ast.Assign):
@@ -405,14 +447,32 @@ class PythonIndexer:
                 end = int(getattr(node, "end_lineno", start) or start)
                 for t in node.targets:
                     for nm in _collect_assigned_names(t):
-                        add(SymbolDef(name=nm, kind="variable", signature=nm, doc="", start_line=start, end_line=end))
+                        add(
+                            SymbolDef(
+                                name=nm,
+                                kind="variable",
+                                signature=nm,
+                                doc="",
+                                start_line=start,
+                                end_line=end,
+                            )
+                        )
                 continue
 
             if isinstance(node, ast.AnnAssign):
                 start = int(getattr(node, "lineno", 0) or 0)
                 end = int(getattr(node, "end_lineno", start) or start)
                 for nm in _collect_assigned_names(node.target):
-                    add(SymbolDef(name=nm, kind="variable", signature=nm, doc="", start_line=start, end_line=end))
+                    add(
+                        SymbolDef(
+                            name=nm,
+                            kind="variable",
+                            signature=nm,
+                            doc="",
+                            start_line=start,
+                            end_line=end,
+                        )
+                    )
 
         filtered = [s for s in out if s.name and not s.name.startswith("_")]
         return filtered

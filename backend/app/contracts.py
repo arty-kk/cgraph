@@ -1,21 +1,23 @@
-#backend/app/contracts.py
+# backend/app/contracts.py
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from sqlmodel import select, delete
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from .db import get_session
-from .models import ModuleContract
-from .indexers import pick_indexer
-from .utils import sha256_file, resolve_under_root
-from .errors import PathValidationError
-from .resolve import resolve_spec
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import delete, select
+
+from .db import get_session
+from .errors import PathValidationError
+from .indexers import pick_indexer
+from .models import ModuleContract
+from .resolve import resolve_spec
+from .utils import resolve_under_root, sha256_file
 
 CONTRACT_VERSION = 2
 MAX_CONTRACT_SYMBOLS = 400
 MAX_CONTRACT_IMPORTS = 2000
+
 
 def get_or_build_contract(project_id: int, project_root: Path, rel_path: str) -> dict:
     project_root = project_root.resolve()
@@ -55,10 +57,12 @@ def get_or_build_contract(project_id: int, project_root: Path, rel_path: str) ->
                         existing.contract_json = json.dumps(data, ensure_ascii=False)
                         s.add(existing)
                         if rel_path != rel_norm:
-                            s.exec(delete(ModuleContract).where(
-                                ModuleContract.project_id == project_id,
-                                ModuleContract.path == rel_path,
-                            ))
+                            s.exec(
+                                delete(ModuleContract).where(
+                                    ModuleContract.project_id == project_id,
+                                    ModuleContract.path == rel_path,
+                                )
+                            )
                         s.commit()
                     return data
 
@@ -126,24 +130,30 @@ def get_or_build_contract(project_id: int, project_root: Path, rel_path: str) ->
 
     with get_session() as s:
         cj = json.dumps(contract, ensure_ascii=False)
-        stmt = pg_insert(ModuleContract).values(
-            project_id=project_id,
-            path=rel_norm,
-            file_hash=file_hash,
-            contract_json=cj,
-        ).on_conflict_do_update(
-            index_elements=["project_id", "path"],
-            set_={
-                "file_hash": file_hash,
-                "contract_json": cj,
-            },
+        stmt = (
+            pg_insert(ModuleContract)
+            .values(
+                project_id=project_id,
+                path=rel_norm,
+                file_hash=file_hash,
+                contract_json=cj,
+            )
+            .on_conflict_do_update(
+                index_elements=["project_id", "path"],
+                set_={
+                    "file_hash": file_hash,
+                    "contract_json": cj,
+                },
+            )
         )
         s.exec(stmt)
         if rel_path != rel_norm:
-            s.exec(delete(ModuleContract).where(
-                ModuleContract.project_id == project_id,
-                ModuleContract.path == rel_path,
-            ))
+            s.exec(
+                delete(ModuleContract).where(
+                    ModuleContract.project_id == project_id,
+                    ModuleContract.path == rel_path,
+                )
+            )
         s.commit()
 
     return contract

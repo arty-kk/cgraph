@@ -1,4 +1,4 @@
-#backend/app/api_contracts.py
+# backend/app/api_contracts.py
 from __future__ import annotations
 
 import ast
@@ -8,8 +8,8 @@ from typing import Any
 
 from .api_scaffold import parse_backend_path_params
 
-
 _IGNORED_PARAM_NAMES = {"request", "background_tasks", "response", "s", "session"}
+
 
 def _safe_unparse(node: ast.AST | None) -> str:
     if node is None:
@@ -30,6 +30,7 @@ def _safe_unparse(node: ast.AST | None) -> str:
 
 _TYPING_WRAPPERS = {"Optional", "Union", "Annotated"}
 
+
 def _model_name_from_annotation(node: ast.AST | None, models: dict[str, dict]) -> str:
     if node is None:
         return ""
@@ -44,7 +45,7 @@ def _model_name_from_annotation(node: ast.AST | None, models: dict[str, dict]) -
         return node.value if node.value in models else ""
 
     if isinstance(node, ast.Str):
-        return node.s if node.s in models else ""
+        return str(node.s) if node.s in models else ""
 
     idx_t = getattr(ast, "Index", None)
     if idx_t is not None and isinstance(node, idx_t):
@@ -57,7 +58,7 @@ def _model_name_from_annotation(node: ast.AST | None, models: dict[str, dict]) -
         return _model_name_from_annotation(node.right, models)
 
     if isinstance(node, ast.Tuple):
-        for e in (node.elts or []):
+        for e in node.elts or []:
             nm = _model_name_from_annotation(e, models)
             if nm:
                 return nm
@@ -104,7 +105,11 @@ def _extract_pydantic_models(tree: ast.Module) -> dict[str, dict]:
                     # Field(...) with first arg "..." or Ellipsis means required
                     if isinstance(st.value, ast.Call):
                         fn = st.value.func
-                        fn_name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
+                        fn_name = (
+                            fn.id
+                            if isinstance(fn, ast.Name)
+                            else (fn.attr if isinstance(fn, ast.Attribute) else "")
+                        )
                         if fn_name == "Field" and st.value.args:
                             a0 = st.value.args[0]
                             if isinstance(a0, ast.Constant) and a0.value is Ellipsis:
@@ -162,7 +167,7 @@ def _extract_response_shape(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict:
                     if isinstance(k, ast.Constant) and isinstance(k.value, str):
                         keys.add(k.value)
                     elif isinstance(k, ast.Str):
-                        keys.add(k.s)
+                        keys.add(str(k.s))
             self.generic_visit(node)
 
     V().visit(fn)
@@ -174,21 +179,31 @@ def _is_primitive_type(typ: str) -> bool:
     if not t:
         return True
     prim = {
-        "str", "int", "float", "bool", "dict", "list", "set", "tuple",
-        "Any", "object",
-        "Optional[str]", "Optional[int]", "Optional[float]", "Optional[bool]",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "dict",
+        "list",
+        "set",
+        "tuple",
+        "Any",
+        "object",
+        "Optional[str]",
+        "Optional[int]",
+        "Optional[float]",
+        "Optional[bool]",
     }
     if t in prim:
         return True
     # Optional[T]
     if t.startswith("Optional[") and t.endswith("]"):
-        inner = t[len("Optional["):-1].strip()
+        inner = t[len("Optional[") : -1].strip()
         return inner in {"str", "int", "float", "bool", "dict", "list", "Any", "object"}
     return False
 
 
 def build_backend_contract_for_route(text: str, route: dict) -> dict:
-
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -269,7 +284,7 @@ def build_backend_contract_for_route(text: str, route: dict) -> dict:
         )
 
     # kwonly args
-    for a in (fn.args.kwonlyargs or []):
+    for a in fn.args.kwonlyargs or []:
         name = a.arg
         if name in _IGNORED_PARAM_NAMES or name in path_param_names:
             continue
@@ -278,7 +293,7 @@ def build_backend_contract_for_route(text: str, route: dict) -> dict:
         default_node = defaults_map.get(name)
         default_val = _literal_default(default_node)
         required = default_node is None
-        
+
         model_name = _model_name_from_annotation(ann_node, models)
         is_model = bool(model_name)
         if is_model or (name in {"body", "payload", "data"} and not _is_primitive_type(ann)):
@@ -293,7 +308,9 @@ def build_backend_contract_for_route(text: str, route: dict) -> dict:
                 warnings.append("multiple_body_like_params_detected")
             continue
 
-        query_params.append({"name": name, "type": ann, "required": bool(required), "default": default_val})
+        query_params.append(
+            {"name": name, "type": ann, "required": bool(required), "default": default_val}
+        )
 
     response = _extract_response_shape(fn)
 
@@ -310,7 +327,9 @@ def build_backend_contract_for_route(text: str, route: dict) -> dict:
     }
 
 
-def extract_backend_route_contract_rows(project_id: int, source_path: str, text: str, routes_in_file: list[dict]) -> list[dict]:
+def extract_backend_route_contract_rows(
+    project_id: int, source_path: str, text: str, routes_in_file: list[dict]
+) -> list[dict]:
     out: list[dict] = []
     for r in routes_in_file:
         method = str(r.get("method") or "").upper()
@@ -342,7 +361,10 @@ _EXPORT_FN_RE = re.compile(
 
 _PROMISE_RE = re.compile(r"Promise\s*<\s*([^>]+)\s*>")
 
-_TS_FIELD_RE = re.compile(r"^\s*(?P<name>[A-Za-z_$][\w$]*)\s*(?P<opt>\?)?\s*:\s*(?P<typ>[^;,\n]+)", re.MULTILINE)
+_TS_FIELD_RE = re.compile(
+    r"^\s*(?P<name>[A-Za-z_$][\w$]*)\s*(?P<opt>\?)?\s*:\s*(?P<typ>[^;,\n]+)", re.MULTILINE
+)
+
 
 def _split_ts_params(params: str) -> list[str]:
     # split by top-level commas, ignore generics/objects/arrays
@@ -426,7 +448,7 @@ def _find_wrapper_for_line(text: str, lineno: int) -> dict:
     lines = text.splitlines()
     i0 = max(0, min(len(lines), int(lineno) - 1))
     start = max(0, i0 - 220)
-    window = "\n".join(lines[start:i0+1])
+    window = "\n".join(lines[start : i0 + 1])
     best = None
     for m in _EXPORT_FN_RE.finditer(window):
         best = m
@@ -446,15 +468,22 @@ def _find_wrapper_for_line(text: str, lineno: int) -> dict:
         if not p:
             continue
         params.append(p)
-        nm = (p.get("name") or "")
-        typ = (p.get("type") or "")
+        nm = p.get("name") or ""
+        typ = p.get("type") or ""
         if nm in {"body", "payload", "data"} and not body_type and typ:
             body_type = typ
-    return {"name": fn_name, "params": params, "return_type": ret, "response_type": response_type, "body_type": body_type}
+    return {
+        "name": fn_name,
+        "params": params,
+        "return_type": ret,
+        "response_type": response_type,
+        "body_type": body_type,
+    }
 
 
 def _extract_call_args(text: str, call_start: int) -> list[str]:
-    # best-effort: parse (...) of api.get/post(...) call starting at match.start() of "<client>.<method>("
+    # best-effort: parse (...) of api.get/post(...) call starting at match.start()
+    # of "<client>.<method>("
     s = text
     i = call_start
     # find first "(" after call_start
@@ -532,6 +561,7 @@ _TS_OBJ_KEY_RE = re.compile(r"""(?mx)
     )
 +""")
 
+
 def _extract_obj_literal_keys(expr: str) -> list[str]:
     s = (expr or "").strip()
     if not s.startswith("{"):
@@ -549,7 +579,9 @@ def _extract_obj_literal_keys(expr: str) -> list[str]:
     return keys
 
 
-def extract_frontend_call_meta_rows(project_id: int, source_path: str, text: str, calls_in_file: list[dict]) -> list[dict]:
+def extract_frontend_call_meta_rows(
+    project_id: int, source_path: str, text: str, calls_in_file: list[dict]
+) -> list[dict]:
     out: list[dict] = []
     # for each call, attach wrapper info and body keys
     for c in calls_in_file:
@@ -566,7 +598,7 @@ def extract_frontend_call_meta_rows(project_id: int, source_path: str, text: str
             lines = text.splitlines()
             i0 = max(0, min(len(lines), lineno - 1))
             # search small window for the call line containing path literal
-            window = "\n".join(lines[max(0, i0 - 3): min(len(lines), i0 + 4)])
+            window = "\n".join(lines[max(0, i0 - 3) : min(len(lines), i0 + 4)])
             # find first occurrence of path string (without quotes)
             raw = path
             raw_find = raw
@@ -607,6 +639,7 @@ def extract_frontend_call_meta_rows(project_id: int, source_path: str, text: str
 
 
 _TYPE_START_RE = re.compile(r"(?m)^\s*export\s+(type|interface)\s+([A-Za-z_$][\w$]*)\s*(?:=)?\s*\{")
+
 
 def _extract_brace_block(text: str, brace_pos: int) -> tuple[str, int] | None:
     # returns (block_content_including_braces, end_pos)

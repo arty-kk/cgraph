@@ -1,16 +1,17 @@
-#backend/app/resolve.py
+# backend/app/resolve.py
 from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 JS_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"]
 PY_EXTS = [".py", ".pyi"]
 TSCONFIG_NAMES = ("tsconfig.json", "jsconfig.json")
 PACKAGE_JSON_EXTS = JS_EXTS + [".d.ts"]
+
 
 def _try_files(base: Path, exts: list[str]) -> Optional[Path]:
     try:
@@ -21,7 +22,7 @@ def _try_files(base: Path, exts: list[str]) -> Optional[Path]:
             exts = [base_suffix] + [e for e in exts if e != base_suffix]
     except Exception:
         pass
-    
+
     for ext in exts:
         p = base.with_suffix(ext)
         if p.exists() and p.is_file():
@@ -32,33 +33,34 @@ def _try_files(base: Path, exts: list[str]) -> Optional[Path]:
             return p
     return None
 
+
 def _pick_go_file(pkg_dir: Path) -> Optional[Path]:
     try:
         candidates = sorted(
-            [
-                p
-                for p in pkg_dir.glob("*.go")
-                if p.is_file() and not p.name.endswith("_test.go")
-            ],
+            [p for p in pkg_dir.glob("*.go") if p.is_file() and not p.name.endswith("_test.go")],
             key=lambda p: p.name,
         )
         return candidates[0] if candidates else None
     except Exception:
         return None
 
+
 GO_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 GO_LINE_COMMENT_RE = re.compile(r"//.*?$", re.MULTILINE)
+
 
 def _strip_go_comments(text: str) -> str:
     text = GO_BLOCK_COMMENT_RE.sub("", text)
     text = GO_LINE_COMMENT_RE.sub("", text)
     return text
 
+
 def _strip_quotes(s: str) -> str:
     s = s.strip()
     if len(s) >= 2 and ((s[0] == s[-1]) and s[0] in ("'", '"', "`")):
         return s[1:-1].strip()
     return s
+
 
 def _resolve_python_relative(project_root: Path, importer_dir: Path, spec: str) -> Optional[str]:
     leading = len(spec) - len(spec.lstrip("."))
@@ -86,6 +88,7 @@ def _resolve_python_relative(project_root: Path, importer_dir: Path, spec: str) 
             return init_pyi.resolve().relative_to(pr).as_posix()
     return None
 
+
 def _read_package_json(path: Path) -> Optional[dict]:
     try:
         data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
@@ -94,6 +97,7 @@ def _read_package_json(path: Path) -> Optional[dict]:
     if isinstance(data, dict):
         return data
     return None
+
 
 def _workspace_globs_from_package_json(project_root: Path) -> list[str]:
     pkg_json = project_root / "package.json"
@@ -110,6 +114,7 @@ def _workspace_globs_from_package_json(project_root: Path) -> list[str]:
         if isinstance(packages, list):
             return [w for w in packages if isinstance(w, str)]
     return []
+
 
 def _workspace_globs_from_pnpm_workspace(project_root: Path) -> list[str]:
     ws = project_root / "pnpm-workspace.yaml"
@@ -132,10 +137,11 @@ def _workspace_globs_from_pnpm_workspace(project_root: Path) -> list[str]:
         if not line.startswith((" ", "\t")):
             break
         if stripped.startswith("- "):
-            glob = stripped[2:].strip().strip('"\'')
+            glob = stripped[2:].strip().strip("\"'")
             if glob:
                 globs.append(glob)
     return globs
+
 
 def _workspace_paths_from_pnpm_lock(project_root: Path) -> list[str]:
     lock = project_root / "pnpm-lock.yaml"
@@ -159,10 +165,11 @@ def _workspace_paths_from_pnpm_lock(project_root: Path) -> list[str]:
             break
         match = re.match(r"^\s{2}([^:#]+):\s*$", line)
         if match:
-            entry = match.group(1).strip().strip('"\'')
+            entry = match.group(1).strip().strip("\"'")
             if entry:
                 paths.append(entry)
     return paths
+
 
 def _workspace_paths_from_package_lock(project_root: Path) -> list[str]:
     lock = project_root / "package-lock.json"
@@ -182,6 +189,7 @@ def _workspace_paths_from_package_lock(project_root: Path) -> list[str]:
             continue
         paths.append(key)
     return paths
+
 
 @lru_cache(maxsize=64)
 def _local_package_info(project_root_str: str) -> dict[str, list[tuple[str, dict]]]:
@@ -237,6 +245,7 @@ def _local_package_info(project_root_str: str) -> dict[str, list[tuple[str, dict
         entries.append((str(resolved.parent), data))
     return info
 
+
 def _export_targets(value: object) -> list[str]:
     targets: list[str] = []
     if isinstance(value, str):
@@ -251,6 +260,7 @@ def _export_targets(value: object) -> list[str]:
                 targets.extend(_export_targets(value.get(key)))
         return targets
     return targets
+
 
 def _resolve_package_target(project_root: Path, pkg_dir: Path, target: str) -> Optional[str]:
     if not target:
@@ -277,7 +287,10 @@ def _resolve_package_target(project_root: Path, pkg_dir: Path, target: str) -> O
     except Exception:
         return None
 
-def _resolve_package_entry(project_root: Path, pkg_dir: Path, data: dict, subpath: str) -> Optional[str]:
+
+def _resolve_package_entry(
+    project_root: Path, pkg_dir: Path, data: dict, subpath: str
+) -> Optional[str]:
     exports = data.get("exports")
     if exports is not None:
         if subpath:
@@ -337,6 +350,7 @@ def _resolve_package_entry(project_root: Path, pkg_dir: Path, data: dict, subpat
             return rp.relative_to(pr).as_posix()
     return None
 
+
 def _resolve_local_package(project_root: Path, spec: str) -> Optional[str]:
     info = _local_package_info(str(project_root))
     if not info:
@@ -357,6 +371,7 @@ def _resolve_local_package(project_root: Path, spec: str) -> Optional[str]:
             return resolved
     return None
 
+
 def _parse_go_module_line(go_mod_text: str) -> Optional[str]:
     for line in go_mod_text.splitlines():
         s = line.strip()
@@ -370,8 +385,8 @@ def _parse_go_module_line(go_mod_text: str) -> Optional[str]:
                 return mod or None
     return None
 
-def _parse_go_uses(go_work_text: str) -> list[str]:
 
+def _parse_go_uses(go_work_text: str) -> list[str]:
     txt = _strip_go_comments(go_work_text)
     uses: list[str] = []
     in_block = False
@@ -398,8 +413,8 @@ def _parse_go_uses(go_work_text: str) -> list[str]:
                 uses.append(_strip_quotes(part.split()[0]))
     return uses
 
-def _parse_go_replaces(text: str) -> dict[str, str]:
 
+def _parse_go_replaces(text: str) -> dict[str, str]:
     txt = _strip_go_comments(text)
     rep: dict[str, str] = {}
     in_block = False
@@ -433,14 +448,14 @@ def _parse_go_replaces(text: str) -> dict[str, str]:
                 rep[old] = new
     return rep
 
-def _localize_path(project_root: Path, base_dir: Path, p: str) -> Optional[Path]:
 
+def _localize_path(project_root: Path, base_dir: Path, p: str) -> Optional[Path]:
     p = _strip_quotes(p.strip())
     if not p:
         return None
     candidate = Path(p).expanduser()
     if not candidate.is_absolute():
-        candidate = (base_dir / candidate)
+        candidate = base_dir / candidate
     try:
         candidate = candidate.resolve()
     except Exception:
@@ -452,9 +467,9 @@ def _localize_path(project_root: Path, base_dir: Path, p: str) -> Optional[Path]
         return None
     return candidate
 
+
 @lru_cache(maxsize=512)
 def _nearest_go_module(project_root_str: str, importer_dir_str: str) -> Optional[tuple[str, str]]:
-
     project_root = Path(project_root_str).resolve()
     cur = Path(importer_dir_str).resolve()
 
@@ -478,9 +493,9 @@ def _nearest_go_module(project_root_str: str, importer_dir_str: str) -> Optional
             break
     return None
 
+
 @lru_cache(maxsize=512)
 def _nearest_go_work_dir(project_root_str: str, importer_dir_str: str) -> Optional[str]:
-
     project_root = Path(project_root_str).resolve()
     cur = Path(importer_dir_str).resolve()
 
@@ -498,9 +513,11 @@ def _nearest_go_work_dir(project_root_str: str, importer_dir_str: str) -> Option
             break
     return None
 
-@lru_cache(maxsize=256)
-def _go_work_info(project_root_str: str, go_work_dir_str: str) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
 
+@lru_cache(maxsize=256)
+def _go_work_info(
+    project_root_str: str, go_work_dir_str: str
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
     project_root = Path(project_root_str).resolve()
     go_work_dir = Path(go_work_dir_str).resolve()
     gw = go_work_dir / "go.work"
@@ -516,7 +533,7 @@ def _go_work_info(project_root_str: str, go_work_dir_str: str) -> tuple[tuple[tu
             continue
         use_dir = Path(_strip_quotes(u)).expanduser()
         if not use_dir.is_absolute():
-            use_dir = (go_work_dir / use_dir)
+            use_dir = go_work_dir / use_dir
         try:
             use_dir = use_dir.resolve()
         except Exception:
@@ -544,9 +561,11 @@ def _go_work_info(project_root_str: str, go_work_dir_str: str) -> tuple[tuple[tu
 
     return (tuple(modules), tuple(replaces))
 
-@lru_cache(maxsize=512)
-def _go_mod_local_replaces(project_root_str: str, module_dir_str: str) -> tuple[tuple[str, str], ...]:
 
+@lru_cache(maxsize=512)
+def _go_mod_local_replaces(
+    project_root_str: str, module_dir_str: str
+) -> tuple[tuple[str, str], ...]:
     project_root = Path(project_root_str).resolve()
     module_dir = Path(module_dir_str).resolve()
     gm = module_dir / "go.mod"
@@ -564,8 +583,8 @@ def _go_mod_local_replaces(project_root_str: str, module_dir_str: str) -> tuple[
             out.append((old, str(new_dir)))
     return tuple(out)
 
-def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[str]:
 
+def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[str]:
     project_root = project_root.resolve()
     importer_path = (project_root / importer_rel).resolve()
     importer_dir = importer_path.parent
@@ -605,7 +624,7 @@ def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[s
                 if abs_path.exists() and abs_path.is_file():
                     return abs_path.relative_to(project_root).as_posix()
         else:
-            candidate = (importer_dir / spec_clean)
+            candidate = importer_dir / spec_clean
             try:
                 candidate_resolved = candidate.resolve()
             except Exception:
@@ -613,12 +632,14 @@ def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[s
             if (project_root in candidate_resolved.parents) or (candidate_resolved == project_root):
                 if candidate_resolved.exists() and candidate_resolved.is_file():
                     return candidate_resolved.relative_to(project_root).as_posix()
-            candidate_root = (project_root / spec_clean)
+            candidate_root = project_root / spec_clean
             try:
                 candidate_root_resolved = candidate_root.resolve()
             except Exception:
                 candidate_root_resolved = candidate_root
-            if (project_root in candidate_root_resolved.parents) or (candidate_root_resolved == project_root):
+            if (project_root in candidate_root_resolved.parents) or (
+                candidate_root_resolved == project_root
+            ):
                 if candidate_root_resolved.exists() and candidate_root_resolved.is_file():
                     return candidate_root_resolved.relative_to(project_root).as_posix()
 
@@ -633,7 +654,9 @@ def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[s
     if pkg_resolved:
         return pkg_resolved
 
-    def _best_prefix_match(value: str, candidates: list[tuple[str, str, int]]) -> Optional[tuple[str, str]]:
+    def _best_prefix_match(
+        value: str, candidates: list[tuple[str, str, int]]
+    ) -> Optional[tuple[str, str]]:
         best: Optional[tuple[str, str, int]] = None
         for prefix, d, prio in candidates:
             if not prefix:
@@ -643,7 +666,9 @@ def resolve_spec(project_root: Path, importer_rel: str, spec: str) -> Optional[s
                 if best is None:
                     best = cand
                 else:
-                    if len(prefix) > len(best[0]) or (len(prefix) == len(best[0]) and prio < best[2]):
+                    if len(prefix) > len(best[0]) or (
+                        len(prefix) == len(best[0]) and prio < best[2]
+                    ):
                         best = cand
         if best is None:
             return None

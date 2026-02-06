@@ -1,4 +1,4 @@
-#backend/app/models.py
+# backend/app/models.py
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -8,6 +8,7 @@ from sqlalchemy import Column, Computed, Index, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlmodel import Field, SQLModel
 
+
 class Project(SQLModel, table=True):
     __tablename__ = "project"
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -16,16 +17,16 @@ class Project(SQLModel, table=True):
     root_path: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+
 class User(SQLModel, table=True):
     __tablename__ = "user"
-    __table_args__ = (
-        UniqueConstraint("email", name="uq_user_email"),
-    )
+    __table_args__ = (UniqueConstraint("email", name="uq_user_email"),)
     id: Optional[int] = Field(default=None, primary_key=True)
     email: str = Field(index=True)
     password_hash: str
     is_active: bool = Field(default=True, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
 
 class Organization(SQLModel, table=True):
     __tablename__ = "organization"
@@ -33,11 +34,10 @@ class Organization(SQLModel, table=True):
     name: str = Field(index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
+
 class OrgMembership(SQLModel, table=True):
     __tablename__ = "orgmembership"
-    __table_args__ = (
-        UniqueConstraint("org_id", "user_id", name="uq_orgmembership_org_user"),
-    )
+    __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_orgmembership_org_user"),)
     id: Optional[int] = Field(default=None, primary_key=True)
     org_id: int = Field(index=True)
     user_id: int = Field(index=True)
@@ -45,22 +45,20 @@ class OrgMembership(SQLModel, table=True):
     is_active: bool = Field(default=True, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
+
 class OrgUsage(SQLModel, table=True):
     __tablename__ = "orgusage"
-    __table_args__ = (
-        UniqueConstraint("org_id", "day", "kind", name="uq_orgusage_org_day_kind"),
-    )
+    __table_args__ = (UniqueConstraint("org_id", "day", "kind", name="uq_orgusage_org_day_kind"),)
     id: Optional[int] = Field(default=None, primary_key=True)
     org_id: int = Field(index=True)
     day: date = Field(index=True)
     kind: str = Field(index=True)
     count: int = Field(default=0)
 
+
 class Plan(SQLModel, table=True):
     __tablename__ = "plan"
-    __table_args__ = (
-        UniqueConstraint("name", name="uq_plan_name"),
-    )
+    __table_args__ = (UniqueConstraint("name", name="uq_plan_name"),)
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True)
     llm_enabled: bool = Field(default=True)
@@ -70,11 +68,10 @@ class Plan(SQLModel, table=True):
     embeddings_daily_query_limit: int | None = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
+
 class OrgSubscription(SQLModel, table=True):
     __tablename__ = "orgsubscription"
-    __table_args__ = (
-        UniqueConstraint("org_id", name="uq_orgsubscription_org_id"),
-    )
+    __table_args__ = (UniqueConstraint("org_id", name="uq_orgsubscription_org_id"),)
     id: Optional[int] = Field(default=None, primary_key=True)
     org_id: int = Field(index=True)
     plan_id: int = Field(index=True)
@@ -83,17 +80,17 @@ class OrgSubscription(SQLModel, table=True):
     current_period_end: datetime = Field(index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
+
 class OrgEntitlement(SQLModel, table=True):
     __tablename__ = "orgentitlement"
-    __table_args__ = (
-        UniqueConstraint("org_id", "key", name="uq_orgentitlement_org_key"),
-    )
+    __table_args__ = (UniqueConstraint("org_id", "key", name="uq_orgentitlement_org_key"),)
     id: Optional[int] = Field(default=None, primary_key=True)
     org_id: int = Field(index=True)
     key: str = Field(index=True)
     value_int: int | None = Field(default=None)
     value_bool: bool | None = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
 
 class UserSession(SQLModel, table=True):
     __tablename__ = "usersession"
@@ -103,6 +100,7 @@ class UserSession(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     expires_at: datetime = Field(index=True)
     revoked_at: datetime | None = Field(default=None, index=True)
+
 
 class ApiKey(SQLModel, table=True):
     __tablename__ = "apikey"
@@ -115,6 +113,7 @@ class ApiKey(SQLModel, table=True):
     expires_at: datetime | None = Field(default=None, index=True)
     revoked_at: datetime | None = Field(default=None, index=True)
 
+
 class RepoSnapshot(SQLModel, table=True):
     __tablename__ = "reposnapshot"
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -125,11 +124,10 @@ class RepoSnapshot(SQLModel, table=True):
     storage_json: str
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
+
 class FileNode(SQLModel, table=True):
     __tablename__ = "filenode"
-    __table_args__ = (
-        UniqueConstraint("project_id", "path", name="uq_filenode_project_path"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", "path", name="uq_filenode_project_path"),)
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(index=True)
     path: str = Field(index=True)
@@ -144,10 +142,13 @@ class FileNode(SQLModel, table=True):
     file_mtime: float = Field(default=0)
     file_size: int = Field(default=0)
 
+
 class FileEdge(SQLModel, table=True):
     __tablename__ = "fileedge"
     __table_args__ = (
-        UniqueConstraint("project_id", "src_path", "dst_path", "kind", name="uq_fileedge_project_src_dst_kind"),
+        UniqueConstraint(
+            "project_id", "src_path", "dst_path", "kind", name="uq_fileedge_project_src_dst_kind"
+        ),
     )
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(index=True)
@@ -155,6 +156,7 @@ class FileEdge(SQLModel, table=True):
     dst_path: str = Field(index=True)
     kind: str = Field(default="import")
     raw: str = Field(default="")
+
 
 class ModuleContract(SQLModel, table=True):
     __tablename__ = "modulecontract"
@@ -166,6 +168,7 @@ class ModuleContract(SQLModel, table=True):
     path: str = Field(index=True)
     file_hash: str
     contract_json: str
+
 
 class AnalysisRun(SQLModel, table=True):
     __tablename__ = "analysisrun"
@@ -188,6 +191,7 @@ class AnalysisRun(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     result_json: str
 
+
 class ProjectDoc(SQLModel, table=True):
     __tablename__ = "projectdoc"
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -196,11 +200,17 @@ class ProjectDoc(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     content_md: str = Field(default="")
 
+
 class ApiRoute(SQLModel, table=True):
     __tablename__ = "apiroute"
     __table_args__ = (
         UniqueConstraint(
-            "project_id", "method", "path", "source_path", "handler_name", "lineno",
+            "project_id",
+            "method",
+            "path",
+            "source_path",
+            "handler_name",
+            "lineno",
             name="uq_apiroute_project_method_path_src_handler_line",
         ),
     )
@@ -215,11 +225,16 @@ class ApiRoute(SQLModel, table=True):
     lineno: int = Field(default=0)
     decorator: str = Field(default="")
 
+
 class ApiCall(SQLModel, table=True):
     __tablename__ = "apicall"
     __table_args__ = (
         UniqueConstraint(
-            "project_id", "method", "path", "source_path", "lineno",
+            "project_id",
+            "method",
+            "path",
+            "source_path",
+            "lineno",
             name="uq_apicall_project_method_path_src_line",
         ),
     )
@@ -231,6 +246,7 @@ class ApiCall(SQLModel, table=True):
     source_path: str = Field(index=True)
     lineno: int = Field(default=0)
     client: str = Field(default="")
+
 
 class ApiInclude(SQLModel, table=True):
     __tablename__ = "apiinclude"
@@ -257,11 +273,17 @@ class ApiInclude(SQLModel, table=True):
     prefix: str = Field(default="")
     lineno: int = Field(default=0)
 
+
 class ApiRouteContract(SQLModel, table=True):
     __tablename__ = "apiroutecontract"
     __table_args__ = (
         UniqueConstraint(
-            "project_id", "method", "path", "source_path", "handler_name", "lineno",
+            "project_id",
+            "method",
+            "path",
+            "source_path",
+            "handler_name",
+            "lineno",
             name="uq_apiroutecontract_project_method_path_src_handler_line",
         ),
     )
@@ -274,11 +296,16 @@ class ApiRouteContract(SQLModel, table=True):
     lineno: int = Field(default=0)
     contract_json: str = Field(default="")
 
+
 class ApiCallMeta(SQLModel, table=True):
     __tablename__ = "apicallmeta"
     __table_args__ = (
         UniqueConstraint(
-            "project_id", "method", "path", "source_path", "lineno",
+            "project_id",
+            "method",
+            "path",
+            "source_path",
+            "lineno",
             name="uq_apicallmeta_project_method_path_src_line",
         ),
     )
@@ -294,6 +321,7 @@ class ApiCallMeta(SQLModel, table=True):
     wrapper_params_json: str = Field(default="[]")
     body_keys_json: str = Field(default="[]")
     notes: str = Field(default="")
+
 
 class TsTypeDef(SQLModel, table=True):
     __tablename__ = "tstypedef"
@@ -312,7 +340,10 @@ class FileChunkEmbedding(SQLModel, table=True):
     __tablename__ = "filechunkembedding"
     __table_args__ = (
         UniqueConstraint(
-            "project_id", "path", "chunk_index", "file_hash",
+            "project_id",
+            "path",
+            "chunk_index",
+            "file_hash",
             name="uq_filechunkembedding_project_path_chunk_hash",
         ),
     )

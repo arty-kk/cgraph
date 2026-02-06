@@ -1,21 +1,24 @@
-#backend/app/graph.py
+# backend/app/graph.py
 from __future__ import annotations
 
-from typing import Any
-from pathlib import Path
 import json
 import logging
 import math
-from sqlmodel import select
-from sqlalchemy import text, func, or_
-from .db import get_session
-from .models import FileNode, FileEdge, FileChunkEmbedding
-from .config import settings
-from .llm.client import get_openai_client
-from .utils import _chunk_text, resolve_under_root
+from pathlib import Path
+from typing import Any
+
 import networkx as nx
+from sqlalchemy import func, or_, text
+from sqlmodel import select
+
+from .config import settings
+from .db import get_session
+from .llm.client import get_openai_client
+from .models import FileChunkEmbedding, FileEdge, FileNode
+from .utils import _chunk_text, resolve_under_root
 
 logger = logging.getLogger(__name__)
+
 
 def _as_int(v: Any, default: int = 0) -> int:
     try:
@@ -25,6 +28,7 @@ def _as_int(v: Any, default: int = 0) -> int:
     except Exception:
         return default
 
+
 def _as_float(v: Any, default: float = 0.0) -> float:
     try:
         if v is None:
@@ -33,9 +37,12 @@ def _as_float(v: Any, default: float = 0.0) -> float:
     except Exception:
         return default
 
+
 def compute_graph_metrics(project_id: int) -> None:
     with get_session() as s:
-        node_rows = s.exec(select(FileNode.id, FileNode.path).where(FileNode.project_id == project_id)).all()
+        node_rows = s.exec(
+            select(FileNode.id, FileNode.path).where(FileNode.project_id == project_id)
+        ).all()
         if not node_rows:
             return
 
@@ -49,7 +56,7 @@ def compute_graph_metrics(project_id: int) -> None:
             .where(FileEdge.project_id == project_id)
             .group_by(FileEdge.src_path)
         ).all()
- 
+
         indeg: dict[str, int] = {}
         for p, c in indeg_rows:
             if isinstance(p, str) and p:
@@ -81,7 +88,9 @@ def compute_graph_metrics(project_id: int) -> None:
             node_count_int = len(node_rows)
             if node_count_int <= max_nodes and edge_count_int <= max_edges:
                 edge_rows = s.exec(
-                    select(FileEdge.src_path, FileEdge.dst_path).where(FileEdge.project_id == project_id)
+                    select(FileEdge.src_path, FileEdge.dst_path).where(
+                        FileEdge.project_id == project_id
+                    )
                 ).all()
                 g = nx.DiGraph()
                 for _nid, path in node_rows:
@@ -105,19 +114,25 @@ def compute_graph_metrics(project_id: int) -> None:
             p = path if isinstance(path, str) else ""
             if not p:
                 continue
-            params.append({
-                "id": int(nid),
-                "fan_in": _as_int(indeg.get(p, 0), 0),
-                "fan_out": _as_int(outdeg.get(p, 0), 0),
-                "scc_id": _as_int(scc_map.get(p, -1), -1),
-            })
+            params.append(
+                {
+                    "id": int(nid),
+                    "fan_in": _as_int(indeg.get(p, 0), 0),
+                    "fan_out": _as_int(outdeg.get(p, 0), 0),
+                    "scc_id": _as_int(scc_map.get(p, -1), -1),
+                }
+            )
 
         if params:
             s.execute(
-                text("UPDATE filenode SET fan_in=:fan_in, fan_out=:fan_out, scc_id=:scc_id WHERE id=:id"),
+                text(
+                    "UPDATE filenode SET fan_in=:fan_in, fan_out=:fan_out, "
+                    "scc_id=:scc_id WHERE id=:id"
+                ),
                 params,
             )
             s.commit()
+
 
 def update_graph_metrics_incremental(
     project_id: int,
@@ -189,7 +204,10 @@ def update_graph_metrics_incremental(
                 if dst not in component_paths:
                     component_paths.add(dst)
                     next_frontier.add(dst)
-            if len(component_paths) > max_component_nodes or len(component_edges) > max_component_edges:
+            if (
+                len(component_paths) > max_component_nodes
+                or len(component_edges) > max_component_edges
+            ):
                 too_large = True
                 break
             frontier = next_frontier
@@ -265,11 +283,13 @@ def update_graph_metrics_incremental(
         for nid, path in node_rows:
             if nid is None or not isinstance(path, str) or not path:
                 continue
-            fan_params.append({
-                "id": int(nid),
-                "fan_in": _as_int(indeg.get(path, 0), 0),
-                "fan_out": _as_int(outdeg.get(path, 0), 0),
-            })
+            fan_params.append(
+                {
+                    "id": int(nid),
+                    "fan_in": _as_int(indeg.get(path, 0), 0),
+                    "fan_out": _as_int(outdeg.get(path, 0), 0),
+                }
+            )
         if fan_params:
             s.execute(
                 text("UPDATE filenode SET fan_in=:fan_in, fan_out=:fan_out WHERE id=:id"),
@@ -311,8 +331,8 @@ def update_graph_metrics_incremental(
 
         s.commit()
 
-def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
 
+def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
     AUTO_LIMIT = 8000
     AUTO_RETURN = 2000
     SQLITE_IN_CHUNK = 400
@@ -378,19 +398,21 @@ def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
                 continue
             node_paths.append(path)
             label = path.rsplit("/", 1)[-1]
-            node_payload.append({
-                "id": path,
-                "label": label,
-                "path": path,
-                "language": n.language,
-                "loc": _as_int(getattr(n, "loc", 0), 0),
-                "complexity": _as_float(getattr(n, "complexity", 0), 0.0),
-                "fan_in": _as_int(getattr(n, "fan_in", 0), 0),
-                "fan_out": _as_int(getattr(n, "fan_out", 0), 0),
-                "scc_id": _as_int(getattr(n, "scc_id", -1), -1),
-                "status": n.status,
-                "risk": risk_value(n),
-            })
+            node_payload.append(
+                {
+                    "id": path,
+                    "label": label,
+                    "path": path,
+                    "language": n.language,
+                    "loc": _as_int(getattr(n, "loc", 0), 0),
+                    "complexity": _as_float(getattr(n, "complexity", 0), 0.0),
+                    "fan_in": _as_int(getattr(n, "fan_in", 0), 0),
+                    "fan_out": _as_int(getattr(n, "fan_out", 0), 0),
+                    "scc_id": _as_int(getattr(n, "scc_id", -1), -1),
+                    "status": n.status,
+                    "risk": risk_value(n),
+                }
+            )
 
         node_set = set(node_paths)
 
@@ -399,6 +421,7 @@ def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
         else:
             edges = []
             if node_paths:
+
                 def _iter_chunks(seq: list[str], size: int):
                     for i in range(0, len(seq), size):
                         yield seq[i : i + size]
@@ -417,7 +440,12 @@ def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:
 
     edge_payload: list[dict] = []
     for e in edges:
-        if not (isinstance(e.src_path, str) and e.src_path and isinstance(e.dst_path, str) and e.dst_path):
+        if not (
+            isinstance(e.src_path, str)
+            and e.src_path
+            and isinstance(e.dst_path, str)
+            and e.dst_path
+        ):
             continue
         if effective_limit is not None:
             if e.src_path not in node_set or e.dst_path not in node_set:
@@ -476,8 +504,7 @@ def local_subgraph(
             frontier = list(dict.fromkeys(frontier))
             for chunk in _iter_chunks(frontier, SQLITE_IN_CHUNK):
                 rows = s.exec(
-                    select(FileEdge.src_path, FileEdge.dst_path, FileEdge.kind)
-                    .where(
+                    select(FileEdge.src_path, FileEdge.dst_path, FileEdge.kind).where(
                         FileEdge.project_id == project_id,
                         (FileEdge.src_path.in_(chunk)) | (FileEdge.dst_path.in_(chunk)),
                     )
@@ -665,13 +692,13 @@ def search_semantic(
     filters = [FileChunkEmbedding.project_id == project_id]
     if prefix_norm:
         like = f"{prefix_norm}/%"
-        filters.append((FileChunkEmbedding.path == prefix_norm) | (FileChunkEmbedding.path.like(like)))
+        filters.append(
+            (FileChunkEmbedding.path == prefix_norm) | (FileChunkEmbedding.path.like(like))
+        )
 
     with get_session() as s:
         total_candidates_row = s.exec(
-            select(func.count())
-            .select_from(FileChunkEmbedding)
-            .where(*filters)
+            select(func.count()).select_from(FileChunkEmbedding).where(*filters)
         ).one()
         if isinstance(total_candidates_row, (tuple, list)):
             total_candidates = _as_int(total_candidates_row[0] if total_candidates_row else 0, 0)
@@ -748,7 +775,9 @@ def search_semantic(
         snippet = ""
         if path not in file_cache:
             try:
-                abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+                abs_path, rel_norm = resolve_under_root(
+                    root, path, max_length=settings.max_rel_path_chars
+                )
             except Exception:
                 file_cache[path] = ""
             else:
@@ -766,7 +795,7 @@ def search_semantic(
             symbol_end = _as_int(symbol_end_line, 0)
             if symbol_start > 0 and symbol_end >= symbol_start:
                 lines = text.splitlines(keepends=True)
-                snippet = "".join(lines[symbol_start - 1:symbol_end])
+                snippet = "".join(lines[symbol_start - 1 : symbol_end])
             else:
                 try:
                     start = max(0, int(chunk_index) * step)
@@ -791,7 +820,7 @@ def search_semantic(
         )
 
     scored.sort(key=lambda x: x["score"], reverse=True)
-    results = scored[: max_results_eff]
+    results = scored[:max_results_eff]
     truncated = total_candidates > max_candidates or len(scored) > max_results_eff
     if truncated:
         logger.info(

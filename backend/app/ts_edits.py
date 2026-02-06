@@ -1,4 +1,4 @@
-#backend/app/ts_edits.py
+# backend/app/ts_edits.py
 import difflib
 import re
 from typing import Any
@@ -22,6 +22,7 @@ _TYPE_START_RE = re.compile(
 _TS_FIELD_RE = re.compile(
     r"(?m)^\s*(?P<name>[A-Za-z_$][\w$]*)\s*(?P<opt>\?)?\s*:\s*(?P<typ>[^;,\n]+)"
 )
+
 
 def _extract_brace_block(text: str, brace_pos: int) -> tuple[int, int] | None:
     # returns (start, end) indices of '{...}' inclusive braces
@@ -73,7 +74,7 @@ def _py_type_to_ts(py: str) -> str:
     base = t
     # Optional[T]
     if base.startswith("Optional[") and base.endswith("]"):
-        base = base[len("Optional["):-1].strip()
+        base = base[len("Optional[") : -1].strip()
     mapping = {
         "str": "string",
         "int": "number",
@@ -101,7 +102,6 @@ def ts_add_fields_to_typedef(
     *,
     optional: bool,
 ) -> tuple[str, bool, str]:
-
     if not type_name or not isinstance(type_name, str):
         return (text, False, "bad_type_name")
 
@@ -165,13 +165,18 @@ def ts_add_fields_to_typedef(
 
 
 _IMPORT_RE = re.compile(r"(?m)^\s*import\s+.*?;\s*$")
-_ENCODE_IMPORT_RE = re.compile(r"(?m)^\s*import\s+\{\s*([^}]+)\s*\}\s*from\s*['\"]\./utils['\"]\s*;")
+_ENCODE_IMPORT_RE = re.compile(
+    r"(?m)^\s*import\s+\{\s*([^}]+)\s*\}\s*from\s*['\"]\./utils['\"]\s*;"
+)
 _FN_RE = re.compile(
-    r"(?ms)^\s*export\s+(?:async\s+)?function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<params>[^)]*)\)\s*:\s*(?P<ret>[^ {;\n]+)?\s*\{"
+    r"(?ms)^\s*export\s+(?:async\s+)?function\s+(?P<name>[A-Za-z_$][\w$]*)\s*"
+    r"\((?P<params>[^)]*)\)\s*:\s*(?P<ret>[^ {;\n]+)?\s*\{"
 )
 _FN_RE2 = re.compile(
-    r"(?ms)^\s*export\s+(?:async\s+)?function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<params>[^)]*)\)\s*\{"
+    r"(?ms)^\s*export\s+(?:async\s+)?function\s+(?P<name>[A-Za-z_$][\w$]*)\s*"
+    r"\((?P<params>[^)]*)\)\s*\{"
 )
+
 
 def _find_function_block(text: str, fn_name: str) -> tuple[int, int, int, int] | None:
     # returns (sig_start, params_start, params_end, block_end)
@@ -232,7 +237,7 @@ def _ensure_encodepath_import(text: str) -> tuple[str, bool]:
             # add to existing import list
             new_items = items + ["encodePath"]
             repl = f"import {{ {', '.join(new_items)} }} from './utils';"
-            new_text = text[:m.start()] + repl + text[m.end():]
+            new_text = text[: m.start()] + repl + text[m.end() :]
             return (new_text, True)
     # If there is a utils import but not encodePath, add it.
     m = _ENCODE_IMPORT_RE.search(text)
@@ -242,7 +247,7 @@ def _ensure_encodepath_import(text: str) -> tuple[str, bool]:
             return (text, False)
         new_items = items + ["encodePath"]
         repl = f"import {{ {', '.join(new_items)} }} from './utils';"
-        new_text = text[:m.start()] + repl + text[m.end():]
+        new_text = text[: m.start()] + repl + text[m.end() :]
         return (new_text, True)
 
     # else insert new import after last import line
@@ -257,7 +262,9 @@ def _ensure_encodepath_import(text: str) -> tuple[str, bool]:
     return (ins_line + "\n" + text, True)
 
 
-def _replace_first_api_call_path(block: str, method: str, new_path_literal: str) -> tuple[str, bool, str]:
+def _replace_first_api_call_path(
+    block: str, method: str, new_path_literal: str
+) -> tuple[str, bool, str]:
     m = (method or "").strip().lower()
     if not m:
         return (block, False, "no_method")
@@ -295,7 +302,7 @@ def _replace_first_api_call_path(block: str, method: str, new_path_literal: str)
         j += 1
     if j >= len(block):
         return (block, False, "unterminated_string")
-    old_lit = block[i : j + 1]
+    block[i : j + 1]
     new_block = block[:i] + new_path_literal + block[j + 1 :]
     return (new_block, True, "ok")
 
@@ -337,7 +344,8 @@ def ts_patch_wrapper_function(
     new_params_str = params_str
     if inserts:
         # keep params?: ... last if present
-        # naive: split by commas, but preserve original formatting; we inject before "params?" token if present
+        # naive: split by commas, but preserve original formatting; we inject before "params?"
+        # token if present
         if "params?:" in params_str or "params ?:" in params_str:
             idx = params_str.find("params")
             head = params_str[:idx].rstrip()
@@ -384,5 +392,5 @@ def ts_patch_wrapper_function(
         if changed:
             warnings.append("added_encodePath_import")
 
-    changed_any = (new_text != text)
+    changed_any = new_text != text
     return (new_text, changed_any, warnings)

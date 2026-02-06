@@ -1,10 +1,11 @@
-#backend/app/indexers/infra_indexer.py
+# backend/app/indexers/infra_indexer.py
 from __future__ import annotations
 
 import json
 import os
 import re
 import shlex
+from typing import Sequence
 from pathlib import Path
 
 from .base import ImportRef, SymbolDef
@@ -50,9 +51,7 @@ INFRA_BASENAMES = {
     ".gitlab-ci.yml",
 }
 
-INFRA_PATH_SNIPPETS = (
-    ".github/workflows/",
-)
+INFRA_PATH_SNIPPETS = (".github/workflows/",)
 
 DOCKERFILE_PREFIX = "dockerfile"
 
@@ -74,13 +73,9 @@ PYTHON_ENTRYPOINTS = (
     "__main__.py",
 )
 
-GO_ENTRYPOINTS = (
-    "main.go",
-)
+GO_ENTRYPOINTS = ("main.go",)
 
-RUST_ENTRYPOINTS = (
-    "src/main.rs",
-)
+RUST_ENTRYPOINTS = ("src/main.rs",)
 
 INFRA_HINT_FILES = (
     "Dockerfile",
@@ -226,7 +221,9 @@ class InfraIndexer:
                 abs_src = (importer_dir / spec).resolve()
                 if abs_src.exists() and abs_src.is_dir():
                     for dir_spec in _expand_directory_targets(importer_dir, abs_src):
-                        out.append(ImportRef(raw=raw_line.strip(), spec=dir_spec, kind="docker-copy"))
+                        out.append(
+                            ImportRef(raw=raw_line.strip(), spec=dir_spec, kind="docker-copy")
+                        )
                 else:
                     out.append(ImportRef(raw=raw_line.strip(), spec=spec, kind="docker-copy"))
         return out
@@ -240,7 +237,6 @@ class InfraIndexer:
         volume_hosts: list[str] = []
 
         for line in text.splitlines():
-            raw_line = line
             line = _strip_inline_comment(line.rstrip())
             if not line.strip():
                 continue
@@ -314,19 +310,27 @@ class InfraIndexer:
             if isinstance(exports_field, str):
                 spec = _spec_from_rel(exports_field)
                 if spec:
-                    out.append(ImportRef(raw=f"exports: {exports_field}", spec=spec, kind="manifest"))
+                    out.append(
+                        ImportRef(raw=f"exports: {exports_field}", spec=spec, kind="manifest")
+                    )
             elif isinstance(exports_field, dict):
                 for value in exports_field.values():
                     if isinstance(value, str):
                         spec = _spec_from_rel(value)
                         if spec:
-                            out.append(ImportRef(raw=f"exports: {value}", spec=spec, kind="manifest"))
+                            out.append(
+                                ImportRef(raw=f"exports: {value}", spec=spec, kind="manifest")
+                            )
                     elif isinstance(value, dict):
                         for sub_value in value.values():
                             if isinstance(sub_value, str):
                                 spec = _spec_from_rel(sub_value)
                                 if spec:
-                                    out.append(ImportRef(raw=f"exports: {sub_value}", spec=spec, kind="manifest"))
+                                    out.append(
+                                        ImportRef(
+                                            raw=f"exports: {sub_value}", spec=spec, kind="manifest"
+                                        )
+                                    )
         for lock_name in ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"):
             lock_path = importer_dir / lock_name
             if lock_path.exists() and lock_path.is_file():
@@ -366,9 +370,15 @@ class InfraIndexer:
                 if spec:
                     out.append(ImportRef(raw=peer, spec=spec, kind="manifest-peer"))
 
-        entrypoints = []
+        entrypoints: Sequence[str] = ()
         lower_name = name.lower()
-        if lower_name in {"requirements.txt", "requirements-dev.txt", "pipfile", "pipfile.lock", "pyproject.toml"}:
+        if lower_name in {
+            "requirements.txt",
+            "requirements-dev.txt",
+            "pipfile",
+            "pipfile.lock",
+            "pyproject.toml",
+        }:
             entrypoints = PYTHON_ENTRYPOINTS
         elif lower_name in {"go.mod", "go.sum", "go.work"}:
             entrypoints = GO_ENTRYPOINTS

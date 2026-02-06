@@ -4,6 +4,7 @@ Usage:
     user, org_id, membership = require_org_context(request, min_role="viewer")
     project = require_project_access(request, project_id, min_role="member")
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -15,9 +16,10 @@ from .auth import extract_token
 from .config import settings
 from .db import get_session
 from .errors import BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError
-from .models import OrgMembership, Organization, Project, User
+from .models import Organization, OrgMembership, Project, User
 from .rbac import ORG_ROLES, role_at_least
 from .services.auth_service import get_user_from_token
+
 
 def require_user(request: Request) -> User:
     if not settings.auth_enabled:
@@ -100,7 +102,9 @@ def _resolve_org_id(request: Request, user_id: int) -> int:
     raise BadRequestError("Укажите X-Org-ID")
 
 
-def require_org_context(request: Request, min_role: str = "viewer") -> tuple[User, int, OrgMembership]:
+def require_org_context(
+    request: Request, min_role: str = "viewer"
+) -> tuple[User, int, OrgMembership]:
     if min_role not in ORG_ROLES:
         raise BadRequestError("Некорректная роль доступа")
     if not settings.auth_enabled:

@@ -1,4 +1,4 @@
-#backend/app/services/auth_service.py
+# backend/app/services/auth_service.py
 from __future__ import annotations
 
 import base64
@@ -10,9 +10,9 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import select
 
 from ..config import settings
-from ..errors import BadRequestError, NotFoundError, UnauthorizedError
-from ..models import ApiKey, OrgMembership, Organization, User, UserSession
 from ..db import get_session
+from ..errors import BadRequestError, NotFoundError, UnauthorizedError
+from ..models import ApiKey, Organization, OrgMembership, User, UserSession
 
 
 def _hash_password(password: str, *, salt: bytes | None = None) -> str:

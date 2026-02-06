@@ -1,10 +1,9 @@
-#backend/app/api_map.py
+# backend/app/api_map.py
 from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 TOKEN_ANY1 = "{}"
 TOKEN_ANYM = "{*}"
@@ -229,14 +228,14 @@ def _eval_str_expr(node: ast.AST | None, consts: dict[str, str]) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.Str):
-        return node.s
+        return str(node.s)
     if isinstance(node, ast.Name):
         return consts.get(node.id)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        l = _eval_str_expr(node.left, consts)
-        r = _eval_str_expr(node.right, consts)
-        if l is not None and r is not None:
-            return l + r
+        left_value = _eval_str_expr(node.left, consts)
+        right_value = _eval_str_expr(node.right, consts)
+        if left_value is not None and right_value is not None:
+            return left_value + right_value
         return None
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
@@ -244,13 +243,14 @@ def _eval_str_expr(node: ast.AST | None, consts: dict[str, str]) -> str | None:
             if isinstance(v, ast.Constant) and isinstance(v.value, str):
                 parts.append(v.value)
             elif isinstance(v, ast.Str):
-                parts.append(v.s)
+                parts.append(str(v.s))
             elif isinstance(v, ast.FormattedValue):
                 parts.append(TOKEN_ANY1)
             else:
                 parts.append(TOKEN_ANY1)
         return "".join(parts)
     return None
+
 
 def _expr_repr(node: ast.AST) -> str:
     unparse = getattr(ast, "unparse", None)
@@ -266,8 +266,10 @@ def _expr_repr(node: ast.AST) -> str:
         return f"{base}.{node.attr}"
     return "<expr>"
 
-def _collect_python_import_aliases(tree: ast.Module, consts: dict[str, str]) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
 
+def _collect_python_import_aliases(
+    tree: ast.Module, consts: dict[str, str]
+) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
     module_aliases: dict[str, str] = {}
     symbol_imports: dict[str, tuple[str, str]] = {}
 
@@ -295,6 +297,7 @@ def _collect_python_import_aliases(tree: ast.Module, consts: dict[str, str]) -> 
                 if mod_spec:
                     module_aliases[bound] = (mod_spec + "." + name).strip(".")
     return module_aliases, symbol_imports
+
 
 def _collect_module_const_strings(tree: ast.Module) -> dict[str, str]:
     consts: dict[str, str] = {}
@@ -369,10 +372,18 @@ def extract_fastapi_routes(source_path: str, text: str) -> list[dict]:
     for stmt in tree.body:
         target_name = None
         call = None
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+        ):
             target_name = stmt.targets[0].id
             call = stmt.value if isinstance(stmt.value, ast.Call) else None
-        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and isinstance(stmt.value, ast.Call):
+        elif (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and isinstance(stmt.value, ast.Call)
+        ):
             target_name = stmt.target.id
             call = stmt.value
         if not target_name or not isinstance(call, ast.Call):
@@ -395,7 +406,14 @@ def extract_fastapi_routes(source_path: str, text: str) -> list[dict]:
 
     routes: list[dict] = []
 
-    def emit(methods: list[str], full_path: str, router_prefix: str, handler: str, lineno: int, decorator: str) -> None:
+    def emit(
+        methods: list[str],
+        full_path: str,
+        router_prefix: str,
+        handler: str,
+        lineno: int,
+        decorator: str,
+    ) -> None:
         for m in methods:
             mm = (m or "").strip().upper()
             if not mm:
@@ -479,6 +497,7 @@ def extract_fastapi_routes(source_path: str, text: str) -> list[dict]:
 
     return routes
 
+
 def extract_fastapi_includes(source_path: str, text: str) -> list[dict]:
     try:
         tree = ast.parse(text)
@@ -496,10 +515,18 @@ def extract_fastapi_includes(source_path: str, text: str) -> list[dict]:
     for stmt in tree.body:
         target_name = None
         call = None
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+        ):
             target_name = stmt.targets[0].id
             call = stmt.value if isinstance(stmt.value, ast.Call) else None
-        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and isinstance(stmt.value, ast.Call):
+        elif (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and isinstance(stmt.value, ast.Call)
+        ):
             target_name = stmt.target.id
             call = stmt.value
         if not target_name or not isinstance(call, ast.Call):
@@ -555,7 +582,9 @@ def extract_fastapi_includes(source_path: str, text: str) -> list[dict]:
                     elif nm in module_aliases:
                         child_module_spec = module_aliases[nm]
                         child_instance = ""
-                elif isinstance(router_expr, ast.Attribute) and isinstance(router_expr.value, ast.Name):
+                elif isinstance(router_expr, ast.Attribute) and isinstance(
+                    router_expr.value, ast.Name
+                ):
                     base_alias = router_expr.value.id
                     attr = (router_expr.attr or "").strip()
                     if base_alias in module_aliases:
@@ -584,6 +613,7 @@ def extract_fastapi_includes(source_path: str, text: str) -> list[dict]:
 
     Visitor().visit(tree)
     return includes
+
 
 def extract_frontend_api_calls(source_path: str, text: str) -> list[dict]:
     # Best-effort extraction of HTTP calls in JS/TS sources.

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+
 from .base import ImportRef, SymbolDef
 from .tree_sitter_utils import iter_nodes, node_text, parse_tree
-
 
 _USE_SPLIT_RE = re.compile(r"\s+as\s+", re.IGNORECASE)
 _PHP_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
@@ -78,12 +78,12 @@ def _strip_use_prefix(raw: str) -> tuple[str, str]:
     lower = s.lower()
     if lower.startswith("use function "):
         kind = "function"
-        s = s[len("use function "):]
+        s = s[len("use function ") :]
     elif lower.startswith("use const "):
         kind = "const"
-        s = s[len("use const "):]
+        s = s[len("use const ") :]
     elif lower.startswith("use "):
-        s = s[len("use "):]
+        s = s[len("use ") :]
     return s.strip(), kind
 
 
@@ -114,9 +114,9 @@ def _parse_use_item(item: str, default_kind: str) -> tuple[str, str, str | None]
 
 
 def _split_use_items(spec: str, default_kind: str) -> list[tuple[str, str, str | None]]:
+    out: list[tuple[str, str, str | None]] = []
     if "{" not in spec or "}" not in spec:
         parts = [p.strip() for p in spec.split(",") if p.strip()]
-        out: list[tuple[str, str, str | None]] = []
         for part in parts:
             item, kind, alias = _parse_use_item(part, default_kind)
             if not item:
@@ -127,7 +127,6 @@ def _split_use_items(spec: str, default_kind: str) -> list[tuple[str, str, str |
     base = base.rstrip("\\").strip()
     inner = rest.split("}", 1)[0]
     parts = [p.strip() for p in inner.split(",") if p.strip()]
-    out: list[tuple[str, str, str | None]] = []
     for part in parts:
         item, kind, alias = _parse_use_item(part, default_kind)
         if not item:
@@ -225,18 +224,18 @@ class PhpIndexer:
             raw = match.group(0).strip()
             path_literal = match.group("path")
             if _is_plain_string_literal(path_literal):
-                spec = _strip_quotes(path_literal)
-                _add(raw, spec, "include")
+                spec_value = _strip_quotes(path_literal)
+                _add(raw, spec_value, "include")
             else:
                 _add(raw, "<dynamic>", "include_dynamic")
             include_starts.add(match.start())
         for match in _PHP_INCLUDE_CONCAT_RE.finditer(stripped):
             expr = match.group("expr")
-            spec = _parse_include_concat(expr)
-            if not spec:
+            spec_value = _parse_include_concat(expr)
+            if spec_value is None:
                 continue
             raw = match.group(0).strip()
-            _add(raw, spec, "include-conditional")
+            _add(raw, spec_value, "include-conditional")
             include_starts.add(match.start())
         for match in _PHP_INCLUDE_DYNAMIC_RE.finditer(stripped):
             if match.start() in include_starts:
@@ -337,7 +336,18 @@ class PhpIndexer:
         return out
 
     def naive_complexity(self, text: str) -> int:
-        keywords = ["if(", "if (", "for(", "for (", "while(", "while (", "&&", "||", "catch", "case "]
+        keywords = [
+            "if(",
+            "if (",
+            "for(",
+            "for (",
+            "while(",
+            "while (",
+            "&&",
+            "||",
+            "catch",
+            "case ",
+        ]
         c = 1
         low = text.lower()
         for k in keywords:

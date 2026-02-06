@@ -68,8 +68,11 @@ def _validate_tool_result(name: str, result: Any) -> dict:
     return result
 
 
-def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int) -> dict:
+def _dispatch_tool(
+    project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int
+) -> dict:
     from . import tools
+
     package_module = sys.modules.get(__package__)
 
     def _resolve_tool_func(attr: str) -> Callable[..., dict]:
@@ -97,11 +100,15 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
     if not plan_ready:
         return _validate_tool_result(
             name,
-            _tool_error("policy_violation", "Перед использованием инструментов нужно вызвать plan_retrieval."),
+            _tool_error(
+                "policy_violation",
+                "Перед использованием инструментов нужно вызвать plan_retrieval.",
+            ),
         )
     if name == "get_file":
         allowed = any(
-            entry.get("name") in ("search_paths", "search_symbols", "search_text", "search_semantic")
+            entry.get("name")
+            in ("search_paths", "search_symbols", "search_text", "search_semantic")
             and entry.get("status") == "ok"
             for entry in meta.tool_trace
             if isinstance(entry, dict)
@@ -111,14 +118,18 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
                 name,
                 _tool_error(
                     "policy_violation",
-                    "Перед get_file нужно выполнить search_paths, search_symbols, search_text или search_semantic.",
+                    "Перед get_file нужно выполнить search_paths, search_symbols, search_text "
+                    "или search_semantic.",
                 ),
             )
         tool_fn = _resolve_tool_func("_tool_get_file")
-        return _validate_tool_result(name, tool_fn(project_id, root, meta, args, max_file_chars=max_file_chars))
+        return _validate_tool_result(
+            name, tool_fn(project_id, root, meta, args, max_file_chars=max_file_chars)
+        )
     if name == "get_file_lines":
         allowed = any(
-            entry.get("name") in ("search_paths", "search_symbols", "search_text", "search_semantic")
+            entry.get("name")
+            in ("search_paths", "search_symbols", "search_text", "search_semantic")
             and entry.get("status") == "ok"
             for entry in meta.tool_trace
             if isinstance(entry, dict)
@@ -128,11 +139,14 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
                 name,
                 _tool_error(
                     "policy_violation",
-                    "Перед get_file_lines нужно выполнить search_paths, search_symbols, search_text или search_semantic.",
+                    "Перед get_file_lines нужно выполнить search_paths, search_symbols, "
+                    "search_text или search_semantic.",
                 ),
             )
         tool_fn = _resolve_tool_func("_tool_get_file_lines")
-        return _validate_tool_result(name, tool_fn(project_id, root, meta, args, max_file_chars=max_file_chars))
+        return _validate_tool_result(
+            name, tool_fn(project_id, root, meta, args, max_file_chars=max_file_chars)
+        )
     if name == "get_contract":
         tool_fn = _resolve_tool_func("_tool_get_contract")
         return _validate_tool_result(name, tool_fn(project_id, root, meta, args))
@@ -162,10 +176,14 @@ def _dispatch_tool(project_id: int, root: Path, meta: AgenticMeta, name: str, ar
         return _validate_tool_result(name, tool_fn(project_id, root, args))
     if name == "search_text":
         tool_fn = _resolve_tool_func("_tool_search_text")
-        return _validate_tool_result(name, tool_fn(project_id, root, args, max_file_chars=max_file_chars))
+        return _validate_tool_result(
+            name, tool_fn(project_id, root, args, max_file_chars=max_file_chars)
+        )
     if name == "search_semantic":
         tool_fn = _resolve_tool_func("_tool_search_semantic")
-        return _validate_tool_result(name, tool_fn(project_id, root, args, max_file_chars=max_file_chars))
+        return _validate_tool_result(
+            name, tool_fn(project_id, root, args, max_file_chars=max_file_chars)
+        )
     if name == "search_routes":
         tool_fn = _resolve_tool_func("_tool_search_routes")
         return _validate_tool_result(name, tool_fn(project_id, args))

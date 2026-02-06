@@ -42,15 +42,27 @@ def _run_self_check(
     }
     if supports_temperature(model):
         kwargs["temperature"] = 0.0
-    if isinstance(settings.openai_prompt_cache_key, str) and settings.openai_prompt_cache_key.strip():
+    if (
+        isinstance(settings.openai_prompt_cache_key, str)
+        and settings.openai_prompt_cache_key.strip()
+    ):
         kwargs["prompt_cache_key"] = settings.openai_prompt_cache_key.strip()
-        if isinstance(settings.openai_prompt_cache_retention, str) and settings.openai_prompt_cache_retention.strip():
+        if (
+            isinstance(settings.openai_prompt_cache_retention, str)
+            and settings.openai_prompt_cache_retention.strip()
+        ):
             kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
     try:
         resp = client.responses.create(**kwargs)
     except TypeError as e:
         msg = str(e)
-        for k in ("prompt_cache_key", "prompt_cache_retention", "store", "temperature", "parallel_tool_calls"):
+        for k in (
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "store",
+            "temperature",
+            "parallel_tool_calls",
+        ):
             if k in msg:
                 kwargs.pop(k, None)
         resp = client.responses.create(**kwargs)

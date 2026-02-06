@@ -1,9 +1,10 @@
-#backend/app/storage.py
+# backend/app/storage.py
 """Storage abstraction for large artifacts (e.g., patch blobs).
 
 Usage: call store_patch_blob() for large payloads, then read_patch_blob()
 or get_patch_download_url() when returning the artifact to clients.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

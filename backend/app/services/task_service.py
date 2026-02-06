@@ -1,4 +1,4 @@
-#backend/app/services/task_service.py
+# backend/app/services/task_service.py
 from __future__ import annotations
 
 import json
@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks
-from sqlmodel import delete, select
 from sqlalchemy import func
+from sqlmodel import delete, select
 from unidiff import PatchSet
 
 from ..config import settings
 from ..context_pack import pack_context
 from ..contracts import get_or_build_contract
+from ..db import get_session
 from ..errors import (
     BadRequestError,
     ExternalServiceError,
@@ -23,18 +24,17 @@ from ..errors import (
     ServerError,
 )
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
-from ..llm.orchestrator import analyze, evolve, fix, triage, plan_task
-from ..llm.agentic import analyze_agentic, evolve_agentic, fix_agentic, AgenticMeta
-from ..llm.policy import ProfileName, ProfileParams, resolve_profile, DEFAULT_POLICY
+from ..llm.agentic import AgenticMeta, analyze_agentic, evolve_agentic, fix_agentic
+from ..llm.orchestrator import analyze, evolve, fix, plan_task, triage
+from ..llm.policy import DEFAULT_POLICY, ProfileName, ProfileParams, resolve_profile
+from ..logging import get_logger
 from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract, TaskJob
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
-from ..storage import StorageError, get_patch_download_url, read_patch_blob, store_patch_blob
 from ..scan import scan_files
-from ..utils import normalize_project_root, project_lock, resolve_under_root
-from ..db import get_session
-from ..logging import get_logger
 from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from ..services.usage_service import LLM_REQUESTS_KIND, check_and_increment
+from ..storage import StorageError, get_patch_download_url, read_patch_blob, store_patch_blob
+from ..utils import normalize_project_root, project_lock, resolve_under_root
 from .project_service import get_project, scan_with_background
 from .task_queue import TaskState, task_queue
 
@@ -60,6 +60,7 @@ PLAN_TZ_EMPTY = {
     "open_questions": [],
     "deliverables": [],
 }
+
 
 @dataclass
 class TaskRequest:
@@ -89,12 +90,14 @@ class TaskRequest:
     agentic_temperature: float | None = None
     agentic_reasoning_effort: str | None = None
 
+
 def _clamp_int(value: int | None, default: int, lo: int, hi: int) -> int:
     try:
         v = int(value) if value is not None else int(default)
     except Exception:
         v = int(default)
     return max(lo, min(hi, v))
+
 
 def _clamp_float(value: float | None, default: float, lo: float, hi: float) -> float:
     try:
@@ -103,7 +106,9 @@ def _clamp_float(value: float | None, default: float, lo: float, hi: float) -> f
         v = float(default)
     return max(lo, min(hi, v))
 
+
 REASONING_EFFORT_LEVELS = ("low", "medium", "high")
+
 
 def _normalize_reasoning_effort(value: str | None, default: str) -> str:
     if isinstance(value, str):
@@ -111,6 +116,7 @@ def _normalize_reasoning_effort(value: str | None, default: str) -> str:
         if val in REASONING_EFFORT_LEVELS:
             return val
     return default
+
 
 def _bump_reasoning_effort(base: str, steps: int) -> str:
     try:
@@ -120,6 +126,7 @@ def _bump_reasoning_effort(base: str, steps: int) -> str:
     idx = max(0, min(len(REASONING_EFFORT_LEVELS) - 1, idx + steps))
     return REASONING_EFFORT_LEVELS[idx]
 
+
 def _scale_reasoning_effort(base: str, complexity_coeff: float) -> str:
     steps = 0
     if complexity_coeff >= 1.6:
@@ -127,6 +134,7 @@ def _scale_reasoning_effort(base: str, complexity_coeff: float) -> str:
     elif complexity_coeff >= 1.3:
         steps = 1
     return _bump_reasoning_effort(base, steps)
+
 
 def _scale_temperature(base_temp: float, complexity_coeff: float) -> float:
     if base_temp <= 0:
@@ -140,6 +148,7 @@ def _scale_temperature(base_temp: float, complexity_coeff: float) -> float:
         delta = 0.05
     return base_temp + delta
 
+
 SELF_CHECK_RETRY_MULTIPLIERS = {
     "max_calls": 1.5,
     "max_total_tool_output_chars": 1.5,
@@ -147,6 +156,7 @@ SELF_CHECK_RETRY_MULTIPLIERS = {
 }
 SELF_CHECK_RETRY_TEMP_DELTA = 0.05
 SELF_CHECK_RETRY_REASONING_STEPS = 1
+
 
 def _store_patch_blob(patch_text: str) -> dict:
     meta = store_patch_blob(patch_text)
@@ -207,10 +217,7 @@ def _apply_patch_and_record(
 
             if blocked_paths:
                 applied = {
-                    "error": (
-                        "Patch затрагивает файлы вне контекста: "
-                        + ", ".join(blocked_paths)
-                    ),
+                    "error": ("Patch затрагивает файлы вне контекста: " + ", ".join(blocked_paths)),
                     "blocked_paths": blocked_paths,
                     "blocked_reason": "out_of_context",
                 }
@@ -674,9 +681,7 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
     )
     with get_session() as session:
         nodes_row = session.exec(
-            select(func.count())
-            .select_from(FileNode)
-            .where(FileNode.project_id == project_id)
+            select(func.count()).select_from(FileNode).where(FileNode.project_id == project_id)
         ).one()
     project_nodes = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
     project_norm = min(1.0, project_nodes / 1_000.0)
@@ -955,18 +960,29 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
 
             if agentic_meta is not None and agentic_meta.self_check_missing_context:
                 self_check_retry = True
-                self_check_retry_missing_context = list(agentic_meta.self_check_missing_context or [])
+                self_check_retry_missing_context = list(
+                    agentic_meta.self_check_missing_context or []
+                )
                 self_check_retry_budget = dict(SELF_CHECK_RETRY_MULTIPLIERS)
                 agentic_max_calls = min(
                     int(round(agentic_max_calls * SELF_CHECK_RETRY_MULTIPLIERS["max_calls"])),
                     srv_calls,
                 )
                 agentic_max_file_chars = min(
-                    int(round(agentic_max_file_chars * SELF_CHECK_RETRY_MULTIPLIERS["max_file_chars"])),
+                    int(
+                        round(
+                            agentic_max_file_chars * SELF_CHECK_RETRY_MULTIPLIERS["max_file_chars"]
+                        )
+                    ),
                     srv_file,
                 )
                 agentic_max_total_tool_output_chars = min(
-                    int(round(agentic_max_total_tool_output_chars * SELF_CHECK_RETRY_MULTIPLIERS["max_total_tool_output_chars"])),
+                    int(
+                        round(
+                            agentic_max_total_tool_output_chars
+                            * SELF_CHECK_RETRY_MULTIPLIERS["max_total_tool_output_chars"]
+                        )
+                    ),
                     srv_total,
                 )
                 agentic_temperature = _clamp_float(
@@ -984,8 +1000,12 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 retrieval_settings["agentic"]["budget_reason"] = retry_budget_reason
                 retrieval_settings["agentic"]["self_check_retry"] = True
                 retrieval_settings["agentic"]["self_check_retry_reason"] = "missing_context"
-                retrieval_settings["agentic"]["self_check_retry_missing_context"] = self_check_retry_missing_context
-                retrieval_settings["agentic"]["self_check_retry_multiplier"] = self_check_retry_budget
+                retrieval_settings["agentic"]["self_check_retry_missing_context"] = (
+                    self_check_retry_missing_context
+                )
+                retrieval_settings["agentic"]["self_check_retry_multiplier"] = (
+                    self_check_retry_budget
+                )
                 try:
                     if mode == "analyze":
                         result, agentic_meta = analyze_agentic(
@@ -1054,14 +1074,22 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 # Files read via get_contract/get_symbol are whitelisted for patching.
                 allowed_patch_paths = set(agentic_meta.full_file_paths) | {target}
                 try:
-                    if isinstance(retrieval_settings, dict) and isinstance(retrieval_settings.get("agentic"), dict):
+                    if isinstance(retrieval_settings, dict) and isinstance(
+                        retrieval_settings.get("agentic"), dict
+                    ):
                         retrieval_settings["agentic"]["max_calls"] = agentic_max_calls
                         retrieval_settings["agentic"]["max_file_chars"] = agentic_max_file_chars
-                        retrieval_settings["agentic"]["max_total_tool_output_chars"] = agentic_max_total_tool_output_chars
+                        retrieval_settings["agentic"]["max_total_tool_output_chars"] = (
+                            agentic_max_total_tool_output_chars
+                        )
                         retrieval_settings["agentic"]["temperature"] = agentic_temperature
                         retrieval_settings["agentic"]["reasoning_effort"] = agentic_reasoning_effort
-                        retrieval_settings["agentic"]["tool_calls_used"] = int(agentic_meta.tool_calls)
-                        retrieval_settings["agentic"]["tool_output_chars_used"] = int(agentic_meta.total_tool_output_chars)
+                        retrieval_settings["agentic"]["tool_calls_used"] = int(
+                            agentic_meta.tool_calls
+                        )
+                        retrieval_settings["agentic"]["tool_output_chars_used"] = int(
+                            agentic_meta.total_tool_output_chars
+                        )
                         retrieval_settings["agentic"]["cache_hits"] = int(
                             getattr(agentic_meta, "cache_hits", 0)
                         )
@@ -1099,10 +1127,12 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             )
 
             graph_raw = packed.graph if isinstance(packed.graph, dict) else {}
-        
+
             included_paths = {
-                p for p in (
-                    f.get("path") for f in packed.files
+                p
+                for p in (
+                    f.get("path")
+                    for f in packed.files
                     if isinstance(f, dict) and isinstance(f.get("path"), str)
                 )
                 if isinstance(p, str) and p
@@ -1346,14 +1376,12 @@ def list_runs(project_id: int, org_id: int, limit: int = 50) -> list[dict]:
     if limit < 1 or limit > 200:
         raise BadRequestError("limit должен быть в диапазоне 1..200")
     with get_session() as session:
-        runs = (
-            session.exec(
-                select(AnalysisRun)
-                .where(AnalysisRun.project_id == project_id, AnalysisRun.org_id == org_id)
-                .order_by(AnalysisRun.id.desc())
-                .limit(limit)
-            ).all()
-        )
+        runs = session.exec(
+            select(AnalysisRun)
+            .where(AnalysisRun.project_id == project_id, AnalysisRun.org_id == org_id)
+            .order_by(AnalysisRun.id.desc())
+            .limit(limit)
+        ).all()
     return [
         {
             "id": run.id,
