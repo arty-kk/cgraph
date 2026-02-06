@@ -188,28 +188,28 @@ def delete_patch_blob(meta: dict | None) -> None:
 def delete_patch_blob_by_sha(sha: str) -> None:
     if not isinstance(sha, str) or not sha:
         return
-    backend = _storage_backend()
-    if backend == "s3":
-        bucket = settings.s3_bucket
-        if not bucket:
-            return
-        key = _s3_patch_key(sha)
-        try:
-            _s3_client().delete_object(Bucket=bucket, Key=key)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to delete S3 patch blob", extra={"reason": str(exc)})
-        return
 
     fp = _local_patch_path(sha)
     base = Path(settings.db_dir).resolve()
     if base not in fp.parents and fp != base:
         logger.warning("Refusing to delete patch blob outside db_dir", extra={"sha": sha})
         return
-    if fp.exists() and fp.is_file():
-        try:
-            fp.unlink()
-        except Exception as error:  # noqa: BLE001
-            logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
+    try:
+        fp.unlink(missing_ok=True)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
+
+    backend = _storage_backend()
+    if backend != "s3":
+        return
+    bucket = settings.s3_bucket
+    if not bucket:
+        return
+    key = _s3_patch_key(sha)
+    try:
+        _s3_client().delete_object(Bucket=bucket, Key=key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to delete S3 patch blob", extra={"reason": str(exc)})
 
 
 def get_patch_download_url(meta: dict) -> str | None:
