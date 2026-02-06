@@ -4,6 +4,8 @@ from __future__ import annotations
 import ast
 from typing import Any
 
+from .parsing_utils import extract_brace_block
+
 
 def _line_offsets(lines: list[str]) -> list[int]:
     off = [0]
@@ -49,19 +51,6 @@ def _infer_element_indent(lines: list[str], start_line: int, end_line: int, clos
             if ind:
                 return ind
     return close_indent + "    "
-
-
-def _find_close_brace_pos(text: str, start_abs: int, end_abs: int) -> int:
-    # end_abs is expected to be right after dict literal; we want index of '}'
-    i = max(0, min(len(text), end_abs - 1))
-    if 0 <= i < len(text) and text[i] == "}":
-        return i
-    # search backwards in the slice (best-effort)
-    sub = text[start_abs:end_abs]
-    j = sub.rfind("}")
-    if j >= 0:
-        return start_abs + j
-    return max(0, min(len(text), end_abs - 1))
 
 
 def py_add_keys_to_function_return_dicts(
@@ -121,12 +110,21 @@ def py_add_keys_to_function_return_dicts(
 
                 start_abs = _abs_pos(offsets, start_ln, start_col)
                 end_abs = _abs_pos(offsets, end_ln, end_col)
-                close_abs = _find_close_brace_pos(text, start_abs, end_abs)
+                brace_pos = text.find("{", start_abs, end_abs)
+                if brace_pos < 0:
+                    warnings.append("dict_missing_brace_start")
+                    return
+                blk = extract_brace_block(text, brace_pos)
+                if not blk:
+                    warnings.append("dict_missing_brace_end")
+                    return
+                _block_start, block_end = blk
+                close_abs = block_end - 1
 
                 # single-line vs multi-line
                 if int(start_ln) == int(end_ln):
                     # inline insert before }
-                    inner = text[start_abs:close_abs]
+                    inner = text[brace_pos:close_abs]
                     inner_has_items = ":" in inner
                     parts = []
                     for k in missing:

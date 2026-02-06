@@ -3,6 +3,8 @@ import difflib
 import re
 from typing import Any
 
+from .parsing_utils import extract_brace_block
+
 
 def unified_diff(rel_path: str, old_text: str, new_text: str) -> str:
     if old_text == new_text:
@@ -22,40 +24,6 @@ _TYPE_START_RE = re.compile(
 _TS_FIELD_RE = re.compile(
     r"(?m)^\s*(?P<name>[A-Za-z_$][\w$]*)\s*(?P<opt>\?)?\s*:\s*(?P<typ>[^;,\n]+)"
 )
-
-
-def _extract_brace_block(text: str, brace_pos: int) -> tuple[int, int] | None:
-    # returns (start, end) indices of '{...}' inclusive braces
-    s = text
-    if brace_pos < 0 or brace_pos >= len(s) or s[brace_pos] != "{":
-        return None
-    i = brace_pos
-    depth = 0
-    in_str: str | None = None
-    esc = False
-    while i < len(s):
-        ch = s[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == in_str:
-                in_str = None
-            i += 1
-            continue
-        if ch in ("'", '"', "`"):
-            in_str = ch
-            i += 1
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return (brace_pos, i + 1)
-        i += 1
-    return None
 
 
 def _infer_indent(block: str) -> str:
@@ -117,7 +85,7 @@ def ts_add_fields_to_typedef(
     brace_pos = text.find("{", m_target.end() - 1)
     if brace_pos < 0:
         return (text, False, "brace_not_found")
-    blk = _extract_brace_block(text, brace_pos)
+    blk = extract_brace_block(text, brace_pos)
     if not blk:
         return (text, False, "brace_block_not_found")
     s0, e0 = blk
@@ -197,7 +165,7 @@ def _find_function_block(text: str, fn_name: str) -> tuple[int, int, int, int] |
     brace_pos = text.find("{", m.end() - 1)
     if brace_pos < 0:
         return None
-    blk = _extract_brace_block(text, brace_pos)
+    blk = extract_brace_block(text, brace_pos)
     if not blk:
         return None
     b0, b1 = blk
@@ -375,7 +343,7 @@ def ts_patch_wrapper_function(
     brace_pos = new_text.find("{", _ps1b)
     if brace_pos < 0:
         return (new_text, True, ["brace_not_found"])
-    blk = _extract_brace_block(new_text, brace_pos)
+    blk = extract_brace_block(new_text, brace_pos)
     if not blk:
         return (new_text, True, ["brace_block_not_found"])
     b0, b1 = blk

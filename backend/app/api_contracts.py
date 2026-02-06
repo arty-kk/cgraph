@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from .api_scaffold import parse_backend_path_params
+from .parsing_utils import extract_brace_block
 
 _IGNORED_PARAM_NAMES = {"request", "background_tasks", "response", "s", "session"}
 
@@ -638,41 +639,9 @@ def extract_frontend_call_meta_rows(
     return out
 
 
-_TYPE_START_RE = re.compile(r"(?m)^\s*export\s+(type|interface)\s+([A-Za-z_$][\w$]*)\s*(?:=)?\s*\{")
-
-
-def _extract_brace_block(text: str, brace_pos: int) -> tuple[str, int] | None:
-    # returns (block_content_including_braces, end_pos)
-    s = text
-    if brace_pos < 0 or brace_pos >= len(s) or s[brace_pos] != "{":
-        return None
-    i = brace_pos
-    depth = 0
-    in_str: str | None = None
-    esc = False
-    while i < len(s):
-        ch = s[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == in_str:
-                in_str = None
-            i += 1
-            continue
-        if ch in ("'", '"', "`"):
-            in_str = ch
-            i += 1
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return (s[brace_pos : i + 1], i + 1)
-        i += 1
-    return None
+_TYPE_START_RE = re.compile(
+    r"(?m)^\s*export\s+(type|interface)\s+([A-Za-z_$][\w$]*)\s*(?:=)?\s*\{"
+)
 
 
 def extract_ts_type_defs(project_id: int, source_path: str, text: str) -> list[dict]:
@@ -683,10 +652,11 @@ def extract_ts_type_defs(project_id: int, source_path: str, text: str) -> list[d
         brace_pos = text.find("{", m.end() - 1)
         if brace_pos < 0:
             continue
-        blk = _extract_brace_block(text, brace_pos)
+        blk = extract_brace_block(text, brace_pos)
         if not blk:
             continue
-        block_text, _end = blk
+        start, end = blk
+        block_text = text[start:end]
         fields: list[dict] = []
         for fm in _TS_FIELD_RE.finditer(block_text):
             fn = (fm.group("name") or "").strip()
