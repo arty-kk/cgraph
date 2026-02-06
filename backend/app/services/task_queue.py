@@ -30,8 +30,7 @@ class TaskState:
 
 class TaskQueue:
     def submit_scan(self, project_id: int, org_id: int) -> str:
-        payload = {"project_id": project_id}
-        idempotency_key = _idempotency_key("scan", org_id, payload)
+        idempotency_key = get_scan_idempotency_key(org_id, project_id)
         existing = _find_existing_job_id(org_id, idempotency_key)
         if existing:
             return existing
@@ -265,3 +264,7 @@ def _idempotency_key(kind: str, org_id: int, payload: dict) -> str:
         separators=(",", ":"),
     )
     return sha256_text(raw)
+
+
+def get_scan_idempotency_key(org_id: int, project_id: int) -> str:
+    return _idempotency_key("scan", org_id, {"project_id": project_id})
