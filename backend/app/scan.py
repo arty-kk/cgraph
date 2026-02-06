@@ -12,7 +12,6 @@ from typing import Iterable, Tuple
 from sqlalchemy import bindparam, or_
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
 from sqlmodel import delete, select
 
@@ -927,10 +926,6 @@ def scan_files(
                 for e in edge_map.values()
             ]
             stmt_e = pg_insert(FileEdge).values(edge_rows)
-            stmt_e = stmt_e.on_conflict_do_nothing(
-                index_elements=["project_id", "src_path", "dst_path", "kind"]
-            )
-            stmt_e = sqlite_insert(FileEdge).values(edge_rows)
             stmt_e = stmt_e.on_conflict_do_nothing(
                 index_elements=["project_id", "src_path", "dst_path", "kind"]
             )
