@@ -430,9 +430,38 @@ def scan_files(
                     raise
 
     JS_TS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
+    max_file_bytes = int(settings.snapshot_max_file_bytes)
 
     for rel in present:
         p = project_root / rel
+        if precomputed_stats and rel in precomputed_stats:
+            stat_mtime, stat_size = precomputed_stats[rel]
+        else:
+            try:
+                st = p.stat()
+                stat_mtime, stat_size = st.st_mtime, st.st_size
+            except OSError:
+                stat_mtime, stat_size = 0.0, 0
+        oversized = max_file_bytes > 0 and int(stat_size) > max_file_bytes
+        if oversized:
+            idx = pick_indexer(rel)
+            lang = idx.language()
+            file_hash = sha256_text(f"oversized:{stat_size}:{stat_mtime}")
+            node_rows.append(
+                {
+                    "project_id": project_id,
+                    "path": rel,
+                    "language": lang,
+                    "loc": 0,
+                    "complexity": 0,
+                    "file_hash": file_hash,
+                    "file_mtime": float(stat_mtime),
+                    "file_size": int(stat_size),
+                }
+            )
+            if embeddings_enabled and embedding_hashes.get(rel):
+                embedding_paths_to_delete.append(rel)
+            continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
@@ -566,14 +595,6 @@ def scan_files(
             except Exception:
                 cached_imports = []
             _store_cached_parse(lang, file_hash, file_suffix, complexity, cached_imports)
-        if precomputed_stats and rel in precomputed_stats:
-            stat_mtime, stat_size = precomputed_stats[rel]
-        else:
-            try:
-                st = p.stat()
-                stat_mtime, stat_size = st.st_mtime, st.st_size
-            except OSError:
-                stat_mtime, stat_size = 0.0, 0
         node_rows.append(
             {
                 "project_id": project_id,
