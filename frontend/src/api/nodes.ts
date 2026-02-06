@@ -30,8 +30,16 @@ export async function createFile(projectId: number, path: string, content?: stri
   return r.data
 }
 
-export async function renameFile(projectId: number, path: string, newPath: string): Promise<FileSaveResult> {
-  const r = await api.post(`/api/nodes/${projectId}/${encodePath(path)}/rename`, { new_path: newPath })
+export async function renameFile(
+  projectId: number,
+  path: string,
+  newPath: string,
+  createDirs?: boolean,
+): Promise<FileSaveResult> {
+  const r = await api.post(`/api/nodes/${projectId}/${encodePath(path)}/rename`, {
+    new_path: newPath,
+    create_dirs: createDirs,
+  })
   return r.data
 }
 
