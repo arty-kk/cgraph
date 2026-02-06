@@ -49,7 +49,7 @@ from ..snapshots import (
     snapshot_meta_from_dict,
     store_snapshot_blob,
 )
-from ..utils import normalize_project_root, project_lock, resolve_under_root
+from ..utils import normalize_project_root, project_lock, release_project_lock, resolve_under_root
 from .task_queue import task_queue
 
 _scan_tasks: dict[int, str] = {}
@@ -210,6 +210,7 @@ def delete_project(project_id: int, org_id: int) -> None:
             session.exec(delete(RepoSnapshot).where(RepoSnapshot.project_id == project_id))
             session.exec(delete(Project).where(Project.id == project_id))
             session.commit()
+    release_project_lock(project_id)
     cache_invalidate_prefix([f"project:{project_id}"])
 
 

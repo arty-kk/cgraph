@@ -45,6 +45,13 @@ def project_lock(project_id: int) -> Iterator[None]:
         lock.release()
 
 
+def release_project_lock(project_id: int) -> None:
+    with _LOCK_GUARD:
+        lock = _PROJECT_LOCKS.get(project_id)
+        if lock and not lock.locked():
+            _PROJECT_LOCKS.pop(project_id, None)
+
+
 def _normalize_rel_path(rel_path: str, max_length: int | None = None) -> str:
     if not isinstance(rel_path, str) or not rel_path.strip():
         raise PathValidationError("Относительный путь не должен быть пустым")
