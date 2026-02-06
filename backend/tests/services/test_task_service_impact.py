@@ -1,7 +1,11 @@
 import sys
+import unittest
 from pathlib import Path
+from typing import Callable
 
-from sqlmodel import SQLModel, Session, create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlmodel import Session, SQLModel, select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
@@ -10,12 +14,22 @@ from app.models import FileEdge  # noqa: E402
 from app.services import task_service  # noqa: E402
 
 
-def test_impact_limits(monkeypatch) -> None:
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+def _ensure_postgres() -> tuple[Engine, Callable[[], Session]]:
+    try:
+        from app.db import engine, get_session  # noqa: E402
+    except ModuleNotFoundError:
+        raise unittest.SkipTest("Postgres dependencies are not available for impact tests")
+    try:
+        with get_session() as session:
+            session.exec(select(1)).first()
+    except SQLAlchemyError:
+        raise unittest.SkipTest("Postgres is not available for impact tests")
     SQLModel.metadata.create_all(engine)
+    return engine, get_session
 
-    def get_test_session() -> Session:
-        return Session(engine)
+
+def test_impact_limits(monkeypatch) -> None:
+    engine, get_test_session = _ensure_postgres()
 
     monkeypatch.setattr(db, "engine", engine)
     monkeypatch.setattr(db, "get_session", get_test_session)
@@ -36,11 +50,7 @@ def test_impact_limits(monkeypatch) -> None:
 
 
 def test_impact_no_edges_includes_target(monkeypatch) -> None:
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
-    SQLModel.metadata.create_all(engine)
-
-    def get_test_session() -> Session:
-        return Session(engine)
+    engine, get_test_session = _ensure_postgres()
 
     monkeypatch.setattr(db, "engine", engine)
     monkeypatch.setattr(db, "get_session", get_test_session)
