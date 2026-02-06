@@ -338,7 +338,10 @@ def _impact(
     from collections import deque
 
     visited: set[str] = set()
-    queue: deque[tuple[str, int]] = deque([(target, 0)])
+    queue: deque[tuple[str, int]] = deque()
+    if isinstance(target, str) and target:
+        visited.add(target)
+        queue.append((target, 0))
     SQLITE_IN_CHUNK = 400
     truncated = False
 
@@ -358,6 +361,7 @@ def _impact(
                 continue
 
             for chunk in _chunks(current_paths, SQLITE_IN_CHUNK):
+                hit_max_nodes = False
                 rows = session.exec(
                     select(FileEdge.src_path).where(
                         FileEdge.project_id == project_id,
@@ -375,14 +379,13 @@ def _impact(
                         continue
                     if max_nodes is not None and len(visited) >= max_nodes:
                         truncated = True
+                        hit_max_nodes = True
                         break
                     visited.add(src)
                     queue.append((src, current_depth + 1))
-                if max_nodes is not None and len(visited) >= max_nodes:
-                    truncated = True
+                if hit_max_nodes:
                     break
-            if max_nodes is not None and len(visited) >= max_nodes:
-                truncated = True
+            if hit_max_nodes:
                 break
     return sorted(visited), truncated
 

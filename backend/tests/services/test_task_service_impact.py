@@ -27,9 +27,26 @@ def test_impact_limits(monkeypatch) -> None:
         session.commit()
 
     impacted, truncated = task_service._impact(1, "C", max_nodes=1, max_depth=None)
-    assert impacted == ["B"]
+    assert impacted == ["C"]
     assert truncated is True
 
     impacted, truncated = task_service._impact(1, "C", max_nodes=None, max_depth=1)
-    assert impacted == ["B"]
+    assert impacted == ["B", "C"]
     assert truncated is True
+
+
+def test_impact_no_edges_includes_target(monkeypatch) -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+
+    def get_test_session() -> Session:
+        return Session(engine)
+
+    monkeypatch.setattr(db, "engine", engine)
+    monkeypatch.setattr(db, "get_session", get_test_session)
+    monkeypatch.setattr(task_service, "get_session", get_test_session)
+
+    impacted, truncated = task_service._impact(1, "file.py", max_nodes=None, max_depth=None)
+    assert impacted == ["file.py"]
+    assert len(impacted) == 1
+    assert truncated is False

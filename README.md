@@ -96,7 +96,7 @@ Backend поднимается на `http://localhost:8000` (эндпоинт з
 - Поиск: `GET /api/projects/{id}/search?q=...`.
 - Семантический поиск: `GET /api/projects/{id}/search/semantic?q=...&limit=20&prefix=...` (требуются включённые эмбеддинги и `OPENAI_API_KEY`).
 - Метаданные узла: `GET /api/nodes/{id}/{path}/node`; контракт файла: `GET /api/nodes/{id}/{path}/contract`.
-- Запуск LLM‑задачи: `POST /api/tasks/{id}/run` с `target_path`, `prompt`, `mode` (опционально), `profile` (опционально), `depth`, `dep_mode`, `apply_patch`, `agentic` и опциональными `agentic_*` (`max_calls`, `max_file_chars`, `max_total_tool_output_chars`, `temperature`, `reasoning_effort`). Для `mode=impact` доступны лимиты `impact_max_nodes` и `impact_max_depth`; в ответе добавляются поля `truncated`, `max_nodes`, `max_depth`.
+- Запуск LLM‑задачи: `POST /api/tasks/{id}/run` с `target_path`, `prompt`, `mode` (опционально), `profile` (опционально), `depth`, `dep_mode`, `apply_patch`, `agentic` и опциональными `agentic_*` (`max_calls`, `max_file_chars`, `max_total_tool_output_chars`, `temperature`, `reasoning_effort`). Для `mode=impact` доступны лимиты `impact_max_nodes` и `impact_max_depth`; в ответе добавляются поля `truncated`, `max_nodes`, `max_depth`, а список `impacted` включает `target_path`.
 - История запусков и патчи: `GET /api/tasks/{id}/runs`, `GET /api/tasks/{id}/runs/{run_id}`, `GET /api/tasks/{id}/runs/{run_id}/patch`.
 - Статус фоновой задачи: `GET /api/tasks/status/{task_id}`.
 
