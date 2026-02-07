@@ -9,9 +9,16 @@ from sqlmodel import select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from app.config import settings  # noqa: E402
 from app.db import get_session  # noqa: E402
+from app.errors import BadRequestError  # noqa: E402
+from app.infra.redis_client import get_redis_client  # noqa: E402
 from app.models import TaskJob  # noqa: E402
-from app.services.task_queue import get_scan_idempotency_key, task_queue  # noqa: E402
+from app.services.task_queue import (  # noqa: E402
+    _guard_inflight,
+    get_scan_idempotency_key,
+    task_queue,
+)
 
 
 class TestTaskQueueStatus(unittest.TestCase):
@@ -78,6 +85,44 @@ class TestTaskQueueStatus(unittest.TestCase):
                 )
             ).all()
         self.assertEqual(len(count), 1)
+
+    def test_inflight_guard_blocks_when_redis_state_expired(self) -> None:
+        try:
+            client = get_redis_client()
+            client.ping()
+        except Exception:
+            self.skipTest("Redis is not available for inflight guard test")
+        previous_limit = settings.task_queue_inflight_heavy_limit
+        settings.task_queue_inflight_heavy_limit = 1
+        inflight_key = "stubgraph:queue:heavy:inflight"
+        job_id = uuid4().hex
+        now = datetime.now(timezone.utc)
+        with get_session() as session:
+            job = TaskJob(
+                id=job_id,
+                org_id=1,
+                status="running",
+                queue="heavy",
+                result_json=None,
+                error=None,
+                created_at=now,
+                updated_at=now,
+                completed_at=None,
+            )
+            session.add(job)
+            session.commit()
+        client.delete(inflight_key)
+        try:
+            with self.assertRaises(BadRequestError):
+                _guard_inflight("heavy", uuid4().hex)
+        finally:
+            settings.task_queue_inflight_heavy_limit = previous_limit
+            client.delete(inflight_key)
+            with get_session() as session:
+                existing = session.get(TaskJob, job_id)
+                if existing:
+                    session.delete(existing)
+                    session.commit()
 
 
 if __name__ == "__main__":

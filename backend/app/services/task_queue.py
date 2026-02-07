@@ -182,32 +182,39 @@ def _guard_inflight(queue: str, job_id: str | None = None) -> None:
     try:
         client = get_redis_client()
         key = "stubgraph:queue:heavy:inflight"
-        ttl_seconds = 60 * 10
+        with get_session() as session:
+            active_rows = session.exec(
+                select(TaskJob.id).where(
+                    TaskJob.queue == "heavy",
+                    TaskJob.status.in_(("pending", "running")),
+                )
+            ).all()
+        active_ids: set[str] = set()
+        for row in active_rows:
+            if isinstance(row, str):
+                active_ids.add(row)
+            elif isinstance(row, (tuple, list)) and row and isinstance(row[0], str):
+                active_ids.add(row[0])
+        existing_ids = client.smembers(key)
+        zombies = set(existing_ids) - active_ids
+        missing = active_ids - set(existing_ids)
+        if zombies:
+            client.srem(key, *zombies)
+        if missing:
+            client.sadd(key, *missing)
         lua = """
         local set_key = KEYS[1]
-        local job_key = KEYS[2]
         local limit = tonumber(ARGV[1])
-        local ttl = tonumber(ARGV[2])
-        local job_id = ARGV[3]
+        local job_id = ARGV[2]
         local count = redis.call("SCARD", set_key)
         if count >= limit then
             return {0, count}
         end
         redis.call("SADD", set_key, job_id)
-        redis.call("SET", job_key, "1", "EX", ttl)
-        redis.call("EXPIRE", set_key, ttl)
         count = redis.call("SCARD", set_key)
         return {1, count}
         """
-        added, _count = client.eval(
-            lua,
-            2,
-            key,
-            f"{key}:job:{job_id}",
-            int(limit),
-            ttl_seconds,
-            job_id,
-        )
+        added, _count = client.eval(lua, 1, key, int(limit), job_id)
         if int(added) != 1:
             raise BadRequestError("Превышен лимит одновременных heavy задач")
     except RedisError as exc:
@@ -221,7 +228,6 @@ def _release_inflight(queue: str, job_id: str) -> None:
         client = get_redis_client()
         key = "stubgraph:queue:heavy:inflight"
         client.srem(key, job_id)
-        client.delete(f"{key}:job:{job_id}")
     except RedisError as exc:
         logger.warning("Failed to release inflight job", extra={"reason": str(exc)})
 

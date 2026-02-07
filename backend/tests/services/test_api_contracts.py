@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 from sqlmodel import select  # noqa: E402
 
+
 class TestApiContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -17,7 +18,9 @@ class TestApiContracts(unittest.TestCase):
             from app.models import OrgMembership, User  # noqa: E402
             from app.services.auth_service import bootstrap_user, create_session  # noqa: E402
         except ModuleNotFoundError:
-            raise unittest.SkipTest("Postgres dependencies are not available for API contract tests")
+            raise unittest.SkipTest(
+                "Postgres dependencies are not available for API contract tests"
+            )
         try:
             with get_session() as session:
                 session.exec(select(1)).first()
