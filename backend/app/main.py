@@ -59,7 +59,8 @@ async def auth_guard(request: Request, call_next):
                 status_code=401,
                 content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
             )
-        get_user_from_token(token)
+        user = get_user_from_token(token)
+        request.state.user = user
     return await call_next(request)
 
 
