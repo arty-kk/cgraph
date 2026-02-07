@@ -210,6 +210,12 @@ def update_file(
                     "Scan failed after update_file",
                     extra={"path": rel_norm, "operation": "update_file"},
                 )
+                rescan_task = scan_with_background(
+                    project_id,
+                    project.org_id,
+                    background=True,
+                    background_tasks=background_tasks,
+                )
                 rollback_ok = False
                 try:
                     abs_path.write_text(previous_content, encoding="utf-8")
@@ -226,14 +232,10 @@ def update_file(
                         "reindexed": False,
                         "rollback": "ok",
                         "partial": False,
+                        "rescan_task": rescan_task,
+                        "rescan_scheduled": True,
                         "error": str(error),
                     }
-                rescan_task = scan_with_background(
-                    project_id,
-                    project.org_id,
-                    background=True,
-                    background_tasks=background_tasks,
-                )
                 return {
                     "path": rel_norm,
                     "saved": True,
@@ -241,6 +243,7 @@ def update_file(
                     "rollback": "failed",
                     "partial": True,
                     "rescan_task": rescan_task,
+                    "rescan_scheduled": True,
                     "error": str(error),
                 }
     except ProjectLockTimeout as exc:
@@ -293,6 +296,12 @@ def create_file(
                     "Scan failed after create_file",
                     extra={"path": rel_norm, "operation": "create_file"},
                 )
+                rescan_task = scan_with_background(
+                    project_id,
+                    project.org_id,
+                    background=True,
+                    background_tasks=background_tasks,
+                )
                 rollback_ok = False
                 try:
                     if abs_path.exists():
@@ -310,14 +319,10 @@ def create_file(
                         "reindexed": False,
                         "rollback": "ok",
                         "partial": False,
+                        "rescan_task": rescan_task,
+                        "rescan_scheduled": True,
                         "error": str(error),
                     }
-                rescan_task = scan_with_background(
-                    project_id,
-                    project.org_id,
-                    background=True,
-                    background_tasks=background_tasks,
-                )
                 return {
                     "path": rel_norm,
                     "saved": True,
@@ -325,6 +330,7 @@ def create_file(
                     "rollback": "failed",
                     "partial": True,
                     "rescan_task": rescan_task,
+                    "rescan_scheduled": True,
                     "error": str(error),
                 }
     except ProjectLockTimeout as exc:
@@ -389,6 +395,12 @@ def rename_file(
                     "Scan failed after rename_file",
                     extra={"path": rel_norm, "operation": "rename_file"},
                 )
+                rescan_task = scan_with_background(
+                    project_id,
+                    project.org_id,
+                    background=True,
+                    background_tasks=background_tasks,
+                )
                 rollback_ok = False
                 try:
                     if new_abs.exists():
@@ -406,14 +418,10 @@ def rename_file(
                         "reindexed": False,
                         "rollback": "ok",
                         "partial": False,
+                        "rescan_task": rescan_task,
+                        "rescan_scheduled": True,
                         "error": str(error),
                     }
-                rescan_task = scan_with_background(
-                    project_id,
-                    project.org_id,
-                    background=True,
-                    background_tasks=background_tasks,
-                )
                 return {
                     "path": new_rel,
                     "saved": True,
@@ -421,6 +429,7 @@ def rename_file(
                     "rollback": "failed",
                     "partial": True,
                     "rescan_task": rescan_task,
+                    "rescan_scheduled": True,
                     "error": str(error),
                 }
     except ProjectLockTimeout as exc:
@@ -465,6 +474,12 @@ def delete_file(
                     "Scan failed after delete_file",
                     extra={"path": rel_norm, "operation": "delete_file"},
                 )
+                rescan_task = scan_with_background(
+                    project_id,
+                    project.org_id,
+                    background=True,
+                    background_tasks=background_tasks,
+                )
                 rollback_ok = False
                 try:
                     abs_path.write_text(previous_content, encoding="utf-8")
@@ -481,14 +496,10 @@ def delete_file(
                         "reindexed": False,
                         "rollback": "ok",
                         "partial": False,
+                        "rescan_task": rescan_task,
+                        "rescan_scheduled": True,
                         "error": str(error),
                     }
-                rescan_task = scan_with_background(
-                    project_id,
-                    project.org_id,
-                    background=True,
-                    background_tasks=background_tasks,
-                )
                 return {
                     "path": rel_norm,
                     "saved": True,
@@ -496,6 +507,7 @@ def delete_file(
                     "rollback": "failed",
                     "partial": True,
                     "rescan_task": rescan_task,
+                    "rescan_scheduled": True,
                     "error": str(error),
                 }
     except ProjectLockTimeout as exc:
