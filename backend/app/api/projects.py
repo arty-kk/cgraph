@@ -4,6 +4,8 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
 
+from ..config import settings
+from ..errors import BadRequestError
 from ..policy import require_org_context, require_project_access
 from ..services.docs_service import build_project_docs, get_latest_project_doc
 from ..services.project_service import (
@@ -78,7 +80,21 @@ async def create_project_from_snapshot(
     archive: UploadFile = File(...),
 ):
     archive_name = archive.filename or ""
-    data = await archive.read()
+    chunk_size = 1024 * 1024
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = await archive.read(chunk_size)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > settings.snapshot_max_bytes:
+            raise BadRequestError(
+                "Архив слишком большой",
+                context={"max_bytes": settings.snapshot_max_bytes, "size": total_bytes},
+            )
+        chunks.append(chunk)
+    data = b"".join(chunks)
     _, org_id, _ = require_org_context(request, min_role="member")
     project = create_project_from_snapshot_service(name, data, archive_name, org_id)
     return _project_response(project, snapshot_label=archive_name)
