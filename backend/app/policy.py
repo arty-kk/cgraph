@@ -31,6 +31,14 @@ def require_user(request: Request) -> User:
             is_active=True,
             created_at=datetime.now(timezone.utc),
         )
+    state_user = getattr(request.state, "user", None)
+    if state_user is not None:
+        if (
+            isinstance(state_user, User)
+            and state_user.id is not None
+            and isinstance(state_user.id, int)
+        ):
+            return state_user
     token = extract_token(request)
     if not token:
         raise UnauthorizedError("Требуется токен")
