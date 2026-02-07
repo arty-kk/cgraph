@@ -27,6 +27,4 @@ if last_error is not None:
     raise SystemExit(f"Database is not ready: {last_error}")
 PY
 
-alembic -c /app/alembic.ini upgrade head
-
 exec "$@"
