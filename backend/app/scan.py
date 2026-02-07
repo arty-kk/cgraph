@@ -10,7 +10,6 @@ from threading import Lock
 from typing import Iterable, Tuple
 
 from sqlalchemy import bindparam, or_
-from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import OperationalError
 from sqlmodel import delete, select
@@ -399,7 +398,6 @@ def scan_files(
     node_rows: list[dict] = []
     edge_map: dict[tuple[str, str, str], FileEdge] = {}
     search_rows: list[dict] = []
-    fts_rows: list[dict] = []
     route_rows: list[dict] = []
     call_rows: list[dict] = []
     include_rows: list[dict] = []
@@ -569,17 +567,6 @@ def scan_files(
         search_rows.append(
             {"project_id": int(project_id), "path": rel, "content": text[:SEARCH_INDEX_MAX_CHARS]}
         )
-        try:
-            fts_rows.append(
-                {
-                    "project_id": int(project_id),
-                    "path": rel,
-                    "content": text[:SEARCH_INDEX_MAX_CHARS],
-                }
-            )
-        except Exception:
-            pass
-
         cached = _get_cached_parse(lang, file_hash, file_suffix)
         if cached:
             complexity, cached_imports = cached
@@ -797,14 +784,7 @@ def scan_files(
                     index_elements=["project_id", "path"],
                     set_={"content": stmt_text.excluded.content},
                 )
-            if fts_rows:
-                s.execute(
-                    sa_text(
-                        "INSERT INTO filetext_fts (project_id, path, content) "
-                        "VALUES (:project_id, :path, :content)"
-                    ),
-                    fts_rows,
-                )
+            if search_rows:
                 s.exec(stmt_text)
             if route_rows:
                 stmt_r = pg_insert(ApiRoute).values(route_rows)
