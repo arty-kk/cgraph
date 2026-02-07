@@ -5,6 +5,7 @@ import {
   createProjectFromRoot,
   createProjectFromSnapshot,
   deleteProject,
+  listOrgs,
   getContract,
   getGraph,
   getLocalGraph,
@@ -37,6 +38,7 @@ import {
   type NodeContract,
   type NodeInfo,
   type NodeSearchItem,
+  type Org,
   type SemanticSearchItem,
   type TextSearchMatch,
   type TextSearchResult,
@@ -46,6 +48,7 @@ import {
   type RunTaskResult,
   type ProjectFileItem,
   type ProjectDocs,
+  setSelectedOrgId,
 } from '../api'
 import { extractError, getAppErrorInfo, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '../lib/errors'
 import { clampInt } from '../lib/number'
@@ -205,6 +208,29 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
   const queryClient = useQueryClient()
 
+  const ORG_STORAGE_KEY = 'cs.org.id'
+
+  const orgsQuery = useQuery<Org[]>({
+    queryKey: ['orgs'],
+    queryFn: listOrgs,
+    initialData: [],
+  })
+
+  const [selectedOrgId, setSelectedOrgIdState] = useState<number | null>(null)
+  const prevOrgIdRef = useRef<number | null>(null)
+
+  const applyOrgSelection = useCallback((orgId: number | null) => {
+    setSelectedOrgId(orgId)
+    try {
+      if (orgId == null) {
+        localStorage.removeItem(ORG_STORAGE_KEY)
+      } else {
+        localStorage.setItem(ORG_STORAGE_KEY, String(orgId))
+      }
+    } catch {}
+    setSelectedOrgIdState(orgId)
+  }, [])
+
   const [activeProject, setActiveProject] = useState<Project | null>(null)
 
   const nodeSeqRef = useRef(0)
@@ -266,6 +292,36 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setTextSearchMeta(null)
     setTextSearchError(null)
   }, [textSearchError, textSearchMeta, textSearchQuery, textSearchResults.length])
+
+  const orgs = orgsQuery.data ?? []
+
+  useEffect(() => {
+    if (orgs.length === 0) {
+      if (selectedOrgId !== null) applyOrgSelection(null)
+      return
+    }
+
+    if (selectedOrgId !== null && orgs.some((org) => org.id === selectedOrgId)) return
+
+    let storedId: number | null = null
+    try {
+      const raw = localStorage.getItem(ORG_STORAGE_KEY)
+      const n = Number(raw)
+      if (Number.isFinite(n)) storedId = Math.trunc(n)
+    } catch {}
+
+    if (storedId !== null && orgs.some((org) => org.id === storedId)) {
+      applyOrgSelection(storedId)
+      return
+    }
+
+    if (orgs.length === 1) {
+      applyOrgSelection(orgs[0].id)
+      return
+    }
+
+    applyOrgSelection(null)
+  }, [applyOrgSelection, orgs, selectedOrgId])
 
   const selectedPathRef = useRef<string | null>(null)
   const prevActiveFilePathRef = useRef<string | null>(null)
@@ -761,14 +817,15 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [onClearSelection, selectedPath])
 
   const projectsQuery = useQuery<Project[]>({
-    queryKey: ['projects'],
+    queryKey: ['projects', selectedOrgId],
+    enabled: selectedOrgId !== null,
     queryFn: listProjects,
     initialData: [],
   })
 
   const runsQuery = useQuery<RunRecord[]>({
-    queryKey: ['runs', activeProject?.id],
-    enabled: !!activeProject,
+    queryKey: ['runs', selectedOrgId, activeProject?.id],
+    enabled: selectedOrgId !== null && !!activeProject,
     queryFn: async () => {
       if (!activeProject) return [] as RunRecord[]
       return listRuns(activeProject.id)
@@ -779,18 +836,18 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const graphQueryKey = useMemo(
     () => {
       const pid = activeProject?.id ?? null
-      if (!pid) return ['graph', null]
-      if (graphMode === 'local') return ['graph', pid, 'local', selectedPath ?? null, graphHops, graphLocalMax]
-      if (graphMode === 'limit') return ['graph', pid, 'limit', graphLimitN]
-      if (graphMode === 'full') return ['graph', pid, 'full']
-      return ['graph', pid, graphMode]
+      if (!pid) return ['graph', selectedOrgId, null]
+      if (graphMode === 'local') return ['graph', selectedOrgId, pid, 'local', selectedPath ?? null, graphHops, graphLocalMax]
+      if (graphMode === 'limit') return ['graph', selectedOrgId, pid, 'limit', graphLimitN]
+      if (graphMode === 'full') return ['graph', selectedOrgId, pid, 'full']
+      return ['graph', selectedOrgId, pid, graphMode]
     },
-    [activeProject?.id, graphMode, graphHops, graphLocalMax, graphLimitN, selectedPath],
+    [activeProject?.id, graphMode, graphHops, graphLocalMax, graphLimitN, selectedOrgId, selectedPath],
   )
 
   const graphQuery = useQuery<GraphData | null>({
     queryKey: graphQueryKey,
-    enabled: !!activeProject && (graphMode !== 'local' || !!selectedPath),
+    enabled: selectedOrgId !== null && !!activeProject && (graphMode !== 'local' || !!selectedPath),
     queryFn: async (): Promise<GraphData | null> => {
       if (!activeProject) return null
       const projectId = activeProject.id
@@ -806,8 +863,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   })
 
   const nodeQuery = useQuery<{ info: NodeInfo | null; contract: NodeContract | null }>({
-    queryKey: ['node', activeProject?.id, selectedPath],
-    enabled: !!activeProject && !!selectedPath,
+    queryKey: ['node', selectedOrgId, activeProject?.id, selectedPath],
+    enabled: selectedOrgId !== null && !!activeProject && !!selectedPath,
     queryFn: async () => {
       if (!activeProject || !selectedPath) return { info: null, contract: null }
       const seq = ++nodeSeqRef.current
@@ -926,13 +983,34 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setPendingView(null)
   }, [activeProject?.id, persistWorkspace, setErrorMessage])
 
+  const onSelectOrg = useCallback((orgId: number | null) => {
+    if (orgId == null) {
+      applyOrgSelection(null)
+      return
+    }
+    const match = orgs.find((org) => org.id === orgId)
+    applyOrgSelection(match ? match.id : null)
+  }, [applyOrgSelection, orgs])
+
+  useEffect(() => {
+    if (prevOrgIdRef.current === selectedOrgId) return
+    prevOrgIdRef.current = selectedOrgId
+
+    clearActiveProject()
+    queryClient.invalidateQueries({ queryKey: ['projects', selectedOrgId] })
+    queryClient.invalidateQueries({ queryKey: ['runs'] })
+    queryClient.invalidateQueries({ queryKey: ['graph'] })
+    queryClient.invalidateQueries({ queryKey: ['node'] })
+    queryClient.invalidateQueries({ queryKey: ['files'] })
+  }, [clearActiveProject, queryClient, selectedOrgId])
+
   const projects = projectsQuery.data ?? []
   const runs = runsQuery.data ?? []
   const graph = graphQuery.data ?? null
 
   const filesQuery = useQuery<{ files: ProjectFileItem[]; meta: any }>({
-    queryKey: ['files', activeProject?.id],
-    enabled: !!activeProject,
+    queryKey: ['files', selectedOrgId, activeProject?.id],
+    enabled: selectedOrgId !== null && !!activeProject,
     queryFn: async () => {
       if (!activeProject) return { files: [], meta: { total: 0, returned: 0, truncated: false, limit: 0 } }
       return listProjectFiles(activeProject.id)
@@ -1151,9 +1229,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         }))
         notifyInfo('File saved')
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
         ])
         return true
       }
@@ -1163,7 +1241,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       updateFileEditorEntry(p, (current) => ({ ...current, saving: false }))
     }
     return false
-  }, [activeProject, fileEditorsByPath, notifyInfo, queryClient, updateFileEditorEntry])
+  }, [activeProject, fileEditorsByPath, notifyInfo, queryClient, selectedOrgId, updateFileEditorEntry])
 
   const saveFileEditor = useCallback(async (): Promise<boolean> => {
     if (!activeFilePath) return false
@@ -1371,7 +1449,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         const p = await createProjectFromSnapshot(name, newArchive)
         selectProjectLocal(p)
         setNewArchive(null)
-        await queryClient.invalidateQueries({ queryKey: ['projects'] })
+        await queryClient.invalidateQueries({ queryKey: ['projects', selectedOrgId] })
         return
       }
       const root = newPath.trim()
@@ -1381,7 +1459,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const p = await createProjectFromRoot(name, root)
       selectProjectLocal(p)
       setNewPath('')
-      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      await queryClient.invalidateQueries({ queryKey: ['projects', selectedOrgId] })
     })
   }, [
     newArchive,
@@ -1389,6 +1467,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     newPath,
     queryClient,
     runOp,
+    selectedOrgId,
     selectProjectLocal,
     setNewArchive,
     setNewPath,
@@ -1402,7 +1481,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       try {
         localStorage.removeItem(wsKey(pid))
       } catch {}
-      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      await queryClient.invalidateQueries({ queryKey: ['projects', selectedOrgId] })
       const remaining = (projectsQuery.data ?? []).filter((p) => p.id !== pid)
       if (remaining.length) {
         selectProjectLocal(remaining[0])
@@ -1410,32 +1489,32 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         clearActiveProject()
       }
     })
-  }, [activeProject?.id, clearActiveProject, projectsQuery.data, queryClient, runOp, selectProjectLocal])
+  }, [activeProject?.id, clearActiveProject, projectsQuery.data, queryClient, runOp, selectProjectLocal, selectedOrgId])
 
   const onScan = useCallback(async () => {
     if (!activeProject) return
     await runOp(async () => {
       await scanProject(activeProject.id)
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
       ])
     })
-  }, [activeProject, queryClient, runOp])
+  }, [activeProject, queryClient, runOp, selectedOrgId])
 
   const onRefresh = useCallback(async () => {
     if (!activeProject) return
     await runOp(async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
       ])
     })
-  }, [activeProject, queryClient, runOp])
+  }, [activeProject, queryClient, runOp, selectedOrgId])
 
   const onCreateFile = useCallback(
     async (path: string, content?: string) => {
@@ -1449,16 +1528,16 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         createdPath = nextPath
         notifyInfo('File created')
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
         ])
       })
       if (createdPath) {
         setSelection(createdPath, { pushHistory: true })
       }
     },
-    [activeProject, notifyInfo, queryClient, runOpThrow, setSelection],
+    [activeProject, notifyInfo, queryClient, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onRenameFile = useCallback(
@@ -1486,13 +1565,13 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         }
         notifyInfo('File renamed')
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
         ])
       })
     },
-    [activeProject, notifyInfo, queryClient, runOpThrow, setSelection],
+    [activeProject, notifyInfo, queryClient, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onDeleteFile = useCallback(
@@ -1516,13 +1595,13 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         }
         notifyInfo('File deleted')
         await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+          queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
         ])
       })
     },
-    [activeProject, notifyInfo, queryClient, runOpThrow, setSelection],
+    [activeProject, notifyInfo, queryClient, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onDeleteRun = useCallback(
@@ -1535,10 +1614,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
           setRunResult(null)
           setFullPatch(null)
         }
-        await queryClient.invalidateQueries({ queryKey: ['runs', pid] })
+        await queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, pid] })
       })
     },
-    [activeProject?.id, queryClient, runOp, runResult?.run_id]
+    [activeProject?.id, queryClient, runOp, runResult?.run_id, selectedOrgId]
   )
 
   const onLoadFullGraph = useCallback(() => {
@@ -1615,13 +1694,13 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         }
       })
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['files', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, activeProject.id] }),
       ])
     })
-  }, [activeProject, queryClient, runOp, runResult?.run_id])
+  }, [activeProject, queryClient, runOp, runResult?.run_id, selectedOrgId])
 
   const onLoadRun = useCallback(
     async (runId: number) => {
@@ -1743,9 +1822,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       setRunResult(res)
 
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
       ])
     })
   }, [
@@ -1754,6 +1833,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     runOp,
     buildRunBody,
     queryClient,
+    selectedOrgId,
   ])
 
   const onQuickSummary = useCallback(async (path: string) => {
@@ -1821,9 +1901,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       setRunResult(res)
 
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
       ])
     })
   }, [
@@ -1843,6 +1923,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     retrievalMode,
     runOp,
     selectedPath,
+    selectedOrgId,
     setAgenticMaxCalls,
     setAgenticMaxFileChars,
     setAgenticMaxTotalToolOutputChars,
@@ -1865,12 +1946,12 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       setRunResult(res)
 
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['graph', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['runs', activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['node', activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
       ])
     })
-  }, [activeProject, selectedPath, runOp, buildRunBody, queryClient])
+  }, [activeProject, selectedPath, runOp, buildRunBody, queryClient, selectedOrgId])
 
   const onSearchNodes = useCallback(
     async (query: string) => {
@@ -2385,6 +2466,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
   return {
     // state
+    orgs,
+    orgsLoading: orgsQuery.isFetching,
+    selectedOrgId,
     projects,
     projectsLoading: projectsQuery.isFetching,
     activeProject,
@@ -2474,6 +2558,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setGraphHops,
     graphLocalMax,
     setGraphLocalMax,
+    onSelectOrg,
 
     searchQuery,
     setSearchQuery,

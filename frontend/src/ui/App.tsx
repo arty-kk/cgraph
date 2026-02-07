@@ -342,6 +342,10 @@ export function App({ showDependencies = true }: AppProps) {
       {app.workspaceView === 'graph' && !app.focusGraph && app.leftPanelOpen && (
           <ProjectsSidebar
             onHidePanel={app.toggleLeftPanel}
+            orgs={app.orgs}
+            selectedOrgId={app.selectedOrgId}
+            onSelectOrg={app.onSelectOrg}
+            orgsLoading={app.orgsLoading}
             projects={app.projects}
             activeProject={app.activeProject}
             openFilePaths={app.openFilePaths}

@@ -16,3 +16,18 @@ export const api = axios.create({
   baseURL,
   timeout: 120_000,
 })
+
+let selectedOrgId: number | null = null
+
+export function setSelectedOrgId(orgId: number | null): void {
+  selectedOrgId = orgId
+  if (orgId == null) {
+    delete api.defaults.headers.common['x-org-id']
+    return
+  }
+  api.defaults.headers.common['x-org-id'] = String(orgId)
+}
+
+export function getSelectedOrgId(): number | null {
+  return selectedOrgId
+}
