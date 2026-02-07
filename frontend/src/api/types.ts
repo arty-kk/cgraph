@@ -6,6 +6,12 @@ export type Project = {
   source?: { kind: string; label: string }
 }
 
+export type Org = {
+  id: number
+  name: string
+  created_at: string
+}
+
 export type AgenticRetrievalSettings = {
   complexity_coeff?: number
   complexity_inputs?: {

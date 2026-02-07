@@ -2,6 +2,7 @@
 export { api } from './client'
 
 export type {
+  Org,
   Project,
   GraphData,
   GraphMeta,
@@ -40,6 +41,7 @@ export {
   searchProjectSemantic,
   searchProjectText,
 } from './projects'
+export { listOrgs, getOrg, createOrg } from './orgs'
 export { getGraph, getLocalGraph, searchNodes } from './graph'
 export { getNode, getContract, getFileContent, updateFileContent, createFile, renameFile, deleteFile } from './nodes'
 export {
