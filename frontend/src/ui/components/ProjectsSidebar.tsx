@@ -1,6 +1,6 @@
 // frontend/src/ui/components/ProjectsSidebar.tsx
 import React from 'react'
-import type { Project, ProjectFileItem, NodeSearchItem, SemanticSearchItem } from '../../api'
+import type { Org, Project, ProjectFileItem, NodeSearchItem, SemanticSearchItem } from '../../api'
 import { clampInt } from '../../lib/number'
 import type { SemanticSearchErrorReason } from '../../lib/errors'
 import { Modal } from './Modal'
@@ -9,6 +9,10 @@ import { ExplorerTree } from './ExplorerTree'
 
 type Props = {
   onHidePanel?: () => void
+  orgs: Org[]
+  selectedOrgId: number | null
+  onSelectOrg: (id: number | null) => void | Promise<void>
+  orgsLoading: boolean
   projects: Project[]
   activeProject: Project | null
   openFilePaths: string[]
@@ -67,6 +71,10 @@ type Props = {
 
 export function ProjectsSidebar({
   onHidePanel,
+  orgs,
+  selectedOrgId,
+  onSelectOrg,
+  orgsLoading,
   projects,
   activeProject,
   openFilePaths,
@@ -299,45 +307,83 @@ export function ProjectsSidebar({
 
           {view === 'manage' && (
             <>
+              <div className="mt-2">
+                <div className={labelRowClass}>
+                  <div className={fieldLabelClass}>Organization</div>
+                </div>
+              </div>
 
-          {projectsLoading && projects.length === 0 ? (
-            <div className={loadingCardPulse}>
-              Loading project list…
-            </div>
-          ) : (
-            <div className="flex gap-2 w-full">
-              <select
-                className={selectSmFlexClass}
-                value={activeProject?.id ?? ''}
-                disabled={busy || projects.length === 0}
-                onChange={(e) => {
-                  const id = Number(e.target.value)
-                  const p = projects.find((x) => x.id === id)
-                  if (p) onPickProject(p)
-                }}
-                title="Select active project"
-              >
-                <option value="" disabled>
-                  {projects.length ? 'Pick a project…' : 'No projects'}
-                </option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+              {orgsLoading && orgs.length === 0 ? (
+                <div className={loadingCardPulse}>
+                  Loading organizations…
+                </div>
+              ) : orgs.length === 1 ? (
+                <div className="text-xs text-neutral-300 truncate" title={orgs[0]?.name ?? ''}>
+                  {orgs[0]?.name ?? 'Unknown organization'}
+                </div>
+              ) : (
+                <div className="flex gap-2 w-full">
+                  <select
+                    className={selectSmFlexClass}
+                    value={selectedOrgId ?? ''}
+                    disabled={busy || orgs.length === 0}
+                    onChange={(e) => {
+                      const id = Number(e.target.value)
+                      const org = orgs.find((x) => x.id === id)
+                      onSelectOrg(org ? org.id : null)
+                    }}
+                    title="Select organization"
+                  >
+                    <option value="" disabled>
+                      {orgs.length ? 'Pick an organization…' : 'No organizations'}
+                    </option>
+                    {orgs.map((org) => (
+                      <option key={org.id} value={org.id}>
+                        {org.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-              <button
-                type="button"
-                className={buttonDanger}
-                disabled={!activeProject || busy}
-                onClick={() => setConfirmDeleteOpen(true)}
-                title="Delete active project (irreversible)"
-              >
-                Delete
-              </button>
-            </div>
-          )}
+              {projectsLoading && projects.length === 0 ? (
+                <div className={loadingCardPulse}>
+                  Loading project list…
+                </div>
+              ) : (
+                <div className="flex gap-2 w-full">
+                  <select
+                    className={selectSmFlexClass}
+                    value={activeProject?.id ?? ''}
+                    disabled={busy || projects.length === 0}
+                    onChange={(e) => {
+                      const id = Number(e.target.value)
+                      const p = projects.find((x) => x.id === id)
+                      if (p) onPickProject(p)
+                    }}
+                    title="Select active project"
+                  >
+                    <option value="" disabled>
+                      {projects.length ? 'Pick a project…' : 'No projects'}
+                    </option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    className={buttonDanger}
+                    disabled={!activeProject || busy}
+                    onClick={() => setConfirmDeleteOpen(true)}
+                    title="Delete active project (irreversible)"
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
 
           {activeProject && (
             <div

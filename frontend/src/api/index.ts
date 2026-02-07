@@ -1,5 +1,5 @@
 // frontend/src/api/index.ts
-export { api } from './client'
+export { api, setSelectedOrgId, getSelectedOrgId } from './client'
 
 export type {
   Org,
