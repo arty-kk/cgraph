@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import Request
+from sqlalchemy import text
 from sqlmodel import select
 
 from .auth import extract_token
@@ -75,11 +76,20 @@ def _resolve_org_id_unauth(request: Request) -> int:
         if len(org_ids) == 1:
             return int(org_ids[0])
         if not org_ids:
-            org = Organization(name="Personal", created_at=datetime.now(timezone.utc))
-            session.add(org)
-            session.commit()
-            session.refresh(org)
-            return int(org.id)
+            with session.begin():
+                # Protect against race conditions on concurrent unauthenticated requests.
+                session.exec(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 780451})
+                org_ids = session.exec(select(Organization.id)).all()
+                if len(org_ids) == 1:
+                    return int(org_ids[0])
+                if not org_ids:
+                    org = Organization(
+                        name="Personal", created_at=datetime.now(timezone.utc)
+                    )
+                    session.add(org)
+                    session.flush()
+                    return int(org.id)
+                raise BadRequestError("Укажите X-Org-ID")
         raise BadRequestError("Укажите X-Org-ID")
 
 
