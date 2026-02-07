@@ -96,12 +96,9 @@ def _touch_inflight(queue: str, job_id: str) -> None:
     try:
         client = get_redis_client()
         key = "stubgraph:queue:heavy:inflight"
-        ttl_seconds = 60 * 10
         client.sadd(key, job_id)
-        client.set(f"{key}:job:{job_id}", "1", ex=ttl_seconds)
-        client.expire(key, ttl_seconds)
     except RedisError as exc:
-        logger.warning("Failed to refresh inflight job TTL", extra={"reason": str(exc)})
+        logger.warning("Failed to refresh inflight job state", extra={"reason": str(exc)})
 
 
 def _decrement_inflight(queue: str, job_id: str) -> None:
@@ -111,6 +108,5 @@ def _decrement_inflight(queue: str, job_id: str) -> None:
         client = get_redis_client()
         key = "stubgraph:queue:heavy:inflight"
         client.srem(key, job_id)
-        client.delete(f"{key}:job:{job_id}")
     except RedisError as exc:
         logger.warning("Failed to decrement inflight counter", extra={"reason": str(exc)})

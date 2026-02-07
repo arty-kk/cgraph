@@ -85,7 +85,13 @@ class TestAgenticFileTools(unittest.TestCase):
             lines = ["a" * 120 + "\n"] * 6
             fake = _FakeIterable(lines)
             with patch.object(Path, "open", return_value=fake) as mocked_open:
-                result = agentic._tool_get_file_lines(1, root, meta, args, max_file_chars=max_file_chars)
+                result = agentic._tool_get_file_lines(
+                    1,
+                    root,
+                    meta,
+                    args,
+                    max_file_chars=max_file_chars,
+                )
             self.assertTrue(result["ok"])
             self.assertTrue(result["data"]["truncated"])
             self.assertEqual(len(result["data"]["content"]), expected_max_chars)

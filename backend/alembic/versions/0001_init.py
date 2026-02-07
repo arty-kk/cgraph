@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "0001_init"
@@ -334,7 +334,12 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(), nullable=False),
         sa.Column("source_path", sa.String(), nullable=False, index=True),
         sa.Column("fields_json", sa.Text(), nullable=False),
-        sa.UniqueConstraint("project_id", "name", "source_path", name="uq_tstypedef_project_name_src"),
+        sa.UniqueConstraint(
+            "project_id",
+            "name",
+            "source_path",
+            name="uq_tstypedef_project_name_src",
+        ),
     )
 
     op.create_table(

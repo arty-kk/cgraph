@@ -11,7 +11,10 @@ from app.auth import extract_token  # noqa: E402
 
 class TestAuthUtils(unittest.TestCase):
     def _request(self, headers: dict[str, str]) -> Request:
-        scope = {"type": "http", "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()]}
+        scope = {
+            "type": "http",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        }
         return Request(scope)
 
     def test_extract_bearer_token(self) -> None:
