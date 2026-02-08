@@ -122,6 +122,11 @@ IGNORE_DIRS = {
     ".output",
 }
 
+ALLOWED_DOT_DIRS = {
+    ".github",
+    ".config",
+}
+
 CODE_EXTS = {
     ".py",
     ".pyi",
@@ -134,6 +139,7 @@ CODE_EXTS = {
     ".mts",
     ".cts",
     ".vue",
+    ".json",
     ".go",
     ".java",
     ".kt",
@@ -157,8 +163,13 @@ def _is_supported_file(path: Path) -> bool:
 
 
 def iter_code_files(root: Path) -> Iterable[Path]:
+    """Yield supported files, skipping IGNORE_DIRS and non-allowlisted dot-directories."""
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS and not d.startswith("."))
+        dirnames[:] = sorted(
+            d
+            for d in dirnames
+            if d not in IGNORE_DIRS and (not d.startswith(".") or d in ALLOWED_DOT_DIRS)
+        )
         for fn in sorted(filenames):
             p = Path(dirpath) / fn
             if _is_supported_file(p) and p.is_file():
