@@ -14,6 +14,7 @@ from .logging import get_logger
 from .models import TaskJob
 from .services.docs_service import build_project_docs
 from .services.project_service import _scan_and_update_graph
+from .services.task_queue import cleanup_completed_jobs
 from .services.task_service import TaskRequest, run_task
 
 logger = get_logger("stubgraph.celery")
@@ -48,6 +49,8 @@ def _set_job_status(
             job.result_json = json.dumps(result, ensure_ascii=False)
         session.add(job)
         session.commit()
+    if status in {"succeeded", "failed"}:
+        cleanup_completed_jobs()
 
 
 @celery_app.task(name="stubgraph.scan")

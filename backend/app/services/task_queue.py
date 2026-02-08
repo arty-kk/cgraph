@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
 from redis import RedisError
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import select
+from sqlmodel import delete, select
 
 from ..config import settings
 from ..db import get_session
@@ -274,3 +274,38 @@ def _idempotency_key(kind: str, org_id: int, payload: dict) -> str:
 
 def get_scan_idempotency_key(org_id: int, project_id: int) -> str:
     return _idempotency_key("scan", org_id, {"project_id": project_id})
+
+
+def cleanup_completed_jobs() -> None:
+    ttl_seconds = settings.task_queue_completed_ttl_seconds
+    max_completed = settings.task_queue_max_completed
+    if ttl_seconds is None and max_completed is None:
+        return
+
+    deleted_count = 0
+    now = datetime.now(timezone.utc)
+    with get_session() as session:
+        if ttl_seconds is not None:
+            cutoff = now - timedelta(seconds=ttl_seconds)
+            result = session.exec(
+                delete(TaskJob).where(
+                    TaskJob.status.in_(("succeeded", "failed")),
+                    TaskJob.completed_at < cutoff,
+                )
+            )
+            if result.rowcount and result.rowcount > 0:
+                deleted_count += result.rowcount
+        if max_completed is not None:
+            ids_to_delete = session.exec(
+                select(TaskJob.id)
+                .where(TaskJob.status.in_(("succeeded", "failed")))
+                .order_by(TaskJob.completed_at.desc())
+                .offset(max_completed)
+            ).all()
+            if ids_to_delete:
+                result = session.exec(delete(TaskJob).where(TaskJob.id.in_(ids_to_delete)))
+                if result.rowcount and result.rowcount > 0:
+                    deleted_count += result.rowcount
+        session.commit()
+
+    logger.info("Completed task cleanup finished", extra={"deleted_count": deleted_count})
