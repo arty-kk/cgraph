@@ -17,7 +17,14 @@ from ..models import FileNode
 from ..policy import require_project_access
 from ..scan import scan_files
 from ..services.project_service import scan_with_background
-from ..utils import ProjectLockTimeout, normalize_project_root, project_lock, resolve_under_root
+from ..utils import (
+    ProjectLockTimeout,
+    normalize_project_root,
+    project_lock,
+    resolve_under_root,
+    sha256_file,
+    sha256_text,
+)
 
 
 class FileUpdate(BaseModel):
@@ -200,6 +207,7 @@ def update_file(
     if not isinstance(content, str):
         raise BadRequestError("Некорректное содержимое файла")
 
+    expected_hash = None
     try:
         with project_lock(project_id):
             if not abs_path.exists():
@@ -208,6 +216,7 @@ def update_file(
                 raise BadRequestError("Цель должна быть файлом")
             previous_content = abs_path.read_text(encoding="utf-8", errors="replace")
             abs_path.write_text(content, encoding="utf-8")
+            expected_hash = sha256_text(content)
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
@@ -258,14 +267,56 @@ def update_file(
             background_tasks=background_tasks,
         )
         rollback_ok = False
+        rollback_skipped = False
         try:
-            abs_path.write_text(previous_content, encoding="utf-8")
-            rollback_ok = True
+            with project_lock(project_id):
+                if (
+                    expected_hash
+                    and abs_path.exists()
+                    and abs_path.is_file()
+                    and sha256_file(abs_path) == expected_hash
+                ):
+                    abs_path.write_text(previous_content, encoding="utf-8")
+                    rollback_ok = True
+                else:
+                    rollback_skipped = True
+        except ProjectLockTimeout:
+            logger.warning(
+                "Rollback lock timeout after update_file",
+                extra={"path": rel_norm, "operation": "update_file"},
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "rollback": "failed",
+                "partial": True,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Rollback failed after update_file",
                 extra={"path": rel_norm, "operation": "update_file"},
             )
+        if rollback_skipped:
+            logger.warning(
+                "Rollback skipped due to concurrent change",
+                extra={"path": rel_norm, "operation": "update_file"},
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "rollback": "skipped",
+                "partial": True,
+                "conflict": True,
+                "conflict_reason": "concurrent_change",
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
         if rollback_ok:
             return {
                 "path": rel_norm,
@@ -308,6 +359,7 @@ def create_file(
         raise BadRequestError("Некорректное содержимое файла")
     content = content or ""
 
+    expected_hash = None
     try:
         with project_lock(project_id):
             if abs_path.exists():
@@ -319,6 +371,7 @@ def create_file(
                 parent.mkdir(parents=True, exist_ok=True)
 
             abs_path.write_text(content, encoding="utf-8")
+            expected_hash = sha256_text(content)
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
@@ -369,15 +422,56 @@ def create_file(
             background_tasks=background_tasks,
         )
         rollback_ok = False
+        rollback_skipped = False
         try:
-            if abs_path.exists():
-                abs_path.unlink()
-            rollback_ok = True
+            with project_lock(project_id):
+                if (
+                    expected_hash
+                    and abs_path.exists()
+                    and abs_path.is_file()
+                    and sha256_file(abs_path) == expected_hash
+                ):
+                    abs_path.unlink()
+                    rollback_ok = True
+                else:
+                    rollback_skipped = True
+        except ProjectLockTimeout:
+            logger.warning(
+                "Rollback lock timeout after create_file",
+                extra={"path": rel_norm, "operation": "create_file"},
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "rollback": "failed",
+                "partial": True,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Rollback failed after create_file",
                 extra={"path": rel_norm, "operation": "create_file"},
             )
+        if rollback_skipped:
+            logger.warning(
+                "Rollback skipped due to concurrent change",
+                extra={"path": rel_norm, "operation": "create_file"},
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "rollback": "skipped",
+                "partial": True,
+                "conflict": True,
+                "conflict_reason": "concurrent_change",
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
         if rollback_ok:
             return {
                 "path": rel_norm,
@@ -422,6 +516,7 @@ def rename_file(
     if rel_norm == new_rel:
         raise BadRequestError("Новый путь совпадает со старым", context={"path": rel_norm})
 
+    expected_hash = None
     try:
         with project_lock(project_id):
             if not abs_path.exists():
@@ -442,6 +537,7 @@ def rename_file(
             if not new_parent.is_dir():
                 raise BadRequestError("Родительский путь должен быть директорией")
 
+            expected_hash = sha256_file(abs_path)
             abs_path.rename(new_abs)
     except ProjectLockTimeout as exc:
         raise LockedError(
@@ -493,15 +589,57 @@ def rename_file(
             background_tasks=background_tasks,
         )
         rollback_ok = False
+        rollback_skipped = False
         try:
-            if new_abs.exists():
-                new_abs.rename(abs_path)
-            rollback_ok = True
+            with project_lock(project_id):
+                if (
+                    expected_hash
+                    and not abs_path.exists()
+                    and new_abs.exists()
+                    and new_abs.is_file()
+                    and sha256_file(new_abs) == expected_hash
+                ):
+                    new_abs.rename(abs_path)
+                    rollback_ok = True
+                else:
+                    rollback_skipped = True
+        except ProjectLockTimeout:
+            logger.warning(
+                "Rollback lock timeout after rename_file",
+                extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
+            )
+            return {
+                "path": new_rel,
+                "saved": True,
+                "reindexed": False,
+                "rollback": "failed",
+                "partial": True,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Rollback failed after rename_file",
                 extra={"path": rel_norm, "operation": "rename_file"},
             )
+        if rollback_skipped:
+            logger.warning(
+                "Rollback skipped due to concurrent change",
+                extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
+            )
+            return {
+                "path": new_rel,
+                "saved": True,
+                "reindexed": False,
+                "rollback": "skipped",
+                "partial": True,
+                "conflict": True,
+                "conflict_reason": "concurrent_change",
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
         if rollback_ok:
             return {
                 "path": rel_norm,
@@ -597,14 +735,51 @@ def delete_file(
             background_tasks=background_tasks,
         )
         rollback_ok = False
+        rollback_skipped = False
         try:
-            abs_path.write_text(previous_content, encoding="utf-8")
-            rollback_ok = True
+            with project_lock(project_id):
+                if not abs_path.exists():
+                    abs_path.write_text(previous_content, encoding="utf-8")
+                    rollback_ok = True
+                else:
+                    rollback_skipped = True
+        except ProjectLockTimeout:
+            logger.warning(
+                "Rollback lock timeout after delete_file",
+                extra={"path": rel_norm, "operation": "delete_file"},
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "rollback": "failed",
+                "partial": True,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Rollback failed after delete_file",
                 extra={"path": rel_norm, "operation": "delete_file"},
             )
+        if rollback_skipped:
+            logger.warning(
+                "Rollback skipped due to concurrent change",
+                extra={"path": rel_norm, "operation": "delete_file"},
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "rollback": "skipped",
+                "partial": True,
+                "conflict": True,
+                "conflict_reason": "concurrent_change",
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
         if rollback_ok:
             return {
                 "path": rel_norm,
