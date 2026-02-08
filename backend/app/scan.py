@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from collections import OrderedDict
 from pathlib import Path
 from threading import Lock
@@ -242,43 +241,51 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
             with get_session() as s:
                 existing = s.exec(
                     select(
-                        FileNode.path, FileNode.file_mtime, FileNode.file_size, FileNode.file_hash
+                        FileNode.path,
+                        FileNode.file_mtime,
+                        FileNode.file_mtime_ns,
+                        FileNode.file_size,
+                        FileNode.file_hash,
                     ).where(FileNode.project_id == project_id)
                 ).all()
 
-            existing_map: dict[str, tuple[float, int, str]] = {}
+            existing_map: dict[str, tuple[int, int, str]] = {}
             for row in existing:
-                if isinstance(row, tuple) and len(row) >= 4:
-                    path, mtime, size, h = row[0], row[1], row[2], row[3]
+                if isinstance(row, tuple) and len(row) >= 5:
+                    path, mtime, mtime_ns, size, h = row[0], row[1], row[2], row[3], row[4]
                 else:
                     path = getattr(row, "path", "")
                     mtime = getattr(row, "file_mtime", 0)
+                    mtime_ns = getattr(row, "file_mtime_ns", 0)
                     size = getattr(row, "file_size", 0)
                     h = getattr(row, "file_hash", "")
                 if isinstance(path, str) and path:
-                    existing_map[path] = (float(mtime or 0), int(size or 0), str(h or ""))
+                    resolved_mtime_ns = int(mtime_ns or 0)
+                    if not resolved_mtime_ns:
+                        resolved_mtime_ns = int(float(mtime or 0) * 1_000_000_000)
+                    existing_map[path] = (resolved_mtime_ns, int(size or 0), str(h or ""))
 
             current_paths: list[str] = []
-            stats_map: dict[str, tuple[float, int]] = {}
+            stats_map: dict[str, tuple[int, int]] = {}
             for p in iter_code_files(project_root):
                 rel = p.relative_to(project_root).as_posix()
                 try:
                     st = p.stat()
-                    stats_map[rel] = (st.st_mtime, st.st_size)
+                    stats_map[rel] = (int(st.st_mtime_ns), st.st_size)
                 except Exception:
-                    stats_map[rel] = (time.time(), 0)
+                    stats_map[rel] = (0, 0)
                 current_paths.append(rel)
 
             removed = sorted(set(existing_map.keys()) - set(current_paths))
             candidates: list[str] = []
             for rel in current_paths:
-                mtime, size = stats_map.get(rel, (0.0, 0))
+                mtime_ns, size = stats_map.get(rel, (0, 0))
                 prev = existing_map.get(rel)
                 if not prev:
                     candidates.append(rel)
                     continue
-                prev_mtime, prev_size, _prev_hash = prev
-                if int(prev_size) != int(size) or float(prev_mtime) != float(mtime):
+                prev_mtime_ns, prev_size, _prev_hash = prev
+                if int(prev_size) != int(size) or int(prev_mtime_ns) != int(mtime_ns):
                     candidates.append(rel)
 
             updated = scan_files(
@@ -346,7 +353,7 @@ def scan_files(
     org_id: int,
     project_root: Path,
     rel_paths: Iterable[str],
-    precomputed_stats: dict[str, tuple[float, int]] | None = None,
+    precomputed_stats: dict[str, tuple[int, int]] | None = None,
 ) -> dict:
     project_root = project_root.resolve()
     norm_paths: list[str] = []
@@ -439,18 +446,19 @@ def scan_files(
     for rel in present:
         p = project_root / rel
         if precomputed_stats and rel in precomputed_stats:
-            stat_mtime, stat_size = precomputed_stats[rel]
+            stat_mtime_ns, stat_size = precomputed_stats[rel]
         else:
             try:
                 st = p.stat()
-                stat_mtime, stat_size = st.st_mtime, st.st_size
+                stat_mtime_ns, stat_size = int(st.st_mtime_ns), st.st_size
             except OSError:
-                stat_mtime, stat_size = 0.0, 0
+                stat_mtime_ns, stat_size = 0, 0
+        stat_mtime = float(stat_mtime_ns) / 1_000_000_000 if stat_mtime_ns else 0.0
         oversized = max_file_bytes > 0 and int(stat_size) > max_file_bytes
         if oversized:
             idx = pick_indexer(rel)
             lang = idx.language()
-            file_hash = sha256_text(f"oversized:{stat_size}:{stat_mtime}")
+            file_hash = sha256_text(f"oversized:{stat_size}:{stat_mtime_ns}")
             node_rows.append(
                 {
                     "project_id": project_id,
@@ -460,6 +468,7 @@ def scan_files(
                     "complexity": 0,
                     "file_hash": file_hash,
                     "file_mtime": float(stat_mtime),
+                    "file_mtime_ns": int(stat_mtime_ns),
                     "file_size": int(stat_size),
                 }
             )
@@ -595,6 +604,7 @@ def scan_files(
                 "complexity": complexity,
                 "file_hash": file_hash,
                 "file_mtime": float(stat_mtime),
+                "file_mtime_ns": int(stat_mtime_ns),
                 "file_size": int(stat_size),
             }
         )
@@ -887,6 +897,7 @@ def scan_files(
                     "complexity": stmt.excluded.complexity,
                     "file_hash": stmt.excluded.file_hash,
                     "file_mtime": stmt.excluded.file_mtime,
+                    "file_mtime_ns": stmt.excluded.file_mtime_ns,
                     "file_size": stmt.excluded.file_size,
                 },
             )

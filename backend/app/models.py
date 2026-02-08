@@ -140,6 +140,7 @@ class FileNode(SQLModel, table=True):
     status: str = Field(default="new")
     file_hash: str = Field(default="")
     file_mtime: float = Field(default=0)
+    file_mtime_ns: int = Field(default=0)
     file_size: int = Field(default=0)
 
 
