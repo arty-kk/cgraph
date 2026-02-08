@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from fastapi import Request
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from .auth import extract_token
@@ -96,10 +97,21 @@ def _resolve_org_id_unauth(request: Request) -> int:
                     return int(org_ids[0])
                 if not org_ids:
                     org = Organization(
-                        name="Personal", created_at=datetime.now(timezone.utc)
+                        name="Personal",
+                        slug="personal",
+                        created_at=datetime.now(timezone.utc),
                     )
                     session.add(org)
-                    session.flush()
+                    try:
+                        session.flush()
+                    except IntegrityError:
+                        session.rollback()
+                        existing = session.exec(
+                            select(Organization).where(Organization.slug == "personal")
+                        ).first()
+                        if existing and existing.id is not None:
+                            return int(existing.id)
+                        raise
                     return int(org.id)
                 raise BadRequestError("Укажите X-Org-ID")
         raise BadRequestError("Укажите X-Org-ID")
