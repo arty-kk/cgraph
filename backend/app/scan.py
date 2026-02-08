@@ -463,8 +463,6 @@ def scan_files(
                     "file_size": int(stat_size),
                 }
             )
-            if embeddings_enabled and embedding_hashes.get(rel):
-                embedding_paths_to_delete.append(rel)
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -608,8 +606,7 @@ def scan_files(
                 and embed_text_len <= settings.embeddings_max_file_chars
                 and file_hash not in existing_hashes
             )
-            if should_embed and existing_hashes:
-                embedding_paths_to_delete.append(rel)
+            can_generate_embeddings = False
             if should_embed:
                 symbols: list[object] = []
                 if p.suffix.lower() in CODE_EXTS:
@@ -666,6 +663,7 @@ def scan_files(
                                 if chunk_limit is not None
                                 else settings.embeddings_daily_chunk_limit,
                             )
+                            can_generate_embeddings = True
                         except LimitExceededError:
                             if not embedding_warned_limit:
                                 logger.warning(
@@ -680,6 +678,8 @@ def scan_files(
                             )
                         except Exception as e:  # noqa: BLE001
                             raise RuntimeError(f"Embeddings request failed for {rel}: {e}") from e
+                        if can_generate_embeddings and existing_hashes:
+                            embedding_paths_to_delete.append(rel)
                         for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
                             embedding = getattr(item, "embedding", None)
                             if embedding is None:
@@ -697,8 +697,6 @@ def scan_files(
                                     "symbol_end_line": int(meta.get("symbol_end_line", 0) or 0),
                                 }
                             )
-            elif embed_text_len > settings.embeddings_max_file_chars and existing_hashes:
-                embedding_paths_to_delete.append(rel)
 
         for imp in cached_imports:
             if not isinstance(imp, dict):
