@@ -86,7 +86,11 @@ def _resolve_org_id_unauth(request: Request) -> int:
         if not org_ids:
             with session.begin():
                 # Protect against race conditions on concurrent unauthenticated requests.
-                session.exec(text("SELECT pg_advisory_xact_lock(:key)"), {"key": 780451})
+                dialect = session.get_bind().dialect.name
+                if dialect == "postgresql":
+                    session.exec(
+                        text("SELECT pg_advisory_xact_lock(:key)"), {"key": 780451}
+                    )
                 org_ids = session.exec(select(Organization.id)).all()
                 if len(org_ids) == 1:
                     return int(org_ids[0])
