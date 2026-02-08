@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Tuple
@@ -51,6 +52,33 @@ PARSE_CACHE_LIMIT = 256
 _parse_cache: OrderedDict[Tuple[str, str, str], tuple[int, list[dict]]] = OrderedDict()
 _parse_cache_lock = Lock()
 logger = get_logger("stubgraph.scan")
+
+
+@dataclass(frozen=True)
+class FileSnapshot:
+    mtime_ns: int
+    size: int
+    file_hash: str
+    hash_kind: str
+
+
+@dataclass
+class PreparedScanData:
+    present: list[str]
+    removed: list[str]
+    node_rows: list[dict]
+    edge_map: dict[tuple[str, str, str], FileEdge]
+    search_rows: list[dict]
+    route_rows: list[dict]
+    call_rows: list[dict]
+    include_rows: list[dict]
+    route_contract_rows: list[dict]
+    call_meta_rows: list[dict]
+    ts_type_rows: list[dict]
+    embedding_rows: list[dict]
+    embedding_paths_to_delete: list[str]
+    removed_edge_neighbors: set[str]
+    snapshot: dict[str, FileSnapshot]
 
 
 def _get_cached_parse(lang: str, file_hash: str, file_suffix: str) -> tuple[int, list[dict]] | None:
@@ -234,105 +262,148 @@ def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
         )
 
 
+def _verify_scan_snapshot(
+    project_root: Path,
+    snapshot: dict[str, FileSnapshot],
+    removed: list[str],
+) -> tuple[bool, str]:
+    for rel in removed:
+        if (project_root / rel).exists():
+            return False, f"removed_path_exists:{rel}"
+    for rel, snap in snapshot.items():
+        p = project_root / rel
+        try:
+            st = p.stat()
+        except OSError:
+            return False, f"missing:{rel}"
+        if int(st.st_mtime_ns) != int(snap.mtime_ns) or int(st.st_size) != int(snap.size):
+            return False, f"stat_changed:{rel}"
+        if snap.hash_kind == "content":
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                return False, f"read_failed:{rel}"
+            if sha256_text(text) != snap.file_hash:
+                return False, f"hash_changed:{rel}"
+        elif snap.hash_kind == "oversized":
+            if sha256_text(f"oversized:{snap.size}:{snap.mtime_ns}") != snap.file_hash:
+                return False, f"hash_changed:{rel}"
+        elif snap.hash_kind == "stat_only":
+            continue
+        else:
+            return False, f"unknown_hash_kind:{rel}"
+    return True, ""
+
+
 def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
     project_root = project_root.resolve()
     try:
-        with project_lock(project_id):
-            with get_session() as s:
-                existing = s.exec(
-                    select(
-                        FileNode.path,
-                        FileNode.file_mtime,
-                        FileNode.file_mtime_ns,
-                        FileNode.file_size,
-                        FileNode.file_hash,
-                    ).where(FileNode.project_id == project_id)
-                ).all()
+        with get_session() as s:
+            existing = s.exec(
+                select(
+                    FileNode.path,
+                    FileNode.file_mtime,
+                    FileNode.file_mtime_ns,
+                    FileNode.file_size,
+                    FileNode.file_hash,
+                ).where(FileNode.project_id == project_id)
+            ).all()
 
-            existing_map: dict[str, tuple[int, int, str]] = {}
-            for row in existing:
-                if isinstance(row, tuple) and len(row) >= 5:
-                    path, mtime, mtime_ns, size, h = row[0], row[1], row[2], row[3], row[4]
+        existing_map: dict[str, tuple[int, int, str]] = {}
+        for row in existing:
+            if isinstance(row, tuple) and len(row) >= 5:
+                path, mtime, mtime_ns, size, h = row[0], row[1], row[2], row[3], row[4]
+            else:
+                path = getattr(row, "path", "")
+                mtime = getattr(row, "file_mtime", 0)
+                mtime_ns = getattr(row, "file_mtime_ns", 0)
+                size = getattr(row, "file_size", 0)
+                h = getattr(row, "file_hash", "")
+            if isinstance(path, str) and path:
+                resolved_mtime_ns = int(mtime_ns or 0)
+                if not resolved_mtime_ns:
+                    resolved_mtime_ns = int(float(mtime or 0) * 1_000_000_000)
+                existing_map[path] = (resolved_mtime_ns, int(size or 0), str(h or ""))
+
+        current_paths: list[str] = []
+        stats_map: dict[str, tuple[int, int]] = {}
+        for p in iter_code_files(project_root):
+            rel = p.relative_to(project_root).as_posix()
+            try:
+                st = p.stat()
+                stats_map[rel] = (int(st.st_mtime_ns), st.st_size)
+            except Exception:
+                stats_map[rel] = (0, 0)
+            current_paths.append(rel)
+
+        removed = sorted(set(existing_map.keys()) - set(current_paths))
+        candidates: list[str] = []
+        for rel in current_paths:
+            mtime_ns, size = stats_map.get(rel, (0, 0))
+            prev = existing_map.get(rel)
+            if not prev:
+                candidates.append(rel)
+                continue
+            prev_mtime_ns, prev_size, _prev_hash = prev
+            if int(prev_size) != int(size) or int(prev_mtime_ns) != int(mtime_ns):
+                candidates.append(rel)
+
+        updated = scan_files(
+            project_id,
+            org_id,
+            project_root,
+            candidates,
+            precomputed_stats=stats_map,
+        )
+
+        removed_aborted = False
+        if removed and not updated.get("aborted"):
+            with project_lock(project_id):
+                ok, reason = _verify_scan_snapshot(project_root, {}, removed)
+                if not ok:
+                    logger.warning(
+                        "scan_project snapshot mismatch before delete",
+                        extra={"project_id": project_id, "reason": reason},
+                    )
+                    removed_aborted = True
                 else:
-                    path = getattr(row, "path", "")
-                    mtime = getattr(row, "file_mtime", 0)
-                    mtime_ns = getattr(row, "file_mtime_ns", 0)
-                    size = getattr(row, "file_size", 0)
-                    h = getattr(row, "file_hash", "")
-                if isinstance(path, str) and path:
-                    resolved_mtime_ns = int(mtime_ns or 0)
-                    if not resolved_mtime_ns:
-                        resolved_mtime_ns = int(float(mtime or 0) * 1_000_000_000)
-                    existing_map[path] = (resolved_mtime_ns, int(size or 0), str(h or ""))
-
-            current_paths: list[str] = []
-            stats_map: dict[str, tuple[int, int]] = {}
-            for p in iter_code_files(project_root):
-                rel = p.relative_to(project_root).as_posix()
-                try:
-                    st = p.stat()
-                    stats_map[rel] = (int(st.st_mtime_ns), st.st_size)
-                except Exception:
-                    stats_map[rel] = (0, 0)
-                current_paths.append(rel)
-
-            removed = sorted(set(existing_map.keys()) - set(current_paths))
-            candidates: list[str] = []
-            for rel in current_paths:
-                mtime_ns, size = stats_map.get(rel, (0, 0))
-                prev = existing_map.get(rel)
-                if not prev:
-                    candidates.append(rel)
-                    continue
-                prev_mtime_ns, prev_size, _prev_hash = prev
-                if int(prev_size) != int(size) or int(prev_mtime_ns) != int(mtime_ns):
-                    candidates.append(rel)
-
-            updated = scan_files(
-                project_id,
-                org_id,
-                project_root,
-                candidates,
-                precomputed_stats=stats_map,
-            )
-
-            if removed:
-                with get_session() as s:
-                    s.exec(
-                        delete(FileEdge).where(
-                            FileEdge.project_id == project_id,
-                            (FileEdge.src_path.in_(removed)) | (FileEdge.dst_path.in_(removed)),
+                    with get_session() as s:
+                        s.exec(
+                            delete(FileEdge).where(
+                                FileEdge.project_id == project_id,
+                                (FileEdge.src_path.in_(removed))
+                                | (FileEdge.dst_path.in_(removed)),
+                            )
                         )
-                    )
-                    s.exec(
-                        delete(FileNode).where(
-                            FileNode.project_id == project_id,
-                            FileNode.path.in_(removed),
+                        s.exec(
+                            delete(FileNode).where(
+                                FileNode.project_id == project_id,
+                                FileNode.path.in_(removed),
+                            )
                         )
-                    )
-                    try:
-                        _search_index_delete(s, project_id, removed)
-                    except OperationalError as e:
-                        if not _is_missing_table_error(e, "filetext"):
-                            raise
-                    try:
-                        _delete_embeddings(s, project_id, removed)
-                    except OperationalError as e:
-                        if not _is_missing_table_error(e, "filechunkembedding"):
-                            raise
-                    try:
-                        _delete_api_indexes(s, project_id, removed)
-                    except OperationalError as e:
-                        if not (
-                            _is_missing_table_error(e, "apiroute")
-                            or _is_missing_table_error(e, "apicall")
-                            or _is_missing_table_error(e, "apiinclude")
-                            or _is_missing_table_error(e, "apiroutecontract")
-                            or _is_missing_table_error(e, "apicallmeta")
-                            or _is_missing_table_error(e, "tstypedef")
-                        ):
-                            raise
-                    s.commit()
+                        try:
+                            _search_index_delete(s, project_id, removed)
+                        except OperationalError as e:
+                            if not _is_missing_table_error(e, "filetext"):
+                                raise
+                        try:
+                            _delete_embeddings(s, project_id, removed)
+                        except OperationalError as e:
+                            if not _is_missing_table_error(e, "filechunkembedding"):
+                                raise
+                        try:
+                            _delete_api_indexes(s, project_id, removed)
+                        except OperationalError as e:
+                            if not (
+                                _is_missing_table_error(e, "apiroute")
+                                or _is_missing_table_error(e, "apicall")
+                                or _is_missing_table_error(e, "apiinclude")
+                                or _is_missing_table_error(e, "apiroutecontract")
+                                or _is_missing_table_error(e, "apicallmeta")
+                                or _is_missing_table_error(e, "tstypedef")
+                            ):
+                                raise
+                        s.commit()
     except ProjectLockTimeout as exc:
         logger.warning("Project lock timeout during scan", extra={"project_id": project_id})
         raise LockedError(
@@ -340,12 +411,16 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
             context={"project_id": project_id},
         ) from exc
 
-    return {
+    result = {
         "nodes": len(current_paths),
         "changed": len(candidates),
         "removed": len(removed),
         **updated,
     }
+    if removed_aborted:
+        result["removed_aborted"] = True
+        result["reason"] = "snapshot_mismatch"
+    return result
 
 
 def scan_files(
@@ -367,6 +442,70 @@ def scan_files(
     if not norm_paths:
         return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
 
+    prepared = _prepare_scan_files(
+        project_id,
+        org_id,
+        project_root,
+        norm_paths,
+        precomputed_stats=precomputed_stats,
+    )
+    if not prepared.present and not prepared.removed:
+        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+
+    attempts = 0
+    while True:
+        attempts += 1
+        with project_lock(project_id):
+            ok, reason = _verify_scan_snapshot(
+                project_root,
+                prepared.snapshot,
+                prepared.removed,
+            )
+            if not ok:
+                logger.warning(
+                    "scan_files snapshot mismatch; aborting scan",
+                    extra={
+                        "project_id": project_id,
+                        "reason": reason,
+                        "attempt": attempts,
+                    },
+                )
+                if attempts < 2:
+                    prepared = _prepare_scan_files(
+                        project_id,
+                        org_id,
+                        project_root,
+                        norm_paths,
+                        precomputed_stats=precomputed_stats,
+                    )
+                    if not prepared.present and not prepared.removed:
+                        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+                    continue
+                return {
+                    "updated_nodes": 0,
+                    "updated_edges": 0,
+                    "removed": 0,
+                    "aborted": True,
+                    "reason": "snapshot_mismatch",
+                }
+            _write_scan_files(project_id, prepared)
+            break
+
+    return {
+        "updated_nodes": len(prepared.node_rows),
+        "updated_edges": len(prepared.edge_map),
+        "removed": len(prepared.removed),
+        "removed_edge_neighbors": sorted(prepared.removed_edge_neighbors),
+    }
+
+
+def _prepare_scan_files(
+    project_id: int,
+    org_id: int,
+    project_root: Path,
+    norm_paths: list[str],
+    precomputed_stats: dict[str, tuple[int, int]] | None = None,
+) -> PreparedScanData:
     present: list[str] = []
     removed: list[str] = []
     for rel in norm_paths:
@@ -380,27 +519,6 @@ def scan_files(
         if not _is_supported_file(p):
             continue
         present.append(rel)
-
-    if removed:
-        with get_session() as s:
-            s.exec(
-                delete(FileEdge).where(
-                    FileEdge.project_id == project_id,
-                    (FileEdge.src_path.in_(removed)) | (FileEdge.dst_path.in_(removed)),
-                )
-            )
-            s.exec(
-                delete(FileNode).where(
-                    FileNode.project_id == project_id,
-                    FileNode.path.in_(removed),
-                )
-            )
-            try:
-                _delete_embeddings(s, project_id, removed)
-            except OperationalError as e:
-                if not _is_missing_table_error(e, "filechunkembedding"):
-                    raise
-            s.commit()
 
     node_rows: list[dict] = []
     edge_map: dict[tuple[str, str, str], FileEdge] = {}
@@ -416,6 +534,7 @@ def scan_files(
     embedding_hashes: dict[str, set[str]] = {}
     embedding_warned_missing_key = False
     embedding_warned_limit = False
+    snapshot: dict[str, FileSnapshot] = {}
 
     ent_embeddings_enabled = get_entitlement_bool(org_id, "embeddings_enabled")
     embeddings_enabled = bool(settings.embeddings_enabled) and ent_embeddings_enabled is not False
@@ -472,10 +591,22 @@ def scan_files(
                     "file_size": int(stat_size),
                 }
             )
+            snapshot[rel] = FileSnapshot(
+                mtime_ns=int(stat_mtime_ns),
+                size=int(stat_size),
+                file_hash=file_hash,
+                hash_kind="oversized",
+            )
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
+            snapshot[rel] = FileSnapshot(
+                mtime_ns=int(stat_mtime_ns),
+                size=int(stat_size),
+                file_hash="",
+                hash_kind="stat_only",
+            )
             continue
 
         rel_l = rel.lower()
@@ -607,6 +738,12 @@ def scan_files(
                 "file_mtime_ns": int(stat_mtime_ns),
                 "file_size": int(stat_size),
             }
+        )
+        snapshot[rel] = FileSnapshot(
+            mtime_ns=int(stat_mtime_ns),
+            size=int(stat_size),
+            file_hash=file_hash,
+            hash_kind="content",
         )
 
         if embeddings_enabled:
@@ -760,8 +897,49 @@ def scan_files(
                     removed_edge_neighbors.add(src)
                 if isinstance(dst, str) and dst:
                     removed_edge_neighbors.add(dst)
+    return PreparedScanData(
+        present=present,
+        removed=removed,
+        node_rows=node_rows,
+        edge_map=edge_map,
+        search_rows=search_rows,
+        route_rows=route_rows,
+        call_rows=call_rows,
+        include_rows=include_rows,
+        route_contract_rows=route_contract_rows,
+        call_meta_rows=call_meta_rows,
+        ts_type_rows=ts_type_rows,
+        embedding_rows=embedding_rows,
+        embedding_paths_to_delete=embedding_paths_to_delete,
+        removed_edge_neighbors=removed_edge_neighbors,
+        snapshot=snapshot,
+    )
+
+
+def _write_scan_files(project_id: int, prepared: PreparedScanData) -> None:
+    with get_session() as s:
+        if prepared.removed:
+            s.exec(
+                delete(FileEdge).where(
+                    FileEdge.project_id == project_id,
+                    (FileEdge.src_path.in_(prepared.removed))
+                    | (FileEdge.dst_path.in_(prepared.removed)),
+                )
+            )
+            s.exec(
+                delete(FileNode).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path.in_(prepared.removed),
+                )
+            )
+            try:
+                _delete_embeddings(s, project_id, prepared.removed)
+            except OperationalError as e:
+                if not _is_missing_table_error(e, "filechunkembedding"):
+                    raise
+
         try:
-            to_del = sorted(set((present or []) + (removed or [])))
+            to_del = sorted(set((prepared.present or []) + (prepared.removed or [])))
             if to_del:
                 try:
                     _search_index_delete(s, project_id, to_del)
@@ -780,22 +958,25 @@ def scan_files(
                         or _is_missing_table_error(e, "tstypedef")
                     ):
                         raise
-            if embedding_paths_to_delete:
+            if prepared.embedding_paths_to_delete:
                 try:
-                    _delete_embeddings(s, project_id, sorted(set(embedding_paths_to_delete)))
+                    _delete_embeddings(
+                        s,
+                        project_id,
+                        sorted(set(prepared.embedding_paths_to_delete)),
+                    )
                 except OperationalError as e:
                     if not _is_missing_table_error(e, "filechunkembedding"):
                         raise
-            if search_rows:
-                stmt_text = pg_insert(FileText).values(search_rows)
+            if prepared.search_rows:
+                stmt_text = pg_insert(FileText).values(prepared.search_rows)
                 stmt_text = stmt_text.on_conflict_do_update(
                     index_elements=["project_id", "path"],
                     set_={"content": stmt_text.excluded.content},
                 )
-            if search_rows:
                 s.exec(stmt_text)
-            if route_rows:
-                stmt_r = pg_insert(ApiRoute).values(route_rows)
+            if prepared.route_rows:
+                stmt_r = pg_insert(ApiRoute).values(prepared.route_rows)
                 stmt_r = stmt_r.on_conflict_do_nothing(
                     index_elements=[
                         "project_id",
@@ -807,14 +988,14 @@ def scan_files(
                     ]
                 )
                 s.exec(stmt_r)
-            if call_rows:
-                stmt_c = pg_insert(ApiCall).values(call_rows)
+            if prepared.call_rows:
+                stmt_c = pg_insert(ApiCall).values(prepared.call_rows)
                 stmt_c = stmt_c.on_conflict_do_nothing(
                     index_elements=["project_id", "method", "path", "source_path", "lineno"]
                 )
                 s.exec(stmt_c)
-            if include_rows:
-                stmt_i = pg_insert(ApiInclude).values(include_rows)
+            if prepared.include_rows:
+                stmt_i = pg_insert(ApiInclude).values(prepared.include_rows)
                 stmt_i = stmt_i.on_conflict_do_nothing(
                     index_elements=[
                         "project_id",
@@ -827,8 +1008,8 @@ def scan_files(
                     ]
                 )
                 s.exec(stmt_i)
-            if route_contract_rows:
-                stmt_rc = pg_insert(ApiRouteContract).values(route_contract_rows)
+            if prepared.route_contract_rows:
+                stmt_rc = pg_insert(ApiRouteContract).values(prepared.route_contract_rows)
                 stmt_rc = stmt_rc.on_conflict_do_update(
                     index_elements=[
                         "project_id",
@@ -841,8 +1022,8 @@ def scan_files(
                     set_={"contract_json": stmt_rc.excluded.contract_json},
                 )
                 s.exec(stmt_rc)
-            if call_meta_rows:
-                stmt_cm = pg_insert(ApiCallMeta).values(call_meta_rows)
+            if prepared.call_meta_rows:
+                stmt_cm = pg_insert(ApiCallMeta).values(prepared.call_meta_rows)
                 stmt_cm = stmt_cm.on_conflict_do_update(
                     index_elements=["project_id", "method", "path", "source_path", "lineno"],
                     set_={
@@ -855,8 +1036,8 @@ def scan_files(
                     },
                 )
                 s.exec(stmt_cm)
-            if ts_type_rows:
-                stmt_tt = pg_insert(TsTypeDef).values(ts_type_rows)
+            if prepared.ts_type_rows:
+                stmt_tt = pg_insert(TsTypeDef).values(prepared.ts_type_rows)
                 stmt_tt = stmt_tt.on_conflict_do_update(
                     index_elements=["project_id", "name", "source_path"],
                     set_={
@@ -865,8 +1046,8 @@ def scan_files(
                     },
                 )
                 s.exec(stmt_tt)
-            if embedding_rows:
-                stmt_emb = pg_insert(FileChunkEmbedding).values(embedding_rows)
+            if prepared.embedding_rows:
+                stmt_emb = pg_insert(FileChunkEmbedding).values(prepared.embedding_rows)
                 stmt_emb = stmt_emb.on_conflict_do_nothing(
                     index_elements=["project_id", "path", "chunk_index", "file_hash"]
                 )
@@ -879,16 +1060,16 @@ def scan_files(
             s.rollback()
             raise RuntimeError(f"scan_files: DB write failed: {e}") from e
 
-        if present:
+        if prepared.present:
             s.exec(
                 delete(FileEdge).where(
                     FileEdge.project_id == project_id,
-                    FileEdge.src_path.in_(present),
+                    FileEdge.src_path.in_(prepared.present),
                 )
             )
 
-        if node_rows:
-            stmt = pg_insert(FileNode).values(node_rows)
+        if prepared.node_rows:
+            stmt = pg_insert(FileNode).values(prepared.node_rows)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["project_id", "path"],
                 set_={
@@ -903,7 +1084,7 @@ def scan_files(
             )
             s.exec(stmt)
 
-        if edge_map:
+        if prepared.edge_map:
             edge_rows = [
                 {
                     "project_id": e.project_id,
@@ -912,7 +1093,7 @@ def scan_files(
                     "kind": e.kind,
                     "raw": e.raw,
                 }
-                for e in edge_map.values()
+                for e in prepared.edge_map.values()
             ]
             stmt_e = pg_insert(FileEdge).values(edge_rows)
             stmt_e = stmt_e.on_conflict_do_nothing(
@@ -921,10 +1102,3 @@ def scan_files(
             s.exec(stmt_e)
 
         s.commit()
-
-    return {
-        "updated_nodes": len(node_rows),
-        "updated_edges": len(edge_map),
-        "removed": len(removed),
-        "removed_edge_neighbors": sorted(removed_edge_neighbors),
-    }

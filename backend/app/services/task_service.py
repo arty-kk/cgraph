@@ -232,9 +232,14 @@ def _apply_patch_and_record(
                 modified = sorted(set(modified))
                 applied = {"modified": modified}
 
-            if applied and "modified" in applied:
-                try:
-                    applied["reindexed"] = scan_files(project_id, org_id, root, modified)
+        if applied and "modified" in applied:
+            try:
+                applied["reindexed"] = scan_files(project_id, org_id, root, modified)
+                if isinstance(applied.get("reindexed"), dict) and applied["reindexed"].get(
+                    "aborted"
+                ):
+                    applied["reindex_aborted"] = True
+                else:
                     removed_edge_neighbors = None
                     if isinstance(applied.get("reindexed"), dict):
                         removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
@@ -244,38 +249,38 @@ def _apply_patch_and_record(
                         removed_edge_neighbors=removed_edge_neighbors,
                     )
 
-                    updated_contracts: list[str] = []
-                    removed_contracts: list[str] = []
-                    for rel_path in modified:
-                        try:
-                            abs_path, rel_norm = resolve_under_root(
-                                root, rel_path, max_length=settings.max_rel_path_chars
-                            )
-                            if not abs_path.exists():
-                                removed_contracts.append(rel_norm)
-                                continue
-                            if not abs_path.is_file():
-                                continue
-                            contract = get_or_build_contract(project_id, root, rel_norm)
-                            if isinstance(contract, dict) and contract.get("path"):
-                                updated_contracts.append(str(contract["path"]))
-                        except Exception:  # noqa: BLE001
+                updated_contracts: list[str] = []
+                removed_contracts: list[str] = []
+                for rel_path in modified:
+                    try:
+                        abs_path, rel_norm = resolve_under_root(
+                            root, rel_path, max_length=settings.max_rel_path_chars
+                        )
+                        if not abs_path.exists():
+                            removed_contracts.append(rel_norm)
                             continue
-                    applied["contracts_updated"] = sorted(set(updated_contracts))
+                        if not abs_path.is_file():
+                            continue
+                        contract = get_or_build_contract(project_id, root, rel_norm)
+                        if isinstance(contract, dict) and contract.get("path"):
+                            updated_contracts.append(str(contract["path"]))
+                    except Exception:  # noqa: BLE001
+                        continue
+                applied["contracts_updated"] = sorted(set(updated_contracts))
 
-                    removed_contracts = sorted(set(removed_contracts))
-                    if removed_contracts:
-                        with get_session() as session:
-                            session.exec(
-                                delete(ModuleContract).where(
-                                    ModuleContract.project_id == project_id,
-                                    ModuleContract.path.in_(removed_contracts),
-                                )
+                removed_contracts = sorted(set(removed_contracts))
+                if removed_contracts:
+                    with get_session() as session:
+                        session.exec(
+                            delete(ModuleContract).where(
+                                ModuleContract.project_id == project_id,
+                                ModuleContract.path.in_(removed_contracts),
                             )
-                            session.commit()
-                        applied["contracts_removed"] = removed_contracts
-                except Exception as error:  # noqa: BLE001
-                    applied["reindex_error"] = str(error)
+                        )
+                        session.commit()
+                    applied["contracts_removed"] = removed_contracts
+            except Exception as error:  # noqa: BLE001
+                applied["reindex_error"] = str(error)
 
                 with get_session() as session:
                     patched_nodes = session.exec(
@@ -408,15 +413,15 @@ def _ensure_node_exists(project_id: int, org_id: int, target: str, root: Path) -
         return
 
     try:
+        abs_target, rel_norm = resolve_under_root(
+            root, target, max_length=settings.max_rel_path_chars
+        )
+        if not abs_target.exists():
+            raise FileNotFoundError(rel_norm)
+        if not abs_target.is_file():
+            raise ValueError("Цель должна быть файлом")
+        scan_files(project_id, org_id, root, [target])
         with project_lock(project_id):
-            abs_target, rel_norm = resolve_under_root(
-                root, target, max_length=settings.max_rel_path_chars
-            )
-            if not abs_target.exists():
-                raise FileNotFoundError(rel_norm)
-            if not abs_target.is_file():
-                raise ValueError("Цель должна быть файлом")
-            scan_files(project_id, org_id, root, [target])
             compute_graph_metrics(project_id)
     except ProjectLockTimeout as exc:
         raise LockedError(
