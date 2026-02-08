@@ -1,8 +1,9 @@
 import sys
 import unittest
-from unittest import mock
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from starlette.requests import Request
 
@@ -77,6 +78,58 @@ class _FakeSession:
             self.added.id = 1
 
 
+class _FakeSessionIntegrity:
+    def __init__(self) -> None:
+        self.advisory_called = False
+        self.select_calls = 0
+        self.added: list[Organization] = []
+        self.persisted = [
+            Organization(
+                id=7,
+                name="Personal",
+                slug="personal",
+                created_at=datetime.now(timezone.utc),
+            )
+        ]
+        self.flush_calls = 0
+        self.rollback_calls = 0
+
+    def __enter__(self) -> "_FakeSessionIntegrity":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def begin(self) -> _FakeBegin:
+        return _FakeBegin()
+
+    def get_bind(self) -> _FakeBind:
+        return _FakeBind()
+
+    def exec(self, statement, params=None) -> _FakeResult:
+        sql_text = str(statement)
+        if "pg_advisory_xact_lock" in sql_text:
+            self.advisory_called = True
+            return _FakeResult([])
+        if "organization.slug" in sql_text:
+            return _FakeResult(self.persisted)
+        if "organization.id" in sql_text:
+            self.select_calls += 1
+            return _FakeResult([])
+        return _FakeResult([])
+
+    def add(self, obj: Organization) -> None:
+        self.added.append(obj)
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+        raise policy.IntegrityError("INSERT", {}, Exception("conflict"))
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
+        self.added = []
+
+
 class TestResolveOrgUnauthSqlite(unittest.TestCase):
     def _request(self) -> Request:
         scope = {"type": "http", "headers": []}
@@ -95,6 +148,21 @@ class TestResolveOrgUnauthSqlite(unittest.TestCase):
         self.assertFalse(session.advisory_called)
         self.assertEqual(session.select_calls, 2)
         self.assertIsInstance(session.added, Organization)
+        self.assertEqual(session.added.slug, "personal")
+
+    def test_reuses_personal_on_slug_conflict(self) -> None:
+        session = _FakeSessionIntegrity()
+
+        def _get_session() -> _FakeSessionIntegrity:
+            return session
+
+        with mock.patch("app.policy.get_session", _get_session):
+            org_id = policy._resolve_org_id_unauth(self._request())
+
+        self.assertEqual(org_id, session.persisted[0].id)
+        self.assertEqual(len(session.persisted), 1)
+        self.assertEqual(session.flush_calls, 1)
+        self.assertEqual(session.rollback_calls, 1)
 
 
 if __name__ == "__main__":
