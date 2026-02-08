@@ -818,13 +818,20 @@ def _prepare_scan_files(
                                 )
                                 embedding_warned_limit = True
                             continue
+                        # Embeddings are best-effort and should not block core indexing.
                         try:
                             response = client.embeddings.create(
                                 model=settings.embeddings_model,
                                 input=chunks,
                             )
                         except Exception as e:  # noqa: BLE001
-                            raise RuntimeError(f"Embeddings request failed for {rel}: {e}") from e
+                            logger.warning(
+                                "Embeddings request failed for %s; skipping embeddings: %s",
+                                rel,
+                                e,
+                                exc_info=True,
+                            )
+                            continue
                         if can_generate_embeddings and existing_hashes:
                             embedding_paths_to_delete.append(rel)
                         for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
