@@ -47,6 +47,10 @@ class Settings(BaseSettings):
         default=50_000_000,
         alias="STUBGRAPH_SNAPSHOT_MAX_FILE_BYTES",
     )
+    scan_hash_verify_max_file_bytes: int | None = Field(
+        default=None,
+        alias="STUBGRAPH_SCAN_HASH_VERIFY_MAX_FILE_BYTES",
+    )
     snapshot_max_unpacked_bytes: int = Field(
         default=1_000_000_000,
         alias="STUBGRAPH_SNAPSHOT_MAX_UNPACKED_BYTES",
@@ -219,6 +223,12 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_SNAPSHOT_MAX_FILES должен быть положительным")
         if self.snapshot_max_file_bytes <= 0:
             raise ValueError("STUBGRAPH_SNAPSHOT_MAX_FILE_BYTES должен быть положительным")
+        if self.scan_hash_verify_max_file_bytes is None:
+            self.scan_hash_verify_max_file_bytes = self.snapshot_max_file_bytes
+        if self.scan_hash_verify_max_file_bytes <= 0:
+            raise ValueError(
+                "STUBGRAPH_SCAN_HASH_VERIFY_MAX_FILE_BYTES должен быть положительным"
+            )
         if self.snapshot_max_unpacked_bytes <= 0:
             raise ValueError("STUBGRAPH_SNAPSHOT_MAX_UNPACKED_BYTES должен быть положительным")
         if not isinstance(self.allow_local_root_path, bool):
