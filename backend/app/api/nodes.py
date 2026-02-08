@@ -62,6 +62,12 @@ def _removed_neighbors(reindexed: object) -> list[str] | None:
     return None
 
 
+def _scan_aborted(reindexed: object) -> bool:
+    if isinstance(reindexed, dict):
+        return bool(reindexed.get("aborted"))
+    return False
+
+
 router = APIRouter(prefix="/nodes", tags=["nodes"])
 logger = get_logger("stubgraph.api")
 
@@ -108,12 +114,17 @@ def node(request: Request, project_id: int, path: str):
         ).first()
     if not n:
         try:
-            with project_lock(project_id):
-                if not abs_path.exists():
-                    raise NotFoundError("Файл не найден", context={"path": rel_norm})
-                if not abs_path.is_file():
-                    raise BadRequestError("Цель должна быть файлом")
-                reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
+            if not abs_path.exists():
+                raise NotFoundError("Файл не найден", context={"path": rel_norm})
+            if not abs_path.is_file():
+                raise BadRequestError("Цель должна быть файлом")
+            reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
+            if _scan_aborted(reindexed):
+                logger.warning(
+                    "Scan aborted during node lookup",
+                    extra={"path": rel_norm, "operation": "node_lookup"},
+                )
+            else:
                 removed_neighbors = _removed_neighbors(reindexed)
                 update_graph_metrics_incremental(
                     project_id,
@@ -197,60 +208,85 @@ def update_file(
                 raise BadRequestError("Цель должна быть файлом")
             previous_content = abs_path.read_text(encoding="utf-8", errors="replace")
             abs_path.write_text(content, encoding="utf-8")
-            try:
-                reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
-                removed_neighbors = _removed_neighbors(reindexed)
-                update_graph_metrics_incremental(
-                    project_id,
-                    [rel_norm],
-                    removed_edge_neighbors=removed_neighbors,
-                )
-            except Exception as error:  # noqa: BLE001
-                logger.exception(
-                    "Scan failed after update_file",
-                    extra={"path": rel_norm, "operation": "update_file"},
-                )
-                rescan_task = scan_with_background(
-                    project_id,
-                    project.org_id,
-                    background=True,
-                    background_tasks=background_tasks,
-                )
-                rollback_ok = False
-                try:
-                    abs_path.write_text(previous_content, encoding="utf-8")
-                    rollback_ok = True
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "Rollback failed after update_file",
-                        extra={"path": rel_norm, "operation": "update_file"},
-                    )
-                if rollback_ok:
-                    return {
-                        "path": rel_norm,
-                        "saved": False,
-                        "reindexed": False,
-                        "rollback": "ok",
-                        "partial": False,
-                        "rescan_task": rescan_task,
-                        "rescan_scheduled": True,
-                        "error": str(error),
-                    }
-                return {
-                    "path": rel_norm,
-                    "saved": True,
-                    "reindexed": False,
-                    "rollback": "failed",
-                    "partial": True,
-                    "rescan_task": rescan_task,
-                    "rescan_scheduled": True,
-                    "error": str(error),
-                }
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
             context={"project_id": project_id},
         ) from exc
+
+    try:
+        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
+        if _scan_aborted(reindexed):
+            logger.warning(
+                "Scan aborted after update_file",
+                extra={"path": rel_norm, "operation": "update_file"},
+            )
+            rescan_task = scan_with_background(
+                project_id,
+                project.org_id,
+                background=True,
+                background_tasks=background_tasks,
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "aborted": True,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+            }
+        removed_neighbors = _removed_neighbors(reindexed)
+        update_graph_metrics_incremental(
+            project_id,
+            [rel_norm],
+            removed_edge_neighbors=removed_neighbors,
+        )
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
+    except Exception as error:  # noqa: BLE001
+        logger.exception(
+            "Scan failed after update_file",
+            extra={"path": rel_norm, "operation": "update_file"},
+        )
+        rescan_task = scan_with_background(
+            project_id,
+            project.org_id,
+            background=True,
+            background_tasks=background_tasks,
+        )
+        rollback_ok = False
+        try:
+            abs_path.write_text(previous_content, encoding="utf-8")
+            rollback_ok = True
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rollback failed after update_file",
+                extra={"path": rel_norm, "operation": "update_file"},
+            )
+        if rollback_ok:
+            return {
+                "path": rel_norm,
+                "saved": False,
+                "reindexed": False,
+                "rollback": "ok",
+                "partial": False,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
+        return {
+            "path": rel_norm,
+            "saved": True,
+            "reindexed": False,
+            "rollback": "failed",
+            "partial": True,
+            "rescan_task": rescan_task,
+            "rescan_scheduled": True,
+            "error": str(error),
+        }
 
     return {"path": rel_norm, "saved": True, "reindexed": reindexed}
 
@@ -283,61 +319,86 @@ def create_file(
                 parent.mkdir(parents=True, exist_ok=True)
 
             abs_path.write_text(content, encoding="utf-8")
-            try:
-                reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
-                removed_neighbors = _removed_neighbors(reindexed)
-                update_graph_metrics_incremental(
-                    project_id,
-                    [rel_norm],
-                    removed_edge_neighbors=removed_neighbors,
-                )
-            except Exception as error:  # noqa: BLE001
-                logger.exception(
-                    "Scan failed after create_file",
-                    extra={"path": rel_norm, "operation": "create_file"},
-                )
-                rescan_task = scan_with_background(
-                    project_id,
-                    project.org_id,
-                    background=True,
-                    background_tasks=background_tasks,
-                )
-                rollback_ok = False
-                try:
-                    if abs_path.exists():
-                        abs_path.unlink()
-                    rollback_ok = True
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "Rollback failed after create_file",
-                        extra={"path": rel_norm, "operation": "create_file"},
-                    )
-                if rollback_ok:
-                    return {
-                        "path": rel_norm,
-                        "saved": False,
-                        "reindexed": False,
-                        "rollback": "ok",
-                        "partial": False,
-                        "rescan_task": rescan_task,
-                        "rescan_scheduled": True,
-                        "error": str(error),
-                    }
-                return {
-                    "path": rel_norm,
-                    "saved": True,
-                    "reindexed": False,
-                    "rollback": "failed",
-                    "partial": True,
-                    "rescan_task": rescan_task,
-                    "rescan_scheduled": True,
-                    "error": str(error),
-                }
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
             context={"project_id": project_id},
         ) from exc
+
+    try:
+        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
+        if _scan_aborted(reindexed):
+            logger.warning(
+                "Scan aborted after create_file",
+                extra={"path": rel_norm, "operation": "create_file"},
+            )
+            rescan_task = scan_with_background(
+                project_id,
+                project.org_id,
+                background=True,
+                background_tasks=background_tasks,
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "aborted": True,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+            }
+        removed_neighbors = _removed_neighbors(reindexed)
+        update_graph_metrics_incremental(
+            project_id,
+            [rel_norm],
+            removed_edge_neighbors=removed_neighbors,
+        )
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
+    except Exception as error:  # noqa: BLE001
+        logger.exception(
+            "Scan failed after create_file",
+            extra={"path": rel_norm, "operation": "create_file"},
+        )
+        rescan_task = scan_with_background(
+            project_id,
+            project.org_id,
+            background=True,
+            background_tasks=background_tasks,
+        )
+        rollback_ok = False
+        try:
+            if abs_path.exists():
+                abs_path.unlink()
+            rollback_ok = True
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rollback failed after create_file",
+                extra={"path": rel_norm, "operation": "create_file"},
+            )
+        if rollback_ok:
+            return {
+                "path": rel_norm,
+                "saved": False,
+                "reindexed": False,
+                "rollback": "ok",
+                "partial": False,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
+        return {
+            "path": rel_norm,
+            "saved": True,
+            "reindexed": False,
+            "rollback": "failed",
+            "partial": True,
+            "rescan_task": rescan_task,
+            "rescan_scheduled": True,
+            "error": str(error),
+        }
 
     return {"path": rel_norm, "saved": True, "reindexed": reindexed}
 
@@ -382,61 +443,86 @@ def rename_file(
                 raise BadRequestError("Родительский путь должен быть директорией")
 
             abs_path.rename(new_abs)
-            try:
-                reindexed = scan_files(project_id, project.org_id, root, [rel_norm, new_rel])
-                removed_neighbors = _removed_neighbors(reindexed)
-                update_graph_metrics_incremental(
-                    project_id,
-                    [rel_norm, new_rel],
-                    removed_edge_neighbors=removed_neighbors,
-                )
-            except Exception as error:  # noqa: BLE001
-                logger.exception(
-                    "Scan failed after rename_file",
-                    extra={"path": rel_norm, "operation": "rename_file"},
-                )
-                rescan_task = scan_with_background(
-                    project_id,
-                    project.org_id,
-                    background=True,
-                    background_tasks=background_tasks,
-                )
-                rollback_ok = False
-                try:
-                    if new_abs.exists():
-                        new_abs.rename(abs_path)
-                    rollback_ok = True
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "Rollback failed after rename_file",
-                        extra={"path": rel_norm, "operation": "rename_file"},
-                    )
-                if rollback_ok:
-                    return {
-                        "path": rel_norm,
-                        "saved": False,
-                        "reindexed": False,
-                        "rollback": "ok",
-                        "partial": False,
-                        "rescan_task": rescan_task,
-                        "rescan_scheduled": True,
-                        "error": str(error),
-                    }
-                return {
-                    "path": new_rel,
-                    "saved": True,
-                    "reindexed": False,
-                    "rollback": "failed",
-                    "partial": True,
-                    "rescan_task": rescan_task,
-                    "rescan_scheduled": True,
-                    "error": str(error),
-                }
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
             context={"project_id": project_id},
         ) from exc
+
+    try:
+        reindexed = scan_files(project_id, project.org_id, root, [rel_norm, new_rel])
+        if _scan_aborted(reindexed):
+            logger.warning(
+                "Scan aborted after rename_file",
+                extra={"path": rel_norm, "operation": "rename_file"},
+            )
+            rescan_task = scan_with_background(
+                project_id,
+                project.org_id,
+                background=True,
+                background_tasks=background_tasks,
+            )
+            return {
+                "path": new_rel,
+                "saved": True,
+                "reindexed": False,
+                "aborted": True,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+            }
+        removed_neighbors = _removed_neighbors(reindexed)
+        update_graph_metrics_incremental(
+            project_id,
+            [rel_norm, new_rel],
+            removed_edge_neighbors=removed_neighbors,
+        )
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
+    except Exception as error:  # noqa: BLE001
+        logger.exception(
+            "Scan failed after rename_file",
+            extra={"path": rel_norm, "operation": "rename_file"},
+        )
+        rescan_task = scan_with_background(
+            project_id,
+            project.org_id,
+            background=True,
+            background_tasks=background_tasks,
+        )
+        rollback_ok = False
+        try:
+            if new_abs.exists():
+                new_abs.rename(abs_path)
+            rollback_ok = True
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rollback failed after rename_file",
+                extra={"path": rel_norm, "operation": "rename_file"},
+            )
+        if rollback_ok:
+            return {
+                "path": rel_norm,
+                "saved": False,
+                "reindexed": False,
+                "rollback": "ok",
+                "partial": False,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
+        return {
+            "path": new_rel,
+            "saved": True,
+            "reindexed": False,
+            "rollback": "failed",
+            "partial": True,
+            "rescan_task": rescan_task,
+            "rescan_scheduled": True,
+            "error": str(error),
+        }
 
     return {"path": new_rel, "saved": True, "reindexed": reindexed}
 
@@ -461,59 +547,84 @@ def delete_file(
 
             previous_content = abs_path.read_text(encoding="utf-8", errors="replace")
             abs_path.unlink()
-            try:
-                reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
-                removed_neighbors = _removed_neighbors(reindexed)
-                update_graph_metrics_incremental(
-                    project_id,
-                    [rel_norm],
-                    removed_edge_neighbors=removed_neighbors,
-                )
-            except Exception as error:  # noqa: BLE001
-                logger.exception(
-                    "Scan failed after delete_file",
-                    extra={"path": rel_norm, "operation": "delete_file"},
-                )
-                rescan_task = scan_with_background(
-                    project_id,
-                    project.org_id,
-                    background=True,
-                    background_tasks=background_tasks,
-                )
-                rollback_ok = False
-                try:
-                    abs_path.write_text(previous_content, encoding="utf-8")
-                    rollback_ok = True
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "Rollback failed after delete_file",
-                        extra={"path": rel_norm, "operation": "delete_file"},
-                    )
-                if rollback_ok:
-                    return {
-                        "path": rel_norm,
-                        "saved": False,
-                        "reindexed": False,
-                        "rollback": "ok",
-                        "partial": False,
-                        "rescan_task": rescan_task,
-                        "rescan_scheduled": True,
-                        "error": str(error),
-                    }
-                return {
-                    "path": rel_norm,
-                    "saved": True,
-                    "reindexed": False,
-                    "rollback": "failed",
-                    "partial": True,
-                    "rescan_task": rescan_task,
-                    "rescan_scheduled": True,
-                    "error": str(error),
-                }
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
             context={"project_id": project_id},
         ) from exc
+
+    try:
+        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
+        if _scan_aborted(reindexed):
+            logger.warning(
+                "Scan aborted after delete_file",
+                extra={"path": rel_norm, "operation": "delete_file"},
+            )
+            rescan_task = scan_with_background(
+                project_id,
+                project.org_id,
+                background=True,
+                background_tasks=background_tasks,
+            )
+            return {
+                "path": rel_norm,
+                "saved": True,
+                "reindexed": False,
+                "aborted": True,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+            }
+        removed_neighbors = _removed_neighbors(reindexed)
+        update_graph_metrics_incremental(
+            project_id,
+            [rel_norm],
+            removed_edge_neighbors=removed_neighbors,
+        )
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
+    except Exception as error:  # noqa: BLE001
+        logger.exception(
+            "Scan failed after delete_file",
+            extra={"path": rel_norm, "operation": "delete_file"},
+        )
+        rescan_task = scan_with_background(
+            project_id,
+            project.org_id,
+            background=True,
+            background_tasks=background_tasks,
+        )
+        rollback_ok = False
+        try:
+            abs_path.write_text(previous_content, encoding="utf-8")
+            rollback_ok = True
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rollback failed after delete_file",
+                extra={"path": rel_norm, "operation": "delete_file"},
+            )
+        if rollback_ok:
+            return {
+                "path": rel_norm,
+                "saved": False,
+                "reindexed": False,
+                "rollback": "ok",
+                "partial": False,
+                "rescan_task": rescan_task,
+                "rescan_scheduled": True,
+                "error": str(error),
+            }
+        return {
+            "path": rel_norm,
+            "saved": True,
+            "reindexed": False,
+            "rollback": "failed",
+            "partial": True,
+            "rescan_task": rescan_task,
+            "rescan_scheduled": True,
+            "error": str(error),
+        }
 
     return {"path": rel_norm, "saved": True, "reindexed": reindexed}
