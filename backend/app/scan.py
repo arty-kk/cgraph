@@ -349,6 +349,9 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
 
         removed = sorted(set(existing_map.keys()) - set(current_paths))
         candidates: list[str] = []
+        hash_verify_max_bytes = int(
+            settings.scan_hash_verify_max_file_bytes or settings.snapshot_max_file_bytes
+        )
         for rel in current_paths:
             mtime_ns, size = stats_map.get(rel, (0, 0))
             prev = existing_map.get(rel)
@@ -357,6 +360,23 @@ def scan_project(project_id: int, org_id: int, project_root: Path) -> dict:
                 continue
             prev_mtime_ns, prev_size, _prev_hash = prev
             if int(prev_size) != int(size) or int(prev_mtime_ns) != int(mtime_ns):
+                candidates.append(rel)
+                continue
+            # Change detection: stat diff first, then optional hash verification
+            # for unchanged stats (content hash for small files, oversized hash for large files).
+            if not _prev_hash:
+                continue
+            if hash_verify_max_bytes > 0 and int(size) > hash_verify_max_bytes:
+                oversized_hash = sha256_text(f"oversized:{size}:{mtime_ns}")
+                if oversized_hash != _prev_hash:
+                    candidates.append(rel)
+                continue
+            try:
+                text = (project_root / rel).read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                candidates.append(rel)
+                continue
+            if sha256_text(text) != _prev_hash:
                 candidates.append(rel)
 
         updated = scan_files(
