@@ -148,20 +148,7 @@ def delete_project(project_id: int, org_id: int) -> None:
                 ).first()
                 if not project:
                     raise NotFoundError("Проект не найден", context={"project_id": project_id})
-                session.exec(delete(FileEdge).where(FileEdge.project_id == project_id))
-                session.exec(delete(FileNode).where(FileNode.project_id == project_id))
-                session.exec(delete(ModuleContract).where(ModuleContract.project_id == project_id))
-                session.exec(delete(ApiRoute).where(ApiRoute.project_id == project_id))
-                session.exec(delete(ApiCall).where(ApiCall.project_id == project_id))
-                session.exec(delete(ApiInclude).where(ApiInclude.project_id == project_id))
-                session.exec(
-                    delete(ApiRouteContract).where(ApiRouteContract.project_id == project_id)
-                )
-                session.exec(delete(ApiCallMeta).where(ApiCallMeta.project_id == project_id))
-                session.exec(delete(TsTypeDef).where(TsTypeDef.project_id == project_id))
-                session.exec(
-                    delete(FileChunkEmbedding).where(FileChunkEmbedding.project_id == project_id)
-                )
+                project_root_path = project.root_path
                 runs = session.exec(
                     select(AnalysisRun).where(AnalysisRun.project_id == project_id)
                 ).all()
@@ -178,15 +165,10 @@ def delete_project(project_id: int, org_id: int) -> None:
                         sha = meta.get("sha256")
                         if isinstance(sha, str) and sha:
                             shas.add(sha)
-                for sha in shas:
-                    delete_patch_blob_for_sha(sha)
-                session.exec(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
-                session.exec(delete(ProjectDoc).where(ProjectDoc.project_id == project_id))
-                session.exec(delete(FileText).where(FileText.project_id == project_id))
                 snapshots = session.exec(
                     select(RepoSnapshot).where(RepoSnapshot.project_id == project_id)
                 ).all()
-                delete_project_snapshot_root(project.root_path)
+                snapshot_payloads: list[tuple[RepoSnapshot, dict]] = []
                 for snap in snapshots:
                     try:
                         payload = json.loads(snap.storage_json or "{}")
@@ -211,34 +193,76 @@ def delete_project(project_id: int, org_id: int) -> None:
                         )
                         if has_other_refs:
                             continue
-                        try:
-                            delete_snapshot(snapshot_meta_from_dict(payload))
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "Snapshot delete failed",
-                                extra={
-                                    "project_id": project_id,
-                                    "snapshot_sha": snap.content_sha256,
-                                    "archive_name": snap.archive_name,
-                                    "error": str(exc),
-                                },
-                            )
-                            cache_set_json(
-                                [
-                                    "snapshot_delete_failed",
-                                    snap.content_sha256,
-                                    str(project_id),
-                                ],
-                                {
-                                    "project_id": project_id,
-                                    "archive_name": snap.archive_name,
-                                    "storage": payload.get("storage"),
-                                    "error": str(exc),
-                                },
-                            )
+                        snapshot_payloads.append((snap, payload))
+                session.exec(delete(FileEdge).where(FileEdge.project_id == project_id))
+                session.exec(delete(FileNode).where(FileNode.project_id == project_id))
+                session.exec(delete(ModuleContract).where(ModuleContract.project_id == project_id))
+                session.exec(delete(ApiRoute).where(ApiRoute.project_id == project_id))
+                session.exec(delete(ApiCall).where(ApiCall.project_id == project_id))
+                session.exec(delete(ApiInclude).where(ApiInclude.project_id == project_id))
+                session.exec(
+                    delete(ApiRouteContract).where(ApiRouteContract.project_id == project_id)
+                )
+                session.exec(delete(ApiCallMeta).where(ApiCallMeta.project_id == project_id))
+                session.exec(delete(TsTypeDef).where(TsTypeDef.project_id == project_id))
+                session.exec(
+                    delete(FileChunkEmbedding).where(FileChunkEmbedding.project_id == project_id)
+                )
+                session.exec(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
+                session.exec(delete(ProjectDoc).where(ProjectDoc.project_id == project_id))
+                session.exec(delete(FileText).where(FileText.project_id == project_id))
                 session.exec(delete(RepoSnapshot).where(RepoSnapshot.project_id == project_id))
                 session.exec(delete(Project).where(Project.id == project_id))
                 session.commit()
+            try:
+                delete_project_snapshot_root(project_root_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Project snapshot root delete failed",
+                    extra={
+                        "project_id": project_id,
+                        "root_path": project_root_path,
+                        "error": str(exc),
+                    },
+                )
+                cache_set_json(
+                    ["project_delete_failed", "project_root", str(project_id)],
+                    {"project_id": project_id, "root_path": project_root_path, "error": str(exc)},
+                )
+            for sha in shas:
+                try:
+                    delete_patch_blob_for_sha(sha)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Patch blob delete failed",
+                        extra={"project_id": project_id, "sha": sha, "error": str(exc)},
+                    )
+                    cache_set_json(
+                        ["project_delete_failed", "patch", sha],
+                        {"project_id": project_id, "sha": sha, "error": str(exc)},
+                    )
+            for snap, payload in snapshot_payloads:
+                try:
+                    delete_snapshot(snapshot_meta_from_dict(payload))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Snapshot delete failed",
+                        extra={
+                            "project_id": project_id,
+                            "snapshot_sha": snap.content_sha256,
+                            "archive_name": snap.archive_name,
+                            "error": str(exc),
+                        },
+                    )
+                    cache_set_json(
+                        ["project_delete_failed", "snapshot", snap.content_sha256],
+                        {
+                            "project_id": project_id,
+                            "archive_name": snap.archive_name,
+                            "storage": payload.get("storage"),
+                            "error": str(exc),
+                        },
+                    )
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
