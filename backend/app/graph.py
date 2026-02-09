@@ -663,32 +663,6 @@ def search_semantic(
         except Exception:
             max_results_eff = max_results_eff
 
-    try:
-        client = get_openai_client()
-        resp = client.embeddings.create(model=settings.embeddings_model, input=[q])
-    except Exception as e:  # noqa: BLE001
-        return {
-            "error": "embedding_failed",
-            "message": f"Failed to get embedding: {e}",
-            "meta": {"reason": "embedding_failed"},
-        }
-
-    data = getattr(resp, "data", None) or []
-    if not data:
-        return {
-            "error": "embedding_empty",
-            "message": "Embedding response is empty.",
-            "meta": {"reason": "embedding_empty"},
-        }
-
-    query_embedding = getattr(data[0], "embedding", None)
-    if not isinstance(query_embedding, list) or not query_embedding:
-        return {
-            "error": "embedding_empty",
-            "message": "Embedding vector is missing.",
-            "meta": {"reason": "embedding_empty"},
-        }
-
     filters = [FileChunkEmbedding.project_id == project_id]
     if prefix_norm:
         like = f"{prefix_norm}/%"
@@ -731,6 +705,32 @@ def search_semantic(
             .order_by(FileChunkEmbedding.path.asc(), FileChunkEmbedding.chunk_index.asc())
             .limit(int(max_candidates))
         ).all()
+
+    try:
+        client = get_openai_client()
+        resp = client.embeddings.create(model=settings.embeddings_model, input=[q])
+    except Exception as e:  # noqa: BLE001
+        return {
+            "error": "embedding_failed",
+            "message": f"Failed to get embedding: {e}",
+            "meta": {"reason": "embedding_failed"},
+        }
+
+    data = getattr(resp, "data", None) or []
+    if not data:
+        return {
+            "error": "embedding_empty",
+            "message": "Embedding response is empty.",
+            "meta": {"reason": "embedding_empty"},
+        }
+
+    query_embedding = getattr(data[0], "embedding", None)
+    if not isinstance(query_embedding, list) or not query_embedding:
+        return {
+            "error": "embedding_empty",
+            "message": "Embedding vector is missing.",
+            "meta": {"reason": "embedding_empty"},
+        }
 
     compared = 0
     scored: list[dict] = []
