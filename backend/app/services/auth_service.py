@@ -7,12 +7,17 @@ import hmac
 import os
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from ..config import settings
 from ..db import get_session
 from ..errors import BadRequestError, NotFoundError, UnauthorizedError
-from ..models import ApiKey, Organization, OrgMembership, User, UserSession
+from ..models import ApiKey, BootstrapSentinel, Organization, OrgMembership, User, UserSession
+
+_BOOTSTRAP_LOCK_KEY = 104729
+_BOOTSTRAP_SENTINEL_KEY = "bootstrap"
 
 
 def _hash_password(password: str, *, salt: bytes | None = None) -> str:
@@ -78,14 +83,26 @@ def bootstrap_user(email: str, password: str) -> User:
     if not isinstance(password, str) or len(password) < 8:
         raise BadRequestError("Пароль должен быть не короче 8 символов")
     with get_session() as session:
-        existing = session.exec(select(User).limit(1)).first()
-        if existing:
-            raise BadRequestError("Bootstrap уже выполнен")
-        user = User(email=email.strip().lower(), password_hash=_hash_password(password))
-        session.add(user)
-        session.flush()
-        _create_default_org(session, user)
-        session.commit()
+        with session.begin():
+            dialect = session.get_bind().dialect.name
+            if dialect == "postgresql":
+                session.exec(
+                    text("SELECT pg_advisory_xact_lock(:key)"),
+                    {"key": _BOOTSTRAP_LOCK_KEY},
+                )
+            else:
+                try:
+                    session.add(BootstrapSentinel(key=_BOOTSTRAP_SENTINEL_KEY))
+                    session.flush()
+                except IntegrityError as exc:
+                    raise BadRequestError("Bootstrap уже выполнен") from exc
+            existing = session.exec(select(User).limit(1)).first()
+            if existing:
+                raise BadRequestError("Bootstrap уже выполнен")
+            user = User(email=email.strip().lower(), password_hash=_hash_password(password))
+            session.add(user)
+            session.flush()
+            _create_default_org(session, user)
         session.refresh(user)
         return user
 
