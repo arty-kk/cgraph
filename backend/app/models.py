@@ -28,6 +28,13 @@ class User(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
+class BootstrapSentinel(SQLModel, table=True):
+    __tablename__ = "bootstrapsentinel"
+    __table_args__ = (UniqueConstraint("key", name="uq_bootstrapsentinel_key"),)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key: str = Field(index=True)
+
+
 class Organization(SQLModel, table=True):
     __tablename__ = "organization"
     __table_args__ = (Index("uq_organization_slug", "slug", unique=True),)
