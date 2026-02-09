@@ -42,7 +42,7 @@ from ..patches import delete_patch_blob_for_sha
 from ..scan import SEARCH_INDEX_MAX_CHARS, scan_project
 from ..search import search_text_paths
 from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
-from ..services.usage_service import EMBEDDING_QUERY_KIND, check_and_increment
+from ..services.usage_service import EMBEDDING_QUERY_KIND, check_and_increment, check_usage_limit
 from ..snapshots import (
     SnapshotMeta,
     delete_project_snapshot_root,
@@ -610,9 +610,11 @@ def search_project_semantic(
         raise BadRequestError("Лимит выдачи должен быть между 1 и 200")
 
     ent_embeddings_enabled = get_entitlement_bool(org_id, "embeddings_enabled")
-    if settings.embeddings_enabled and ent_embeddings_enabled is not False:
+    usage_enabled = settings.embeddings_enabled and ent_embeddings_enabled is not False
+    query_limit: int | None = None
+    if usage_enabled:
         query_limit = get_entitlement_int(org_id, "embeddings_daily_query_limit")
-        check_and_increment(
+        check_usage_limit(
             org_id,
             EMBEDDING_QUERY_KIND,
             1,
@@ -631,6 +633,13 @@ def search_project_semantic(
         reason = meta.get("reason") if isinstance(meta, dict) else None
         context = {"reason": reason} if isinstance(reason, str) and reason else None
         raise BadRequestError(message, context=context)
+    if usage_enabled:
+        check_and_increment(
+            org_id,
+            EMBEDDING_QUERY_KIND,
+            1,
+            query_limit if query_limit is not None else settings.embeddings_daily_query_limit,
+        )
     return response
 
 
