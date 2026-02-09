@@ -116,7 +116,14 @@ def store_snapshot_blob(data: bytes, archive_name: str) -> SnapshotMeta:
     root_dir = _snapshot_dir(sha)
     root_dir.mkdir(parents=True, exist_ok=True)
     archive_path = _local_archive_path(sha, ext)
-    if not archive_path.exists():
+    if archive_path.exists():
+        needs_update = archive_path.stat().st_size != len(data)
+        if not needs_update:
+            existing_sha = sha256_bytes(archive_path.read_bytes())
+            needs_update = existing_sha != sha
+        if needs_update:
+            archive_path.write_bytes(data)
+    else:
         archive_path.write_bytes(data)
 
     backend = _ensure_storage_backend()
