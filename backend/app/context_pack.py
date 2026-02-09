@@ -9,7 +9,11 @@ from sqlmodel import select
 
 from .contracts import get_or_build_contract
 from .db import get_session
+from .infra.cache import cache_get_json, cache_set_json
+from .logging import get_logger
 from .models import FileEdge, FileNode
+
+logger = get_logger("stubgraph.context_pack")
 
 
 @dataclass
@@ -70,12 +74,59 @@ def pack_context(
     max_total_chars: int = 120000,
 ) -> PackedContext:
     project_root = project_root.resolve()
-    p = project_root / target_rel
-    target_text = p.read_text(encoding="utf-8", errors="replace")[:max_chars_per_file]
+    cache_hits = {"file": 0, "contract": 0}
+    def _file_hash(path: str) -> str | None:
+        with get_session() as s:
+            row = s.exec(
+                select(FileNode.file_hash).where(
+                    FileNode.project_id == project_id, FileNode.path == path
+                )
+            ).first()
+        if isinstance(row, (tuple, list)):
+            row = row[0] if row else None
+        return row if isinstance(row, str) and row else None
+
+    def _read_file_cached(path: str, max_chars: int) -> str:
+        file_hash = _file_hash(path)
+        cache_key = (
+            [f"project:{project_id}", "pack", "file", path, file_hash]
+            if file_hash
+            else None
+        )
+        if cache_key:
+            cached = cache_get_json(cache_key)
+            if isinstance(cached, dict) and isinstance(cached.get("content"), str):
+                cache_hits["file"] += 1
+                return cached["content"][:max_chars]
+        try:
+            content = (project_root / path).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+        content = content[:max_chars]
+        if cache_key:
+            cache_set_json(cache_key, {"content": content})
+        return content
+
+    target_text = _read_file_cached(target_rel, max_chars_per_file)
 
     exports: list[str] = []
     try:
-        _contract = get_or_build_contract(project_id, project_root, target_rel)
+        file_hash = _file_hash(target_rel)
+        contract_key = (
+            [f"project:{project_id}", "pack", "contract", target_rel, file_hash]
+            if file_hash
+            else None
+        )
+        cached_contract = cache_get_json(contract_key) if contract_key else None
+        _contract = (
+            cached_contract
+            if isinstance(cached_contract, dict)
+            else get_or_build_contract(project_id, project_root, target_rel)
+        )
+        if isinstance(cached_contract, dict):
+            cache_hits["contract"] += 1
+        if contract_key and isinstance(_contract, dict):
+            cache_set_json(contract_key, _contract)
         exports = [str(x) for x in _contract.get("exports", []) if isinstance(x, str)]
     except Exception:
         exports = []
@@ -110,11 +161,9 @@ def pack_context(
         abs_p = project_root / path
         if not abs_p.exists() or not abs_p.is_file():
             return
-        try:
-            content = abs_p.read_text(encoding="utf-8", errors="replace")
-        except Exception:
+        content = _read_file_cached(path, max_chars_per_file)
+        if not content:
             return
-        content = content[:max_chars_per_file]
         if total_chars + len(content) > max_total_chars:
             return
         total_chars += len(content)
@@ -161,7 +210,22 @@ def pack_context(
             if dep_mode == "full" or mode == "fix":
                 _add_file(d, "dep_full")
             else:
-                c = get_or_build_contract(project_id, project_root, d)
+                file_hash = _file_hash(d)
+                contract_key = (
+                    [f"project:{project_id}", "pack", "contract", d, file_hash]
+                    if file_hash
+                    else None
+                )
+                cached_contract = cache_get_json(contract_key) if contract_key else None
+                c = (
+                    cached_contract
+                    if isinstance(cached_contract, dict)
+                    else get_or_build_contract(project_id, project_root, d)
+                )
+                if isinstance(cached_contract, dict):
+                    cache_hits["contract"] += 1
+                if contract_key and isinstance(c, dict):
+                    cache_set_json(contract_key, c)
                 contract_size = len(json.dumps(c, ensure_ascii=False))
                 if total_chars + contract_size > max_total_chars:
                     continue
@@ -171,4 +235,13 @@ def pack_context(
             continue
 
     graph = {"target": target_rel, "deps": ordered_deps, "inbound": in_deps, "outbound": out_deps}
+    logger.info(
+        "Context pack cache",
+        extra={
+            "project_id": project_id,
+            "target": target_rel,
+            "file_cache_hits": cache_hits["file"],
+            "contract_cache_hits": cache_hits["contract"],
+        },
+    )
     return PackedContext(target_path=target_rel, files=files, graph=graph)

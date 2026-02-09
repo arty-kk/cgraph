@@ -1,7 +1,8 @@
 // frontend/src/ui/components/ProjectsSidebar.tsx
 import React from 'react'
-import type { Org, Project, ProjectFileItem, NodeSearchItem, SemanticSearchItem } from '../../api'
+import type { Org, Project, ProjectTreeEntry, NodeSearchItem, SemanticSearchItem } from '../../api'
 import { clampInt } from '../../lib/number'
+import { safeStorageGet, safeStorageSet } from '../../lib/storage'
 import type { SemanticSearchErrorReason } from '../../lib/errors'
 import { Modal } from './Modal'
 import { LanguageIcon } from './LanguageIcon'
@@ -61,10 +62,9 @@ type Props = {
   onRenameFile: (path: string, newPath: string) => void | Promise<void>
   onDeleteFile: (path: string) => void | Promise<void>
 
-  projectFiles: ProjectFileItem[]
-  projectFilesMeta: any
-  projectFilesBusy: boolean
+  onRegisterFileMeta?: (entries: ProjectTreeEntry[]) => void
   pinnedPaths: string[]
+  allowLocalRootPath: boolean | null
 
   onOpenDocs: () => void | Promise<void>
 }
@@ -116,10 +116,9 @@ export function ProjectsSidebar({
   onCreateFile,
   onRenameFile,
   onDeleteFile,
-  projectFiles,
-  projectFilesMeta,
-  projectFilesBusy,
+  onRegisterFileMeta,
   pinnedPaths,
+  allowLocalRootPath,
   onOpenDocs,
 }: Props) {
   const [helpOpen, setHelpOpen] = React.useState<null | 'projects' | 'graph' | 'search'>(null)
@@ -159,6 +158,7 @@ export function ProjectsSidebar({
       : semanticSearchUnavailableReason === 'no_embeddings'
         ? 'no embeddings'
       : ''
+  const localRootDisabled = allowLocalRootPath === false
 
   const HelpButton = ({
     topic,
@@ -202,15 +202,11 @@ export function ProjectsSidebar({
 
   type View = 'explorer' | 'manage'
   const [view, setView] = React.useState<View>(() => {
-    try {
-      const v = (localStorage.getItem('cs.ui.sidebarView') || '').trim()
-      return v === 'manage' ? 'manage' : 'explorer'
-    } catch {
-      return 'explorer'
-    }
+    const v = (safeStorageGet('cs.ui.sidebarView', '') || '').trim()
+    return v === 'manage' ? 'manage' : 'explorer'
   })
   React.useEffect(() => {
-    try { localStorage.setItem('cs.ui.sidebarView', view) } catch {}
+    safeStorageSet('cs.ui.sidebarView', view)
   }, [view])
 
   return (
@@ -296,9 +292,7 @@ export function ProjectsSidebar({
                 onCreateFile={onCreateFile}
                 onRenameFile={onRenameFile}
                 onDeleteFile={onDeleteFile}
-                projectFiles={projectFiles}
-                projectFilesMeta={projectFilesMeta}
-                projectFilesBusy={projectFilesBusy}
+                onRegisterFileMeta={onRegisterFileMeta}
                 pinnedPaths={pinnedPaths}
                 showModuleSelect
               />
@@ -424,16 +418,16 @@ export function ProjectsSidebar({
             placeholder="/absolute/path/to/repo"
             value={newPath}
             onChange={(e) => setNewPath(e.target.value)}
-            disabled={busy || Boolean(newArchive)}
+            disabled={busy || Boolean(newArchive) || localRootDisabled}
             title="Absolute path on the backend machine (local-only)"
           />
           <div className="text-xs text-neutral-500 leading-relaxed">
-            Local root_path works only when enabled on the backend.
+            {localRootDisabled ? 'Local root_path is disabled on this server.' : 'Local root_path works only when enabled on the backend.'}
           </div>
           <button
             className={buttonPrimary}
             onClick={() => onCreateProject()}
-            disabled={!newName.trim() || (!newArchive && !newPath.trim()) || busy}
+            disabled={!newName.trim() || (!newArchive && (!newPath.trim() || localRootDisabled)) || busy}
             title="Create project from snapshot or local root_path"
           >
             Create Project

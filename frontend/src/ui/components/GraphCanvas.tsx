@@ -8,6 +8,7 @@ import {
   type CytoscapeGraphActions,
 } from '../hooks/useCytoscapeGraph'
 import { Modal } from './Modal'
+import { safeStorageGet, safeStorageSet } from '../../lib/storage'
 
 const FILTER_STORAGE_KEY = 'cs.graph.filters.v1'
 const LABELS_STORAGE_KEY = 'cs.graph.labels.v1'
@@ -31,17 +32,9 @@ function pidKey(base: string, pid: number | null): string {
   return base
 }
 
-function safeGet(key: string): string | null {
-  try { return localStorage.getItem(key) } catch { return null }
-}
-
-function safeSet(key: string, value: string) {
-  try { localStorage.setItem(key, value) } catch {}
-}
-
 function loadFilters(pid: number | null): GraphFilters {
   const key = pidKey(FILTER_STORAGE_KEY, pid)
-  const raw = safeGet(key)
+  const raw = safeStorageGet(key)
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as Partial<GraphFilters>
@@ -56,7 +49,7 @@ function loadFilters(pid: number | null): GraphFilters {
     } catch {}
   }
 
-  const legacyRaw = safeGet(LEGACY_FILTER_STORAGE_KEY)
+  const legacyRaw = safeStorageGet(LEGACY_FILTER_STORAGE_KEY)
   if (legacyRaw) {
     try {
       const parsed = JSON.parse(legacyRaw) as Partial<GraphFilters>
@@ -68,7 +61,7 @@ function loadFilters(pid: number | null): GraphFilters {
             ? parsed.onlySelectionNeighborhood
             : DEFAULT_FILTERS.onlySelectionNeighborhood,
       }
-      safeSet(key, JSON.stringify(out))
+      safeStorageSet(key, JSON.stringify(out))
       return out
     } catch {}
   }
@@ -78,12 +71,12 @@ function loadFilters(pid: number | null): GraphFilters {
 
 function loadLabelMode(pid: number | null): LabelMode {
   const key = pidKey(LABELS_STORAGE_KEY, pid)
-  const raw = (safeGet(key) || '').trim()
+  const raw = (safeStorageGet(key, '') || '').trim()
   if (raw === 'on' || raw === 'off' || raw === 'auto') return raw
 
-  const legacy = (safeGet(LEGACY_LABELS_STORAGE_KEY) || '').trim()
+  const legacy = (safeStorageGet(LEGACY_LABELS_STORAGE_KEY, '') || '').trim()
   if (legacy === 'on' || legacy === 'off' || legacy === 'auto') {
-    safeSet(key, legacy)
+    safeStorageSet(key, legacy)
     return legacy
   }
   return 'auto'
@@ -91,19 +84,19 @@ function loadLabelMode(pid: number | null): LabelMode {
 
 function loadSpotlight(pid: number | null): boolean {
   const key = pidKey(SPOTLIGHT_STORAGE_KEY, pid)
-  const raw = (safeGet(key) || '').trim()
+  const raw = (safeStorageGet(key, '') || '').trim()
   if (raw === '0') return false
   if (raw === '1') return true
 
-  const legacy = (safeGet(LEGACY_SPOTLIGHT_STORAGE_KEY) || '').trim()
-  if (legacy === '0') { safeSet(key, '0'); return false }
-  if (legacy === '1') { safeSet(key, '1'); return true }
+  const legacy = (safeStorageGet(LEGACY_SPOTLIGHT_STORAGE_KEY, '') || '').trim()
+  if (legacy === '0') { safeStorageSet(key, '0'); return false }
+  if (legacy === '1') { safeStorageSet(key, '1'); return true }
   return true
 }
 
 function loadEdgeDir(pid: number | null): boolean {
   const key = pidKey(EDGE_DIR_STORAGE_KEY, pid)
-  const raw = (safeGet(key) || '').trim()
+  const raw = (safeStorageGet(key, '') || '').trim()
   if (raw === '0') return false
   if (raw === '1') return true
   return true
@@ -545,28 +538,28 @@ export function GraphCanvas({
     if (uiBootingRef.current) return
     const pid = Number(projectId)
     const key = pidKey(FILTER_STORAGE_KEY, Number.isFinite(pid) && pid > 0 ? pid : null)
-    try { localStorage.setItem(key, JSON.stringify(filters)) } catch {}
+    safeStorageSet(key, JSON.stringify(filters))
   }, [filters, projectId])
 
   useEffect(() => {
     if (uiBootingRef.current) return
     const pid = Number(projectId)
     const key = pidKey(LABELS_STORAGE_KEY, Number.isFinite(pid) && pid > 0 ? pid : null)
-    try { localStorage.setItem(key, labelMode) } catch {}
+    safeStorageSet(key, labelMode)
   }, [labelMode, projectId])
 
   useEffect(() => {
     if (uiBootingRef.current) return
     const pid = Number(projectId)
     const key = pidKey(SPOTLIGHT_STORAGE_KEY, Number.isFinite(pid) && pid > 0 ? pid : null)
-    try { localStorage.setItem(key, spotlight ? '1' : '0') } catch {}
+    safeStorageSet(key, spotlight ? '1' : '0')
   }, [spotlight, projectId])
 
   useEffect(() => {
     if (uiBootingRef.current) return
     const pid = Number(projectId)
     const key = pidKey(EDGE_DIR_STORAGE_KEY, Number.isFinite(pid) && pid > 0 ? pid : null)
-    try { localStorage.setItem(key, edgeDirColors ? '1' : '0') } catch {}
+    safeStorageSet(key, edgeDirColors ? '1' : '0')
   }, [edgeDirColors, projectId])
 
   const [panelOpen, setPanelOpen] = useState(false)
@@ -809,9 +802,7 @@ export function GraphCanvas({
     if (!graph || !activeProject) return
     const applyKey = `${layoutKey}::${instanceId}`
     if (loadedLayoutKeyRef.current === applyKey) return
-    const has = (() => {
-      try { return !!localStorage.getItem(layoutKey) } catch { return false }
-    })()
+    const has = Boolean(safeStorageGet(layoutKey))
     if (!has) {
       loadedLayoutKeyRef.current = applyKey
       return

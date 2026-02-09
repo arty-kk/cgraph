@@ -27,6 +27,10 @@ export type {
   ProjectFileItem,
   ProjectFilesResponse,
   ProjectDocs,
+  ProjectTreeEntry,
+  ProjectTreeResponse,
+  FileDependenciesResponse,
+  AppConfig,
 } from './types'
 
 export {
@@ -35,17 +39,23 @@ export {
   createProjectFromSnapshot,
   deleteProject,
   scanProject,
+  scanProjectStatus,
   listProjectFiles,
+  listProjectTreeEntries,
+  getFileDependencies,
   getProjectDocs,
   buildProjectDocs,
+  buildProjectDocsStatus,
   searchProjectSemantic,
   searchProjectText,
 } from './projects'
+export { getAppConfig } from './config'
 export { listOrgs, getOrg, createOrg } from './orgs'
 export { getGraph, getLocalGraph, searchNodes } from './graph'
 export { getNode, getContract, getFileContent, updateFileContent, createFile, renameFile, deleteFile } from './nodes'
 export {
   runTask,
+  runTaskStatus,
   listRuns,
   getRun,
   getRunPatch,

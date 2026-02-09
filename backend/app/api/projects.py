@@ -4,7 +4,6 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
 
-from ..config import settings
 from ..errors import BadRequestError
 from ..policy import require_org_context, require_project_access
 from ..services.docs_service import build_project_docs, get_latest_project_doc
@@ -18,8 +17,10 @@ from ..services.project_service import (
     delete_project as delete_project_service,
 )
 from ..services.project_service import (
+    get_file_dependencies,
     get_latest_snapshots,
     list_project_files,
+    list_project_tree_entries,
     load_graph,
     load_local_graph,
     scan_with_background,
@@ -31,6 +32,7 @@ from ..services.project_service import (
     list_projects as list_projects_service,
 )
 from ..services.task_queue import task_queue
+from ..snapshots import store_snapshot_stream
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -80,23 +82,14 @@ async def create_project_from_snapshot(
     archive: UploadFile = File(...),
 ):
     archive_name = archive.filename or ""
-    chunk_size = 1024 * 1024
-    chunks = bytearray()
-    total_bytes = 0
-    while True:
-        chunk = await archive.read(chunk_size)
-        if not chunk:
-            break
-        total_bytes += len(chunk)
-        if total_bytes > settings.snapshot_max_bytes:
-            raise BadRequestError(
-                "Архив слишком большой",
-                context={"max_bytes": settings.snapshot_max_bytes, "size": total_bytes},
-            )
-        chunks.extend(chunk)
-    data = bytes(chunks)
     _, org_id, _ = require_org_context(request, min_role="member")
-    project = create_project_from_snapshot_service(name, data, archive_name, org_id)
+    try:
+        meta = store_snapshot_stream(archive.file, archive_name)
+    except BadRequestError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise BadRequestError("Не удалось сохранить архив", context={"reason": str(exc)}) from exc
+    project = create_project_from_snapshot_service(name, meta, org_id)
     return _project_response(project, snapshot_label=archive_name)
 
 
@@ -208,6 +201,35 @@ def search_text(
 def files(request: Request, project_id: int, prefix: str | None = None, limit: int = 50_000):
     project = require_project_access(request, project_id, min_role="viewer")
     return list_project_files(project.id, project.org_id, prefix=prefix, limit=limit)
+
+
+@router.get("/{project_id}/files/tree")
+def files_tree(
+    request: Request,
+    project_id: int,
+    prefix: str | None = None,
+    cursor: str | None = None,
+    limit: int = 200,
+):
+    project = require_project_access(request, project_id, min_role="viewer")
+    return list_project_tree_entries(
+        project.id,
+        project.org_id,
+        prefix=prefix,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+@router.get("/{project_id}/dependencies")
+def file_dependencies(
+    request: Request,
+    project_id: int,
+    path: str,
+    limit: int = 2000,
+):
+    project = require_project_access(request, project_id, min_role="viewer")
+    return get_file_dependencies(project.id, project.org_id, path, limit=limit)
 
 
 @router.post("/{project_id}/docs/build")

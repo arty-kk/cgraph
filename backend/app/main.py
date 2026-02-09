@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api.auth import router as auth_router
+from .api.config import router as config_router
 from .api.nodes import router as nodes_router
 from .api.orgs import router as orgs_router
 from .api.projects import router as projects_router
@@ -71,11 +72,13 @@ app.include_router(nodes_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(orgs_router, prefix="/api")
+app.include_router(config_router, prefix="/api")
 app.include_router(projects_router, prefix="/api/v1")
 app.include_router(nodes_router, prefix="/api/v1")
 app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(orgs_router, prefix="/api/v1")
+app.include_router(config_router, prefix="/api/v1")
 
 
 @app.get("/health")

@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.config import settings  # noqa: E402
-from app.snapshots import prepare_snapshot_root, store_snapshot_blob  # noqa: E402
+from app.snapshots import prepare_snapshot_root, store_snapshot_blob, store_snapshot_stream  # noqa: E402
 
 
 class TestSnapshots(unittest.TestCase):
@@ -23,6 +23,44 @@ class TestSnapshots(unittest.TestCase):
                 with zipfile.ZipFile(buffer, "w") as zf:
                     zf.writestr("repo/README.md", "hello")
                 meta = store_snapshot_blob(buffer.getvalue(), "repo.zip")
+                root = prepare_snapshot_root(meta)
+                self.assertTrue((root / "repo" / "README.md").exists())
+        finally:
+            settings.db_dir = original_dir
+            settings.storage_backend = original_backend
+
+    def test_store_snapshot_stream_enforces_limit(self) -> None:
+        original_dir = settings.db_dir
+        original_backend = settings.storage_backend
+        original_limit = settings.snapshot_max_bytes
+        try:
+            with TemporaryDirectory() as tmpdir:
+                settings.db_dir = Path(tmpdir)
+                settings.storage_backend = "local"
+                settings.snapshot_max_bytes = 20
+                buffer = io.BytesIO()
+                with zipfile.ZipFile(buffer, "w") as zf:
+                    zf.writestr("repo/README.md", "hello world")
+                buffer.seek(0)
+                with self.assertRaises(Exception):
+                    store_snapshot_stream(buffer, "repo.zip")
+        finally:
+            settings.db_dir = original_dir
+            settings.storage_backend = original_backend
+            settings.snapshot_max_bytes = original_limit
+
+    def test_store_snapshot_stream_ok(self) -> None:
+        original_dir = settings.db_dir
+        original_backend = settings.storage_backend
+        try:
+            with TemporaryDirectory() as tmpdir:
+                settings.db_dir = Path(tmpdir)
+                settings.storage_backend = "local"
+                buffer = io.BytesIO()
+                with zipfile.ZipFile(buffer, "w") as zf:
+                    zf.writestr("repo/README.md", "hello")
+                buffer.seek(0)
+                meta = store_snapshot_stream(buffer, "repo.zip")
                 root = prepare_snapshot_root(meta)
                 self.assertTrue((root / "repo" / "README.md").exists())
         finally:

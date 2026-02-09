@@ -1,8 +1,14 @@
 // frontend/src/api/projects.ts
 import { api } from './client'
-import type { 
-  Project, ScanResult, TaskPollOptions,
-  TaskStatus, ProjectFilesResponse, ProjectDocs,
+import type {
+  Project,
+  ScanResult,
+  TaskPollOptions,
+  TaskStatus,
+  ProjectFilesResponse,
+  ProjectDocs,
+  ProjectTreeResponse,
+  FileDependenciesResponse,
   SemanticSearchResult,
   TextSearchResult,
 } from './types'
@@ -38,10 +44,41 @@ export async function scanProject(projectId: number, opts: TaskPollOptions = {})
   return waitForTaskResult<ScanResult>(initial, opts)
 }
 
-export async function listProjectFiles(projectId: number, prefix?: string, limit = 50_000): Promise<ProjectFilesResponse> {
+export async function scanProjectStatus(
+  projectId: number,
+  opts: TaskPollOptions = {},
+): Promise<ScanResult | TaskStatus> {
+  const background = opts.background ?? true
+  const r = await api.post(`/api/projects/${projectId}/scan`, null, { params: { background } })
+  return r.data
+}
+
+export async function listProjectFiles(projectId: number, prefix?: string, limit = 2_000): Promise<ProjectFilesResponse> {
   const params: any = { limit }
   if (typeof prefix === 'string' && prefix.trim()) params.prefix = prefix.trim()
   const r = await api.get(`/api/projects/${projectId}/files`, { params })
+  return r.data
+}
+
+export async function listProjectTreeEntries(
+  projectId: number,
+  opts: { prefix?: string; cursor?: string; limit?: number } = {},
+): Promise<ProjectTreeResponse> {
+  const params: Record<string, any> = {}
+  if (typeof opts.prefix === 'string' && opts.prefix.trim()) params.prefix = opts.prefix.trim()
+  if (typeof opts.cursor === 'string' && opts.cursor.trim()) params.cursor = opts.cursor.trim()
+  if (typeof opts.limit === 'number') params.limit = opts.limit
+  const r = await api.get(`/api/projects/${projectId}/files/tree`, { params })
+  return r.data
+}
+
+export async function getFileDependencies(
+  projectId: number,
+  path: string,
+  limit = 2000,
+): Promise<FileDependenciesResponse> {
+  const params: Record<string, any> = { path, limit }
+  const r = await api.get(`/api/projects/${projectId}/dependencies`, { params })
   return r.data
 }
 
@@ -54,6 +91,15 @@ export async function buildProjectDocs(projectId: number, opts: TaskPollOptions 
   const background = opts.background ?? true
   const r = await api.post(`/api/projects/${projectId}/docs/build`, null, { params: { background } })
   return waitForTaskResult<ProjectDocs>(r.data, opts)
+}
+
+export async function buildProjectDocsStatus(
+  projectId: number,
+  opts: TaskPollOptions = {},
+): Promise<ProjectDocs | TaskStatus> {
+  const background = opts.background ?? true
+  const r = await api.post(`/api/projects/${projectId}/docs/build`, null, { params: { background } })
+  return r.data
 }
 
 export async function searchProjectSemantic(

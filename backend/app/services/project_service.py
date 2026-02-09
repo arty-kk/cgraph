@@ -19,6 +19,7 @@ from ..graph import (
     search_semantic,
 )
 from ..infra.cache import cache_get_json, cache_invalidate_prefix, cache_set_json
+from ..logging import get_logger
 from ..models import (
     AnalysisRun,
     ApiCall,
@@ -43,6 +44,7 @@ from ..search import search_text_paths
 from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from ..services.usage_service import EMBEDDING_QUERY_KIND, check_and_increment
 from ..snapshots import (
+    SnapshotMeta,
     delete_project_snapshot_root,
     delete_snapshot,
     prepare_project_snapshot_root,
@@ -51,6 +53,8 @@ from ..snapshots import (
 )
 from ..utils import ProjectLockTimeout, normalize_project_root, project_lock, resolve_under_root
 from .task_queue import get_scan_idempotency_key, task_queue
+
+logger = get_logger("stubgraph.project_service")
 
 
 def _get_active_scan_task(project_id: int, org_id: int) -> tuple[str | None, str | None]:
@@ -82,11 +86,9 @@ def create_project(name: str, root_path: str, org_id: int) -> Project:
 
 def create_project_from_snapshot(
     name: str,
-    archive_bytes: bytes,
-    archive_name: str,
+    meta: SnapshotMeta,
     org_id: int,
 ) -> Project:
-    meta = store_snapshot_blob(archive_bytes, archive_name)
     root = prepare_project_snapshot_root(meta)
     root = normalize_project_root(str(root), max_length=settings.max_root_path_chars)
     with get_session() as session:
@@ -104,6 +106,16 @@ def create_project_from_snapshot(
         session.add(snapshot)
         session.commit()
     return project
+
+
+def create_project_from_snapshot_blob(
+    name: str,
+    archive_bytes: bytes,
+    archive_name: str,
+    org_id: int,
+) -> Project:
+    meta = store_snapshot_blob(archive_bytes, archive_name)
+    return create_project_from_snapshot(name, meta, org_id)
 
 
 def list_projects(org_id: int) -> list[Project]:
@@ -201,8 +213,29 @@ def delete_project(project_id: int, org_id: int) -> None:
                             continue
                         try:
                             delete_snapshot(snapshot_meta_from_dict(payload))
-                        except Exception:  # noqa: BLE001
-                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "Snapshot delete failed",
+                                extra={
+                                    "project_id": project_id,
+                                    "snapshot_sha": snap.content_sha256,
+                                    "archive_name": snap.archive_name,
+                                    "error": str(exc),
+                                },
+                            )
+                            cache_set_json(
+                                [
+                                    "snapshot_delete_failed",
+                                    snap.content_sha256,
+                                    str(project_id),
+                                ],
+                                {
+                                    "project_id": project_id,
+                                    "archive_name": snap.archive_name,
+                                    "storage": payload.get("storage"),
+                                    "error": str(exc),
+                                },
+                            )
                 session.exec(delete(RepoSnapshot).where(RepoSnapshot.project_id == project_id))
                 session.exec(delete(Project).where(Project.id == project_id))
                 session.commit()
@@ -279,6 +312,199 @@ def list_project_files(
             "returned": len(files),
             "truncated": bool(truncated),
             "limit": int(limit),
+        },
+    }
+
+
+def list_project_tree_entries(
+    project_id: int,
+    org_id: int,
+    prefix: str | None = None,
+    cursor: str | None = None,
+    limit: int = 200,
+) -> dict:
+    get_project(project_id, org_id=org_id)
+    if limit < 1 or limit > 2000:
+        raise BadRequestError("limit должен быть в диапазоне 1..2000")
+
+    prefix_norm: str | None = None
+    if isinstance(prefix, str) and prefix.strip():
+        prefix_norm = prefix.strip().replace("\\", "/").strip("/")
+        if not prefix_norm:
+            prefix_norm = None
+
+    cursor_norm: str | None = None
+    if isinstance(cursor, str) and cursor.strip():
+        cursor_norm = cursor.strip().replace("\\", "/")
+
+    with get_session() as session:
+        base = select(FileNode).where(FileNode.project_id == project_id)
+        if prefix_norm:
+            like = f"{prefix_norm}/%"
+            base = base.where((FileNode.path.like(like)) | (FileNode.path == prefix_norm))
+        if cursor_norm:
+            base = base.where(FileNode.path > cursor_norm)
+
+        scan_limit = min(20000, max(limit * 40, limit + 1))
+        rows = session.exec(base.order_by(FileNode.path).limit(scan_limit + 1)).all()
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    next_cursor = None
+
+    def add_dir(child_path: str, name: str) -> None:
+        if child_path in seen:
+            return
+        seen.add(child_path)
+        entries.append(
+            {
+                "type": "dir",
+                "path": child_path,
+                "name": name,
+                "has_children": True,
+            }
+        )
+
+    def add_file(node: FileNode) -> None:
+        if node.path in seen:
+            return
+        seen.add(node.path)
+        entries.append(
+            {
+                "type": "file",
+                "path": node.path,
+                "name": node.path.split("/")[-1],
+                "file": {
+                    "path": node.path,
+                    "language": node.language,
+                    "loc": int(node.loc or 0),
+                    "complexity": int(node.complexity or 0),
+                    "fan_in": int(node.fan_in or 0),
+                    "fan_out": int(node.fan_out or 0),
+                    "status": node.status,
+                    "risk": (0.3 * float(node.complexity or 0))
+                    + (0.7 * float(node.fan_in or 0))
+                    + (0.1 * float(node.fan_out or 0)),
+                },
+            }
+        )
+
+    for row in rows:
+        path = row.path if isinstance(row.path, str) else ""
+        if not path:
+            continue
+        rel = path
+        if prefix_norm:
+            if path == prefix_norm:
+                rel = path.split("/")[-1]
+            elif path.startswith(f"{prefix_norm}/"):
+                rel = path[len(prefix_norm) + 1 :]
+            else:
+                continue
+        if not rel:
+            continue
+        if "/" in rel:
+            name = rel.split("/", 1)[0]
+            child_path = f"{prefix_norm}/{name}" if prefix_norm else name
+            add_dir(child_path, name)
+        else:
+            add_file(row)
+
+        next_cursor = path
+        if len(entries) >= limit:
+            break
+
+    truncated = len(entries) >= limit and next_cursor is not None
+    return {
+        "entries": entries,
+        "meta": {
+            "prefix": prefix_norm or "",
+            "cursor": cursor_norm,
+            "next_cursor": next_cursor if truncated else None,
+            "returned": len(entries),
+            "truncated": bool(truncated),
+            "limit": int(limit),
+        },
+    }
+
+
+def get_file_dependencies(
+    project_id: int,
+    org_id: int,
+    path: str,
+    limit: int = 2000,
+) -> dict:
+    project = get_project(project_id, org_id=org_id)
+    if not isinstance(path, str) or not path.strip():
+        raise BadRequestError("path обязателен")
+    if limit < 1 or limit > 20_000:
+        raise BadRequestError("limit должен быть в диапазоне 1..20000")
+
+    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+    _, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+
+    with get_session() as session:
+        inbound_count = session.exec(
+            select(func.count()).select_from(FileEdge).where(
+                FileEdge.project_id == project_id, FileEdge.dst_path == rel_norm
+            )
+        ).one()
+        outbound_count = session.exec(
+            select(func.count()).select_from(FileEdge).where(
+                FileEdge.project_id == project_id, FileEdge.src_path == rel_norm
+            )
+        ).one()
+
+        if isinstance(inbound_count, (tuple, list)):
+            inbound_value = inbound_count[0] if inbound_count else 0
+        else:
+            inbound_value = inbound_count
+        if isinstance(outbound_count, (tuple, list)):
+            outbound_value = outbound_count[0] if outbound_count else 0
+        else:
+            outbound_value = outbound_count
+        inbound_total = int(inbound_value)
+        outbound_total = int(outbound_value)
+
+        inbound_rows = session.exec(
+            select(FileEdge.src_path)
+            .where(FileEdge.project_id == project_id, FileEdge.dst_path == rel_norm)
+            .order_by(FileEdge.src_path)
+            .limit(limit + 1)
+        ).all()
+        outbound_rows = session.exec(
+            select(FileEdge.dst_path)
+            .where(FileEdge.project_id == project_id, FileEdge.src_path == rel_norm)
+            .order_by(FileEdge.dst_path)
+            .limit(limit + 1)
+        ).all()
+
+    inbound = [
+        r[0] if isinstance(r, (tuple, list)) else r
+        for r in inbound_rows
+        if isinstance(r[0] if isinstance(r, (tuple, list)) else r, str)
+    ]
+    outbound = [
+        r[0] if isinstance(r, (tuple, list)) else r
+        for r in outbound_rows
+        if isinstance(r[0] if isinstance(r, (tuple, list)) else r, str)
+    ]
+
+    inbound_truncated = len(inbound) > limit
+    outbound_truncated = len(outbound) > limit
+    inbound = inbound[:limit]
+    outbound = outbound[:limit]
+
+    return {
+        "path": rel_norm,
+        "inbound": inbound,
+        "outbound": outbound,
+        "meta": {
+            "limit": int(limit),
+            "total_inbound": inbound_total,
+            "total_outbound": outbound_total,
+            "truncated_inbound": inbound_truncated,
+            "truncated_outbound": outbound_truncated,
         },
     }
 
