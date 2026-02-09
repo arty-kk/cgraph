@@ -12,6 +12,7 @@ from ..contracts import get_or_build_contract
 from ..db import get_session
 from ..errors import BadRequestError, LockedError, NotFoundError
 from ..graph import update_graph_metrics_incremental
+from ..infra.cache import cache_invalidate_prefix
 from ..logging import get_logger
 from ..models import FileNode
 from ..policy import require_project_access
@@ -77,6 +78,10 @@ def _scan_aborted(reindexed: object) -> bool:
 
 router = APIRouter(prefix="/nodes", tags=["nodes"])
 logger = get_logger("stubgraph.api")
+
+
+def _invalidate_pack_cache(project_id: int) -> None:
+    cache_invalidate_prefix([f"project:{project_id}", "pack"])
 
 
 @router.get("/{project_id}/{path:path}/contract")
@@ -236,6 +241,7 @@ def update_file(
                 background=True,
                 background_tasks=background_tasks,
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -285,6 +291,7 @@ def update_file(
                 "Rollback lock timeout after update_file",
                 extra={"path": rel_norm, "operation": "update_file"},
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -305,6 +312,7 @@ def update_file(
                 "Rollback skipped due to concurrent change",
                 extra={"path": rel_norm, "operation": "update_file"},
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -318,6 +326,7 @@ def update_file(
                 "error": str(error),
             }
         if rollback_ok:
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": False,
@@ -328,6 +337,7 @@ def update_file(
                 "rescan_scheduled": True,
                 "error": str(error),
             }
+        _invalidate_pack_cache(project_id)
         return {
             "path": rel_norm,
             "saved": True,
@@ -339,6 +349,7 @@ def update_file(
             "error": str(error),
         }
 
+    _invalidate_pack_cache(project_id)
     return {"path": rel_norm, "saved": True, "reindexed": reindexed}
 
 
@@ -391,6 +402,7 @@ def create_file(
                 background=True,
                 background_tasks=background_tasks,
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -440,6 +452,7 @@ def create_file(
                 "Rollback lock timeout after create_file",
                 extra={"path": rel_norm, "operation": "create_file"},
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -460,6 +473,7 @@ def create_file(
                 "Rollback skipped due to concurrent change",
                 extra={"path": rel_norm, "operation": "create_file"},
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -473,6 +487,7 @@ def create_file(
                 "error": str(error),
             }
         if rollback_ok:
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": False,
@@ -483,6 +498,7 @@ def create_file(
                 "rescan_scheduled": True,
                 "error": str(error),
             }
+        _invalidate_pack_cache(project_id)
         return {
             "path": rel_norm,
             "saved": True,
@@ -494,6 +510,7 @@ def create_file(
             "error": str(error),
         }
 
+    _invalidate_pack_cache(project_id)
     return {"path": rel_norm, "saved": True, "reindexed": reindexed}
 
 
@@ -558,6 +575,7 @@ def rename_file(
                 background=True,
                 background_tasks=background_tasks,
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": new_rel,
                 "saved": True,
@@ -608,6 +626,7 @@ def rename_file(
                 "Rollback lock timeout after rename_file",
                 extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": new_rel,
                 "saved": True,
@@ -628,6 +647,7 @@ def rename_file(
                 "Rollback skipped due to concurrent change",
                 extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": new_rel,
                 "saved": True,
@@ -641,6 +661,7 @@ def rename_file(
                 "error": str(error),
             }
         if rollback_ok:
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": False,
@@ -651,6 +672,7 @@ def rename_file(
                 "rescan_scheduled": True,
                 "error": str(error),
             }
+        _invalidate_pack_cache(project_id)
         return {
             "path": new_rel,
             "saved": True,
@@ -662,6 +684,7 @@ def rename_file(
             "error": str(error),
         }
 
+    _invalidate_pack_cache(project_id)
     return {"path": new_rel, "saved": True, "reindexed": reindexed}
 
 
@@ -704,6 +727,7 @@ def delete_file(
                 background=True,
                 background_tasks=background_tasks,
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -748,6 +772,7 @@ def delete_file(
                 "Rollback lock timeout after delete_file",
                 extra={"path": rel_norm, "operation": "delete_file"},
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -768,6 +793,7 @@ def delete_file(
                 "Rollback skipped due to concurrent change",
                 extra={"path": rel_norm, "operation": "delete_file"},
             )
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": True,
@@ -781,6 +807,7 @@ def delete_file(
                 "error": str(error),
             }
         if rollback_ok:
+            _invalidate_pack_cache(project_id)
             return {
                 "path": rel_norm,
                 "saved": False,
@@ -791,6 +818,7 @@ def delete_file(
                 "rescan_scheduled": True,
                 "error": str(error),
             }
+        _invalidate_pack_cache(project_id)
         return {
             "path": rel_norm,
             "saved": True,
@@ -802,4 +830,5 @@ def delete_file(
             "error": str(error),
         }
 
+    _invalidate_pack_cache(project_id)
     return {"path": rel_norm, "saved": True, "reindexed": reindexed}

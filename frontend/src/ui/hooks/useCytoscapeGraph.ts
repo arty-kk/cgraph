@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Core, ElementDefinition, LayoutOptions } from 'cytoscape'
 import type { GraphData } from '../../api'
 import { riskColor } from '../../lib/riskColor'
+import { safeStorageGet, safeStorageRemove, safeStorageSet } from '../../lib/storage'
 
 export type GraphFilters = {
   text: string
@@ -1371,7 +1372,7 @@ export function useCytoscapeGraph({
       if (!key) return false
       const snap = exportSnapshot()
       if (!snap) return false
-      localStorage.setItem(key, JSON.stringify(snap))
+      safeStorageSet(key, JSON.stringify(snap))
       return true
     } catch {
       return false
@@ -1382,7 +1383,7 @@ export function useCytoscapeGraph({
     try {
       const key = safeStr(storageKey)
       if (!key) return
-      localStorage.removeItem(key)
+      safeStorageRemove(key)
     } catch {}
   }, [])
 
@@ -1394,7 +1395,7 @@ export function useCytoscapeGraph({
     try {
       const key = safeStr(storageKey)
       if (!key) return false
-      const raw = localStorage.getItem(key)
+      const raw = safeStorageGet(key)
       if (!raw) return false
       const parsed = JSON.parse(raw) as GraphEditSnapshot
       const attempts = Number.isFinite(Number(opts?.attempts)) ? Number(opts?.attempts) : 10

@@ -1,7 +1,9 @@
 // frontend/src/ui/components/ExplorerTree.tsx
 import React from 'react'
-import type { Project, ProjectFileItem } from '../../api'
+import type { Project, ProjectFileItem, ProjectTreeEntry } from '../../api'
+import { listProjectTreeEntries, searchNodes } from '../../api'
 import { Modal } from './Modal'
+import { safeStorageGet, safeStorageGetJson, safeStorageSet } from '../../lib/storage'
 
 type ExplorerTreeProps = {
   activeProject: Project | null
@@ -16,9 +18,7 @@ type ExplorerTreeProps = {
   onRenameFile: (path: string, newPath: string) => void | Promise<void>
   onDeleteFile: (path: string) => void | Promise<void>
   onOpenFileEditor?: (path: string) => void | Promise<void>
-  projectFiles: ProjectFileItem[]
-  projectFilesMeta: any
-  projectFilesBusy: boolean
+  onRegisterFileMeta?: (entries: ProjectTreeEntry[]) => void
   showModuleSelect?: boolean
   compact?: boolean
   showOpenEditors?: boolean
@@ -37,9 +37,7 @@ export function ExplorerTree({
   onRenameFile,
   onDeleteFile,
   onOpenFileEditor,
-  projectFiles,
-  projectFilesMeta,
-  projectFilesBusy,
+  onRegisterFileMeta,
   showModuleSelect = true,
   compact = false,
   showOpenEditors = true,
@@ -70,7 +68,6 @@ export function ExplorerTree({
     'w-full text-left pr-3 text-xs text-neutral-200 hover:bg-neutral-900/70',
     compact ? 'py-1' : 'py-2',
   ].join(' ')
-  const dirChildrenClass = compact ? 'px-2 pb-1 flex flex-col gap-0.5' : 'px-2 pb-1.5 flex flex-col gap-0.5'
   const sectionHeaderClass = compact
     ? 'text-[10px] uppercase tracking-[0.2em] text-neutral-500'
     : 'text-[11px] font-semibold text-neutral-300'
@@ -79,13 +76,29 @@ export function ExplorerTree({
   const ef = explorerFilter.trim().toLowerCase()
   const [focusedPath, setFocusedPath] = React.useState<string | null>(null)
 
-  const MAX_DIRS_PER_NODE = 120
-  const MAX_FILES_PER_NODE = 160
+  const PAGE_LIMIT = 200
 
-  const actionsDisabled = busy || projectFilesBusy || !activeProject
+  const actionsDisabled = busy || !activeProject
   const selectedFilePath = String(selectedPath || '').trim()
   const renameDisabled = actionsDisabled || !selectedFilePath
   const deleteDisabled = actionsDisabled || !selectedFilePath
+
+  type DirState = {
+    entries: ProjectTreeEntry[]
+    meta: {
+      prefix: string
+      next_cursor?: string | null
+      returned: number
+      truncated: boolean
+      limit: number
+    } | null
+    loading: boolean
+    error: string | null
+  }
+
+  const [dirStates, setDirStates] = React.useState<Record<string, DirState>>({})
+  const [searchResults, setSearchResults] = React.useState<ProjectTreeEntry[]>([])
+  const [searchBusy, setSearchBusy] = React.useState(false)
 
   const [createOpen, setCreateOpen] = React.useState(false)
   const [renameOpen, setRenameOpen] = React.useState(false)
@@ -139,140 +152,79 @@ export function ExplorerTree({
     setDeleteOpError(null)
   }, [deleteOpen])
 
-  type DirNode = {
-    name: string
-    path: string
-    dirs: Record<string, DirNode>
-    files: ProjectFileItem[]
-    fileCount: number
-    locSum: number
-    fanInSum: number
-    fanOutSum: number
-    riskMax: number
-    riskSum: number
-    riskLocSum: number
-    riskCount: number
-    riskLocDenom: number
-  }
-
-  const fmtK = React.useCallback((n: unknown): string => {
-    const v = Number(n)
-    if (!Number.isFinite(v)) return '—'
-    const abs = Math.abs(v)
-    if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`
-    if (abs >= 1_000) return `${Math.round(v / 1_000)}k`
-    return String(Math.round(v))
-  }, [])
-
-  const toNum = React.useCallback((v: unknown): number => {
-    const n = Number(v)
-    return Number.isFinite(n) ? n : NaN
-  }, [])
-
-  const tree = React.useMemo<DirNode>(() => {
-    const root: DirNode = {
-      name: '',
-      path: '',
-      dirs: {},
-      files: [],
-      fileCount: 0,
-      locSum: 0,
-      fanInSum: 0,
-      fanOutSum: 0,
-      riskMax: 0,
-      riskSum: 0,
-      riskLocSum: 0,
-      riskCount: 0,
-      riskLocDenom: 0,
-    }
-    for (const f of projectFiles || []) {
-      const p = String(f.path || '').trim()
-      if (!p) continue
-      const parts = p.split('/').filter(Boolean)
-      let cur = root
-      for (let i = 0; i < parts.length - 1; i++) {
-        const seg = parts[i]
-        const nextPath = cur.path ? `${cur.path}/${seg}` : seg
-        cur.dirs[seg] =
-          cur.dirs[seg] ||
-          ({
-            name: seg,
-            path: nextPath,
-            dirs: {},
-            files: [],
-            fileCount: 0,
-            locSum: 0,
-            fanInSum: 0,
-            fanOutSum: 0,
-            riskMax: 0,
-            riskSum: 0,
-            riskLocSum: 0,
-            riskCount: 0,
-            riskLocDenom: 0,
-          } as DirNode)
-        cur = cur.dirs[seg]
+  const mergeEntries = React.useCallback((existing: ProjectTreeEntry[], incoming: ProjectTreeEntry[]) => {
+    const seen = new Map(existing.map((entry) => [entry.path, entry]))
+    const ordered = [...existing]
+    for (const entry of incoming) {
+      if (seen.has(entry.path)) {
+        const idx = ordered.findIndex((item) => item.path === entry.path)
+        if (idx >= 0) ordered[idx] = entry
+        continue
       }
-      cur.files.push(f)
+      seen.set(entry.path, entry)
+      ordered.push(entry)
     }
+    return ordered
+  }, [])
 
-    const walk = (n: DirNode) => {
-      let count = n.files.length
-      let locSum = 0
-      let fanInSum = 0
-      let fanOutSum = 0
-      let riskMax = 0
-      let riskSum = 0
-      let riskLocSum = 0
-      let riskCount = 0
-      let riskLocDenom = 0
-
-      for (const f of n.files) {
-        const loc = toNum((f as any)?.loc)
-        const fi = toNum((f as any)?.fan_in)
-        const fo = toNum((f as any)?.fan_out)
-        const r = toNum((f as any)?.risk)
-
-        if (Number.isFinite(loc) && loc > 0) locSum += loc
-        if (Number.isFinite(fi) && fi > 0) fanInSum += fi
-        if (Number.isFinite(fo) && fo > 0) fanOutSum += fo
-        if (Number.isFinite(r)) {
-          riskMax = Math.max(riskMax, r)
-          riskSum += r
-          riskCount += 1
-          if (Number.isFinite(loc) && loc > 0) {
-            riskLocSum += r * loc
-            riskLocDenom += loc
+  const loadDir = React.useCallback(
+    async (prefix: string, cursor?: string | null) => {
+      if (!activeProject) return
+      const key = prefix || ''
+      setDirStates((prev) => ({
+        ...prev,
+        [key]: {
+          entries: prev[key]?.entries ?? [],
+          meta: prev[key]?.meta ?? null,
+          loading: true,
+          error: null,
+        },
+      }))
+      try {
+        const res = await listProjectTreeEntries(activeProject.id, {
+          prefix: key || undefined,
+          cursor: cursor || undefined,
+          limit: PAGE_LIMIT,
+        })
+        setDirStates((prev) => {
+          const existing = prev[key]?.entries ?? []
+          const merged = cursor ? mergeEntries(existing, res.entries) : res.entries
+          return {
+            ...prev,
+            [key]: {
+              entries: merged,
+              meta: res.meta ?? null,
+              loading: false,
+              error: null,
+            },
           }
-        }
+        })
+        onRegisterFileMeta?.(res.entries)
+      } catch (error: any) {
+        setDirStates((prev) => ({
+          ...prev,
+          [key]: {
+            entries: prev[key]?.entries ?? [],
+            meta: prev[key]?.meta ?? null,
+            loading: false,
+            error: String(error?.message || 'Failed to load directory'),
+          },
+        }))
       }
+    },
+    [activeProject, mergeEntries, onRegisterFileMeta],
+  )
 
-      const dirKeys = Object.keys(n.dirs).sort()
-      for (const k of dirKeys) {
-        const c = n.dirs[k]
-        walk(c)
-        count += c.fileCount
-        locSum += c.locSum
-        fanInSum += c.fanInSum
-        fanOutSum += c.fanOutSum
-        riskMax = Math.max(riskMax, c.riskMax)
-        riskSum += c.riskSum
-        riskLocSum += c.riskLocSum
-        riskCount += c.riskCount
-        riskLocDenom += c.riskLocDenom
-      }
-      n.fileCount = count
-      n.locSum = locSum
-      n.fanInSum = fanInSum
-      n.fanOutSum = fanOutSum
-      n.riskMax = riskMax
-      n.riskSum = riskSum
-      n.riskLocSum = riskLocSum
-      n.riskCount = riskCount
-      n.riskLocDenom = riskLocDenom
+  React.useEffect(() => {
+    if (!activeProject) {
+      setDirStates({})
+      setSearchResults([])
+      return
     }
-    walk(root)
-    return root
-  }, [projectFiles, toNum])
+    setDirStates({})
+    setSearchResults([])
+    void loadDir('')
+  }, [activeProject?.id, loadDir])
 
   const openDirsStorageKey = React.useMemo(() => {
     const pid = Number(activeProject?.id)
@@ -286,34 +238,80 @@ export function ExplorerTree({
       setOpenDirs({})
       return
     }
-    try {
-      const raw = localStorage.getItem(openDirsStorageKey)
-      if (raw) {
-        setOpenDirs((JSON.parse(raw) as any) || {})
-        return
-      }
-      const legacyRaw = localStorage.getItem('cs.ui.explorer.openDirs')
-      if (legacyRaw) {
-        localStorage.setItem(openDirsStorageKey, legacyRaw)
-        setOpenDirs((JSON.parse(legacyRaw) as any) || {})
-        return
-      }
-    } catch {
-      // ignore
+    const raw = safeStorageGet(openDirsStorageKey)
+    if (raw) {
+      setOpenDirs((safeStorageGetJson(openDirsStorageKey, {}) as any) || {})
+      return
+    }
+    const legacyRaw = safeStorageGet('cs.ui.explorer.openDirs')
+    if (legacyRaw) {
+      safeStorageSet(openDirsStorageKey, legacyRaw)
+      setOpenDirs((safeStorageGetJson(openDirsStorageKey, {}) as any) || {})
+      return
     }
     setOpenDirs({})
   }, [openDirsStorageKey])
 
   React.useEffect(() => {
     if (!openDirsStorageKey) return
-    try {
-      localStorage.setItem(openDirsStorageKey, JSON.stringify(openDirs))
-    } catch {}
+    safeStorageSet(openDirsStorageKey, JSON.stringify(openDirs))
   }, [openDirs, openDirsStorageKey])
 
   const toggleDir = (path: string) => {
     setOpenDirs((prev) => ({ ...prev, [path]: !prev[path] }))
+    const isOpen = openDirs[path] ?? false
+    if (!isOpen && !dirStates[path]?.entries?.length && !dirStates[path]?.loading) {
+      void loadDir(path)
+    }
   }
+
+  React.useEffect(() => {
+    if (!activeProject) {
+      setSearchResults([])
+      setSearchBusy(false)
+      return
+    }
+    if (!ef) {
+      setSearchResults([])
+      setSearchBusy(false)
+      return
+    }
+    let active = true
+    const handle = window.setTimeout(async () => {
+      setSearchBusy(true)
+      try {
+        const results = await searchNodes(activeProject.id, ef, 200)
+        if (!active) return
+        const entries = (results || [])
+          .filter((item) => item?.path)
+          .map((item) => ({
+            type: 'file' as const,
+            path: item.path,
+            name: item.path.split('/').pop() || item.path,
+            file: {
+              path: item.path,
+              language: item.language || 'unknown',
+              loc: 0,
+              complexity: 0,
+              fan_in: item.fan_in || 0,
+              fan_out: item.fan_out || 0,
+              status: 'unknown',
+              risk: 0,
+            } as ProjectFileItem,
+          }))
+        setSearchResults(entries)
+      } catch {
+        if (!active) return
+        setSearchResults([])
+      } finally {
+        if (active) setSearchBusy(false)
+      }
+    }, 200)
+    return () => {
+      active = false
+      window.clearTimeout(handle)
+    }
+  }, [activeProject, ef])
 
   const dirDomId = React.useCallback((p: string) => {
     const s = String(p || '')
@@ -340,92 +338,117 @@ export function ExplorerTree({
 
   type VisibleEntry = {
     path: string
-    type: 'dir' | 'file'
-    isOpen: boolean
+    type: 'dir' | 'file' | 'loading' | 'load-more' | 'error'
     parentPath: string | null
     depth: number
+    entry?: ProjectTreeEntry
+    cursor?: string | null
+    message?: string
   }
+
+  const sortedEntries = React.useCallback((entries: ProjectTreeEntry[]) => {
+    return entries
+      .slice()
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+  }, [])
 
   const visibleEntries = React.useMemo<VisibleEntry[]>(() => {
     if (ef) {
-      return (projectFiles || [])
-        .filter((f) => String(f.path).toLowerCase().includes(ef))
-        .slice(0, 200)
-        .map((f) => ({
-          path: f.path,
-          type: 'file' as const,
-          isOpen: false,
-          parentPath: f.path.includes('/') ? f.path.split('/').slice(0, -1).join('/') : null,
-          depth: 0,
-        }))
+      return (searchResults || []).slice(0, 200).map((entry) => ({
+        path: entry.path,
+        type: 'file' as const,
+        parentPath: entry.path.includes('/') ? entry.path.split('/').slice(0, -1).join('/') : null,
+        depth: 0,
+        entry,
+      }))
     }
 
     const entries: VisibleEntry[] = []
-    const rootFiles = (tree.files || [])
-      .slice()
-      .sort((a, b) => a.path.localeCompare(b.path))
-      .slice(0, 120)
-
-    for (const f of rootFiles) {
-      entries.push({
-        path: f.path,
-        type: 'file',
-        isOpen: false,
-        parentPath: null,
-        depth: 0,
-      })
-    }
-
-    const visitDir = (d: DirNode, depth: number, parentPath: string | null) => {
+    const visitDir = (dirPath: string, depth: number, parentPath: string | null) => {
+      const state = dirStates[dirPath] || { entries: [], loading: false, error: null, meta: null }
       const openDefault = depth === 0
-      const isOpen = (openDirs[d.path] ?? openDefault) === true
-      entries.push({
-        path: d.path,
-        type: 'dir',
-        isOpen,
-        parentPath,
-        depth,
-      })
-
-      if (!isOpen) return
-      const dirKeys = Object.keys(d.dirs).sort()
-      const shownDirKeys = dirKeys.slice(0, MAX_DIRS_PER_NODE)
-      const filesSorted = (d.files || []).slice().sort((a, b) => String(a.path).localeCompare(String(b.path)))
-      const shownFiles = filesSorted.slice(0, MAX_FILES_PER_NODE)
-
-      for (const k of shownDirKeys) {
-        visitDir(d.dirs[k], depth + 1, d.path)
+      const isOpen = (openDirs[dirPath] ?? openDefault) === true
+      if (dirPath) {
+        entries.push({ path: dirPath, type: 'dir', parentPath, depth, entry: { type: 'dir', path: dirPath, name: dirPath.split('/').pop() || dirPath } })
       }
 
-      for (const f of shownFiles) {
+      if (!isOpen && dirPath) return
+
+      const list = sortedEntries(state.entries)
+      for (const item of list) {
+        if (item.type === 'dir') {
+          entries.push({
+            path: item.path,
+            type: 'dir',
+            parentPath: dirPath || null,
+            depth: dirPath ? depth + 1 : depth,
+            entry: item,
+          })
+          if ((openDirs[item.path] ?? false) === true) {
+            visitDir(item.path, dirPath ? depth + 1 : depth, dirPath || null)
+          }
+        } else {
+          entries.push({
+            path: item.path,
+            type: 'file',
+            parentPath: dirPath || null,
+            depth: dirPath ? depth + 1 : depth,
+            entry: item,
+          })
+        }
+      }
+
+      if (state.loading) {
         entries.push({
-          path: f.path,
-          type: 'file',
-          isOpen: false,
-          parentPath: d.path,
-          depth: depth + 1,
+          path: `${dirPath}__loading`,
+          type: 'loading',
+          parentPath: dirPath || null,
+          depth: dirPath ? depth + 1 : depth,
+          message: 'Loading…',
+        })
+      }
+      if (state.error) {
+        entries.push({
+          path: `${dirPath}__error`,
+          type: 'error',
+          parentPath: dirPath || null,
+          depth: dirPath ? depth + 1 : depth,
+          message: state.error,
+        })
+      }
+      if (state.meta?.next_cursor) {
+        entries.push({
+          path: `${dirPath}__more`,
+          type: 'load-more',
+          parentPath: dirPath || null,
+          depth: dirPath ? depth + 1 : depth,
+          cursor: state.meta.next_cursor,
+          message: 'Load more',
         })
       }
     }
 
-    for (const k of Object.keys(tree.dirs).sort()) {
-      visitDir(tree.dirs[k], 0, null)
-    }
-
+    visitDir('', 0, null)
     return entries
-  }, [ef, openDirs, projectFiles, tree])
+  }, [dirStates, ef, openDirs, searchResults, sortedEntries])
 
   const visibleEntryMap = React.useMemo(() => {
     const map = new Map<string, VisibleEntry>()
     for (const entry of visibleEntries) {
-      map.set(entry.path, entry)
+      if (entry.type === 'dir' || entry.type === 'file') {
+        map.set(entry.path, entry)
+      }
     }
     return map
   }, [visibleEntries])
 
   const resolveVisibleFocus = React.useCallback(
     (candidate: string | null) => {
-      if (!visibleEntries.length) return null
+      const navigable = visibleEntries.filter((entry) => entry.type === 'file' || entry.type === 'dir')
+      if (!navigable.length) return null
       if (candidate && visibleEntryMap.has(candidate)) return candidate
       if (selectedPath && visibleEntryMap.has(selectedPath)) return selectedPath
       if (candidate) {
@@ -435,7 +458,7 @@ export function ExplorerTree({
           if (visibleEntryMap.has(cursor)) return cursor
         }
       }
-      return visibleEntries[0]?.path ?? null
+      return navigable[0]?.path ?? null
     },
     [selectedPath, visibleEntries, visibleEntryMap],
   )
@@ -472,7 +495,6 @@ export function ExplorerTree({
   )
 
   React.useEffect(() => {
-    if (projectFilesBusy) return
     if (ef) return
     const p = String(selectedPath || '').trim()
     if (!p) return
@@ -492,10 +514,16 @@ export function ExplorerTree({
       }
       return changed ? next : prev
     })
-  }, [ef, projectFilesBusy, selectedPath])
+    let current = ''
+    for (let i = 0; i < parts.length - 1; i++) {
+      current = current ? `${current}/${parts[i]}` : parts[i]
+      if (!dirStates[current]?.entries?.length && !dirStates[current]?.loading) {
+        void loadDir(current)
+      }
+    }
+  }, [dirStates, ef, loadDir, selectedPath])
 
   React.useEffect(() => {
-    if (projectFilesBusy) return
     if (ef) return
     const p = String(selectedPath || '').trim()
     if (!p) return
@@ -506,7 +534,7 @@ export function ExplorerTree({
       ensureVisibleInContainer(el, container)
     }, 0)
     return () => window.clearTimeout(t)
-  }, [ef, ensureVisibleInContainer, projectFilesBusy, selectedPath])
+  }, [ef, ensureVisibleInContainer, selectedPath])
 
   const isSelectedFile = React.useCallback(
     (path: string) => {
@@ -517,45 +545,44 @@ export function ExplorerTree({
     [selectedPath],
   )
 
+  const toNum = React.useCallback((value: unknown): number => {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : NaN
+  }, [])
+
   const [jumpModule, setJumpModule] = React.useState<string>(() => {
-    try {
-      const v = (localStorage.getItem('cs.ui.explorer.jumpModule') || '').trim()
-      return v || '.'
-    } catch {
-      return '.'
-    }
+    const v = (safeStorageGet('cs.ui.explorer.jumpModule', '') || '').trim()
+    return v || '.'
   })
   const [jumpFile, setJumpFile] = React.useState<string>('')
   React.useEffect(() => {
-    try { localStorage.setItem('cs.ui.explorer.jumpModule', jumpModule) } catch {}
+    safeStorageSet('cs.ui.explorer.jumpModule', jumpModule)
   }, [jumpModule])
 
   const modules = React.useMemo(() => {
-    const out: Array<{ key: string; label: string; files: number; loc: number; riskWAvg: number; riskMax: number }> = []
-    const rootRiskMax = tree.riskMax
-    const rootRiskAvg = tree.riskCount > 0 ? tree.riskSum / tree.riskCount : 0
-    const rootRiskWAvg = tree.riskLocDenom > 0 ? tree.riskLocSum / tree.riskLocDenom : rootRiskAvg
-    out.push({ key: '.', label: '. (root)', files: tree.fileCount, loc: tree.locSum, riskWAvg: rootRiskWAvg, riskMax: rootRiskMax })
-    for (const k of Object.keys(tree.dirs).sort()) {
-      const d = tree.dirs[k]
-      const riskAvg = d.riskCount > 0 ? d.riskSum / d.riskCount : 0
-      const riskWAvg = d.riskLocDenom > 0 ? d.riskLocSum / d.riskLocDenom : riskAvg
-      out.push({ key: d.path, label: d.name, files: d.fileCount, loc: d.locSum, riskWAvg, riskMax: d.riskMax })
-    }
+    const rootEntries = dirStates['']?.entries ?? []
+    const out: Array<{ key: string; label: string; files: number }> = []
+    const rootFiles = rootEntries.filter((entry) => entry.type === 'file').length
+    out.push({ key: '.', label: '. (root)', files: rootFiles })
+    rootEntries
+      .filter((entry) => entry.type === 'dir')
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach((entry) => {
+        const count = dirStates[entry.path]?.entries?.length ?? 0
+        out.push({ key: entry.path, label: entry.name, files: count })
+      })
     return out
-  }, [tree])
+  }, [dirStates])
 
   const jumpFiles = React.useMemo(() => {
     const key = String(jumpModule || '.')
-    const all = projectFiles || []
-    const filtered =
-      key === '.'
-        ? all.filter((f) => !String(f.path || '').includes('/'))
-        : all.filter((f) => String(f.path || '').startsWith(`${key}/`))
-    return filtered
-      .slice()
+    const stateKey = key === '.' ? '' : key
+    const entries = dirStates[stateKey]?.entries ?? []
+    const files = entries.filter((entry) => entry.type === 'file')
+    return files
+      .map((entry) => entry.file ?? { path: entry.path } as ProjectFileItem)
       .sort((a, b) => String(a.path || '').localeCompare(String(b.path || '')))
-  }, [jumpModule, projectFiles])
+  }, [dirStates, jumpModule])
 
   const openEntries = React.useMemo(
     () => (openFilePaths || []).map((p) => String(p || '').trim()).filter(Boolean),
@@ -571,6 +598,9 @@ export function ExplorerTree({
     if (!activeProject) return
     const key = String(jumpModule || '.')
     if (!key || key === '.') return
+    if (!dirStates[key]?.entries?.length && !dirStates[key]?.loading) {
+      void loadDir(key)
+    }
     setOpenDirs((prev) => {
       if (prev[key] === true) return prev
       return { ...prev, [key]: true }
@@ -582,9 +612,19 @@ export function ExplorerTree({
       ensureVisibleInContainer(el as HTMLElement, container)
     }, 0)
     return () => window.clearTimeout(t)
-  }, [activeProject, dirDomId, ensureVisibleInContainer, jumpModule, showModuleSelect])
+  }, [activeProject, dirDomId, dirStates, ensureVisibleInContainer, jumpModule, loadDir, showModuleSelect])
 
-  const renderFile = (f: ProjectFileItem, depth: number, opts?: { showPath?: boolean }) => {
+  const renderFile = (entry: ProjectTreeEntry, depth: number, opts?: { showPath?: boolean }) => {
+    const f: ProjectFileItem = entry.file ?? {
+      path: entry.path,
+      language: 'unknown',
+      loc: 0,
+      complexity: 0,
+      fan_in: 0,
+      fan_out: 0,
+      status: 'unknown',
+      risk: 0,
+    }
     const selected = isSelectedFile(f.path)
     const isActive = Boolean(activeFilePath && activeFilePath === f.path)
     const focused = focusedPath === f.path
@@ -711,82 +751,15 @@ export function ExplorerTree({
     )
   }
 
-  const renderDir = (d: DirNode, depth: number) => {
-    const openDefault = depth === 0
-    const isOpen = (openDirs[d.path] ?? openDefault) === true
-    const focused = focusedPath === d.path
+  const renderDirEntry = (entry: ProjectTreeEntry, depth: number) => {
+    const isOpen = (openDirs[entry.path] ?? false) === true
+    const focused = focusedPath === entry.path
     const pad = 10 + depth * 10
-
-    const dirKeys = Object.keys(d.dirs).sort()
-    const shownDirKeys = dirKeys.slice(0, MAX_DIRS_PER_NODE)
-    const filesSorted = (d.files || []).slice().sort((a, b) => String(a.path).localeCompare(String(b.path)))
-    const shownFiles = filesSorted.slice(0, MAX_FILES_PER_NODE)
-    if (compact) {
-      return (
-        <div key={d.path} id={dirDomId(d.path)} className="flex flex-col">
-          <button
-            type="button"
-            className={[
-              dirButtonClass,
-              focused ? 'ring-1 ring-indigo-400' : '',
-            ].join(' ')}
-            onClick={() => {
-              setFocusedPath(d.path)
-              toggleDir(d.path)
-            }}
-            style={{ paddingLeft: pad }}
-            onMouseDown={(e) => e.preventDefault()}
-            onFocus={() => setFocusedPath(d.path)}
-            data-explorer-path={d.path}
-            role="treeitem"
-            aria-expanded={isOpen}
-            aria-level={depth + 1}
-            tabIndex={focused ? 0 : -1}
-          >
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-neutral-200 truncate">
-                {isOpen ? '▾' : '▸'} {d.name}
-              </span>
-              <span className="text-neutral-500 font-normal">({d.fileCount})</span>
-            </div>
-          </button>
-
-          {isOpen && (
-            <div className={dirChildrenClass} role="group">
-              {shownDirKeys.map((k) => renderDir(d.dirs[k], depth + 1))}
-              {dirKeys.length > shownDirKeys.length && (
-                <div className="text-[11px] text-neutral-500" style={{ marginLeft: (depth + 1) * 10 }}>
-                  … {dirKeys.length - shownDirKeys.length} More Dirs
-                </div>
-              )}
-
-              {shownFiles.map((f) => renderFile(f, depth + 1))}
-
-              {filesSorted.length > shownFiles.length && (
-                <div className="text-[11px] text-neutral-500" style={{ marginLeft: (depth + 1) * 10 }}>
-                  … {filesSorted.length - shownFiles.length} More Files
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )
-    }
-
-    const riskAvg = d.riskCount > 0 ? d.riskSum / d.riskCount : 0
-    const riskWAvg = d.riskLocDenom > 0 ? d.riskLocSum / d.riskLocDenom : riskAvg
-    const dirTooltip = [
-      d.path || '(root)',
-      `files: ${d.fileCount}`,
-      `loc sum: ${fmtK(d.locSum)}`,
-      `fan_in sum: ${fmtK(d.fanInSum)} · fan_out sum: ${fmtK(d.fanOutSum)}`,
-      `risk max: ${Number.isFinite(d.riskMax) ? d.riskMax.toFixed(2) : '—'}`,
-      `risk avg: ${d.riskCount > 0 && Number.isFinite(riskAvg) ? riskAvg.toFixed(2) : '—'}`,
-      `risk weighted(avg, loc): ${d.riskLocDenom > 0 && Number.isFinite(riskWAvg) ? riskWAvg.toFixed(2) : '—'}`,
-    ].join('\n')
+    const name = entry.name || entry.path.split('/').pop() || entry.path
+    const count = dirStates[entry.path]?.entries?.length ?? 0
 
     return (
-      <div key={d.path} id={dirDomId(d.path)} className="border border-neutral-800 rounded-md bg-neutral-950">
+      <div key={entry.path} id={dirDomId(entry.path)} className={compact ? 'flex flex-col' : 'border border-neutral-800 rounded-md bg-neutral-950'}>
         <button
           type="button"
           className={[
@@ -794,52 +767,94 @@ export function ExplorerTree({
             focused ? 'ring-1 ring-indigo-400' : '',
           ].join(' ')}
           onClick={() => {
-            setFocusedPath(d.path)
-            toggleDir(d.path)
+            setFocusedPath(entry.path)
+            toggleDir(entry.path)
           }}
-          title={dirTooltip}
           style={{ paddingLeft: pad }}
           onMouseDown={(e) => e.preventDefault()}
-          onFocus={() => setFocusedPath(d.path)}
-          data-explorer-path={d.path}
+          onFocus={() => setFocusedPath(entry.path)}
+          data-explorer-path={entry.path}
           role="treeitem"
           aria-expanded={isOpen}
           aria-level={depth + 1}
           tabIndex={focused ? 0 : -1}
         >
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0 flex items-center gap-2">
-              <span className="font-semibold text-neutral-200 truncate">
-                {isOpen ? '▾' : '▸'} {d.name}
-              </span>
-              <span className="text-neutral-500 font-normal">({d.fileCount})</span>
-            </div>
-            <div className="shrink-0 text-[11px] text-neutral-500 font-normal whitespace-nowrap">
-              LOC {fmtK(d.locSum)} · RISK {Number.isFinite(riskWAvg) ? riskWAvg.toFixed(2) : '—'}
-            </div>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-semibold text-neutral-200 truncate">
+              {isOpen ? '▾' : '▸'} {name}
+            </span>
+            <span className="text-neutral-500 font-normal">{count > 0 ? `(${count})` : ''}</span>
           </div>
         </button>
-
-        {isOpen && (
-          <div className={dirChildrenClass} role="group">
-            {shownDirKeys.map((k) => renderDir(d.dirs[k], depth + 1))}
-            {dirKeys.length > shownDirKeys.length && (
-              <div className="text-[11px] text-neutral-500" style={{ marginLeft: (depth + 1) * 10 }}>
-                … {dirKeys.length - shownDirKeys.length} More Dirs
-              </div>
-            )}
-
-            {shownFiles.map((f) => renderFile(f, depth + 1))}
-
-            {filesSorted.length > shownFiles.length && (
-              <div className="text-[11px] text-neutral-500" style={{ marginLeft: (depth + 1) * 10 }}>
-                … {filesSorted.length - shownFiles.length} More Files
-              </div>
-            )}
-          </div>
-        )}
       </div>
     )
+  }
+
+  const [scrollTop, setScrollTop] = React.useState(0)
+  const [viewportHeight, setViewportHeight] = React.useState(0)
+  const rowHeight = compact ? 22 : 28
+  const overscan = 6
+
+  React.useEffect(() => {
+    const container = explorerScrollRef.current
+    if (!container) return
+    const update = () => setViewportHeight(container.clientHeight)
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const obs = new ResizeObserver(update)
+    obs.observe(container)
+    return () => obs.disconnect()
+  }, [explorerScrollRef])
+
+  const windowed = React.useMemo(() => {
+    const total = visibleEntries.length
+    if (total === 0) return { items: [], paddingTop: 0, paddingBottom: 0 }
+    const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
+    const endIndex = Math.min(
+      total,
+      Math.ceil((scrollTop + viewportHeight) / rowHeight) + overscan,
+    )
+    const items = visibleEntries.slice(startIndex, endIndex)
+    const paddingTop = startIndex * rowHeight
+    const paddingBottom = Math.max(0, (total - endIndex) * rowHeight)
+    return { items, paddingTop, paddingBottom }
+  }, [overscan, rowHeight, scrollTop, viewportHeight, visibleEntries])
+
+  const renderEntry = (entry: VisibleEntry) => {
+    if (entry.type === 'dir') {
+      return renderDirEntry(entry.entry as ProjectTreeEntry, entry.depth)
+    }
+    if (entry.type === 'file') {
+      return renderFile(entry.entry as ProjectTreeEntry, entry.depth, { showPath: Boolean(ef) })
+    }
+    if (entry.type === 'load-more') {
+      return (
+        <div key={entry.path} style={{ marginLeft: entry.depth * 10 }} className="text-[11px] text-neutral-400">
+          <button
+            type="button"
+            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800"
+            onClick={() => void loadDir(entry.parentPath || '', entry.cursor)}
+          >
+            {entry.message || 'Load more'}
+          </button>
+        </div>
+      )
+    }
+    if (entry.type === 'loading') {
+      return (
+        <div key={entry.path} style={{ marginLeft: entry.depth * 10 }} className="text-[11px] text-neutral-500">
+          {entry.message || 'Loading…'}
+        </div>
+      )
+    }
+    if (entry.type === 'error') {
+      return (
+        <div key={entry.path} style={{ marginLeft: entry.depth * 10 }} className="text-[11px] text-rose-300">
+          {entry.message || 'Failed to load'}
+        </div>
+      )
+    }
+    return null
   }
 
   const handleCreateSubmit = React.useCallback(async () => {
@@ -899,13 +914,14 @@ export function ExplorerTree({
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (!visibleEntries.length) return
       if (!focusedPath) return
-      const currentIndex = visibleEntries.findIndex((entry) => entry.path === focusedPath)
+      const navigable = visibleEntries.filter((entry) => entry.type === 'file' || entry.type === 'dir')
+      const currentIndex = navigable.findIndex((entry) => entry.path === focusedPath)
       if (currentIndex < 0) return
-      const current = visibleEntries[currentIndex]
+      const current = navigable[currentIndex]
 
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        const next = visibleEntries[currentIndex + 1]
+        const next = navigable[currentIndex + 1]
         if (next) {
           focusEntry(next.path, { scroll: true })
         }
@@ -914,7 +930,7 @@ export function ExplorerTree({
 
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        const prev = visibleEntries[currentIndex - 1]
+        const prev = navigable[currentIndex - 1]
         if (prev) {
           focusEntry(prev.path, { scroll: true })
         }
@@ -923,11 +939,14 @@ export function ExplorerTree({
 
       if (event.key === 'ArrowRight' && current.type === 'dir') {
         event.preventDefault()
-        if (!current.isOpen) {
+        if (!(openDirs[current.path] ?? false)) {
           setOpenDirs((prev) => ({ ...prev, [current.path]: true }))
+          if (!dirStates[current.path]?.entries?.length && !dirStates[current.path]?.loading) {
+            void loadDir(current.path)
+          }
           return
         }
-        const next = visibleEntries[currentIndex + 1]
+        const next = navigable[currentIndex + 1]
         if (next && next.parentPath === current.path) {
           focusEntry(next.path, { scroll: true })
         }
@@ -936,7 +955,7 @@ export function ExplorerTree({
 
       if (event.key === 'ArrowLeft' && current.type === 'dir') {
         event.preventDefault()
-        if (current.isOpen) {
+        if (openDirs[current.path] ?? false) {
           setOpenDirs((prev) => ({ ...prev, [current.path]: false }))
           return
         }
@@ -955,7 +974,7 @@ export function ExplorerTree({
         }
       }
     },
-    [focusEntry, focusedPath, onOpenFileEditor, onSelectPath, visibleEntries],
+    [dirStates, focusEntry, focusedPath, loadDir, onOpenFileEditor, onSelectPath, openDirs, visibleEntries],
   )
 
   return (
@@ -973,12 +992,12 @@ export function ExplorerTree({
                 setJumpModule(e.target.value || '.')
                 setJumpFile('')
               }}
-              disabled={!activeProject || busy || projectFilesBusy}
-              title="Quick jump to a top-level folder (module). The list shows aggregated metrics."
+              disabled={!activeProject || busy}
+              title="Quick jump to a top-level folder (module)."
             >
               {modules.map((m) => (
                 <option key={m.key} value={m.key}>
-                  {m.label} · Files:{m.files} · LOC:{fmtK(m.loc)} · Risk:{Number(m.riskWAvg ?? 0).toFixed(2)}
+                  {m.label} · Files:{m.files}
                 </option>
               ))}
             </select>
@@ -995,7 +1014,7 @@ export function ExplorerTree({
                 setJumpFile(p)
                 if (p) void Promise.resolve(onSelectPath(p))
               }}
-              disabled={!activeProject || busy || projectFilesBusy}
+              disabled={!activeProject || busy}
               title="Quick jump to a file inside the selected module"
             >
               <option value="">—</option>
@@ -1015,7 +1034,7 @@ export function ExplorerTree({
         value={explorerFilter}
         onChange={(e) => setExplorerFilter(e.target.value)}
         disabled={!activeProject || busy}
-        title="Local filter for the file tree (path substring). Does not query the backend."
+        title="Search files by path (server query)."
       />
 
       {!compact && (
@@ -1247,14 +1266,8 @@ export function ExplorerTree({
         </div>
       </div>
 
-      {projectFilesBusy ? (
-        <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-400">
-          Loading files…
-        </div>
-      ) : !activeProject ? (
+      {!activeProject ? (
         <div className="text-xs text-neutral-500">Pick a project.</div>
-      ) : (projectFiles?.length || 0) === 0 ? (
-        <div className="text-xs text-neutral-500">No files yet (run Scan first).</div>
       ) : (
         <div
           ref={explorerScrollRef}
@@ -1265,32 +1278,26 @@ export function ExplorerTree({
           role="tree"
           aria-label="Project files"
           onKeyDown={handleTreeKeyDown}
+          onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
         >
-          {projectFilesMeta?.truncated && (
-            <div className="text-[11px] text-amber-300">
-              Explorer truncated: shown {projectFilesMeta.returned} of {projectFilesMeta.total}
+          {searchBusy && ef && (
+            <div className="text-[11px] text-neutral-500">Searching…</div>
+          )}
+          {!searchBusy && ef && searchResults.length === 0 && (
+            <div className="text-[11px] text-neutral-500">No matches.</div>
+          )}
+          {!ef && dirStates['']?.loading && visibleEntries.length === 0 && (
+            <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-400">
+              Loading files…
             </div>
           )}
-
-          {ef ? (
-            projectFiles
-              .filter((f) => String(f.path).toLowerCase().includes(ef))
-              .slice(0, 200)
-              .map((f) =>
-                renderFile(f, 0, { showPath: true })
-              )
-          ) : (
-            <>
-              {(tree.files || [])
-                .slice()
-                .sort((a, b) => a.path.localeCompare(b.path))
-                .slice(0, 120)
-                .map((f) => renderFile(f, 0))}
-
-              {Object.keys(tree.dirs)
-                .sort()
-                .map((k) => renderDir(tree.dirs[k], 0))}
-            </>
+          {!ef && !dirStates['']?.loading && visibleEntries.length === 0 && (
+            <div className="text-xs text-neutral-500">No files yet (run Scan first).</div>
+          )}
+          {visibleEntries.length > 0 && (
+            <div style={{ paddingTop: windowed.paddingTop, paddingBottom: windowed.paddingBottom }}>
+              {windowed.items.map((entry) => renderEntry(entry))}
+            </div>
           )}
         </div>
       )}

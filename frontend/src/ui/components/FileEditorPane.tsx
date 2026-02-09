@@ -3,6 +3,7 @@ import React from 'react'
 import { DiffEditor, Editor } from '@monaco-editor/react'
 import type { editor, IPosition } from 'monaco-editor'
 import type { NodeInfo, ProjectFileItem } from '../../api'
+import { safeStorageGet, safeStorageSet } from '../../lib/storage'
 
 export type FileEditorPaneProps = {
   open: boolean
@@ -105,11 +106,7 @@ export function FileEditorPane({
     canScrollRight: false,
   })
   const [depsOpen, setDepsOpen] = React.useState(() => {
-    try {
-      return (localStorage.getItem('cs.editor.depsOpen') || '') === '1'
-    } catch {
-      return false
-    }
+    return (safeStorageGet('cs.editor.depsOpen', '') || '') === '1'
   })
   const lineCount = React.useMemo(() => content.split('\n').length || 1, [content])
   const readOnly = busy || saving || truncated
@@ -198,7 +195,7 @@ export function FileEditorPane({
   }, [busy, editorReadyTick, onApplyPendingJump, path, pendingJump, showDiff])
 
   React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.depsOpen', depsOpen ? '1' : '0') } catch {}
+    safeStorageSet('cs.editor.depsOpen', depsOpen ? '1' : '0')
   }, [depsOpen])
 
   const updateCursorInfo = React.useCallback((position?: IPosition | null) => {

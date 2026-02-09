@@ -72,6 +72,16 @@ export async function runTask(
   return waitForTaskResult<RunTaskResult>(r.data, opts)
 }
 
+export async function runTaskStatus(
+  projectId: number,
+  body: RunTaskBody,
+  opts: TaskPollOptions = {}
+): Promise<RunTaskResult | TaskStatus> {
+  const background = opts.background ?? true
+  const r = await api.post(`/api/tasks/${projectId}/run`, body, { params: { background } })
+  return r.data
+}
+
 export async function listRuns(projectId: number): Promise<RunRecord[]> {
   const r = await api.get(`/api/tasks/${projectId}/runs`)
   return r.data

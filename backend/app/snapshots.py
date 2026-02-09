@@ -1,6 +1,7 @@
 # backend/app/snapshots.py
 from __future__ import annotations
 
+import hashlib
 import shutil
 import tarfile
 import zipfile
@@ -11,7 +12,7 @@ from uuid import uuid4
 from .config import settings
 from .errors import BadRequestError
 from .logging import get_logger
-from .utils import sha256_bytes
+from .utils import sha256_bytes, sha256_file
 
 logger = get_logger("stubgraph.snapshots")
 
@@ -145,6 +146,85 @@ def store_snapshot_blob(data: bytes, archive_name: str) -> SnapshotMeta:
         archive_name=archive_name,
         archive_ext=ext,
         size=len(data),
+        file=str(archive_path.relative_to(settings.db_dir)),
+        root_dir=str((root_dir / "repo").relative_to(settings.db_dir)),
+        bucket=bucket,
+        key=key,
+    )
+
+
+def store_snapshot_stream(fileobj, archive_name: str) -> SnapshotMeta:
+    if not isinstance(archive_name, str) or not archive_name.strip():
+        raise BadRequestError("Имя архива обязательно")
+
+    ext = _archive_ext(archive_name)
+    tmp_dir = settings.db_dir / "snapshots" / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{uuid4().hex}{ext}"
+
+    total = 0
+    hasher = hashlib.sha256()
+    try:
+        with tmp_path.open("wb") as tmp:
+            while True:
+                chunk = fileobj.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > settings.snapshot_max_bytes:
+                    raise BadRequestError(
+                        "Архив слишком большой",
+                        context={"max_bytes": settings.snapshot_max_bytes, "size": total},
+                    )
+                hasher.update(chunk)
+                tmp.write(chunk)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+    if total <= 0:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise BadRequestError("Архив пустой")
+
+    sha = hasher.hexdigest()
+    root_dir = _snapshot_dir(sha)
+    root_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = _local_archive_path(sha, ext)
+
+    if archive_path.exists():
+        needs_update = archive_path.stat().st_size != total
+        if not needs_update:
+            needs_update = sha256_file(archive_path) != sha
+        if needs_update:
+            archive_path.unlink(missing_ok=True)
+            tmp_path.replace(archive_path)
+        else:
+            tmp_path.unlink(missing_ok=True)
+    else:
+        tmp_path.replace(archive_path)
+
+    backend = _ensure_storage_backend()
+    bucket = None
+    key = None
+    if backend == "s3":
+        bucket = settings.s3_bucket
+        if not bucket:
+            raise SnapshotError("S3 bucket is not configured")
+        key = _s3_snapshot_key(sha, archive_name)
+        try:
+            with archive_path.open("rb") as f:
+                _s3_client().put_object(Bucket=bucket, Key=key, Body=f)
+        except Exception as exc:  # noqa: BLE001
+            raise SnapshotError(f"Failed to upload snapshot to S3: {exc}") from exc
+
+    return SnapshotMeta(
+        storage=backend,
+        sha256=sha,
+        archive_name=archive_name,
+        archive_ext=ext,
+        size=total,
         file=str(archive_path.relative_to(settings.db_dir)),
         root_dir=str((root_dir / "repo").relative_to(settings.db_dir)),
         bucket=bucket,

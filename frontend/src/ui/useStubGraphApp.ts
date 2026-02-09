@@ -16,12 +16,15 @@ import {
   listProjects,
   listRuns,
   deleteRun,
-  runTask,
-  scanProject,
+  getTaskStatus,
+  waitForTaskResult,
+  runTaskStatus,
+  scanProjectStatus,
   searchNodes,
-  listProjectFiles,
+  getFileDependencies,
   getProjectDocs,
-  buildProjectDocs,
+  buildProjectDocsStatus,
+  getAppConfig,
   searchProjectSemantic,
   searchProjectText,
   getFileContent,
@@ -46,12 +49,21 @@ import {
   type RunRecord,
   type RunTaskBody,
   type RunTaskResult,
+  type TaskStatus,
   type ProjectFileItem,
+  type ProjectTreeEntry,
   type ProjectDocs,
   setSelectedOrgId,
 } from '../api'
 import { extractError, getAppErrorInfo, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '../lib/errors'
 import { clampInt } from '../lib/number'
+import {
+  addStorageErrorListener,
+  safeStorageGet,
+  safeStorageGetJson,
+  safeStorageRemove,
+  safeStorageSet,
+} from '../lib/storage'
 
 type AutoOrMode = 'auto' | Mode
 type GraphMode = 'local' | 'full' | 'limit'
@@ -187,6 +199,15 @@ function isEntryDirty(entry: FileEditorEntry | null | undefined): boolean {
   return Boolean(entry && entry.content !== entry.original)
 }
 
+function isTaskStatus(payload: unknown): payload is TaskStatus {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    typeof (payload as TaskStatus).task_id === 'string' &&
+    typeof (payload as TaskStatus).status === 'string'
+  )
+}
+
 export type NotificationKind = 'info' | 'error'
 
 export type NotificationItem = {
@@ -216,18 +237,22 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     initialData: [],
   })
 
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: getAppConfig,
+    staleTime: 60_000,
+  })
+
   const [selectedOrgId, setSelectedOrgIdState] = useState<number | null>(null)
   const prevOrgIdRef = useRef<number | null>(null)
 
   const applyOrgSelection = useCallback((orgId: number | null) => {
     setSelectedOrgId(orgId)
-    try {
-      if (orgId == null) {
-        localStorage.removeItem(ORG_STORAGE_KEY)
-      } else {
-        localStorage.setItem(ORG_STORAGE_KEY, String(orgId))
-      }
-    } catch {}
+    if (orgId == null) {
+      safeStorageRemove(ORG_STORAGE_KEY)
+    } else {
+      safeStorageSet(ORG_STORAGE_KEY, String(orgId))
+    }
     setSelectedOrgIdState(orgId)
   }, [])
 
@@ -294,6 +319,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [textSearchError, textSearchMeta, textSearchQuery, textSearchResults.length])
 
   const orgs = orgsQuery.data ?? []
+  const allowLocalRootPath = configQuery.data?.allow_local_root_path ?? null
 
   useEffect(() => {
     if (orgs.length === 0) {
@@ -304,11 +330,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     if (selectedOrgId !== null && orgs.some((org) => org.id === selectedOrgId)) return
 
     let storedId: number | null = null
-    try {
-      const raw = localStorage.getItem(ORG_STORAGE_KEY)
-      const n = Number(raw)
-      if (Number.isFinite(n)) storedId = Math.trunc(n)
-    } catch {}
+    const raw = safeStorageGet(ORG_STORAGE_KEY)
+    const n = Number(raw)
+    if (Number.isFinite(n)) storedId = Math.trunc(n)
 
     if (storedId !== null && orgs.some((org) => org.id === storedId)) {
       applyOrgSelection(storedId)
@@ -350,52 +374,30 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [depth, setDepth] = useState<number>(1)
   const [depMode, setDepMode] = useState<DepMode>('contracts')
   const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>(() => {
-    try {
-      const v = (localStorage.getItem('cs.ui.retrievalMode') || '').trim()
-      return v === 'pack' ? 'pack' : 'agentic'
-    } catch {
-      return 'agentic'
-    }
+    const v = (safeStorageGet('cs.ui.retrievalMode', '') || '').trim()
+    return v === 'pack' ? 'pack' : 'agentic'
   })
   useEffect(() => {
-    try {
-      localStorage.setItem('cs.ui.retrievalMode', retrievalMode)
-    } catch {}
+    safeStorageSet('cs.ui.retrievalMode', retrievalMode)
   }, [retrievalMode])
 
   // Advanced context settings (persisted)
-  const [agenticMaxCalls, setAgenticMaxCalls] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.agentic.maxCalls') || '24') || 24 } catch { return 24 }
-  })
-  const [agenticMaxFileChars, setAgenticMaxFileChars] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.agentic.maxFileChars') || '200000') || 200000 } catch { return 200000 }
-  })
-  const [agenticMaxTotalToolOutputChars, setAgenticMaxTotalToolOutputChars] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.agentic.maxToolChars') || '2000000') || 2000000 } catch { return 2000000 }
-  })
-  const [agenticTemperature, setAgenticTemperature] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.agentic.temperature') || '0') || 0 } catch { return 0 }
-  })
-  const [agenticEvidenceMode, setAgenticEvidenceMode] = useState<boolean>(() => {
-    try { return (localStorage.getItem('cs.ui.agentic.evidenceMode') || '0') === '1' } catch { return false }
-  })
-  const [packMaxFiles, setPackMaxFiles] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.pack.maxFiles') || '25') || 25 } catch { return 25 }
-  })
-  const [packMaxCharsPerFile, setPackMaxCharsPerFile] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.pack.maxCharsPerFile') || '200000') || 200000 } catch { return 200000 }
-  })
-  const [packMaxTotalChars, setPackMaxTotalChars] = useState<number>(() => {
-    try { return Number(localStorage.getItem('cs.ui.pack.maxTotalChars') || '2000000') || 2000000 } catch { return 2000000 }
-  })
-  useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxCalls', String(agenticMaxCalls)) } catch {} }, [agenticMaxCalls])
-  useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxFileChars', String(agenticMaxFileChars)) } catch {} }, [agenticMaxFileChars])
-  useEffect(() => { try { localStorage.setItem('cs.ui.agentic.maxToolChars', String(agenticMaxTotalToolOutputChars)) } catch {} }, [agenticMaxTotalToolOutputChars])
-  useEffect(() => { try { localStorage.setItem('cs.ui.agentic.temperature', String(agenticTemperature)) } catch {} }, [agenticTemperature])
-  useEffect(() => { try { localStorage.setItem('cs.ui.agentic.evidenceMode', agenticEvidenceMode ? '1' : '0') } catch {} }, [agenticEvidenceMode])
-  useEffect(() => { try { localStorage.setItem('cs.ui.pack.maxFiles', String(packMaxFiles)) } catch {} }, [packMaxFiles])
-  useEffect(() => { try { localStorage.setItem('cs.ui.pack.maxCharsPerFile', String(packMaxCharsPerFile)) } catch {} }, [packMaxCharsPerFile])
-  useEffect(() => { try { localStorage.setItem('cs.ui.pack.maxTotalChars', String(packMaxTotalChars)) } catch {} }, [packMaxTotalChars])
+  const [agenticMaxCalls, setAgenticMaxCalls] = useState<number>(() => Number(safeStorageGet('cs.ui.agentic.maxCalls', '24')) || 24)
+  const [agenticMaxFileChars, setAgenticMaxFileChars] = useState<number>(() => Number(safeStorageGet('cs.ui.agentic.maxFileChars', '200000')) || 200000)
+  const [agenticMaxTotalToolOutputChars, setAgenticMaxTotalToolOutputChars] = useState<number>(() => Number(safeStorageGet('cs.ui.agentic.maxToolChars', '2000000')) || 2000000)
+  const [agenticTemperature, setAgenticTemperature] = useState<number>(() => Number(safeStorageGet('cs.ui.agentic.temperature', '0')) || 0)
+  const [agenticEvidenceMode, setAgenticEvidenceMode] = useState<boolean>(() => (safeStorageGet('cs.ui.agentic.evidenceMode', '0') || '0') === '1')
+  const [packMaxFiles, setPackMaxFiles] = useState<number>(() => Number(safeStorageGet('cs.ui.pack.maxFiles', '25')) || 25)
+  const [packMaxCharsPerFile, setPackMaxCharsPerFile] = useState<number>(() => Number(safeStorageGet('cs.ui.pack.maxCharsPerFile', '200000')) || 200000)
+  const [packMaxTotalChars, setPackMaxTotalChars] = useState<number>(() => Number(safeStorageGet('cs.ui.pack.maxTotalChars', '2000000')) || 2000000)
+  useEffect(() => { safeStorageSet('cs.ui.agentic.maxCalls', String(agenticMaxCalls)) }, [agenticMaxCalls])
+  useEffect(() => { safeStorageSet('cs.ui.agentic.maxFileChars', String(agenticMaxFileChars)) }, [agenticMaxFileChars])
+  useEffect(() => { safeStorageSet('cs.ui.agentic.maxToolChars', String(agenticMaxTotalToolOutputChars)) }, [agenticMaxTotalToolOutputChars])
+  useEffect(() => { safeStorageSet('cs.ui.agentic.temperature', String(agenticTemperature)) }, [agenticTemperature])
+  useEffect(() => { safeStorageSet('cs.ui.agentic.evidenceMode', agenticEvidenceMode ? '1' : '0') }, [agenticEvidenceMode])
+  useEffect(() => { safeStorageSet('cs.ui.pack.maxFiles', String(packMaxFiles)) }, [packMaxFiles])
+  useEffect(() => { safeStorageSet('cs.ui.pack.maxCharsPerFile', String(packMaxCharsPerFile)) }, [packMaxCharsPerFile])
+  useEffect(() => { safeStorageSet('cs.ui.pack.maxTotalChars', String(packMaxTotalChars)) }, [packMaxTotalChars])
 
   const [applyPatch, setApplyPatch] = useState(false)
   const [prompt, setPrompt] = useState('')
@@ -410,22 +412,32 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [focusGraph, setFocusGraph] = useState(false)
 
-  const [compactMode, setCompactMode] = useState<boolean>(() => {
-    try { return (localStorage.getItem('cs.ui.compactMode') || '0') === '1' } catch { return false }
-  })
+  type TaskBannerItem = {
+    id: string
+    kind: 'scan' | 'docs' | 'run'
+    status: TaskStatus['status']
+    label: string
+    startedAt: number
+    finishedAt?: number | null
+    error?: string | null
+  }
+
+  const [taskStatuses, setTaskStatuses] = useState<TaskBannerItem[]>([])
+  const taskStatusesRef = useRef<TaskBannerItem[]>([])
   useEffect(() => {
-    try { localStorage.setItem('cs.ui.compactMode', compactMode ? '1' : '0') } catch {}
+    taskStatusesRef.current = taskStatuses
+  }, [taskStatuses])
+
+  const [compactMode, setCompactMode] = useState<boolean>(() => (safeStorageGet('cs.ui.compactMode', '0') || '0') === '1')
+  useEffect(() => {
+    safeStorageSet('cs.ui.compactMode', compactMode ? '1' : '0')
   }, [compactMode])
   const toggleCompactMode = useCallback(() => setCompactMode((v) => !v), [])
 
-  const [leftPanelOpen, setLeftPanelOpen] = useState<boolean>(() => {
-    try { return (localStorage.getItem('cs.ui.leftPanelOpen') || '1') !== '0' } catch { return true }
-  })
-  const [rightPanelOpen, setRightPanelOpen] = useState<boolean>(() => {
-    try { return (localStorage.getItem('cs.ui.rightPanelOpen') || '1') !== '0' } catch { return true }
-  })
-  useEffect(() => { try { localStorage.setItem('cs.ui.leftPanelOpen', leftPanelOpen ? '1' : '0') } catch {} }, [leftPanelOpen])
-  useEffect(() => { try { localStorage.setItem('cs.ui.rightPanelOpen', rightPanelOpen ? '1' : '0') } catch {} }, [rightPanelOpen])
+  const [leftPanelOpen, setLeftPanelOpen] = useState<boolean>(() => (safeStorageGet('cs.ui.leftPanelOpen', '1') || '1') !== '0')
+  const [rightPanelOpen, setRightPanelOpen] = useState<boolean>(() => (safeStorageGet('cs.ui.rightPanelOpen', '1') || '1') !== '0')
+  useEffect(() => { safeStorageSet('cs.ui.leftPanelOpen', leftPanelOpen ? '1' : '0') }, [leftPanelOpen])
+  useEffect(() => { safeStorageSet('cs.ui.rightPanelOpen', rightPanelOpen ? '1' : '0') }, [rightPanelOpen])
 
   const toggleLeftPanel = useCallback(() => setLeftPanelOpen((v) => !v), [])
   const toggleRightPanel = useCallback(() => setRightPanelOpen((v) => !v), [])
@@ -434,6 +446,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [openFilePaths, setOpenFilePaths] = useState<string[]>([])
   const [fileEditorsByPath, setFileEditorsByPath] = useState<Record<string, FileEditorEntry>>({})
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
+  const [fileDependencies, setFileDependencies] = useState<{ in: string[]; out: string[] } | null>(null)
+  const [fileDependenciesMeta, setFileDependenciesMeta] = useState<{ total_in: number; total_out: number } | null>(null)
+  const [fileDependenciesBusy, setFileDependenciesBusy] = useState(false)
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null)
   const [pendingClosePaths, setPendingClosePaths] = useState<string[]>([])
   const [pendingActivePath, setPendingActivePath] = useState<string | null>(null)
@@ -459,6 +474,37 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       window.removeEventListener('beforeunload', handleBeforeUnload)
     }
   }, [hasDirtyEditors])
+
+  useEffect(() => {
+    if (!activeProject || !activeFilePath) {
+      setFileDependencies(null)
+      setFileDependenciesMeta(null)
+      setFileDependenciesBusy(false)
+      return
+    }
+    let active = true
+    setFileDependenciesBusy(true)
+    getFileDependencies(activeProject.id, activeFilePath, 2000)
+      .then((res) => {
+        if (!active) return
+        setFileDependencies({ in: res.inbound || [], out: res.outbound || [] })
+        setFileDependenciesMeta({
+          total_in: res.meta?.total_inbound ?? res.inbound?.length ?? 0,
+          total_out: res.meta?.total_outbound ?? res.outbound?.length ?? 0,
+        })
+      })
+      .catch(() => {
+        if (!active) return
+        setFileDependencies({ in: [], out: [] })
+        setFileDependenciesMeta({ total_in: 0, total_out: 0 })
+      })
+      .finally(() => {
+        if (active) setFileDependenciesBusy(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [activeFilePath, activeProject])
 
   const buildWorkspaceState = useCallback((): WorkspaceStateV3 => {
     const fileEditorState: Record<string, { dirty?: boolean }> = {}
@@ -502,7 +548,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     (projectId: number) => {
       if (!Number.isFinite(projectId) || projectId <= 0) return
       try {
-        localStorage.setItem(wsKey(projectId), JSON.stringify(buildWorkspaceState()))
+        safeStorageSet(wsKey(projectId), JSON.stringify(buildWorkspaceState()))
       } catch {}
     },
     [buildWorkspaceState],
@@ -573,6 +619,82 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     pushNotification('info', message)
   }, [pushNotification])
 
+  useEffect(() => {
+    return addStorageErrorListener(() => {
+      notifyInfo('Local storage unavailable — preferences will not be saved.')
+    })
+  }, [notifyInfo])
+
+  const trackTaskStatus = useCallback((task: TaskStatus, kind: TaskBannerItem['kind'], label: string) => {
+    setTaskStatuses((prev) => {
+      const existing = prev.find((item) => item.id === task.task_id)
+      if (existing) {
+        return prev.map((item) =>
+          item.id === task.task_id
+            ? { ...item, status: task.status, error: task.error ? String(task.error) : item.error }
+            : item
+        )
+      }
+      const next: TaskBannerItem = {
+        id: task.task_id,
+        kind,
+        status: task.status,
+        label,
+        startedAt: Date.now(),
+        finishedAt: null,
+        error: task.error ? String(task.error) : null,
+      }
+      return [...prev, next].slice(-5)
+    })
+  }, [])
+
+  const refreshTaskStatuses = useCallback(async () => {
+    const pending = taskStatusesRef.current.filter((item) => item.status === 'pending' || item.status === 'running')
+    if (!pending.length) return
+    const updates = await Promise.all(
+      pending.map(async (item) => {
+        try {
+          const status = await getTaskStatus(item.id)
+          return { item, status }
+        } catch {
+          return { item, status: null }
+        }
+      })
+    )
+    setTaskStatuses((prev) =>
+      prev.map((item) => {
+        const update = updates.find((u) => u.item.id === item.id)
+        if (!update || !update.status) return item
+        const finishedAt =
+          update.status.status === 'succeeded' || update.status.status === 'failed'
+            ? Date.now()
+            : item.finishedAt
+        return {
+          ...item,
+          status: update.status.status,
+          error: update.status.error ? String(update.status.error) : item.error,
+          finishedAt,
+        }
+      })
+    )
+  }, [])
+
+  useEffect(() => {
+    if (!taskStatuses.length) return
+    const interval = window.setInterval(() => {
+      void refreshTaskStatuses()
+    }, 3000)
+    return () => window.clearInterval(interval)
+  }, [refreshTaskStatuses, taskStatuses.length])
+
+  const clearFinishedTasks = useCallback(() => {
+    setTaskStatuses((prev) => prev.filter((item) => item.status === 'pending' || item.status === 'running'))
+  }, [])
+
+  const dismissTaskStatus = useCallback((taskId: string) => {
+    setTaskStatuses((prev) => prev.filter((item) => item.id !== taskId))
+  }, [])
+
   const resetForSelectionChange = useCallback(() => {
     nodeSeqRef.current++
     setNodeInfo(null); setContract(null); setRunResult(null); setFullPatch(null); setErrorMessage(null)
@@ -587,50 +709,54 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     workspaceBootingRef.current = true
     restoredEditorRef.current = false
 
-    try {
-      const raw = localStorage.getItem(wsKey(pid))
-      const legacyRaw = raw ? null : localStorage.getItem(legacyWsKey(pid))
-      const legacyRawV1 = raw || legacyRaw ? null : localStorage.getItem(legacyWsKeyV1(pid))
-      const parsedRaw = raw || legacyRaw || legacyRawV1
-      if (parsedRaw) {
-        const parsed = JSON.parse(parsedRaw) as Partial<WorkspaceStateV3> | Partial<WorkspaceStateV2> | Partial<WorkspaceStateV1>
-        const nextSelected = asStr(parsed.selectedPath) || null
-        const nextPinned = asStrArr(parsed.pinnedPaths, 20).slice(0, PIN_LIMIT)
-        const nextTrail = asStrArr(parsed.selectionTrail, 20).slice(-3)
-        const nextBack = asStrArr(parsed.backStack, 300).slice(-200)
-        const nextFwd = asStrArr(parsed.forwardStack, 300).slice(-200)
-        const nextWorkspaceView =
-          'workspaceView' in parsed && (parsed.workspaceView === 'editor' || parsed.workspaceView === 'graph')
-            ? parsed.workspaceView
-            : 'graph'
-        const nextOpenFilePaths = 'openFilePaths' in parsed ? asStrArr(parsed.openFilePaths, 200) : []
-        const nextActiveFilePath =
-          'activeFilePath' in parsed && parsed.activeFilePath && nextOpenFilePaths.includes(parsed.activeFilePath)
-            ? parsed.activeFilePath
+    const raw = safeStorageGet(wsKey(pid))
+    const legacyRaw = raw ? null : safeStorageGet(legacyWsKey(pid))
+    const legacyRawV1 = raw || legacyRaw ? null : safeStorageGet(legacyWsKeyV1(pid))
+    const parsed =
+      raw
+        ? safeStorageGetJson<Partial<WorkspaceStateV3>>(wsKey(pid), {})
+        : legacyRaw
+          ? safeStorageGetJson<Partial<WorkspaceStateV2>>(legacyWsKey(pid), {})
+          : legacyRawV1
+            ? safeStorageGetJson<Partial<WorkspaceStateV1>>(legacyWsKeyV1(pid), {})
             : null
-        const nextFileEditors: Record<string, FileEditorEntry> = {}
-        for (const path of nextOpenFilePaths) {
-          nextFileEditors[path] = createFileEditorEntry(path)
-        }
-
-        setGraphMode(asGraphMode(parsed.graphMode, 'limit'))
-        setGraphLimitN(asInt(parsed.graphLimitN, 2000, 100, 20000))
-        setGraphHops(asInt(parsed.graphHops, 2, 1, 6))
-        setGraphLocalMax(asInt(parsed.graphLocalMax, 400, 50, 2000))
-
-        setPinnedPaths(nextPinned)
-        setSelectionTrail(nextTrail)
-        setBackStack(nextBack)
-        setForwardStack(nextFwd)
-        setSelectedPath(nextSelected)
-        setWorkspaceViewState(nextWorkspaceView)
-        setOpenFilePaths(nextOpenFilePaths)
-        setActiveFilePath(nextActiveFilePath)
-        setFileEditorsByPath(nextFileEditors)
-        restoredEditorRef.current = Boolean(nextActiveFilePath)
-        selectedPathRef.current = nextSelected; selectionTrailRef.current = nextTrail; backStackRef.current = nextBack; forwardStackRef.current = nextFwd
+    if (parsed) {
+      const nextSelected = asStr(parsed.selectedPath) || null
+      const nextPinned = asStrArr(parsed.pinnedPaths, 20).slice(0, PIN_LIMIT)
+      const nextTrail = asStrArr(parsed.selectionTrail, 20).slice(-3)
+      const nextBack = asStrArr(parsed.backStack, 300).slice(-200)
+      const nextFwd = asStrArr(parsed.forwardStack, 300).slice(-200)
+      const nextWorkspaceView =
+        'workspaceView' in parsed && (parsed.workspaceView === 'editor' || parsed.workspaceView === 'graph')
+          ? parsed.workspaceView
+          : 'graph'
+      const nextOpenFilePaths = 'openFilePaths' in parsed ? asStrArr(parsed.openFilePaths, 200) : []
+      const nextActiveFilePath =
+        'activeFilePath' in parsed && parsed.activeFilePath && nextOpenFilePaths.includes(parsed.activeFilePath)
+          ? parsed.activeFilePath
+          : null
+      const nextFileEditors: Record<string, FileEditorEntry> = {}
+      for (const path of nextOpenFilePaths) {
+        nextFileEditors[path] = createFileEditorEntry(path)
       }
-    } catch {}
+
+      setGraphMode(asGraphMode(parsed.graphMode, 'limit'))
+      setGraphLimitN(asInt(parsed.graphLimitN, 2000, 100, 20000))
+      setGraphHops(asInt(parsed.graphHops, 2, 1, 6))
+      setGraphLocalMax(asInt(parsed.graphLocalMax, 400, 50, 2000))
+
+      setPinnedPaths(nextPinned)
+      setSelectionTrail(nextTrail)
+      setBackStack(nextBack)
+      setForwardStack(nextFwd)
+      setSelectedPath(nextSelected)
+      setWorkspaceViewState(nextWorkspaceView)
+      setOpenFilePaths(nextOpenFilePaths)
+      setActiveFilePath(nextActiveFilePath)
+      setFileEditorsByPath(nextFileEditors)
+      restoredEditorRef.current = Boolean(nextActiveFilePath)
+      selectedPathRef.current = nextSelected; selectionTrailRef.current = nextTrail; backStackRef.current = nextBack; forwardStackRef.current = nextFwd
+    }
 
     resetForSelectionChange()
     setPrompt('')
@@ -1008,16 +1134,21 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const runs = runsQuery.data ?? []
   const graph = graphQuery.data ?? null
 
-  const filesQuery = useQuery<{ files: ProjectFileItem[]; meta: any }>({
-    queryKey: ['files', selectedOrgId, activeProject?.id],
-    enabled: selectedOrgId !== null && !!activeProject,
-    queryFn: async () => {
-      if (!activeProject) return { files: [], meta: { total: 0, returned: 0, truncated: false, limit: 0 } }
-      return listProjectFiles(activeProject.id)
-    },
-    initialData: { files: [], meta: { total: 0, returned: 0, truncated: false, limit: 0 } },
-    staleTime: 30_000,
-  })
+  const [fileMetaByPath, setFileMetaByPath] = useState<Record<string, ProjectFileItem>>({})
+
+  const registerFileMeta = useCallback((entries: ProjectTreeEntry[]) => {
+    setFileMetaByPath((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const entry of entries) {
+        if (entry.type !== 'file' || !entry.file) continue
+        if (next[entry.file.path] === entry.file) continue
+        next[entry.file.path] = entry.file
+        changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [])
 
   const [docs, setDocs] = useState<ProjectDocs | null>(null)
   const [docsBusy, setDocsBusy] = useState(false)
@@ -1027,6 +1158,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   useEffect(() => {
     setDocs(null)
     setDocsBuildError(null)
+  }, [activeProject?.id])
+
+  useEffect(() => {
+    setFileMetaByPath({})
   }, [activeProject?.id])
 
   useEffect(() => {
@@ -1074,7 +1209,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setDocsBuildError(null)
     setErrorMessage(null)
     try {
-      const d = await buildProjectDocs(activeProject.id, { background: true, pollIntervalMs: 1200, maxAttempts: 300 })
+      const initial = await buildProjectDocsStatus(activeProject.id, { background: true })
+      if (isTaskStatus(initial)) {
+        trackTaskStatus(initial, 'docs', `Docs ${activeProject.name}`)
+      }
+      const d = await waitForTaskResult<ProjectDocs>(initial, { pollIntervalMs: 1200, maxAttempts: 300 })
       setDocs(d)
       setDocsBuildError(null)
       notifyInfo('Docs built')
@@ -1084,7 +1223,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     } finally {
       setDocsBuildBusy(false)
     }
-  }, [activeProject, notifyInfo, setErrorMessage])
+  }, [activeProject, notifyInfo, setErrorMessage, trackTaskStatus])
 
   const updateFileEditorEntry = useCallback((path: string, updater: (entry: FileEditorEntry) => FileEditorEntry) => {
     const p = String(path || '').trim()
@@ -1456,12 +1595,16 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       if (!root) {
         throw new Error('Укажи архив или root_path')
       }
+      if (allowLocalRootPath === false) {
+        throw new Error('Local root_path is disabled on this server')
+      }
       const p = await createProjectFromRoot(name, root)
       selectProjectLocal(p)
       setNewPath('')
       await queryClient.invalidateQueries({ queryKey: ['projects', selectedOrgId] })
     })
   }, [
+    allowLocalRootPath,
     newArchive,
     newName,
     newPath,
@@ -1478,9 +1621,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     if (!Number.isFinite(pid) || pid <= 0) return
     await runOp(async () => {
       await deleteProject(pid)
-      try {
-        localStorage.removeItem(wsKey(pid))
-      } catch {}
+      safeStorageRemove(wsKey(pid))
       await queryClient.invalidateQueries({ queryKey: ['projects', selectedOrgId] })
       const remaining = (projectsQuery.data ?? []).filter((p) => p.id !== pid)
       if (remaining.length) {
@@ -1494,15 +1635,18 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const onScan = useCallback(async () => {
     if (!activeProject) return
     await runOp(async () => {
-      await scanProject(activeProject.id)
+      const initial = await scanProjectStatus(activeProject.id, { background: true })
+      if (isTaskStatus(initial)) {
+        trackTaskStatus(initial, 'scan', `Scan ${activeProject.name}`)
+      }
+      await waitForTaskResult(initial)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
         queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, activeProject.id] }),
         queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
-        queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
       ])
     })
-  }, [activeProject, queryClient, runOp, selectedOrgId])
+  }, [activeProject, queryClient, runOp, selectedOrgId, trackTaskStatus])
 
   const onRefresh = useCallback(async () => {
     if (!activeProject) return
@@ -1809,6 +1953,17 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     ]
   )
 
+  const runTaskTracked = useCallback(
+    async (projectId: number, body: RunTaskBody, label: string) => {
+      const initial = await runTaskStatus(projectId, body, { background: true })
+      if (isTaskStatus(initial)) {
+        trackTaskStatus(initial, 'run', label)
+      }
+      return waitForTaskResult<RunTaskResult>(initial)
+    },
+    [trackTaskStatus],
+  )
+
   const onRun = useCallback(async () => {
     if (!activeProject || !selectedPath) return
 
@@ -1818,7 +1973,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
       const body = buildRunBody()
       if (!body) return
-      const res = await runTask(activeProject.id, body)
+      const res = await runTaskTracked(activeProject.id, body, `Run ${selectedPath}`)
       setRunResult(res)
 
       await Promise.all([
@@ -1832,6 +1987,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     selectedPath,
     runOp,
     buildRunBody,
+    runTaskTracked,
     queryClient,
     selectedOrgId,
   ])
@@ -1897,7 +2053,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         body.pack_max_total_chars = clampedPackMaxTotalChars
       }
 
-      const res = await runTask(activeProject.id, body)
+      const res = await runTaskTracked(activeProject.id, body, `Summary ${path}`)
       setRunResult(res)
 
       await Promise.all([
@@ -1921,6 +2077,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     packMaxTotalChars,
     queryClient,
     retrievalMode,
+    runTaskTracked,
     runOp,
     selectedPath,
     selectedOrgId,
@@ -1933,16 +2090,16 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setRightPanelOpen,
   ])
 
-  const onRunWithExpandedContext = useCallback(async () => {
+  const onRunWithExpandedContext = useCallback(async (extra?: Partial<RunTaskBody>) => {
     if (!activeProject || !selectedPath) return
 
     await runOp(async () => {
       setRunResult(null)
       setFullPatch(null)
 
-      const body = buildRunBody({ allow_out_of_context_patch: true })
+      const body = buildRunBody({ allow_out_of_context_patch: true, ...extra })
       if (!body) return
-      const res = await runTask(activeProject.id, body)
+      const res = await runTaskTracked(activeProject.id, body, `Run ${selectedPath}`)
       setRunResult(res)
 
       await Promise.all([
@@ -1951,7 +2108,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
       ])
     })
-  }, [activeProject, selectedPath, runOp, buildRunBody, queryClient, selectedOrgId])
+  }, [activeProject, selectedPath, runOp, buildRunBody, queryClient, selectedOrgId, runTaskTracked])
 
   const onSearchNodes = useCallback(
     async (query: string) => {
@@ -2473,9 +2630,12 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     projectsLoading: projectsQuery.isFetching,
     activeProject,
     graph,
-    projectFiles: filesQuery.data?.files ?? [],
-    projectFilesMeta: filesQuery.data?.meta ?? null,
-    projectFilesBusy: filesQuery.isFetching,
+    fileMetaByPath,
+    registerFileMeta,
+    fileDependencies,
+    fileDependenciesMeta,
+    fileDependenciesBusy,
+    allowLocalRootPath,
     docs,
     docsBusy,
     docsBuildBusy,
@@ -2600,6 +2760,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     dismissNotification,
     notifyInfo,
     notifyError,
+    taskStatuses,
+    refreshTaskStatuses,
+    clearFinishedTasks,
+    dismissTaskStatus,
     focusGraph,
     setFocusGraph,
     compactMode,

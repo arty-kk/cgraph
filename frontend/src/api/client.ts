@@ -1,5 +1,6 @@
 // frontend/src/api/client.ts
 import axios, { AxiosHeaders } from 'axios'
+import { safeStorageGet } from '../lib/storage'
 
 const rawBaseURL = import.meta.env.VITE_API_BASE_URL
 const baseURL = (() => {
@@ -21,10 +22,7 @@ const ORG_STORAGE_KEY = 'cs.org.id'
 const ORG_HEADER = 'X-Org-ID'
 
 api.interceptors.request.use((config) => {
-  let raw: string | null = null
-  try {
-    raw = localStorage.getItem(ORG_STORAGE_KEY)
-  } catch {}
+  const raw = safeStorageGet(ORG_STORAGE_KEY)
   const n = Number(raw)
   const valid = Number.isFinite(n) && n > 0
   if (valid) {

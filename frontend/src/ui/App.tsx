@@ -11,6 +11,7 @@ import { ExplorerTree } from './components/ExplorerTree'
 import { useStubGraphApp } from './useStubGraphApp'
 import { CommandPalette } from './components/CommandPalette'
 import { Modal } from './components/Modal'
+import { addStorageErrorListener, safeStorageGet, safeStorageSet } from '../lib/storage'
 
 export type AppProps = {
   showDependencies?: boolean
@@ -23,37 +24,25 @@ export function App({ showDependencies = true }: AppProps) {
   const [onboardOpen, setOnboardOpen] = React.useState(false)
   const [onboardStep, setOnboardStep] = React.useState(0)
   const [editorExplorerOpen, setEditorExplorerOpen] = React.useState(() => {
-    try {
-      const raw = localStorage.getItem('cs.editor.explorerOpen')
-      if (raw === '0') return false
-      if (raw === '1') return true
-      return true
-    } catch {
-      return true
-    }
+    const raw = safeStorageGet('cs.editor.explorerOpen')
+    if (raw === '0') return false
+    if (raw === '1') return true
+    return true
   })
   const [editorLeftTab, setEditorLeftTab] = React.useState<'explorer' | 'search'>(() => {
-    try {
-      const raw = localStorage.getItem('cs.editor.leftTab')
-      return raw === 'explorer' || raw === 'search' ? raw : 'explorer'
-    } catch {
-      return 'explorer'
-    }
+    const raw = safeStorageGet('cs.editor.leftTab')
+    return raw === 'explorer' || raw === 'search' ? raw : 'explorer'
   })
   const [editorWrap, setEditorWrap] = React.useState(() => {
-    try { return (localStorage.getItem('cs.editor.wrap') || '1') !== '0' } catch { return true }
+    return (safeStorageGet('cs.editor.wrap', '1') || '1') !== '0'
   })
   const [editorShowDiff, setEditorShowDiff] = React.useState(() => {
-    try { return (localStorage.getItem('cs.editor.showDiff') || '') === '1' } catch { return false }
+    return (safeStorageGet('cs.editor.showDiff', '') || '') === '1'
   })
   const [editorFontSize, setEditorFontSize] = React.useState(() => {
-    try {
-      const raw = localStorage.getItem('cs.editor.fontSize')
-      const parsed = raw ? Number(raw) : Number.NaN
-      return Number.isFinite(parsed) ? parsed : 13
-    } catch {
-      return 13
-    }
+    const raw = safeStorageGet('cs.editor.fontSize')
+    const parsed = raw ? Number(raw) : Number.NaN
+    return Number.isFinite(parsed) ? parsed : 13
   })
 
   const handleFocusSearch = React.useCallback(() => {
@@ -74,27 +63,25 @@ export function App({ showDependencies = true }: AppProps) {
 
   React.useEffect(() => {
     if (!pid || !onboardKey) { setOnboardOpen(false); return }
-    try {
-      const seen = localStorage.getItem(onboardKey) === '1'
-      if (!seen) { setOnboardOpen(true); setOnboardStep(0) }
-    } catch {}
+    const seen = safeStorageGet(onboardKey) === '1'
+    if (!seen) { setOnboardOpen(true); setOnboardStep(0) }
   }, [pid, onboardKey])
 
   const closeOnboarding = (markSeen: boolean) => {
     if (markSeen && onboardKey) {
-      try { localStorage.setItem(onboardKey, '1') } catch {}
+      safeStorageSet(onboardKey, '1')
     }
     setOnboardOpen(false)
   }
 
   const filePathSet = React.useMemo(() => {
     const s = new Set<string>()
-    for (const f of app.projectFiles || []) {
-      const p = String((f as any)?.path ?? '').trim()
+    const entries = app.fileMetaByPath || {}
+    Object.keys(entries).forEach((p) => {
       if (p) s.add(p)
-    }
+    })
     return s
-  }, [app.projectFiles])
+  }, [app.fileMetaByPath])
 
   const editorTabs = React.useMemo(() => {
     return (app.openFilePaths || []).map((path) => {
@@ -121,80 +108,12 @@ export function App({ showDependencies = true }: AppProps) {
 
   const activeFileMeta = React.useMemo(() => {
     if (!app.activeFilePath) return null
-    return app.projectFiles?.find((file) => file.path === app.activeFilePath) ?? null
-  }, [app.activeFilePath, app.projectFiles])
+    return app.fileMetaByPath?.[app.activeFilePath] ?? null
+  }, [app.activeFilePath, app.fileMetaByPath])
 
-  const graphDependencies = React.useMemo(() => {
-    const keyToPath = new Map<string, string>()
-    const edgesByKey = new Map<string, { in: Set<string>; out: Set<string> }>()
-    if (!app.graph) return { keyToPath, deps: new Map<string, { in: string[]; out: string[] }>() }
-
-    for (const n of app.graph.nodes || []) {
-      const id = typeof (n as any)?.id === 'string' ? String((n as any).id) : ''
-      const path = typeof (n as any)?.path === 'string' ? String((n as any).path) : ''
-      if (path) keyToPath.set(path, path)
-      if (id && path) keyToPath.set(id, path)
-      if (id && !keyToPath.has(id)) keyToPath.set(id, id)
-    }
-
-    const ensureEntry = (key: string) => {
-      let entry = edgesByKey.get(key)
-      if (!entry) {
-        entry = { in: new Set<string>(), out: new Set<string>() }
-        edgesByKey.set(key, entry)
-      }
-      return entry
-    }
-
-    const toPath = (k: string) => keyToPath.get(k) || k
-
-    for (const e of app.graph.edges || []) {
-      const s = typeof (e as any)?.source === 'string' ? String((e as any).source) : ''
-      const t = typeof (e as any)?.target === 'string' ? String((e as any).target) : ''
-      if (!s || !t) continue
-      const source = toPath(s)
-      const target = toPath(t)
-      ensureEntry(source).out.add(target)
-      ensureEntry(target).in.add(source)
-    }
-
-    const deps = new Map<string, { in: string[]; out: string[] }>()
-    for (const [key, entry] of edgesByKey.entries()) {
-      const inbound = Array.from(entry.in).filter(Boolean).sort()
-      const outbound = Array.from(entry.out).filter(Boolean).sort()
-      deps.set(key, { in: inbound, out: outbound })
-    }
-
-    return { keyToPath, deps }
-  }, [app.graph])
-
-  const activeFileDependencies = React.useMemo(() => {
-    if (!app.graph || !app.activeFilePath) return { in: [] as string[], out: [] as string[] }
-
-    const selNode =
-      (app.graph.nodes || []).find((n: any) => n?.path === app.activeFilePath || n?.id === app.activeFilePath) ?? null
-    const selId = selNode && typeof (selNode as any).id === 'string' ? String((selNode as any).id) : null
-
-    const toPath = (k: string) => graphDependencies.keyToPath.get(k) || k
-
-    const selectedKeys = [app.activeFilePath, selId].filter(Boolean) as string[]
-    const selectedPaths = Array.from(new Set(selectedKeys.map((k) => toPath(k)).filter(Boolean)))
-
-    const inSet = new Set<string>()
-    const outSet = new Set<string>()
-    for (const key of selectedPaths) {
-      const entry = graphDependencies.deps.get(key) || { in: [] as string[], out: [] as string[] }
-      for (const dep of entry.in) inSet.add(dep)
-      for (const dep of entry.out) outSet.add(dep)
-    }
-
-    const inbound = Array.from(inSet).filter(Boolean).sort()
-    const outbound = Array.from(outSet).filter(Boolean).sort()
-    return { in: inbound, out: outbound }
-  }, [app.activeFilePath, app.graph, graphDependencies])
-
-  const totalIn = activeFileDependencies.in.length
-  const totalOut = activeFileDependencies.out.length
+  const activeFileDependencies = app.fileDependencies ?? { in: [], out: [] }
+  const totalIn = app.fileDependenciesMeta?.total_in ?? activeFileDependencies.in.length
+  const totalOut = app.fileDependenciesMeta?.total_out ?? activeFileDependencies.out.length
 
   const confirmTitle = app.confirmReason === 'reload-file' ? 'Reload file?' : 'Unsaved changes'
   const confirmBody =
@@ -204,29 +123,38 @@ export function App({ showDependencies = true }: AppProps) {
 
   const clampFontSize = React.useCallback((value: number) => Math.min(16, Math.max(12, value)), [])
 
+  const taskStatuses = app.taskStatuses ?? []
+  const hasTaskStatuses = taskStatuses.length > 0
+
   React.useEffect(() => {
     setEditorFontSize((prev) => clampFontSize(prev))
   }, [clampFontSize])
 
   React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.wrap', editorWrap ? '1' : '0') } catch {}
+    safeStorageSet('cs.editor.wrap', editorWrap ? '1' : '0')
   }, [editorWrap])
 
   React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.explorerOpen', editorExplorerOpen ? '1' : '0') } catch {}
+    safeStorageSet('cs.editor.explorerOpen', editorExplorerOpen ? '1' : '0')
   }, [editorExplorerOpen])
 
   React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.leftTab', editorLeftTab) } catch {}
+    safeStorageSet('cs.editor.leftTab', editorLeftTab)
   }, [editorLeftTab])
 
   React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.showDiff', editorShowDiff ? '1' : '0') } catch {}
+    safeStorageSet('cs.editor.showDiff', editorShowDiff ? '1' : '0')
   }, [editorShowDiff])
 
   React.useEffect(() => {
-    try { localStorage.setItem('cs.editor.fontSize', String(editorFontSize)) } catch {}
+    safeStorageSet('cs.editor.fontSize', String(editorFontSize))
   }, [editorFontSize])
+
+  React.useEffect(() => {
+    return addStorageErrorListener(() => {
+      app.notifyInfo('Local storage unavailable — settings will not be saved.')
+    })
+  }, [app])
 
   const activeFileDirty = React.useMemo(() => {
     if (!app.activeFilePath) return false
@@ -337,6 +265,52 @@ export function App({ showDependencies = true }: AppProps) {
 
   return (
     <div className="h-screen w-screen overflow-hidden relative bg-neutral-950 text-neutral-100">
+      {hasTaskStatuses && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[120] w-[min(780px,92vw)]">
+          <div className="rounded-md border border-neutral-800 bg-neutral-950/95 px-3 py-2 text-xs shadow-lg">
+            <div className="flex items-center justify-between gap-3">
+              <div className="font-semibold text-neutral-200">Background tasks</div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800"
+                  onClick={() => void app.refreshTaskStatuses()}
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800"
+                  onClick={() => app.clearFinishedTasks()}
+                >
+                  Clear completed
+                </button>
+              </div>
+            </div>
+            <div className="mt-2 flex flex-col gap-1">
+              {taskStatuses.map((task) => (
+                <div key={task.id} className="flex items-center justify-between gap-2 text-[11px]">
+                  <div className="min-w-0 flex items-center gap-2">
+                    <span className="truncate text-neutral-200">{task.label}</span>
+                    <span className="text-neutral-500">· {task.kind}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-neutral-400">
+                    <span className="uppercase">{task.status}</span>
+                    {task.error && <span className="text-rose-300">· {task.error}</span>}
+                    <button
+                      type="button"
+                      className="rounded-md border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800"
+                      onClick={() => app.dismissTaskStatus(task.id)}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="h-full w-full min-h-0 overflow-x-hidden grid min-w-0" style={{ gridTemplateColumns, gridTemplateRows: '1fr' }}>
 
       {app.workspaceView === 'graph' && !app.focusGraph && app.leftPanelOpen && (
@@ -387,10 +361,9 @@ export function App({ showDependencies = true }: AppProps) {
             searchBusy={app.searchBusy}
             onSearchNodes={app.onSearchNodes}
             onSelectPath={app.onSelectNodePath}
-            projectFiles={app.projectFiles}
-            projectFilesMeta={app.projectFilesMeta}
-            projectFilesBusy={app.projectFilesBusy}
+            onRegisterFileMeta={app.registerFileMeta}
             pinnedPaths={app.pinnedPaths}
+            allowLocalRootPath={app.allowLocalRootPath}
             onOpenDocs={openDocs}
           />
         )}
@@ -499,9 +472,7 @@ export function App({ showDependencies = true }: AppProps) {
                           app.setWorkspaceView('editor')
                           void Promise.resolve(app.openFileEditor(path))
                         }}
-                        projectFiles={app.projectFiles}
-                        projectFilesMeta={app.projectFilesMeta}
-                        projectFilesBusy={app.projectFilesBusy}
+                        onRegisterFileMeta={app.registerFileMeta}
                         pinnedPaths={app.pinnedPaths}
                         showModuleSelect={false}
                         compact

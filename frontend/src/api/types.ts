@@ -304,6 +304,43 @@ export type ProjectFilesResponse = {
   meta: { prefix?: string; total: number; returned: number; truncated: boolean; limit: number }
 }
 
+export type ProjectTreeEntry = {
+  type: 'file' | 'dir'
+  path: string
+  name: string
+  has_children?: boolean
+  file?: ProjectFileItem
+}
+
+export type ProjectTreeResponse = {
+  entries: ProjectTreeEntry[]
+  meta: {
+    prefix: string
+    cursor?: string | null
+    next_cursor?: string | null
+    returned: number
+    truncated: boolean
+    limit: number
+  }
+}
+
+export type FileDependenciesResponse = {
+  path: string
+  inbound: string[]
+  outbound: string[]
+  meta: {
+    limit: number
+    total_inbound: number
+    total_outbound: number
+    truncated_inbound: boolean
+    truncated_outbound: boolean
+  }
+}
+
+export type AppConfig = {
+  allow_local_root_path: boolean
+}
+
 export type ProjectDocs = {
   project_id: number
   kind: string
