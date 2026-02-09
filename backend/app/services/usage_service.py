@@ -20,6 +20,30 @@ def _today_utc() -> date:
     return datetime.now(timezone.utc).date()
 
 
+def check_usage_limit(org_id: int, kind: str, amount: int, limit: int | None) -> None:
+    if amount <= 0:
+        return
+    if limit is None:
+        return
+    if limit <= 0:
+        raise LimitExceededError("Лимит использования исчерпан")
+    day = _today_utc()
+    with get_session() as session:
+        row = session.exec(
+            select(OrgUsage.count).where(
+                OrgUsage.org_id == org_id,
+                OrgUsage.day == day,
+                OrgUsage.kind == kind,
+            )
+        ).first()
+        current = int(row[0]) if isinstance(row, (tuple, list)) else int(row or 0)
+    if current + amount > limit:
+        raise LimitExceededError(
+            "Превышен дневной лимит использования",
+            context={"kind": kind, "limit": limit},
+        )
+
+
 def check_and_increment(org_id: int, kind: str, amount: int, limit: int | None) -> None:
     if amount <= 0:
         return
