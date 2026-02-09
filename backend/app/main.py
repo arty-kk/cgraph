@@ -47,6 +47,8 @@ async def rate_limit(request: Request, call_next):
 async def auth_guard(request: Request, call_next):
     if not settings.auth_enabled:
         return await call_next(request)
+    if request.method == "OPTIONS":
+        return await call_next(request)
     path = request.url.path
     if path == "/health":
         return await call_next(request)

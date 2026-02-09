@@ -81,7 +81,7 @@ async def create_project_from_snapshot(
 ):
     archive_name = archive.filename or ""
     chunk_size = 1024 * 1024
-    chunks: list[bytes] = []
+    chunks = bytearray()
     total_bytes = 0
     while True:
         chunk = await archive.read(chunk_size)
@@ -93,8 +93,8 @@ async def create_project_from_snapshot(
                 "Архив слишком большой",
                 context={"max_bytes": settings.snapshot_max_bytes, "size": total_bytes},
             )
-        chunks.append(chunk)
-    data = b"".join(chunks)
+        chunks.extend(chunk)
+    data = bytes(chunks)
     _, org_id, _ = require_org_context(request, min_role="member")
     project = create_project_from_snapshot_service(name, data, archive_name, org_id)
     return _project_response(project, snapshot_label=archive_name)
