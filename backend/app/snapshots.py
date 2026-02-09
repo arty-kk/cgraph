@@ -213,8 +213,15 @@ def _extract_tar(archive_path: Path, root_dir: Path) -> None:
 def prepare_snapshot_root(meta: SnapshotMeta) -> Path:
     root_dir = (settings.db_dir / meta.root_dir).resolve()
     root_dir.mkdir(parents=True, exist_ok=True)
+    marker_path = root_dir / ".extracted_ok"
     if any(root_dir.iterdir()):
-        return root_dir
+        if marker_path.exists():
+            return root_dir
+        for path in sorted(root_dir.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                path.rmdir()
 
     archive_path = _local_archive_path(meta.sha256, meta.archive_ext)
     if not archive_path.exists() and meta.storage == "s3":
@@ -231,6 +238,7 @@ def prepare_snapshot_root(meta: SnapshotMeta) -> Path:
     else:
         _extract_tar(archive_path, root_dir)
 
+    marker_path.write_text("ok")
     return root_dir
 
 
