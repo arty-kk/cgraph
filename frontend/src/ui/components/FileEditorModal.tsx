@@ -12,9 +12,12 @@ export function FileEditorModal({
   nodeInfo,
   fileMeta,
   dependencies,
+  dependencyMeta,
   showDependencies,
   totalIn,
   totalOut,
+  saveBanner,
+  draftCount,
   original,
   content,
   busy,
@@ -46,6 +49,9 @@ export function FileEditorModal({
   onOpenInGraph,
   onOpenDependencyInGraph,
   onOpenDependencyFile,
+  onLoadMoreDependencies,
+  onRescan,
+  onClearDrafts,
 }: Props) {
   const title = path ? `File: ${path}` : 'File viewer'
 
@@ -64,9 +70,12 @@ export function FileEditorModal({
         nodeInfo={nodeInfo}
         fileMeta={fileMeta}
         dependencies={dependencies}
+        dependencyMeta={dependencyMeta}
         showDependencies={showDependencies}
         totalIn={totalIn}
         totalOut={totalOut}
+        saveBanner={saveBanner}
+        draftCount={draftCount}
         original={original}
         content={content}
         busy={busy}
@@ -98,6 +107,9 @@ export function FileEditorModal({
         onOpenInGraph={onOpenInGraph}
         onOpenDependencyInGraph={onOpenDependencyInGraph}
         onOpenDependencyFile={onOpenDependencyFile}
+        onLoadMoreDependencies={onLoadMoreDependencies}
+        onRescan={onRescan}
+        onClearDrafts={onClearDrafts}
       />
     </Modal>
   )

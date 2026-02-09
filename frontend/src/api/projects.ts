@@ -53,9 +53,13 @@ export async function scanProjectStatus(
   return r.data
 }
 
-export async function listProjectFiles(projectId: number, prefix?: string, limit = 2_000): Promise<ProjectFilesResponse> {
-  const params: any = { limit }
-  if (typeof prefix === 'string' && prefix.trim()) params.prefix = prefix.trim()
+export async function listProjectFiles(
+  projectId: number,
+  opts: { prefix?: string; cursor?: string; limit?: number } = {},
+): Promise<ProjectFilesResponse> {
+  const params: any = { limit: opts.limit ?? 2_000 }
+  if (typeof opts.prefix === 'string' && opts.prefix.trim()) params.prefix = opts.prefix.trim()
+  if (typeof opts.cursor === 'string' && opts.cursor.trim()) params.cursor = opts.cursor.trim()
   const r = await api.get(`/api/projects/${projectId}/files`, { params })
   return r.data
 }
@@ -75,9 +79,11 @@ export async function listProjectTreeEntries(
 export async function getFileDependencies(
   projectId: number,
   path: string,
-  limit = 2000,
+  opts: { limit?: number; cursorIn?: string; cursorOut?: string } = {},
 ): Promise<FileDependenciesResponse> {
-  const params: Record<string, any> = { path, limit }
+  const params: Record<string, any> = { path, limit: opts.limit ?? 2000 }
+  if (typeof opts.cursorIn === 'string' && opts.cursorIn.trim()) params.cursor_in = opts.cursorIn.trim()
+  if (typeof opts.cursorOut === 'string' && opts.cursorOut.trim()) params.cursor_out = opts.cursorOut.trim()
   const r = await api.get(`/api/projects/${projectId}/dependencies`, { params })
   return r.data
 }

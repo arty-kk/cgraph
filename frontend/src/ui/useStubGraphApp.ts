@@ -78,6 +78,7 @@ export type FileEditorEntry = {
   truncated: boolean
   busy: boolean
   saving: boolean
+  loaded: boolean
   error: string | null
 }
 
@@ -146,6 +147,9 @@ function legacyWsKey(projectId: number): string {
 function legacyWsKeyV1(projectId: number): string {
   return `${LEGACY_WORKSPACE_KEY_PREFIX_V1}${projectId}`
 }
+function draftKey(projectId: number): string {
+  return `cs.drafts.v1.${projectId}`
+}
 function isAnyModalOpen(): boolean {
   if (typeof document === 'undefined') return false
   const raw = document.body?.dataset?.csModalOpenCount
@@ -176,6 +180,16 @@ function asInt(v: any, fallback: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, i))
 }
 
+function asIndexStatus(v: any): IndexStatus | null {
+  if (v === 'ok' || v === 'rescan_scheduled' || v === 'failed') return v
+  return null
+}
+
+function asWarnings(v: any): string[] {
+  if (!Array.isArray(v)) return []
+  return v.map((item) => String(item || '').trim()).filter(Boolean)
+}
+
 function asGraphMode(v: any, fallback: GraphMode): GraphMode {
   const s = asStr(v)
   return s === 'local' || s === 'full' || s === 'limit' ? s : fallback
@@ -191,6 +205,7 @@ function createFileEditorEntry(path: string, opts: { dirty?: boolean } = {}): Fi
     truncated: false,
     busy: false,
     saving: false,
+    loaded: false,
     error: null,
   }
 }
@@ -216,6 +231,37 @@ export type NotificationItem = {
   text: string
 }
 
+type IndexStatus = 'ok' | 'rescan_scheduled' | 'failed'
+
+type FileSaveBanner = {
+  path: string
+  status: IndexStatus
+  warnings: string[]
+  rollback?: string
+  conflict?: boolean
+  conflictReason?: string
+  error?: string
+  rescanTask?: { task_id?: string; status?: string }
+  metricsPending?: boolean
+}
+
+type DependencyMeta = {
+  total_in: number
+  total_out: number
+  truncated_in: boolean
+  truncated_out: boolean
+  next_cursor_in?: string | null
+  next_cursor_out?: string | null
+  cursor_in?: string | null
+  cursor_out?: string | null
+}
+
+type DraftEntry = {
+  content: string
+  original: string
+  updatedAt: number
+}
+
 type UseStubGraphAppOptions = {
   onFocusSearch?: () => void
 }
@@ -224,8 +270,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const { onFocusSearch } = options
   const workspaceBootingRef = useRef(false)
   const workspaceSaveTimerRef = useRef<number | null>(null)
+  const draftSaveTimerRef = useRef<number | null>(null)
   const restoredEditorRef = useRef(false)
   const undoRedoHandlersRef = useRef<{ undo?: () => void; redo?: () => void } | null>(null)
+  const draftPromptedRef = useRef<Set<string>>(new Set())
 
   const queryClient = useQueryClient()
 
@@ -447,8 +495,13 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [fileEditorsByPath, setFileEditorsByPath] = useState<Record<string, FileEditorEntry>>({})
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const [fileDependencies, setFileDependencies] = useState<{ in: string[]; out: string[] } | null>(null)
-  const [fileDependenciesMeta, setFileDependenciesMeta] = useState<{ total_in: number; total_out: number } | null>(null)
+  const [fileDependenciesMeta, setFileDependenciesMeta] = useState<DependencyMeta | null>(null)
   const [fileDependenciesBusy, setFileDependenciesBusy] = useState(false)
+  const [fileSaveBanner, setFileSaveBanner] = useState<FileSaveBanner | null>(null)
+  const [graphStale, setGraphStale] = useState(false)
+  const [graphStaleMessage, setGraphStaleMessage] = useState<string | null>(null)
+  const [draftsByPath, setDraftsByPath] = useState<Record<string, DraftEntry>>({})
+  const [draftRestore, setDraftRestore] = useState<{ path: string; draft: DraftEntry } | null>(null)
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null)
   const [pendingClosePaths, setPendingClosePaths] = useState<string[]>([])
   const [pendingActivePath, setPendingActivePath] = useState<string | null>(null)
@@ -458,6 +511,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [confirmReason, setConfirmReason] = useState<string | null>(null)
   const [pendingView, setPendingView] = useState<WorkspaceView | null>(null)
   const FILE_EDITOR_MAX_CHARS = 200_000
+  const DRAFT_MAX_CHARS = 120_000
 
   const hasDirtyEditors = useMemo(() => {
     return Object.values(fileEditorsByPath).some((entry) => isEntryDirty(entry))
@@ -484,19 +538,34 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     }
     let active = true
     setFileDependenciesBusy(true)
-    getFileDependencies(activeProject.id, activeFilePath, 2000)
+    getFileDependencies(activeProject.id, activeFilePath, { limit: 2000 })
       .then((res) => {
         if (!active) return
         setFileDependencies({ in: res.inbound || [], out: res.outbound || [] })
         setFileDependenciesMeta({
           total_in: res.meta?.total_inbound ?? res.inbound?.length ?? 0,
           total_out: res.meta?.total_outbound ?? res.outbound?.length ?? 0,
+          truncated_in: Boolean(res.meta?.truncated_inbound),
+          truncated_out: Boolean(res.meta?.truncated_outbound),
+          next_cursor_in: res.meta?.next_cursor_in ?? null,
+          next_cursor_out: res.meta?.next_cursor_out ?? null,
+          cursor_in: res.meta?.cursor_in ?? null,
+          cursor_out: res.meta?.cursor_out ?? null,
         })
       })
       .catch(() => {
         if (!active) return
         setFileDependencies({ in: [], out: [] })
-        setFileDependenciesMeta({ total_in: 0, total_out: 0 })
+        setFileDependenciesMeta({
+          total_in: 0,
+          total_out: 0,
+          truncated_in: false,
+          truncated_out: false,
+          next_cursor_in: null,
+          next_cursor_out: null,
+          cursor_in: null,
+          cursor_out: null,
+        })
       })
       .finally(() => {
         if (active) setFileDependenciesBusy(false)
@@ -505,6 +574,43 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       active = false
     }
   }, [activeFilePath, activeProject])
+
+  const loadMoreDependencies = useCallback(async () => {
+    if (!activeProject || !activeFilePath || !fileDependenciesMeta) return
+    if (!fileDependenciesMeta.next_cursor_in && !fileDependenciesMeta.next_cursor_out) return
+    setFileDependenciesBusy(true)
+    try {
+      const res = await getFileDependencies(activeProject.id, activeFilePath, {
+        limit: 2000,
+        cursorIn: fileDependenciesMeta.next_cursor_in ?? undefined,
+        cursorOut: fileDependenciesMeta.next_cursor_out ?? undefined,
+      })
+      setFileDependencies((prev) => {
+        const prevIn = prev?.in ?? []
+        const prevOut = prev?.out ?? []
+        const nextIn = [...prevIn, ...(res.inbound || [])]
+        const nextOut = [...prevOut, ...(res.outbound || [])]
+        return {
+          in: Array.from(new Set(nextIn)),
+          out: Array.from(new Set(nextOut)),
+        }
+      })
+      setFileDependenciesMeta({
+        total_in: res.meta?.total_inbound ?? fileDependenciesMeta.total_in,
+        total_out: res.meta?.total_outbound ?? fileDependenciesMeta.total_out,
+        truncated_in: Boolean(res.meta?.truncated_inbound),
+        truncated_out: Boolean(res.meta?.truncated_outbound),
+        next_cursor_in: res.meta?.next_cursor_in ?? null,
+        next_cursor_out: res.meta?.next_cursor_out ?? null,
+        cursor_in: res.meta?.cursor_in ?? fileDependenciesMeta.cursor_in ?? null,
+        cursor_out: res.meta?.cursor_out ?? fileDependenciesMeta.cursor_out ?? null,
+      })
+    } catch {
+      // keep existing state on failure
+    } finally {
+      setFileDependenciesBusy(false)
+    }
+  }, [activeFilePath, activeProject, fileDependenciesMeta])
 
   const buildWorkspaceState = useCallback((): WorkspaceStateV3 => {
     const fileEditorState: Record<string, { dirty?: boolean }> = {}
@@ -763,12 +869,36 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setSearchQuery('')
     setSearchResults([])
     setErrorMessage(null)
+    setFileSaveBanner(null)
+    setGraphStale(false)
+    setGraphStaleMessage(null)
 
     const t = window.setTimeout(() => {
       workspaceBootingRef.current = false
     }, 0)
     return () => window.clearTimeout(t)
   }, [activeProject?.id, resetForSelectionChange, setErrorMessage])
+
+  useEffect(() => {
+    const pid = Number(activeProject?.id)
+    if (!Number.isFinite(pid) || pid <= 0) {
+      setDraftsByPath({})
+      setDraftRestore(null)
+      draftPromptedRef.current = new Set()
+      return
+    }
+    const raw = safeStorageGetJson<Record<string, DraftEntry>>(draftKey(pid), {})
+    const next: Record<string, DraftEntry> = {}
+    for (const [path, draft] of Object.entries(raw || {})) {
+      if (!path || !draft || typeof draft.content !== 'string') continue
+      const original = typeof draft.original === 'string' ? draft.original : ''
+      const updatedAt = Number(draft.updatedAt || 0)
+      next[path] = { content: draft.content, original, updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0 }
+    }
+    setDraftsByPath(next)
+    setDraftRestore(null)
+    draftPromptedRef.current = new Set()
+  }, [activeProject?.id])
 
   // Persist workspace (debounced) when state changes
   useEffect(() => {
@@ -802,6 +932,47 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     fileEditorsByPath,
     persistWorkspace,
   ])
+
+  useEffect(() => {
+    const pid = Number(activeProject?.id)
+    if (!Number.isFinite(pid) || pid <= 0) return
+    if (workspaceBootingRef.current) return
+
+    if (draftSaveTimerRef.current != null) window.clearTimeout(draftSaveTimerRef.current)
+    draftSaveTimerRef.current = window.setTimeout(() => {
+      draftSaveTimerRef.current = null
+      const next: Record<string, DraftEntry> = { ...draftsByPath }
+      let changed = false
+      Object.entries(fileEditorsByPath).forEach(([path, entry]) => {
+        if (!path) return
+        if (entry?.dirty && entry.content.length <= DRAFT_MAX_CHARS) {
+          const prev = next[path]
+          if (!prev || prev.content !== entry.content || prev.original !== entry.original) {
+            next[path] = { content: entry.content, original: entry.original, updatedAt: Date.now() }
+            changed = true
+          }
+          return
+        }
+        if (next[path]) {
+          delete next[path]
+          changed = true
+        }
+      })
+      if (!changed) return
+      setDraftsByPath(next)
+      try {
+        if (Object.keys(next).length > 0) {
+          safeStorageSet(draftKey(pid), JSON.stringify(next))
+        } else {
+          safeStorageRemove(draftKey(pid))
+        }
+      } catch {}
+    }, 200)
+
+    return () => {
+      if (draftSaveTimerRef.current != null) window.clearTimeout(draftSaveTimerRef.current)
+    }
+  }, [DRAFT_MAX_CHARS, activeProject?.id, draftsByPath, fileEditorsByPath])
 
   const setSelection = useCallback(
     (nextRaw: string | null, opts: { pushHistory?: boolean } = {}) => {
@@ -1265,8 +1436,14 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
           truncated: Boolean(res.truncated),
           busy: false,
           saving: false,
+          loaded: true,
           error: null,
         }))
+        const draft = draftsByPath[p]
+        if (draft && draft.content !== content && !draftPromptedRef.current.has(p)) {
+          draftPromptedRef.current.add(p)
+          setDraftRestore({ path: p, draft })
+        }
       } catch (e: any) {
         updateFileEditorEntry(p, (entry) => ({
           ...entry,
@@ -1276,11 +1453,12 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
           truncated: false,
           busy: false,
           saving: false,
+          loaded: false,
           error: extractError(e),
         }))
       }
     },
-    [activeProject, updateFileEditorEntry],
+    [activeProject, draftsByPath, updateFileEditorEntry],
   )
 
   const clearConfirm = useCallback(() => {
@@ -1302,8 +1480,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       setActiveFilePath(p)
       updateFileEditorEntry(p, (entry) => entry)
       const existingEntry = fileEditorsByPath[p]
-      const shouldLoad =
-        !existingEntry || ((!existingEntry.content || !existingEntry.original) && !existingEntry.busy)
+      const shouldLoad = !existingEntry || (!existingEntry.loaded && !existingEntry.busy)
       if (shouldLoad) {
         await loadFileEditor(p)
       }
@@ -1328,6 +1505,56 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     },
     [activeProject, openFileEditor, workspaceView],
   )
+
+  const persistDrafts = useCallback(
+    (next: Record<string, DraftEntry>) => {
+      const pid = Number(activeProject?.id)
+      if (!Number.isFinite(pid) || pid <= 0) return
+      try {
+        if (Object.keys(next).length > 0) {
+          safeStorageSet(draftKey(pid), JSON.stringify(next))
+        } else {
+          safeStorageRemove(draftKey(pid))
+        }
+      } catch {}
+    },
+    [activeProject?.id],
+  )
+
+  const restoreDraft = useCallback(() => {
+    if (!draftRestore) return
+    const { path, draft } = draftRestore
+    updateFileEditorEntry(path, (entry) => ({
+      ...entry,
+      content: draft.content,
+      dirty: draft.content !== entry.original,
+      error: null,
+    }))
+    setDraftRestore(null)
+  }, [draftRestore, updateFileEditorEntry])
+
+  const discardDraft = useCallback(() => {
+    if (!draftRestore) return
+    const { path } = draftRestore
+    setDraftsByPath((prev) => {
+      if (!(path in prev)) return prev
+      const next = { ...prev }
+      delete next[path]
+      persistDrafts(next)
+      return next
+    })
+    setDraftRestore(null)
+  }, [draftRestore, persistDrafts])
+
+  const clearDrafts = useCallback(() => {
+    setDraftsByPath((prev) => {
+      if (Object.keys(prev).length === 0) return prev
+      persistDrafts({})
+      return {}
+    })
+    setDraftRestore(null)
+    draftPromptedRef.current = new Set()
+  }, [persistDrafts])
 
   const clearPendingJump = useCallback(() => {
     setPendingJump(null)
@@ -1359,6 +1586,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     updateFileEditorEntry(p, (current) => ({ ...current, saving: true, error: null }))
     try {
       const res: FileSaveResult = await updateFileContent(activeProject.id, p, entry.content)
+      const status = asIndexStatus(res?.index_status)
+      const warnings = asWarnings(res?.warnings)
+      const partial = status ? status !== 'ok' : res?.reindexed === false
       if (res?.saved) {
         updateFileEditorEntry(p, (current) => ({
           ...current,
@@ -1366,13 +1596,55 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
           dirty: false,
           truncated: false,
         }))
-        notifyInfo('File saved')
+        if (!partial) {
+          notifyInfo('File saved')
+        }
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
         ])
+        if (partial) {
+          const message =
+            status === 'failed'
+              ? 'Indexing failed and the change may be rolled back.'
+              : 'Indexing incomplete — run a rescan.'
+          setFileSaveBanner({
+            path: p,
+            status: status ?? 'rescan_scheduled',
+            warnings,
+            rollback: res?.rollback,
+            conflict: res?.conflict,
+            conflictReason: res?.conflict_reason,
+            error: res?.error,
+            rescanTask: res?.rescan_task,
+            metricsPending: res?.metrics_pending,
+          })
+          setGraphStale(true)
+          setGraphStaleMessage(message)
+        } else {
+          setFileSaveBanner(null)
+        }
         return true
+      }
+      if (res && partial) {
+        const message =
+          status === 'failed'
+            ? 'Indexing failed and the change was rolled back.'
+            : 'Indexing incomplete — run a rescan.'
+        setFileSaveBanner({
+          path: p,
+          status: status ?? 'failed',
+          warnings,
+          rollback: res?.rollback,
+          conflict: res?.conflict,
+          conflictReason: res?.conflict_reason,
+          error: res?.error,
+          rescanTask: res?.rescan_task,
+          metricsPending: res?.metrics_pending,
+        })
+        setGraphStale(true)
+        setGraphStaleMessage(message)
       }
     } catch (e: any) {
       updateFileEditorEntry(p, (current) => ({ ...current, error: extractError(e) }))
@@ -1380,7 +1652,14 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       updateFileEditorEntry(p, (current) => ({ ...current, saving: false }))
     }
     return false
-  }, [activeProject, fileEditorsByPath, notifyInfo, queryClient, selectedOrgId, updateFileEditorEntry])
+  }, [
+    activeProject,
+    fileEditorsByPath,
+    notifyInfo,
+    queryClient,
+    selectedOrgId,
+    updateFileEditorEntry,
+  ])
 
   const saveFileEditor = useCallback(async (): Promise<boolean> => {
     if (!activeFilePath) return false
@@ -1640,6 +1919,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         trackTaskStatus(initial, 'scan', `Scan ${activeProject.name}`)
       }
       await waitForTaskResult(initial)
+      setGraphStale(false)
+      setGraphStaleMessage(null)
+      setFileSaveBanner(null)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
         queryClient.invalidateQueries({ queryKey: ['runs', selectedOrgId, activeProject.id] }),
@@ -1660,6 +1942,24 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     })
   }, [activeProject, queryClient, runOp, selectedOrgId])
 
+  const handleMutationResponse = useCallback(
+    (res: FileSaveResult | null | undefined, successMessage: string) => {
+      const status = asIndexStatus(res?.index_status)
+      const partial = status ? status !== 'ok' : res?.reindexed === false
+      if (!partial) {
+        notifyInfo(successMessage)
+        return
+      }
+      const message =
+        status === 'failed'
+          ? 'Indexing failed and the change may have been rolled back.'
+          : 'Indexing incomplete — run a rescan.'
+      setGraphStale(true)
+      setGraphStaleMessage(message)
+    },
+    [notifyInfo],
+  )
+
   const onCreateFile = useCallback(
     async (path: string, content?: string) => {
       if (!activeProject) return
@@ -1670,7 +1970,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         const res = await createFile(activeProject.id, p, content)
         const nextPath = String(res?.path || p).trim() || p
         createdPath = nextPath
-        notifyInfo('File created')
+        handleMutationResponse(res, 'File created')
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
@@ -1681,7 +1981,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         setSelection(createdPath, { pushHistory: true })
       }
     },
-    [activeProject, notifyInfo, queryClient, runOpThrow, selectedOrgId, setSelection],
+    [activeProject, handleMutationResponse, queryClient, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onRenameFile = useCallback(
@@ -1707,7 +2007,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         if (selectedPathRef.current === oldPath) {
           setSelection(nextPath, { pushHistory: false })
         }
-        notifyInfo('File renamed')
+        handleMutationResponse(res, 'File renamed')
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
@@ -1715,7 +2015,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         ])
       })
     },
-    [activeProject, notifyInfo, queryClient, runOpThrow, selectedOrgId, setSelection],
+    [activeProject, handleMutationResponse, queryClient, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onDeleteFile = useCallback(
@@ -1724,7 +2024,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const p = String(path || '').trim()
       if (!p) return
       await runOpThrow(async () => {
-        await deleteFile(activeProject.id, p)
+        const res = await deleteFile(activeProject.id, p)
         setOpenFilePaths((prev) => prev.filter((item) => item !== p))
         setFileEditorsByPath((prev) => {
           if (!(p in prev)) return prev
@@ -1737,7 +2037,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         if (selectedPathRef.current === p) {
           setSelection(null, { pushHistory: false })
         }
-        notifyInfo('File deleted')
+        handleMutationResponse(res, 'File deleted')
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
@@ -1745,7 +2045,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         ])
       })
     },
-    [activeProject, notifyInfo, queryClient, runOpThrow, selectedOrgId, setSelection],
+    [activeProject, handleMutationResponse, queryClient, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onDeleteRun = useCallback(
@@ -2608,6 +2908,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const fileEditorBusy = activeFileEntry?.busy ?? false
   const fileEditorSaving = activeFileEntry?.saving ?? false
   const fileEditorError = activeFileEntry?.error ?? null
+  const draftCount = useMemo(() => Object.keys(draftsByPath).length, [draftsByPath])
 
   const canRun = useMemo(() => {
     const fileReady = !!selectedPath && (contract != null || nodeInfo != null)
@@ -2635,6 +2936,14 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     fileDependencies,
     fileDependenciesMeta,
     fileDependenciesBusy,
+    loadMoreDependencies,
+    fileSaveBanner,
+    graphStale,
+    graphStaleMessage,
+    draftRestore,
+    restoreDraft,
+    discardDraft,
+    clearDrafts,
     allowLocalRootPath,
     docs,
     docsBusy,
@@ -2651,6 +2960,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     fileEditorBusy,
     fileEditorSaving,
     fileEditorError,
+    draftCount,
     openFilePaths,
     fileEditorsByPath,
     activeFilePath,

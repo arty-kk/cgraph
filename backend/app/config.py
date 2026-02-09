@@ -133,6 +133,12 @@ class Settings(BaseSettings):
     graph_metrics_incremental_max_component_edges: int = Field(
         default=5000, alias="STUBGRAPH_GRAPH_METRICS_INCREMENTAL_MAX_COMPONENT_EDGES"
     )
+    graph_metrics_async_node_threshold: int = Field(
+        default=6000, alias="STUBGRAPH_GRAPH_METRICS_ASYNC_NODE_THRESHOLD"
+    )
+    graph_metrics_async_edge_threshold: int = Field(
+        default=25000, alias="STUBGRAPH_GRAPH_METRICS_ASYNC_EDGE_THRESHOLD"
+    )
 
     impact_max_nodes: int | None = Field(default=None, alias="STUBGRAPH_IMPACT_MAX_NODES")
     impact_max_depth: int | None = Field(default=None, alias="STUBGRAPH_IMPACT_MAX_DEPTH")

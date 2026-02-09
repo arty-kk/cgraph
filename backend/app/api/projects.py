@@ -198,9 +198,21 @@ def search_text(
 
 
 @router.get("/{project_id}/files")
-def files(request: Request, project_id: int, prefix: str | None = None, limit: int = 50_000):
+def files(
+    request: Request,
+    project_id: int,
+    prefix: str | None = None,
+    cursor: str | None = None,
+    limit: int = 50_000,
+):
     project = require_project_access(request, project_id, min_role="viewer")
-    return list_project_files(project.id, project.org_id, prefix=prefix, limit=limit)
+    return list_project_files(
+        project.id,
+        project.org_id,
+        prefix=prefix,
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 @router.get("/{project_id}/files/tree")
@@ -227,9 +239,18 @@ def file_dependencies(
     project_id: int,
     path: str,
     limit: int = 2000,
+    cursor_in: str | None = None,
+    cursor_out: str | None = None,
 ):
     project = require_project_access(request, project_id, min_role="viewer")
-    return get_file_dependencies(project.id, project.org_id, path, limit=limit)
+    return get_file_dependencies(
+        project.id,
+        project.org_id,
+        path,
+        limit=limit,
+        cursor_in=cursor_in,
+        cursor_out=cursor_out,
+    )
 
 
 @router.post("/{project_id}/docs/build")
