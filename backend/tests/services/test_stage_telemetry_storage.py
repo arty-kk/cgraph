@@ -44,13 +44,15 @@ class TestStageTelemetryStorage(unittest.TestCase):
             stop_reason="completed",
             tool_calls=5,
             tool_output_chars=2048,
+            prompt_tokens=321,
+            completion_tokens=123,
         )
         self.assertEqual(len(stages), 1)
         row = stages[0]
         self.assertEqual(row["stage_name"], "analyze_agentic")
         self.assertEqual(row["model"], "gpt-5-mini")
-        self.assertIsNone(row["prompt_tokens"])
-        self.assertIsNone(row["completion_tokens"])
+        self.assertEqual(row["prompt_tokens"], 321)
+        self.assertEqual(row["completion_tokens"], 123)
         self.assertEqual(row["latency_ms"], 123)
         self.assertEqual(row["retry_index"], 1)
         self.assertEqual(row["self_check_result"], "ok")
@@ -67,8 +69,8 @@ class TestStageTelemetryStorage(unittest.TestCase):
                     {
                         "stage_name": "plan_agentic",
                         "model": "gpt-5-mini",
-                        "prompt_tokens": None,
-                        "completion_tokens": None,
+                        "prompt_tokens": 555,
+                        "completion_tokens": 111,
                         "latency_ms": 42,
                         "retry_index": 0,
                         "self_check_result": None,
@@ -102,6 +104,8 @@ class TestStageTelemetryStorage(unittest.TestCase):
                     project_id=9201,
                     stage_name="plan_agentic",
                     model="gpt-5-mini",
+                    prompt_tokens=555,
+                    completion_tokens=111,
                     latency_ms=42,
                     retry_index=0,
                     stop_reason="completed",
@@ -123,6 +127,8 @@ class TestStageTelemetryStorage(unittest.TestCase):
             self.assertEqual(stages[0].stage_name, "plan_agentic")
             self.assertEqual(stages[0].latency_ms, 42)
             self.assertEqual(stages[0].stop_reason, "completed")
+            self.assertEqual(stages[0].prompt_tokens, 555)
+            self.assertEqual(stages[0].completion_tokens, 111)
 
 
 if __name__ == "__main__":

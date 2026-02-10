@@ -11,6 +11,7 @@ from ...config import settings
 from ..client import get_openai_client
 from ..model_caps import supports_reasoning, supports_temperature
 from ..orchestrator import SYSTEM_INSTRUCTIONS
+from ..usage import extract_usage, merge_usage
 from .dispatch import _clamp_float, _clamp_int, _dispatch_tool
 from .schema import _normalize_responses_json_schema, _parse_model_json
 from .self_check import _run_self_check
@@ -58,6 +59,17 @@ def _agentic_json_call(
     tools = _tool_definitions(eff_file)
     meta = AgenticMeta()
     tool_cache: dict[str, dict] = {}
+
+    def _apply_usage_to_meta(usage: dict[str, int | None]) -> None:
+        current = {
+            "prompt_tokens": meta.prompt_tokens,
+            "completion_tokens": meta.completion_tokens,
+            "total_tokens": meta.total_tokens,
+        }
+        merged = merge_usage(current, usage)
+        meta.prompt_tokens = merged.get("prompt_tokens")
+        meta.completion_tokens = merged.get("completion_tokens")
+        meta.total_tokens = merged.get("total_tokens")
 
     tool_rules = (
         "Tooling rules:\n"
@@ -230,6 +242,8 @@ def _agentic_json_call(
         except Exception as e:
             raise RuntimeError(f"OpenAI request failed: {e}") from e
 
+        _apply_usage_to_meta(extract_usage(resp))
+
         out_items = getattr(resp, "output", None)
         if isinstance(out_items, list) and out_items:
             input_list += out_items
@@ -273,7 +287,7 @@ def _agentic_json_call(
                             "Evidence mode requires sources with file paths and line ranges. "
                             "Include non-empty sources and use get_file_lines when possible."
                         )
-                        return _agentic_json_call(
+                        retry_result, retry_meta = _agentic_json_call(
                             model=model,
                             self_check_model=self_check_model,
                             self_check_reasoning_effort=self_check_reasoning_effort,
@@ -292,6 +306,24 @@ def _agentic_json_call(
                             allow_self_check_retry=False,
                             allow_evidence_retry=False,
                         )
+                        merged_retry_usage = merge_usage(
+                            {
+                                "prompt_tokens": meta.prompt_tokens,
+                                "completion_tokens": meta.completion_tokens,
+                                "total_tokens": meta.total_tokens,
+                            },
+                            {
+                                "prompt_tokens": retry_meta.prompt_tokens,
+                                "completion_tokens": retry_meta.completion_tokens,
+                                "total_tokens": retry_meta.total_tokens,
+                            },
+                        )
+                        retry_meta.prompt_tokens = merged_retry_usage.get("prompt_tokens")
+                        retry_meta.completion_tokens = merged_retry_usage.get(
+                            "completion_tokens"
+                        )
+                        retry_meta.total_tokens = merged_retry_usage.get("total_tokens")
+                        return retry_result, retry_meta
                     raise RuntimeError("Evidence mode requires non-empty sources in the response")
             check_model = self_check_model or model
             try:
@@ -333,7 +365,7 @@ def _agentic_json_call(
                 if extra_sections:
                     extra_prompt = f"{extra_prompt}\n\n" + "\n\n".join(extra_sections)
                 retry_prompt = f"{user_prompt}\n\n{extra_prompt}"
-                return _agentic_json_call(
+                retry_result, retry_meta = _agentic_json_call(
                     model=model,
                     self_check_model=self_check_model,
                     self_check_reasoning_effort=self_check_reasoning_effort,
@@ -352,6 +384,22 @@ def _agentic_json_call(
                     allow_self_check_retry=False,
                     allow_evidence_retry=allow_evidence_retry,
                 )
+                merged_retry_usage = merge_usage(
+                    {
+                        "prompt_tokens": meta.prompt_tokens,
+                        "completion_tokens": meta.completion_tokens,
+                        "total_tokens": meta.total_tokens,
+                    },
+                    {
+                        "prompt_tokens": retry_meta.prompt_tokens,
+                        "completion_tokens": retry_meta.completion_tokens,
+                        "total_tokens": retry_meta.total_tokens,
+                    },
+                )
+                retry_meta.prompt_tokens = merged_retry_usage.get("prompt_tokens")
+                retry_meta.completion_tokens = merged_retry_usage.get("completion_tokens")
+                retry_meta.total_tokens = merged_retry_usage.get("total_tokens")
+                return retry_result, retry_meta
 
             return (result, meta)
 

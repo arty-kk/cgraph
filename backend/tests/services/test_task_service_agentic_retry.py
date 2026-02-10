@@ -3,6 +3,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from app.llm.usage import extract_usage  # noqa: E402
 from app.services.task_service import (  # noqa: E402
     _append_stage_telemetry,
     _resolve_agentic_retry_stop_reason,
@@ -69,6 +70,8 @@ def test_agentic_telemetry_and_state_payload_contains_stop_reason_and_counters()
         latency_ms=50,
         retry_index=1,
         stop_reason="retry_limit",
+        prompt_tokens=200,
+        completion_tokens=80,
     )
 
     assert retrieval_settings["agentic"]["retry_count"] == 1
@@ -76,3 +79,29 @@ def test_agentic_telemetry_and_state_payload_contains_stop_reason_and_counters()
     assert retrieval_settings["agentic"]["escalation_count_by_stage"]["analyze_agentic"] == 1
     assert retrieval_settings["agentic"]["stop_reason"] == "retry_limit"
     assert stages[0]["stop_reason"] == "retry_limit"
+    assert stages[0]["prompt_tokens"] == 200
+    assert stages[0]["completion_tokens"] == 80
+
+
+def test_usage_extraction_supports_object_and_dict_sdk_formats() -> None:
+    class UsageObj:
+        prompt_tokens = "17"
+        completion_tokens = 8
+        total_tokens = "25"
+
+    class RespObj:
+        usage = UsageObj()
+
+    usage_object = extract_usage(RespObj())
+    assert usage_object == {"prompt_tokens": 17, "completion_tokens": 8, "total_tokens": 25}
+
+    usage_dict = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 13,
+                "completion_tokens": "4",
+                "total_tokens": None,
+            }
+        }
+    )
+    assert usage_dict == {"prompt_tokens": 13, "completion_tokens": 4, "total_tokens": None}
