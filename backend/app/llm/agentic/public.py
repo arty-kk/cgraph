@@ -40,7 +40,8 @@ def analyze_agentic(
     )
     return _agentic_json_call(
         model=policy.analysis_model,
-        self_check_model=policy.analysis_model,
+        self_check_model=policy.verifier_model,
+        self_check_reasoning_effort=policy.verifier_effort,
         schema=ANALYZE_SCHEMA,
         project_id=project_id,
         root=root,
@@ -88,7 +89,8 @@ def evolve_agentic(
     )
     return _agentic_json_call(
         model=policy.analysis_model,
-        self_check_model=policy.analysis_model,
+        self_check_model=policy.verifier_model,
+        self_check_reasoning_effort=policy.verifier_effort,
         schema=ANALYZE_SCHEMA,
         project_id=project_id,
         root=root,
@@ -138,7 +140,8 @@ def fix_agentic(
     eff_reasoning_effort = reasoning_effort if reasoning_effort is not None else policy.patch_effort
     return _agentic_json_call(
         model=policy.patch_model,
-        self_check_model=policy.analysis_model,
+        self_check_model=policy.verifier_model,
+        self_check_reasoning_effort=policy.verifier_effort,
         schema=FIX_SCHEMA,
         project_id=project_id,
         root=root,

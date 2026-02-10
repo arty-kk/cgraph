@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from time import perf_counter
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +28,23 @@ from ..errors import (
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.agentic import AgenticMeta, analyze_agentic, evolve_agentic, fix_agentic
 from ..llm.orchestrator import analyze, evolve, fix, plan_task, triage
-from ..llm.policy import DEFAULT_POLICY, ProfileName, ProfileParams, resolve_profile
+from ..llm.policy import (
+    DEFAULT_POLICY,
+    ProfileName,
+    ProfileParams,
+    resolve_profile,
+    resolve_runtime_policy,
+)
+from ..llm.routing_selector import select_runtime_route
 from ..logging import get_logger
-from ..models import AnalysisRun, FileEdge, FileNode, ModuleContract, TaskJob
+from ..models import (
+    AnalysisRun,
+    AnalysisStageTelemetry,
+    FileEdge,
+    FileNode,
+    ModuleContract,
+    TaskJob,
+)
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
 from ..scan import scan_files
 from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
@@ -106,6 +121,59 @@ def _clamp_float(value: float | None, default: float, lo: float, hi: float) -> f
     except Exception:
         v = float(default)
     return max(lo, min(hi, v))
+
+
+def _parse_routing_model_stats(raw: str | None) -> dict[str, dict[str, float]] | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    parsed: dict[str, dict[str, float]] = {}
+    for model, row in payload.items():
+        if not isinstance(model, str) or not isinstance(row, dict):
+            continue
+        try:
+            parsed[model] = {
+                "quality": float(row.get("quality", 0.0)),
+                "latency_ms": float(row.get("latency_ms", 0.0)),
+                "token_cost": float(row.get("token_cost", 0.0)),
+                "fail_rate": float(row.get("fail_rate", 1.0)),
+            }
+        except Exception:
+            continue
+    return parsed or None
+
+
+def _append_stage_telemetry(
+    stages: list[dict[str, Any]],
+    *,
+    stage_name: str,
+    model: str,
+    latency_ms: float,
+    retry_index: int = 0,
+    self_check_result: str | None = None,
+    failure_class: str | None = None,
+    tool_calls: int | None = None,
+    tool_output_chars: int | None = None,
+) -> None:
+    stages.append(
+        {
+            "stage_name": stage_name,
+            "model": model,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "latency_ms": max(0, int(round(latency_ms))),
+            "retry_index": int(retry_index),
+            "self_check_result": self_check_result,
+            "failure_class": failure_class,
+            "tool_calls": int(tool_calls) if tool_calls is not None else None,
+            "tool_output_chars": int(tool_output_chars) if tool_output_chars is not None else None,
+        }
+    )
 
 
 REASONING_EFFORT_LEVELS = ("low", "medium", "high")
@@ -587,14 +655,39 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
     if mode in ("analyze", "evolve", "fix") or mode is None:
         _enforce_llm_entitlements(org_id)
 
+    stage_telemetry: list[dict[str, Any]] = []
+
+    runtime_policy = resolve_runtime_policy(
+        task_kind=mode,
+        complexity_coeff=1.0,
+        prompt_len=len(request.prompt),
+    )
+
     if mode is None:
+        triage_started = perf_counter()
         try:
             triage_result = triage(
                 request.prompt,
+                policy=runtime_policy,
                 instructions=profile_instructions,
                 temperature=profile_temperature,
             )
+            _append_stage_telemetry(
+                stage_telemetry,
+                stage_name="triage",
+                model=runtime_policy.triage_model,
+                latency_ms=(perf_counter() - triage_started) * 1000,
+                retry_index=0,
+            )
         except Exception as error:  # noqa: BLE001
+            _append_stage_telemetry(
+                stage_telemetry,
+                stage_name="triage",
+                model=runtime_policy.triage_model,
+                latency_ms=(perf_counter() - triage_started) * 1000,
+                retry_index=0,
+                failure_class=error.__class__.__name__,
+            )
             _llm_http_error("triage", error)
 
         if not isinstance(triage_result, dict):
@@ -708,6 +801,26 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
         1.0,
         2.0,
     )
+    fallback_policy = resolve_runtime_policy(
+        task_kind=mode,
+        complexity_coeff=complexity_coeff,
+        prompt_len=prompt_len,
+    )
+    routing_selection = select_runtime_route(
+        task_kind=mode,
+        complexity_coeff=complexity_coeff,
+        prompt_len=prompt_len,
+        project_nodes=project_nodes,
+        sla_profile=settings.llm_routing_sla_profile,
+        model_stats=_parse_routing_model_stats(settings.llm_routing_model_stats_json),
+        quality_weight=settings.llm_routing_weight_quality,
+        latency_weight=settings.llm_routing_weight_latency,
+        token_cost_weight=settings.llm_routing_weight_token_cost,
+        fail_rate_weight=settings.llm_routing_weight_fail_rate,
+        low_confidence_threshold=settings.llm_routing_low_confidence_threshold,
+    )
+    runtime_policy = routing_selection.policy if routing_selection is not None else fallback_policy
+
     complexity_inputs = {
         "depth": depth,
         "prompt_len": prompt_len,
@@ -827,10 +940,25 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 "temperature": agentic_temperature,
                 "reasoning_effort": agentic_reasoning_effort,
                 "agentic_evidence_mode": evidence_mode,
+                "policy_version": settings.llm_routing_policy_version,
+                "model_routing": {
+                    "triage_model": runtime_policy.triage_model,
+                    "analysis_model": runtime_policy.analysis_model,
+                    "patch_model": runtime_policy.patch_model,
+                    "verifier_model": runtime_policy.verifier_model,
+                },
+                "model_routing_reason": {
+                    "policy_version": settings.llm_routing_policy_version,
+                    "source": "telemetry_score" if routing_selection is not None else "fallback_policy",
+                    "confidence": routing_selection.confidence if routing_selection is not None else None,
+                    "reason": routing_selection.reason if routing_selection is not None else "insufficient_telemetry_or_low_confidence",
+                    "score_breakdown": routing_selection.score_breakdown if routing_selection is not None else None,
+                },
                 "self_check_retry": False,
                 "self_check_retry_reason": None,
                 "self_check_retry_missing_context": [],
                 "self_check_retry_multiplier": None,
+                "self_check_retry_model_routing": None,
             },
             "pack": {
                 "max_files": pack_max_files,
@@ -850,14 +978,31 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 "impacted": impacted,
                 "nodes": _load_node_metrics(project_id, paths_for_metrics),
             }
+            plan_started = perf_counter()
             try:
                 plan_tz = plan_task(
                     knowledge,
                     request.prompt,
+                    policy=runtime_policy,
                     instructions=profile_instructions,
                     temperature=profile_temperature,
                 )
+                _append_stage_telemetry(
+                    stage_telemetry,
+                    stage_name="plan_graph",
+                    model=runtime_policy.analysis_model,
+                    latency_ms=(perf_counter() - plan_started) * 1000,
+                    retry_index=0,
+                )
             except Exception as error:  # noqa: BLE001
+                _append_stage_telemetry(
+                    stage_telemetry,
+                    stage_name="plan_graph",
+                    model=runtime_policy.analysis_model,
+                    latency_ms=(perf_counter() - plan_started) * 1000,
+                    retry_index=0,
+                    failure_class=error.__class__.__name__,
+                )
                 _llm_http_error("plan", error)
             plan_source = "graph"
         else:
@@ -876,10 +1021,25 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 "temperature": agentic_temperature,
                 "reasoning_effort": agentic_reasoning_effort,
                 "agentic_evidence_mode": evidence_mode,
+                "policy_version": settings.llm_routing_policy_version,
+                "model_routing": {
+                    "triage_model": runtime_policy.triage_model,
+                    "analysis_model": runtime_policy.analysis_model,
+                    "patch_model": runtime_policy.patch_model,
+                    "verifier_model": runtime_policy.verifier_model,
+                },
+                "model_routing_reason": {
+                    "policy_version": settings.llm_routing_policy_version,
+                    "source": "telemetry_score" if routing_selection is not None else "fallback_policy",
+                    "confidence": routing_selection.confidence if routing_selection is not None else None,
+                    "reason": routing_selection.reason if routing_selection is not None else "insufficient_telemetry_or_low_confidence",
+                    "score_breakdown": routing_selection.score_breakdown if routing_selection is not None else None,
+                },
                 "self_check_retry": False,
                 "self_check_retry_reason": None,
                 "self_check_retry_missing_context": [],
                 "self_check_retry_multiplier": None,
+                "self_check_retry_model_routing": None,
             },
             "pack": {
                 "max_files": pack_max_files,
@@ -900,26 +1060,45 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             contract_summary = _load_contract_summary(project_id, target)
             if contract_summary is not None:
                 knowledge["contract"] = contract_summary
+            plan_started = perf_counter()
             try:
                 plan_tz = plan_task(
                     knowledge,
                     request.prompt,
+                    policy=runtime_policy,
                     instructions=profile_instructions,
                     temperature=profile_temperature,
                 )
+                _append_stage_telemetry(
+                    stage_telemetry,
+                    stage_name="plan_agentic",
+                    model=runtime_policy.analysis_model,
+                    latency_ms=(perf_counter() - plan_started) * 1000,
+                    retry_index=0,
+                )
             except Exception as error:  # noqa: BLE001
+                _append_stage_telemetry(
+                    stage_telemetry,
+                    stage_name="plan_agentic",
+                    model=runtime_policy.analysis_model,
+                    latency_ms=(perf_counter() - plan_started) * 1000,
+                    retry_index=0,
+                    failure_class=error.__class__.__name__,
+                )
                 _llm_http_error("plan", error)
             plan_source = "agentic"
             allowed_patch_paths = {target}
             self_check_retry = False
             self_check_retry_missing_context: list[str] = []
             self_check_retry_budget: dict[str, float] | None = None
+            stage_started = perf_counter()
             try:
                 if mode == "analyze":
                     result, agentic_meta = analyze_agentic(
                         project_id,
                         root,
                         target,
+                        policy=runtime_policy,
                         depth=depth,
                         user_prompt=request.prompt,
                         instructions=profile_instructions,
@@ -932,12 +1111,13 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         allow_self_check_retry=False,
                         allow_evidence_retry=True,
                     )
-                    model_used = settings.analysis_model
+                    model_used = runtime_policy.analysis_model
                 elif mode == "evolve":
                     result, agentic_meta = evolve_agentic(
                         project_id,
                         root,
                         target,
+                        policy=runtime_policy,
                         depth=depth,
                         user_prompt=request.prompt,
                         instructions=profile_instructions,
@@ -950,12 +1130,13 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         allow_self_check_retry=False,
                         allow_evidence_retry=True,
                     )
-                    model_used = settings.analysis_model
+                    model_used = runtime_policy.analysis_model
                 elif mode == "fix":
                     result, agentic_meta = fix_agentic(
                         project_id,
                         root,
                         target,
+                        policy=runtime_policy,
                         depth=depth,
                         user_prompt=request.prompt,
                         instructions=profile_instructions,
@@ -968,10 +1149,38 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         allow_self_check_retry=False,
                         allow_evidence_retry=True,
                     )
-                    model_used = settings.patch_model
+                    model_used = runtime_policy.patch_model
                 else:
                     raise BadRequestError("Неизвестный режим")
+                _append_stage_telemetry(
+                    stage_telemetry,
+                    stage_name=f"{mode}_agentic",
+                    model=model_used,
+                    latency_ms=(perf_counter() - stage_started) * 1000,
+                    retry_index=0,
+                    self_check_result=(
+                        "ok"
+                        if agentic_meta is not None and agentic_meta.self_check_ok is True
+                        else "failed"
+                        if agentic_meta is not None and agentic_meta.self_check_ok is False
+                        else None
+                    ),
+                    tool_calls=(agentic_meta.tool_calls if agentic_meta is not None else None),
+                    tool_output_chars=(
+                        agentic_meta.total_tool_output_chars if agentic_meta is not None else None
+                    ),
+                )
             except Exception as error:  # noqa: BLE001
+                _append_stage_telemetry(
+                    stage_telemetry,
+                    stage_name=f"{mode}_agentic",
+                    model=(
+                        runtime_policy.patch_model if mode == "fix" else runtime_policy.analysis_model
+                    ),
+                    latency_ms=(perf_counter() - stage_started) * 1000,
+                    retry_index=0,
+                    failure_class=error.__class__.__name__,
+                )
                 _llm_http_error(mode or "agentic", error)
 
             if agentic_meta is not None and agentic_meta.self_check_missing_context:
@@ -980,6 +1189,15 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                     agentic_meta.self_check_missing_context or []
                 )
                 self_check_retry_budget = dict(SELF_CHECK_RETRY_MULTIPLIERS)
+                retry_complexity_coeff = _clamp_float(complexity_coeff + 0.25, complexity_coeff, 1.0, 2.0)
+                retry_prompt_len = prompt_len + sum(
+                    len(item) for item in self_check_retry_missing_context if isinstance(item, str)
+                )
+                retry_policy = resolve_runtime_policy(
+                    task_kind=mode,
+                    complexity_coeff=retry_complexity_coeff,
+                    prompt_len=retry_prompt_len,
+                )
                 agentic_max_calls = min(
                     int(round(agentic_max_calls * SELF_CHECK_RETRY_MULTIPLIERS["max_calls"])),
                     srv_calls,
@@ -1022,12 +1240,20 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 retrieval_settings["agentic"]["self_check_retry_multiplier"] = (
                     self_check_retry_budget
                 )
+                retrieval_settings["agentic"]["self_check_retry_model_routing"] = {
+                    "triage_model": retry_policy.triage_model,
+                    "analysis_model": retry_policy.analysis_model,
+                    "patch_model": retry_policy.patch_model,
+                    "verifier_model": retry_policy.verifier_model,
+                }
+                retry_stage_started = perf_counter()
                 try:
                     if mode == "analyze":
                         result, agentic_meta = analyze_agentic(
                             project_id,
                             root,
                             target,
+                            policy=retry_policy,
                             depth=depth,
                             user_prompt=request.prompt,
                             instructions=profile_instructions,
@@ -1040,12 +1266,13 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                             allow_self_check_retry=False,
                             allow_evidence_retry=True,
                         )
-                        model_used = settings.analysis_model
+                        model_used = retry_policy.analysis_model
                     elif mode == "evolve":
                         result, agentic_meta = evolve_agentic(
                             project_id,
                             root,
                             target,
+                            policy=retry_policy,
                             depth=depth,
                             user_prompt=request.prompt,
                             instructions=profile_instructions,
@@ -1058,12 +1285,13 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                             allow_self_check_retry=False,
                             allow_evidence_retry=True,
                         )
-                        model_used = settings.analysis_model
+                        model_used = retry_policy.analysis_model
                     elif mode == "fix":
                         result, agentic_meta = fix_agentic(
                             project_id,
                             root,
                             target,
+                            policy=retry_policy,
                             depth=depth,
                             user_prompt=request.prompt,
                             instructions=profile_instructions,
@@ -1076,8 +1304,34 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                             allow_self_check_retry=False,
                             allow_evidence_retry=True,
                         )
-                        model_used = settings.patch_model
+                        model_used = retry_policy.patch_model
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name=f"{mode}_agentic",
+                        model=model_used,
+                        latency_ms=(perf_counter() - retry_stage_started) * 1000,
+                        retry_index=1,
+                        self_check_result=(
+                            "ok"
+                            if agentic_meta is not None and agentic_meta.self_check_ok is True
+                            else "failed"
+                            if agentic_meta is not None and agentic_meta.self_check_ok is False
+                            else None
+                        ),
+                        tool_calls=(agentic_meta.tool_calls if agentic_meta is not None else None),
+                        tool_output_chars=(
+                            agentic_meta.total_tool_output_chars if agentic_meta is not None else None
+                        ),
+                    )
                 except Exception as error:  # noqa: BLE001
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name=f"{mode}_agentic",
+                        model=(retry_policy.patch_model if mode == "fix" else retry_policy.analysis_model),
+                        latency_ms=(perf_counter() - retry_stage_started) * 1000,
+                        retry_index=1,
+                        failure_class=error.__class__.__name__,
+                    )
                     _llm_http_error(mode or "agentic", error)
 
             if not self_check_retry:
@@ -1239,49 +1493,117 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 "context_omitted_paths_total": omitted_total,
                 "context_omitted_paths_truncated": omitted_total > len(omitted_sample),
             }
+            plan_started = perf_counter()
             try:
                 plan_tz = plan_task(
                     packed_dict,
                     request.prompt,
+                    policy=runtime_policy,
                     instructions=profile_instructions,
                     temperature=profile_temperature,
                 )
+                _append_stage_telemetry(
+                    stage_telemetry,
+                    stage_name="plan_pack",
+                    model=runtime_policy.analysis_model,
+                    latency_ms=(perf_counter() - plan_started) * 1000,
+                    retry_index=0,
+                )
             except Exception as error:  # noqa: BLE001
+                _append_stage_telemetry(
+                    stage_telemetry,
+                    stage_name="plan_pack",
+                    model=runtime_policy.analysis_model,
+                    latency_ms=(perf_counter() - plan_started) * 1000,
+                    retry_index=0,
+                    failure_class=error.__class__.__name__,
+                )
                 _llm_http_error("plan", error)
             plan_source = "pack"
             if mode == "analyze":
+                stage_started = perf_counter()
                 try:
                     result = analyze(
                         packed_dict,
                         request.prompt,
+                        policy=runtime_policy,
                         instructions=profile_instructions,
                         temperature=profile_temperature,
                     )
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name="analyze_pack",
+                        model=runtime_policy.analysis_model,
+                        latency_ms=(perf_counter() - stage_started) * 1000,
+                        retry_index=0,
+                    )
                 except Exception as error:  # noqa: BLE001
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name="analyze_pack",
+                        model=runtime_policy.analysis_model,
+                        latency_ms=(perf_counter() - stage_started) * 1000,
+                        retry_index=0,
+                        failure_class=error.__class__.__name__,
+                    )
                     _llm_http_error("analyze", error)
-                model_used = settings.analysis_model
+                model_used = runtime_policy.analysis_model
             elif mode == "evolve":
+                stage_started = perf_counter()
                 try:
                     result = evolve(
                         packed_dict,
                         request.prompt,
+                        policy=runtime_policy,
                         instructions=profile_instructions,
                         temperature=profile_temperature,
                     )
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name="evolve_pack",
+                        model=runtime_policy.analysis_model,
+                        latency_ms=(perf_counter() - stage_started) * 1000,
+                        retry_index=0,
+                    )
                 except Exception as error:  # noqa: BLE001
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name="evolve_pack",
+                        model=runtime_policy.analysis_model,
+                        latency_ms=(perf_counter() - stage_started) * 1000,
+                        retry_index=0,
+                        failure_class=error.__class__.__name__,
+                    )
                     _llm_http_error("evolve", error)
-                model_used = settings.analysis_model
+                model_used = runtime_policy.analysis_model
             elif mode == "fix":
+                stage_started = perf_counter()
                 try:
                     result = fix(
                         packed_dict,
                         request.prompt,
+                        policy=runtime_policy,
                         instructions=profile_instructions,
                         temperature=profile_temperature,
                     )
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name="fix_pack",
+                        model=runtime_policy.patch_model,
+                        latency_ms=(perf_counter() - stage_started) * 1000,
+                        retry_index=0,
+                    )
                 except Exception as error:  # noqa: BLE001
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name="fix_pack",
+                        model=runtime_policy.patch_model,
+                        latency_ms=(perf_counter() - stage_started) * 1000,
+                        retry_index=0,
+                        failure_class=error.__class__.__name__,
+                    )
                     _llm_http_error("fix", error)
-                model_used = settings.patch_model
+                model_used = runtime_policy.patch_model
             else:
                 raise BadRequestError("Неизвестный режим")
 
@@ -1307,6 +1629,14 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             ensure_ascii=False,
         )
 
+
+    if isinstance(retrieval_settings, dict):
+        telemetry_payload = retrieval_settings.get("telemetry")
+        if not isinstance(telemetry_payload, dict):
+            telemetry_payload = {}
+        telemetry_payload["stages"] = list(stage_telemetry)
+        retrieval_settings["telemetry"] = telemetry_payload
+
     with get_session() as session:
         run = AnalysisRun(
             org_id=org_id,
@@ -1324,6 +1654,33 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             result_json=json.dumps(result_for_db, ensure_ascii=False),
         )
         session.add(run)
+        session.flush()
+        for stage in stage_telemetry:
+            session.add(
+                AnalysisStageTelemetry(
+                    run_id=int(run.id or 0),
+                    org_id=org_id,
+                    project_id=project_id,
+                    stage_name=str(stage.get("stage_name") or ""),
+                    model=str(stage.get("model") or ""),
+                    prompt_tokens=stage.get("prompt_tokens"),
+                    completion_tokens=stage.get("completion_tokens"),
+                    latency_ms=stage.get("latency_ms"),
+                    retry_index=int(stage.get("retry_index") or 0),
+                    self_check_result=(
+                        str(stage.get("self_check_result"))
+                        if stage.get("self_check_result") is not None
+                        else None
+                    ),
+                    failure_class=(
+                        str(stage.get("failure_class"))
+                        if stage.get("failure_class") is not None
+                        else None
+                    ),
+                    tool_calls=stage.get("tool_calls"),
+                    tool_output_chars=stage.get("tool_output_chars"),
+                )
+            )
 
         node = session.exec(
             select(FileNode).where(FileNode.project_id == project_id, FileNode.path == target)

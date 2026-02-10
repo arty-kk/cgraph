@@ -22,6 +22,7 @@ def _agentic_json_call(
     *,
     model: str,
     self_check_model: str | None,
+    self_check_reasoning_effort: str | None,
     schema: dict,
     project_id: int,
     root: Path,
@@ -275,6 +276,7 @@ def _agentic_json_call(
                         return _agentic_json_call(
                             model=model,
                             self_check_model=self_check_model,
+                            self_check_reasoning_effort=self_check_reasoning_effort,
                             schema=schema,
                             project_id=project_id,
                             root=root,
@@ -296,6 +298,7 @@ def _agentic_json_call(
                 self_check = _run_self_check(
                     client=client,
                     model=check_model,
+                    reasoning_effort=self_check_reasoning_effort,
                     user_prompt=user_prompt,
                     seed=seed,
                     response_payload=result,
@@ -333,6 +336,7 @@ def _agentic_json_call(
                 return _agentic_json_call(
                     model=model,
                     self_check_model=self_check_model,
+                    self_check_reasoning_effort=self_check_reasoning_effort,
                     schema=schema,
                     project_id=project_id,
                     root=root,
