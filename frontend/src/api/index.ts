@@ -55,7 +55,6 @@ export { getGraph, getLocalGraph, searchNodes } from './graph'
 export { getNode, getContract, getFileContent, updateFileContent, createFile, renameFile, deleteFile } from './nodes'
 export {
   runTask,
-  runTaskStatus,
   listRuns,
   getRun,
   getRunPatch,
