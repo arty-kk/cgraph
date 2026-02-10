@@ -7,54 +7,17 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.config import settings
 from app.llm.routing_selector import select_runtime_route
+from tests.llm._routing_fixtures import MODEL_STATS_CANONICAL, MODEL_STATS_TRADEOFF
 
 
 class TestRoutingSelector(unittest.TestCase):
     @staticmethod
     def _model_stats() -> dict[str, dict[str, float]]:
-        return {
-            "gpt-5-nano": {
-                "quality": 0.70,
-                "latency_ms": 400,
-                "token_cost": 0.2,
-                "fail_rate": 0.04,
-            },
-            "gpt-5-mini": {
-                "quality": 0.82,
-                "latency_ms": 650,
-                "token_cost": 0.5,
-                "fail_rate": 0.03,
-            },
-            "gpt-5.2-codex": {
-                "quality": 0.93,
-                "latency_ms": 900,
-                "token_cost": 0.9,
-                "fail_rate": 0.02,
-            },
-        }
+        return {key: dict(value) for key, value in MODEL_STATS_CANONICAL.items()}
 
     @staticmethod
     def _tradeoff_stats() -> dict[str, dict[str, float]]:
-        return {
-            "gpt-5-nano": {
-                "quality": 0.74,
-                "latency_ms": 180,
-                "token_cost": 0.08,
-                "fail_rate": 0.07,
-            },
-            "gpt-5-mini": {
-                "quality": 0.84,
-                "latency_ms": 420,
-                "token_cost": 0.3,
-                "fail_rate": 0.04,
-            },
-            "gpt-5.2-codex": {
-                "quality": 0.95,
-                "latency_ms": 980,
-                "token_cost": 0.95,
-                "fail_rate": 0.02,
-            },
-        }
+        return {key: dict(value) for key, value in MODEL_STATS_TRADEOFF.items()}
 
     def test_returns_none_without_stats(self) -> None:
         selection = select_runtime_route(
