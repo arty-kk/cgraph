@@ -13,9 +13,26 @@ export type FileEditorPaneProps = {
   nodeInfo?: NodeInfo | null
   fileMeta?: ProjectFileItem | null
   dependencies?: { in: string[]; out: string[] }
+  dependencyMeta?: {
+    truncated_in?: boolean
+    truncated_out?: boolean
+    next_cursor_in?: string | null
+    next_cursor_out?: string | null
+  } | null
   showDependencies?: boolean
   totalIn?: number
   totalOut?: number
+  saveBanner?: {
+    status: 'ok' | 'rescan_scheduled' | 'failed'
+    warnings: string[]
+    rollback?: string
+    conflict?: boolean
+    conflictReason?: string
+    error?: string
+    rescanTask?: { task_id?: string; status?: string }
+    metricsPending?: boolean
+  } | null
+  draftCount?: number
   original: string
   content: string
   busy: boolean
@@ -47,6 +64,9 @@ export type FileEditorPaneProps = {
   onOpenInGraph: (path: string) => void
   onOpenDependencyInGraph: (path: string) => void
   onOpenDependencyFile: (path: string) => void
+  onLoadMoreDependencies?: () => void
+  onRescan?: () => void
+  onClearDrafts?: () => void
 }
 
 export function FileEditorPane({
@@ -57,9 +77,12 @@ export function FileEditorPane({
   nodeInfo,
   fileMeta,
   dependencies,
+  dependencyMeta,
   showDependencies,
   totalIn,
   totalOut,
+  saveBanner,
+  draftCount = 0,
   original,
   content,
   busy,
@@ -91,6 +114,9 @@ export function FileEditorPane({
   onOpenInGraph,
   onOpenDependencyInGraph,
   onOpenDependencyFile,
+  onLoadMoreDependencies,
+  onRescan,
+  onClearDrafts,
 }: FileEditorPaneProps) {
   const [cursorInfo, setCursorInfo] = React.useState({ line: 1, column: 1 })
   const editorRef = React.useRef<editor.IStandaloneCodeEditor | null>(null)
@@ -387,9 +413,19 @@ export function FileEditorPane({
   const depsOut = dependencies?.out ?? []
   const totalInCount = typeof totalIn === 'number' ? totalIn : depsIn.length
   const totalOutCount = typeof totalOut === 'number' ? totalOut : depsOut.length
+  const depsTruncated = Boolean(dependencyMeta?.truncated_in || dependencyMeta?.truncated_out)
+  const depsCanLoadMore = Boolean(dependencyMeta?.next_cursor_in || dependencyMeta?.next_cursor_out)
   const showDependenciesBlock = showDependencies !== false && Boolean(dependencies)
   const depButtonClass =
     'rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[10px] font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50'
+  const warningMap: Record<string, string> = {
+    scan_aborted: 'Scan aborted due to a snapshot mismatch.',
+    scan_failed: 'Indexing failed; rescan is recommended.',
+    rollback_ok: 'Changes were rolled back.',
+    rollback_skipped: 'Rollback skipped due to concurrent changes.',
+    rollback_failed: 'Rollback failed; data may be inconsistent.',
+  }
+  const saveWarnings = (saveBanner?.warnings || []).map((code) => warningMap[code] || code)
 
   return (
     <div className="flex flex-col gap-3 h-full min-h-0">
@@ -492,6 +528,29 @@ export function FileEditorPane({
               </button>
             </div>
           </div>
+          {depsTruncated && (
+            <div className="mt-2 rounded-md border border-amber-800/60 bg-amber-950/40 px-2 py-1 text-[10px] text-amber-200">
+              <div>Partial results — the dependency list is truncated.</div>
+              <div className="mt-1 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className={depButtonClass}
+                  onClick={() => onLoadMoreDependencies?.()}
+                  disabled={!depsCanLoadMore || !onLoadMoreDependencies}
+                >
+                  Load more
+                </button>
+                <button
+                  type="button"
+                  className={depButtonClass}
+                  onClick={() => path && onOpenDependencyInGraph(path)}
+                  disabled={!path}
+                >
+                  Open in graph
+                </button>
+              </div>
+            </div>
+          )}
           {depsOpen && (
             <div className="mt-2 grid gap-3 sm:grid-cols-2">
               <div className="space-y-2">
@@ -525,7 +584,7 @@ export function FileEditorPane({
                   ))}
                   {!depsIn.length && <div className="text-[11px] text-neutral-500">—</div>}
                 </div>
-                {depsIn.length > DEP_LIMIT && (
+                {(depsIn.length > DEP_LIMIT || dependencyMeta?.truncated_in) && (
                   <button
                     type="button"
                     className={depButtonClass}
@@ -567,7 +626,7 @@ export function FileEditorPane({
                   ))}
                   {!depsOut.length && <div className="text-[11px] text-neutral-500">—</div>}
                 </div>
-                {depsOut.length > DEP_LIMIT && (
+                {(depsOut.length > DEP_LIMIT || dependencyMeta?.truncated_out) && (
                   <button
                     type="button"
                     className={depButtonClass}
@@ -580,6 +639,54 @@ export function FileEditorPane({
               </div>
             </div>
           )}
+        </div>
+      )}
+      {saveBanner && (
+        <div className="rounded-md border border-amber-800/70 bg-amber-950/40 px-3 py-2 text-[11px] text-amber-200">
+          <div className="font-semibold">
+            {saveBanner.status === 'failed'
+              ? 'Indexing failed'
+              : 'Indexing incomplete — rescan recommended'}
+          </div>
+          {saveWarnings.length > 0 && (
+            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[10px] text-amber-100">
+              {saveWarnings.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+          {saveBanner.conflictReason && (
+            <div className="mt-1 text-[10px] text-amber-100">
+              Conflict: {saveBanner.conflictReason.replace(/_/g, ' ')}
+            </div>
+          )}
+          {saveBanner.metricsPending && (
+            <div className="mt-1 text-[10px] text-amber-100">
+              Graph metrics recomputation is running in the background.
+            </div>
+          )}
+          {saveBanner.error && (
+            <div className="mt-1 text-[10px] text-amber-100">Error: {saveBanner.error}</div>
+          )}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="rounded-md border border-amber-800/70 bg-amber-900/40 px-2 py-1 text-[10px] font-semibold text-amber-100 hover:bg-amber-900/60 disabled:opacity-50"
+              onClick={() => onRescan?.()}
+              disabled={!onRescan}
+            >
+              Rescan now
+            </button>
+            {(saveBanner.conflict || saveBanner.rollback === 'failed') && (
+              <button
+                type="button"
+                className="rounded-md border border-amber-800/70 bg-amber-900/40 px-2 py-1 text-[10px] font-semibold text-amber-100 hover:bg-amber-900/60"
+                onClick={() => void onReload()}
+              >
+                Reload file
+              </button>
+            )}
+          </div>
         </div>
       )}
       {error && (
@@ -753,6 +860,15 @@ export function FileEditorPane({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <button
+          type="button"
+          className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+          onClick={() => onClearDrafts?.()}
+          disabled={draftCount <= 0 || !onClearDrafts}
+          title="Clear stored drafts"
+        >
+          Clear drafts
+        </button>
         <button
           type="button"
           className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-xs font-semibold disabled:opacity-50"

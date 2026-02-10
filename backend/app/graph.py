@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from fastapi import BackgroundTasks
 import networkx as nx
 from sqlalchemy import func, or_, text
 from sqlmodel import select
@@ -134,11 +135,52 @@ def compute_graph_metrics(project_id: int) -> None:
             s.commit()
 
 
+def _graph_counts(project_id: int) -> tuple[int, int]:
+    with get_session() as s:
+        node_row = s.exec(
+            select(func.count()).select_from(FileNode).where(FileNode.project_id == project_id)
+        ).one()
+        edge_row = s.exec(
+            select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
+        ).one()
+    node_count = node_row[0] if isinstance(node_row, (tuple, list)) else node_row
+    edge_count = edge_row[0] if isinstance(edge_row, (tuple, list)) else edge_row
+    return _as_int(node_count, 0), _as_int(edge_count, 0)
+
+
+def _should_defer_graph_metrics(node_count: int, edge_count: int) -> bool:
+    max_nodes = _as_int(getattr(settings, "graph_metrics_async_node_threshold", 0), 0)
+    max_edges = _as_int(getattr(settings, "graph_metrics_async_edge_threshold", 0), 0)
+    if max_nodes <= 0 or max_edges <= 0:
+        return False
+    return node_count >= max_nodes or edge_count >= max_edges
+
+
+def _maybe_compute_graph_metrics(
+    project_id: int,
+    background_tasks: BackgroundTasks | None,
+) -> bool:
+    node_count, edge_count = _graph_counts(project_id)
+    if background_tasks and _should_defer_graph_metrics(node_count, edge_count):
+        background_tasks.add_task(compute_graph_metrics, project_id)
+        return True
+    compute_graph_metrics(project_id)
+    return False
+
+
+def compute_graph_metrics_with_threshold(
+    project_id: int,
+    background_tasks: BackgroundTasks | None = None,
+) -> bool:
+    return _maybe_compute_graph_metrics(project_id, background_tasks)
+
+
 def update_graph_metrics_incremental(
     project_id: int,
     modified_paths: list[str],
     removed_edge_neighbors: list[str] | None = None,
-) -> None:
+    background_tasks: BackgroundTasks | None = None,
+) -> bool:
     normalized: list[str] = []
     seen: set[str] = set()
     for p in modified_paths:
@@ -150,12 +192,11 @@ def update_graph_metrics_incremental(
         normalized.append(p)
 
     if not normalized:
-        return
+        return False
 
     max_paths = _as_int(getattr(settings, "graph_metrics_incremental_max_paths", 200), 200)
     if len(normalized) > max_paths:
-        compute_graph_metrics(project_id)
-        return
+        return _maybe_compute_graph_metrics(project_id, background_tasks)
 
     max_component_nodes = _as_int(
         getattr(settings, "graph_metrics_incremental_max_component_nodes", 2000), 2000
@@ -213,8 +254,7 @@ def update_graph_metrics_incremental(
             frontier = next_frontier
 
         if too_large:
-            compute_graph_metrics(project_id)
-            return
+            return _maybe_compute_graph_metrics(project_id, background_tasks)
 
         affected_paths = set(normalized)
         if removed_edge_neighbors:
@@ -262,16 +302,14 @@ def update_graph_metrics_incremental(
                 path for path, _, _ in previous_rows if isinstance(path, str) and path
             }
             if set(normalized_list) - existing_paths:
-                compute_graph_metrics(project_id)
-                return
+                return _maybe_compute_graph_metrics(project_id, background_tasks)
             for path, fan_in, fan_out in previous_rows:
                 if not isinstance(path, str) or not path:
                     continue
                 new_in = _as_int(indeg.get(path, 0), 0)
                 new_out = _as_int(outdeg.get(path, 0), 0)
                 if new_in < _as_int(fan_in, 0) or new_out < _as_int(fan_out, 0):
-                    compute_graph_metrics(project_id)
-                    return
+                    return _maybe_compute_graph_metrics(project_id, background_tasks)
 
         node_rows = s.exec(
             select(FileNode.id, FileNode.path).where(
@@ -330,6 +368,7 @@ def update_graph_metrics_incremental(
                 )
 
         s.commit()
+    return False
 
 
 def graph_payload(project_id: int, limit_nodes: int | None = None) -> dict:

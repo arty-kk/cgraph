@@ -114,6 +114,10 @@ export function App({ showDependencies = true }: AppProps) {
   const activeFileDependencies = app.fileDependencies ?? { in: [], out: [] }
   const totalIn = app.fileDependenciesMeta?.total_in ?? activeFileDependencies.in.length
   const totalOut = app.fileDependenciesMeta?.total_out ?? activeFileDependencies.out.length
+  const activeSaveBanner =
+    app.fileSaveBanner && app.activeFilePath && app.fileSaveBanner.path === app.activeFilePath
+      ? app.fileSaveBanner
+      : null
 
   const confirmTitle = app.confirmReason === 'reload-file' ? 'Reload file?' : 'Unsaved changes'
   const confirmBody =
@@ -369,6 +373,26 @@ export function App({ showDependencies = true }: AppProps) {
         )}
 
         <div className="min-w-0 min-h-0">
+          {app.graphStale && (
+            <div className="px-4 pt-3">
+              <div className="rounded-md border border-amber-800/70 bg-amber-950/50 px-3 py-2 text-xs text-amber-100 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="font-semibold">Graph may be stale</div>
+                  <div className="text-[11px] text-amber-200">
+                    {app.graphStaleMessage || 'Indexing is incomplete. Run a rescan to refresh the graph.'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-md border border-amber-800/70 bg-amber-900/40 px-2 py-1 text-[11px] font-semibold text-amber-100 hover:bg-amber-900/60 disabled:opacity-50"
+                  onClick={() => void app.onScan()}
+                  disabled={!app.activeProject || app.busy}
+                >
+                  Rescan now
+                </button>
+              </div>
+            </div>
+          )}
           {app.workspaceView === 'graph' ? (
             <GraphCanvas
               graph={app.graph}
@@ -644,8 +668,11 @@ export function App({ showDependencies = true }: AppProps) {
                       }}
                       showDependencies={showDependencies}
                       dependencies={activeFileDependencies}
+                      dependencyMeta={app.fileDependenciesMeta}
                       totalIn={totalIn}
                       totalOut={totalOut}
+                      saveBanner={activeSaveBanner}
+                      draftCount={app.draftCount}
                       onOpenDependencyInGraph={(path) => {
                         app.onSelectNodePath(path)
                         app.setWorkspaceView('graph')
@@ -654,6 +681,9 @@ export function App({ showDependencies = true }: AppProps) {
                         app.setWorkspaceView('editor')
                         void Promise.resolve(app.openFileEditor(path))
                       }}
+                      onLoadMoreDependencies={app.loadMoreDependencies}
+                      onRescan={app.onScan}
+                      onClearDrafts={app.clearDrafts}
                     />
                   )}
                 </div>
@@ -818,6 +848,34 @@ export function App({ showDependencies = true }: AppProps) {
               disabled={app.fileEditorSaving || app.fileEditorBusy}
             >
               Save
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(app.draftRestore)}
+        title="Restore draft?"
+        onClose={app.discardDraft}
+      >
+        <div className="space-y-4">
+          <div className="text-sm text-neutral-200">
+            A local draft was found for <span className="font-semibold">{app.draftRestore?.path}</span>. Restore it?
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              className="rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 py-2 text-sm font-semibold"
+              onClick={() => app.discardDraft()}
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              className="rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-sm font-semibold"
+              onClick={() => app.restoreDraft()}
+            >
+              Restore draft
             </button>
           </div>
         </div>

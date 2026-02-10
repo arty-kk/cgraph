@@ -119,7 +119,22 @@ export type NodeInfo = {
 
 export type NodeContract = Record<string, unknown>
 export type FileContent = { path: string; content: string; truncated?: boolean; max_chars?: number | null }
-export type FileSaveResult = { path: string; saved: boolean; reindexed?: unknown }
+export type FileSaveResult = {
+  path: string
+  saved: boolean
+  reindexed?: unknown
+  index_status?: 'ok' | 'rescan_scheduled' | 'failed'
+  warnings?: string[]
+  rescan_task?: { task_id?: string; status?: string }
+  rescan_scheduled?: boolean
+  aborted?: boolean
+  rollback?: 'ok' | 'skipped' | 'failed'
+  partial?: boolean
+  conflict?: boolean
+  conflict_reason?: string
+  error?: string
+  metrics_pending?: boolean
+}
 
 export type Mode = 'analyze' | 'evolve' | 'fix' | 'impact'
 export type DepMode = 'contracts' | 'full'
@@ -286,7 +301,7 @@ export type TaskPollOptions = {
   maxAttempts?: number
 }
 
-export type ScanResult = { ok: boolean; stats?: unknown }
+export type ScanResult = { ok: boolean; stats?: unknown; metrics_pending?: boolean }
 
 export type ProjectFileItem = {
   path: string
@@ -301,7 +316,15 @@ export type ProjectFileItem = {
 
 export type ProjectFilesResponse = {
   files: ProjectFileItem[]
-  meta: { prefix?: string; total: number; returned: number; truncated: boolean; limit: number }
+  meta: {
+    prefix?: string
+    cursor?: string | null
+    next_cursor?: string | null
+    total: number
+    returned: number
+    truncated: boolean
+    limit: number
+  }
 }
 
 export type ProjectTreeEntry = {
@@ -330,6 +353,10 @@ export type FileDependenciesResponse = {
   outbound: string[]
   meta: {
     limit: number
+    cursor_in?: string | null
+    cursor_out?: string | null
+    next_cursor_in?: string | null
+    next_cursor_out?: string | null
     total_inbound: number
     total_outbound: number
     truncated_inbound: boolean

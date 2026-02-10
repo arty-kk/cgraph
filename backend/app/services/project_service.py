@@ -12,7 +12,7 @@ from ..config import settings
 from ..db import get_session
 from ..errors import BadRequestError, ForbiddenError, LockedError, NotFoundError
 from ..graph import (
-    compute_graph_metrics,
+    compute_graph_metrics_with_threshold,
     graph_payload,
     local_subgraph,
     search_nodes,
@@ -275,6 +275,7 @@ def list_project_files(
     project_id: int,
     org_id: int,
     prefix: str | None = None,
+    cursor: str | None = None,
     limit: int = 50_000,
 ) -> dict:
     get_project(project_id, org_id=org_id)
@@ -287,6 +288,10 @@ def list_project_files(
         if not prefix_norm:
             prefix_norm = None
 
+    cursor_norm: str | None = None
+    if isinstance(cursor, str) and cursor.strip():
+        cursor_norm = cursor.strip().replace("\\", "/")
+
     with get_session() as session:
         base = select(FileNode).where(FileNode.project_id == project_id)
         count_q = (
@@ -296,11 +301,13 @@ def list_project_files(
             like = f"{prefix_norm}/%"
             base = base.where((FileNode.path.like(like)) | (FileNode.path == prefix_norm))
             count_q = count_q.where((FileNode.path.like(like)) | (FileNode.path == prefix_norm))
+        if cursor_norm:
+            base = base.where(FileNode.path > cursor_norm)
 
         total_row = session.exec(count_q).one()
         total = int(total_row[0] if isinstance(total_row, (tuple, list)) else total_row)
 
-        rows = session.exec(base.order_by(FileNode.path).limit(int(limit))).all()
+        rows = session.exec(base.order_by(FileNode.path).limit(int(limit) + 1)).all()
 
     def risk(n: FileNode) -> float:
         try:
@@ -327,11 +334,15 @@ def list_project_files(
         if isinstance(n.path, str) and n.path
     ]
 
-    truncated = total > len(files)
+    truncated = len(files) > limit
+    next_cursor = files[limit - 1]["path"] if truncated and limit > 0 else None
+    files = files[:limit]
     return {
         "files": files,
         "meta": {
             "prefix": prefix_norm or "",
+            "cursor": cursor_norm,
+            "next_cursor": next_cursor,
             "total": total,
             "returned": len(files),
             "truncated": bool(truncated),
@@ -457,6 +468,8 @@ def get_file_dependencies(
     org_id: int,
     path: str,
     limit: int = 2000,
+    cursor_in: str | None = None,
+    cursor_out: str | None = None,
 ) -> dict:
     project = get_project(project_id, org_id=org_id)
     if not isinstance(path, str) or not path.strip():
@@ -466,6 +479,9 @@ def get_file_dependencies(
 
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     _, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+
+    cursor_in_norm = cursor_in.strip().replace("\\", "/") if isinstance(cursor_in, str) and cursor_in.strip() else None
+    cursor_out_norm = cursor_out.strip().replace("\\", "/") if isinstance(cursor_out, str) and cursor_out.strip() else None
 
     with get_session() as session:
         inbound_count = session.exec(
@@ -490,18 +506,23 @@ def get_file_dependencies(
         inbound_total = int(inbound_value)
         outbound_total = int(outbound_value)
 
-        inbound_rows = session.exec(
+        inbound_query = (
             select(FileEdge.src_path)
             .where(FileEdge.project_id == project_id, FileEdge.dst_path == rel_norm)
             .order_by(FileEdge.src_path)
-            .limit(limit + 1)
-        ).all()
-        outbound_rows = session.exec(
+        )
+        outbound_query = (
             select(FileEdge.dst_path)
             .where(FileEdge.project_id == project_id, FileEdge.src_path == rel_norm)
             .order_by(FileEdge.dst_path)
-            .limit(limit + 1)
-        ).all()
+        )
+        if cursor_in_norm:
+            inbound_query = inbound_query.where(FileEdge.src_path > cursor_in_norm)
+        if cursor_out_norm:
+            outbound_query = outbound_query.where(FileEdge.dst_path > cursor_out_norm)
+
+        inbound_rows = session.exec(inbound_query.limit(limit + 1)).all()
+        outbound_rows = session.exec(outbound_query.limit(limit + 1)).all()
 
     inbound = [
         r[0] if isinstance(r, (tuple, list)) else r
@@ -516,6 +537,8 @@ def get_file_dependencies(
 
     inbound_truncated = len(inbound) > limit
     outbound_truncated = len(outbound) > limit
+    inbound_next_cursor = inbound[limit - 1] if inbound_truncated and limit > 0 else None
+    outbound_next_cursor = outbound[limit - 1] if outbound_truncated and limit > 0 else None
     inbound = inbound[:limit]
     outbound = outbound[:limit]
 
@@ -525,6 +548,10 @@ def get_file_dependencies(
         "outbound": outbound,
         "meta": {
             "limit": int(limit),
+            "cursor_in": cursor_in_norm,
+            "cursor_out": cursor_out_norm,
+            "next_cursor_in": inbound_next_cursor,
+            "next_cursor_out": outbound_next_cursor,
             "total_inbound": inbound_total,
             "total_outbound": outbound_total,
             "truncated_inbound": inbound_truncated,
@@ -546,20 +573,27 @@ def get_project(project_id: int, org_id: int | None = None) -> Project:
     return project
 
 
-def _scan_and_update_graph(project_id: int, org_id: int) -> dict:
+def _scan_and_update_graph(
+    project_id: int,
+    org_id: int,
+    background_tasks: BackgroundTasks | None = None,
+) -> dict:
     project = get_project(project_id, org_id=org_id)
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     stats = scan_project(project_id, org_id, root)
     try:
         with project_lock(project_id):
-            compute_graph_metrics(project_id)
+            metrics_pending = compute_graph_metrics_with_threshold(
+                project_id,
+                background_tasks=background_tasks,
+            )
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
             context={"project_id": project_id},
         ) from exc
     cache_invalidate_prefix([f"project:{project_id}"])
-    return {"ok": True, "stats": stats}
+    return {"ok": True, "stats": stats, "metrics_pending": bool(metrics_pending)}
 
 
 def scan_with_background(
@@ -577,7 +611,7 @@ def scan_with_background(
         if background_tasks is not None:
             background_tasks.add_task(lambda: None)
         return {"task_id": task_id, "status": "pending"}
-    return _scan_and_update_graph(project_id, org_id)
+    return _scan_and_update_graph(project_id, org_id, background_tasks=background_tasks)
 
 
 def load_graph(project_id: int, org_id: int, limit_nodes: int | None = None) -> dict:
@@ -770,6 +804,30 @@ def search_project_text(
     matched_files: set[str] = set()
     truncated_files = 0
 
+    indexed_text: dict[str, str] = {}
+    if paths:
+        SQLITE_IN_CHUNK = 400
+
+        def _iter_chunks(seq: list[str], size: int):
+            for i in range(0, len(seq), size):
+                yield seq[i : i + size]
+
+        with get_session() as s:
+            for chunk in _iter_chunks(paths, SQLITE_IN_CHUNK):
+                rows = s.exec(
+                    select(FileText.path, FileText.content).where(
+                        FileText.project_id == project_id,
+                        FileText.path.in_(chunk),
+                    )
+                ).all()
+                for row in rows:
+                    if isinstance(row, (tuple, list)) and len(row) >= 2:
+                        p, content = row[0], row[1]
+                    else:
+                        p, content = None, None
+                    if isinstance(p, str) and p and isinstance(content, str):
+                        indexed_text[p] = content
+
     for p in paths:
         if len(matches) >= limit_matches:
             break
@@ -777,17 +835,22 @@ def search_project_text(
             abs_path, rel_norm = resolve_under_root(root, p, max_length=settings.max_rel_path_chars)
         except Exception:
             continue
-        if not abs_path.exists() or not abs_path.is_file():
-            continue
-        try:
-            with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                text = f.read(int(scan_max_chars) + 1)
-        except Exception:
-            continue
+        text_source = indexed_text.get(rel_norm)
+        from_index = text_source is not None
+        if text_source is None:
+            if not abs_path.exists() or not abs_path.is_file():
+                continue
+            try:
+                with abs_path.open("r", encoding="utf-8", errors="replace") as f:
+                    text_source = f.read(int(scan_max_chars) + 1)
+            except Exception:
+                continue
         scanned += 1
-        truncated_initial = len(text) > scan_max_chars
+        truncated_initial = len(text_source) > scan_max_chars
         if truncated_initial:
-            text = text[:scan_max_chars]
+            text = text_source[:scan_max_chars]
+        else:
+            text = text_source
 
         def _search_text(payload: str, *, truncated_flag: bool) -> bool:
             haystack = payload if case_sensitive else payload.lower()
@@ -829,15 +892,22 @@ def search_project_text(
         matched = _search_text(text, truncated_flag=truncated)
 
         if truncated_initial and not matched and scan_max_chars < index_scan_max_chars:
-            try:
-                with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                    text = f.read(int(index_scan_max_chars) + 1)
-            except Exception:
-                continue
-            truncated = len(text) > index_scan_max_chars
-            if truncated:
-                text = text[:index_scan_max_chars]
-            _search_text(text, truncated_flag=truncated)
+            if from_index:
+                text = text_source[: int(index_scan_max_chars) + 1]
+                truncated = len(text) > index_scan_max_chars
+                if truncated:
+                    text = text[:index_scan_max_chars]
+                _search_text(text, truncated_flag=truncated)
+            else:
+                try:
+                    with abs_path.open("r", encoding="utf-8", errors="replace") as f:
+                        text = f.read(int(index_scan_max_chars) + 1)
+                except Exception:
+                    continue
+                truncated = len(text) > index_scan_max_chars
+                if truncated:
+                    text = text[:index_scan_max_chars]
+                _search_text(text, truncated_flag=truncated)
 
         if truncated:
             truncated_files += 1

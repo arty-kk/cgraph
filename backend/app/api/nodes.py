@@ -17,7 +17,7 @@ from ..logging import get_logger
 from ..models import FileNode
 from ..policy import require_project_access
 from ..scan import scan_files
-from ..services.project_service import scan_with_background
+from ..services.file_mutation_service import RollbackResult, handle_mutation_scan, removed_neighbors, scan_aborted
 from ..utils import (
     ProjectLockTimeout,
     normalize_project_root,
@@ -61,19 +61,6 @@ def _read_text_limited(path: str, max_chars: int | None) -> tuple[str, bool]:
     if truncated:
         chunk = chunk[:max_chars]
     return chunk, truncated
-
-
-def _removed_neighbors(reindexed: object) -> list[str] | None:
-    if isinstance(reindexed, dict):
-        value = reindexed.get("removed_edge_neighbors")
-        return value if isinstance(value, list) else value
-    return None
-
-
-def _scan_aborted(reindexed: object) -> bool:
-    if isinstance(reindexed, dict):
-        return bool(reindexed.get("aborted"))
-    return False
 
 
 router = APIRouter(prefix="/nodes", tags=["nodes"])
@@ -131,17 +118,17 @@ def node(request: Request, project_id: int, path: str):
             if not abs_path.is_file():
                 raise BadRequestError("Цель должна быть файлом")
             reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
-            if _scan_aborted(reindexed):
+            if scan_aborted(reindexed):
                 logger.warning(
                     "Scan aborted during node lookup",
                     extra={"path": rel_norm, "operation": "node_lookup"},
                 )
             else:
-                removed_neighbors = _removed_neighbors(reindexed)
+                removed_neighbors_list = removed_neighbors(reindexed)
                 update_graph_metrics_incremental(
                     project_id,
                     [rel_norm],
-                    removed_edge_neighbors=removed_neighbors,
+                    removed_edge_neighbors=removed_neighbors_list,
                 )
         except ProjectLockTimeout as exc:
             raise LockedError(
@@ -200,6 +187,7 @@ def update_file(
     body: FileUpdate,
     background_tasks: BackgroundTasks,
 ):
+    # Response contract: docs/file-mutation-contract.md
     project = require_project_access(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
@@ -228,52 +216,7 @@ def update_file(
             context={"project_id": project_id},
         ) from exc
 
-    try:
-        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
-        if _scan_aborted(reindexed):
-            logger.warning(
-                "Scan aborted after update_file",
-                extra={"path": rel_norm, "operation": "update_file"},
-            )
-            rescan_task = scan_with_background(
-                project_id,
-                project.org_id,
-                background=True,
-                background_tasks=background_tasks,
-            )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "aborted": True,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-            }
-        removed_neighbors = _removed_neighbors(reindexed)
-        update_graph_metrics_incremental(
-            project_id,
-            [rel_norm],
-            removed_edge_neighbors=removed_neighbors,
-        )
-    except ProjectLockTimeout as exc:
-        raise LockedError(
-            "Проект сейчас занят, повторите позже",
-            context={"project_id": project_id},
-        ) from exc
-    except Exception as error:  # noqa: BLE001
-        logger.exception(
-            "Scan failed after update_file",
-            extra={"path": rel_norm, "operation": "update_file"},
-        )
-        rescan_task = scan_with_background(
-            project_id,
-            project.org_id,
-            background=True,
-            background_tasks=background_tasks,
-        )
-        rollback_ok = False
-        rollback_skipped = False
+    def rollback() -> RollbackResult:
         try:
             with project_lock(project_id):
                 if (
@@ -283,74 +226,41 @@ def update_file(
                     and sha256_file(abs_path) == expected_hash
                 ):
                     abs_path.write_text(previous_content, encoding="utf-8")
-                    rollback_ok = True
-                else:
-                    rollback_skipped = True
+                    return RollbackResult(status="ok")
+                logger.warning(
+                    "Rollback skipped due to concurrent change",
+                    extra={"path": rel_norm, "operation": "update_file"},
+                )
+                return RollbackResult(
+                    status="skipped",
+                    conflict=True,
+                    conflict_reason="concurrent_change",
+                )
         except ProjectLockTimeout:
             logger.warning(
                 "Rollback lock timeout after update_file",
                 extra={"path": rel_norm, "operation": "update_file"},
             )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "rollback": "failed",
-                "partial": True,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
+            return RollbackResult(status="failed")
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Rollback failed after update_file",
                 extra={"path": rel_norm, "operation": "update_file"},
             )
-        if rollback_skipped:
-            logger.warning(
-                "Rollback skipped due to concurrent change",
-                extra={"path": rel_norm, "operation": "update_file"},
-            )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "rollback": "skipped",
-                "partial": True,
-                "conflict": True,
-                "conflict_reason": "concurrent_change",
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
-        if rollback_ok:
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": False,
-                "reindexed": False,
-                "rollback": "ok",
-                "partial": False,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
-        _invalidate_pack_cache(project_id)
-        return {
-            "path": rel_norm,
-            "saved": True,
-            "reindexed": False,
-            "rollback": "failed",
-            "partial": True,
-            "rescan_task": rescan_task,
-            "rescan_scheduled": True,
-            "error": str(error),
-        }
+            return RollbackResult(status="failed")
 
+    response = handle_mutation_scan(
+        project_id=project_id,
+        org_id=project.org_id,
+        root=root,
+        rel_paths=[rel_norm],
+        response_path=rel_norm,
+        operation="update_file",
+        background_tasks=background_tasks,
+        rollback=rollback,
+    )
     _invalidate_pack_cache(project_id)
-    return {"path": rel_norm, "saved": True, "reindexed": reindexed}
+    return response
 
 
 @router.post("/{project_id}/{path:path}/file")
@@ -389,52 +299,7 @@ def create_file(
             context={"project_id": project_id},
         ) from exc
 
-    try:
-        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
-        if _scan_aborted(reindexed):
-            logger.warning(
-                "Scan aborted after create_file",
-                extra={"path": rel_norm, "operation": "create_file"},
-            )
-            rescan_task = scan_with_background(
-                project_id,
-                project.org_id,
-                background=True,
-                background_tasks=background_tasks,
-            )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "aborted": True,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-            }
-        removed_neighbors = _removed_neighbors(reindexed)
-        update_graph_metrics_incremental(
-            project_id,
-            [rel_norm],
-            removed_edge_neighbors=removed_neighbors,
-        )
-    except ProjectLockTimeout as exc:
-        raise LockedError(
-            "Проект сейчас занят, повторите позже",
-            context={"project_id": project_id},
-        ) from exc
-    except Exception as error:  # noqa: BLE001
-        logger.exception(
-            "Scan failed after create_file",
-            extra={"path": rel_norm, "operation": "create_file"},
-        )
-        rescan_task = scan_with_background(
-            project_id,
-            project.org_id,
-            background=True,
-            background_tasks=background_tasks,
-        )
-        rollback_ok = False
-        rollback_skipped = False
+    def rollback() -> RollbackResult:
         try:
             with project_lock(project_id):
                 if (
@@ -444,74 +309,41 @@ def create_file(
                     and sha256_file(abs_path) == expected_hash
                 ):
                     abs_path.unlink()
-                    rollback_ok = True
-                else:
-                    rollback_skipped = True
+                    return RollbackResult(status="ok")
+                logger.warning(
+                    "Rollback skipped due to concurrent change",
+                    extra={"path": rel_norm, "operation": "create_file"},
+                )
+                return RollbackResult(
+                    status="skipped",
+                    conflict=True,
+                    conflict_reason="concurrent_change",
+                )
         except ProjectLockTimeout:
             logger.warning(
                 "Rollback lock timeout after create_file",
                 extra={"path": rel_norm, "operation": "create_file"},
             )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "rollback": "failed",
-                "partial": True,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
+            return RollbackResult(status="failed")
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Rollback failed after create_file",
                 extra={"path": rel_norm, "operation": "create_file"},
             )
-        if rollback_skipped:
-            logger.warning(
-                "Rollback skipped due to concurrent change",
-                extra={"path": rel_norm, "operation": "create_file"},
-            )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "rollback": "skipped",
-                "partial": True,
-                "conflict": True,
-                "conflict_reason": "concurrent_change",
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
-        if rollback_ok:
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": False,
-                "reindexed": False,
-                "rollback": "ok",
-                "partial": False,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
-        _invalidate_pack_cache(project_id)
-        return {
-            "path": rel_norm,
-            "saved": True,
-            "reindexed": False,
-            "rollback": "failed",
-            "partial": True,
-            "rescan_task": rescan_task,
-            "rescan_scheduled": True,
-            "error": str(error),
-        }
+            return RollbackResult(status="failed")
 
+    response = handle_mutation_scan(
+        project_id=project_id,
+        org_id=project.org_id,
+        root=root,
+        rel_paths=[rel_norm],
+        response_path=rel_norm,
+        operation="create_file",
+        background_tasks=background_tasks,
+        rollback=rollback,
+    )
     _invalidate_pack_cache(project_id)
-    return {"path": rel_norm, "saved": True, "reindexed": reindexed}
+    return response
 
 
 @router.post("/{project_id}/{path:path}/rename")
@@ -562,52 +394,7 @@ def rename_file(
             context={"project_id": project_id},
         ) from exc
 
-    try:
-        reindexed = scan_files(project_id, project.org_id, root, [rel_norm, new_rel])
-        if _scan_aborted(reindexed):
-            logger.warning(
-                "Scan aborted after rename_file",
-                extra={"path": rel_norm, "operation": "rename_file"},
-            )
-            rescan_task = scan_with_background(
-                project_id,
-                project.org_id,
-                background=True,
-                background_tasks=background_tasks,
-            )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": new_rel,
-                "saved": True,
-                "reindexed": False,
-                "aborted": True,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-            }
-        removed_neighbors = _removed_neighbors(reindexed)
-        update_graph_metrics_incremental(
-            project_id,
-            [rel_norm, new_rel],
-            removed_edge_neighbors=removed_neighbors,
-        )
-    except ProjectLockTimeout as exc:
-        raise LockedError(
-            "Проект сейчас занят, повторите позже",
-            context={"project_id": project_id},
-        ) from exc
-    except Exception as error:  # noqa: BLE001
-        logger.exception(
-            "Scan failed after rename_file",
-            extra={"path": rel_norm, "operation": "rename_file"},
-        )
-        rescan_task = scan_with_background(
-            project_id,
-            project.org_id,
-            background=True,
-            background_tasks=background_tasks,
-        )
-        rollback_ok = False
-        rollback_skipped = False
+    def rollback() -> RollbackResult:
         try:
             with project_lock(project_id):
                 if (
@@ -618,74 +405,41 @@ def rename_file(
                     and sha256_file(new_abs) == expected_hash
                 ):
                     new_abs.rename(abs_path)
-                    rollback_ok = True
-                else:
-                    rollback_skipped = True
+                    return RollbackResult(status="ok")
+                logger.warning(
+                    "Rollback skipped due to concurrent change",
+                    extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
+                )
+                return RollbackResult(
+                    status="skipped",
+                    conflict=True,
+                    conflict_reason="concurrent_change",
+                )
         except ProjectLockTimeout:
             logger.warning(
                 "Rollback lock timeout after rename_file",
                 extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
             )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": new_rel,
-                "saved": True,
-                "reindexed": False,
-                "rollback": "failed",
-                "partial": True,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
+            return RollbackResult(status="failed")
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Rollback failed after rename_file",
                 extra={"path": rel_norm, "operation": "rename_file"},
             )
-        if rollback_skipped:
-            logger.warning(
-                "Rollback skipped due to concurrent change",
-                extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
-            )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": new_rel,
-                "saved": True,
-                "reindexed": False,
-                "rollback": "skipped",
-                "partial": True,
-                "conflict": True,
-                "conflict_reason": "concurrent_change",
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
-        if rollback_ok:
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": False,
-                "reindexed": False,
-                "rollback": "ok",
-                "partial": False,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
-        _invalidate_pack_cache(project_id)
-        return {
-            "path": new_rel,
-            "saved": True,
-            "reindexed": False,
-            "rollback": "failed",
-            "partial": True,
-            "rescan_task": rescan_task,
-            "rescan_scheduled": True,
-            "error": str(error),
-        }
+            return RollbackResult(status="failed")
 
+    response = handle_mutation_scan(
+        project_id=project_id,
+        org_id=project.org_id,
+        root=root,
+        rel_paths=[rel_norm, new_rel],
+        response_path=new_rel,
+        operation="rename_file",
+        background_tasks=background_tasks,
+        rollback=rollback,
+    )
     _invalidate_pack_cache(project_id)
-    return {"path": new_rel, "saved": True, "reindexed": reindexed}
+    return response
 
 
 @router.delete("/{project_id}/{path:path}/file")
@@ -714,121 +468,43 @@ def delete_file(
             context={"project_id": project_id},
         ) from exc
 
-    try:
-        reindexed = scan_files(project_id, project.org_id, root, [rel_norm])
-        if _scan_aborted(reindexed):
-            logger.warning(
-                "Scan aborted after delete_file",
-                extra={"path": rel_norm, "operation": "delete_file"},
-            )
-            rescan_task = scan_with_background(
-                project_id,
-                project.org_id,
-                background=True,
-                background_tasks=background_tasks,
-            )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "aborted": True,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-            }
-        removed_neighbors = _removed_neighbors(reindexed)
-        update_graph_metrics_incremental(
-            project_id,
-            [rel_norm],
-            removed_edge_neighbors=removed_neighbors,
-        )
-    except ProjectLockTimeout as exc:
-        raise LockedError(
-            "Проект сейчас занят, повторите позже",
-            context={"project_id": project_id},
-        ) from exc
-    except Exception as error:  # noqa: BLE001
-        logger.exception(
-            "Scan failed after delete_file",
-            extra={"path": rel_norm, "operation": "delete_file"},
-        )
-        rescan_task = scan_with_background(
-            project_id,
-            project.org_id,
-            background=True,
-            background_tasks=background_tasks,
-        )
-        rollback_ok = False
-        rollback_skipped = False
+    def rollback() -> RollbackResult:
         try:
             with project_lock(project_id):
                 if not abs_path.exists():
                     abs_path.write_text(previous_content, encoding="utf-8")
-                    rollback_ok = True
-                else:
-                    rollback_skipped = True
+                    return RollbackResult(status="ok")
+                logger.warning(
+                    "Rollback skipped due to concurrent change",
+                    extra={"path": rel_norm, "operation": "delete_file"},
+                )
+                return RollbackResult(
+                    status="skipped",
+                    conflict=True,
+                    conflict_reason="concurrent_change",
+                )
         except ProjectLockTimeout:
             logger.warning(
                 "Rollback lock timeout after delete_file",
                 extra={"path": rel_norm, "operation": "delete_file"},
             )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "rollback": "failed",
-                "partial": True,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
+            return RollbackResult(status="failed")
         except Exception:  # noqa: BLE001
             logger.exception(
                 "Rollback failed after delete_file",
                 extra={"path": rel_norm, "operation": "delete_file"},
             )
-        if rollback_skipped:
-            logger.warning(
-                "Rollback skipped due to concurrent change",
-                extra={"path": rel_norm, "operation": "delete_file"},
-            )
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": True,
-                "reindexed": False,
-                "rollback": "skipped",
-                "partial": True,
-                "conflict": True,
-                "conflict_reason": "concurrent_change",
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
-        if rollback_ok:
-            _invalidate_pack_cache(project_id)
-            return {
-                "path": rel_norm,
-                "saved": False,
-                "reindexed": False,
-                "rollback": "ok",
-                "partial": False,
-                "rescan_task": rescan_task,
-                "rescan_scheduled": True,
-                "error": str(error),
-            }
-        _invalidate_pack_cache(project_id)
-        return {
-            "path": rel_norm,
-            "saved": True,
-            "reindexed": False,
-            "rollback": "failed",
-            "partial": True,
-            "rescan_task": rescan_task,
-            "rescan_scheduled": True,
-            "error": str(error),
-        }
+            return RollbackResult(status="failed")
 
+    response = handle_mutation_scan(
+        project_id=project_id,
+        org_id=project.org_id,
+        root=root,
+        rel_paths=[rel_norm],
+        response_path=rel_norm,
+        operation="delete_file",
+        background_tasks=background_tasks,
+        rollback=rollback,
+    )
     _invalidate_pack_cache(project_id)
-    return {"path": rel_norm, "saved": True, "reindexed": reindexed}
+    return response
