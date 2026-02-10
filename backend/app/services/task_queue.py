@@ -94,10 +94,33 @@ class TaskQueue:
         if created:
             from ..celery_tasks import run_task_job
 
-            run_task_job.apply_async(
-                args=[task_id, project_id, org_id, payload],
-                queue="heavy",
-            )
+            try:
+                run_task_job.apply_async(
+                    args=[task_id, project_id, org_id, payload],
+                    queue="heavy",
+                )
+            except Exception as exc:
+                _release_inflight("heavy", task_id)
+                now = datetime.now(timezone.utc)
+                try:
+                    with get_session() as session:
+                        job = session.get(TaskJob, task_id)
+                        if job:
+                            job.status = "failed"
+                            job.error = str(exc)
+                            job.completed_at = now
+                            job.updated_at = now
+                            session.add(job)
+                            session.commit()
+                except Exception as update_exc:
+                    logger.warning(
+                        "Failed to persist enqueue failure status",
+                        extra={"task_id": task_id, "reason": str(update_exc)},
+                    )
+                raise ExternalServiceError(
+                    "Не удалось отправить задачу в очередь",
+                    context={"task_id": task_id, "queue": "heavy"},
+                ) from exc
         return task_id
 
     def get(self, task_id: str) -> TaskState | None:
