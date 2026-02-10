@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from ..auth import extract_token
-from ..errors import UnauthorizedError
+from ..errors import BadRequestError, UnauthorizedError
 from ..services.auth_service import (
     authenticate_user,
     bootstrap_user,
@@ -58,7 +58,17 @@ def login(body: AuthCredentials):
 
 @router.post("/logout")
 def logout(request: Request):
-    token = _require_token(request)
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        if not token:
+            raise UnauthorizedError("Требуется токен")
+    else:
+        api_key = request.headers.get("x-api-key")
+        if isinstance(api_key, str) and api_key.strip():
+            raise BadRequestError("API-ключи не поддерживаются для logout endpoint")
+        raise UnauthorizedError("Требуется токен")
+
     revoke_session(token)
     return {"ok": True}
 
