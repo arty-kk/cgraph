@@ -142,9 +142,13 @@ def register_user(email: str, password: str) -> User:
             raise BadRequestError("Пользователь уже существует")
         user = User(email=email.strip().lower(), password_hash=_hash_password(password))
         session.add(user)
-        session.flush()
-        _create_default_org(session, user)
-        session.commit()
+        try:
+            session.flush()
+            _create_default_org(session, user)
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise BadRequestError("Пользователь уже существует") from exc
         session.refresh(user)
         return user
 
