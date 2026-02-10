@@ -92,19 +92,19 @@ def create_project_from_snapshot(
     root = prepare_project_snapshot_root(meta)
     root = normalize_project_root(str(root), max_length=settings.max_root_path_chars)
     with get_session() as session:
-        project = Project(name=name, root_path=str(root), org_id=org_id)
-        session.add(project)
-        session.commit()
+        with session.begin():
+            project = Project(name=name, root_path=str(root), org_id=org_id)
+            session.add(project)
+            session.flush()
+            snapshot = RepoSnapshot(
+                org_id=org_id,
+                project_id=project.id,
+                content_sha256=meta.sha256,
+                archive_name=meta.archive_name,
+                storage_json=json.dumps(asdict(meta), ensure_ascii=False),
+            )
+            session.add(snapshot)
         session.refresh(project)
-        snapshot = RepoSnapshot(
-            org_id=org_id,
-            project_id=project.id,
-            content_sha256=meta.sha256,
-            archive_name=meta.archive_name,
-            storage_json=json.dumps(asdict(meta), ensure_ascii=False),
-        )
-        session.add(snapshot)
-        session.commit()
     return project
 
 
