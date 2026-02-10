@@ -384,6 +384,7 @@ def list_project_tree_entries(
 
         scan_limit = min(20000, max(limit * 40, limit + 1))
         rows = session.exec(base.order_by(FileNode.path).limit(scan_limit + 1)).all()
+        has_more_rows = len(rows) > scan_limit
 
     entries: list[dict] = []
     seen: set[str] = set()
@@ -426,7 +427,9 @@ def list_project_tree_entries(
             }
         )
 
-    for row in rows:
+    stopped_by_limit = False
+    scanned_rows = rows[:scan_limit]
+    for idx, row in enumerate(scanned_rows):
         path = row.path if isinstance(row.path, str) else ""
         if not path:
             continue
@@ -449,9 +452,10 @@ def list_project_tree_entries(
 
         next_cursor = path
         if len(entries) >= limit:
+            stopped_by_limit = idx < (len(scanned_rows) - 1)
             break
 
-    truncated = len(entries) >= limit and next_cursor is not None
+    truncated = len(entries) == limit and (has_more_rows or stopped_by_limit)
     return {
         "entries": entries,
         "meta": {
