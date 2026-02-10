@@ -30,7 +30,13 @@ from ..errors import (
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.agentic import AgenticMeta, analyze_agentic, evolve_agentic, fix_agentic
 from ..llm.quality_gates import QualityGateError, validate_llm_result
-from ..llm.orchestrator import analyze, evolve, fix, plan_task, triage
+from ..llm.orchestrator import (
+    analyze_with_usage,
+    evolve_with_usage,
+    fix_with_usage,
+    plan_task_with_usage,
+    triage_with_usage,
+)
 from ..llm.policy import (
     DEFAULT_POLICY,
     ProfileName,
@@ -68,6 +74,13 @@ MIN_GRAPH_EDGES_FOR_READY = 1
 GRAPH_NOT_READY_WARNING = "graph not built"
 
 logger = get_logger("stubgraph.api")
+
+# Backward-compatible callables for tests/monkeypatching inside task_service.
+triage = triage_with_usage
+analyze = analyze_with_usage
+evolve = evolve_with_usage
+fix = fix_with_usage
+plan_task = plan_task_with_usage
 
 PLAN_TZ_EMPTY = {
     "summary": "",
@@ -163,13 +176,15 @@ def _append_stage_telemetry(
     stop_reason: str | None = None,
     tool_calls: int | None = None,
     tool_output_chars: int | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
 ) -> None:
     stages.append(
         {
             "stage_name": stage_name,
             "model": model,
-            "prompt_tokens": None,
-            "completion_tokens": None,
+            "prompt_tokens": int(prompt_tokens) if prompt_tokens is not None else None,
+            "completion_tokens": int(completion_tokens) if completion_tokens is not None else None,
             "latency_ms": max(0, int(round(latency_ms))),
             "retry_index": int(retry_index),
             "self_check_result": self_check_result,
@@ -178,6 +193,32 @@ def _append_stage_telemetry(
             "tool_calls": int(tool_calls) if tool_calls is not None else None,
             "tool_output_chars": int(tool_output_chars) if tool_output_chars is not None else None,
         }
+    )
+
+
+def _extract_payload_and_usage(
+    raw: Any,
+) -> tuple[dict[str, Any], dict[str, int | None]]:
+    if (
+        isinstance(raw, tuple)
+        and len(raw) == 2
+        and isinstance(raw[0], dict)
+        and isinstance(raw[1], dict)
+    ):
+        payload = raw[0]
+        usage_raw = raw[1]
+    elif isinstance(raw, dict):
+        payload = raw
+        usage_raw = {}
+    else:
+        raise ExternalServiceError("Ответ LLM не является объектом JSON")
+    return (
+        payload,
+        {
+            "prompt_tokens": usage_raw.get("prompt_tokens"),
+            "completion_tokens": usage_raw.get("completion_tokens"),
+            "total_tokens": usage_raw.get("total_tokens"),
+        },
     )
 
 
@@ -735,11 +776,13 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
     if mode is None:
         triage_started = perf_counter()
         try:
-            triage_result = triage(
-                request.prompt,
-                policy=runtime_policy,
-                instructions=profile_instructions,
-                temperature=profile_temperature,
+            triage_result, triage_usage = _extract_payload_and_usage(
+                triage(
+                    request.prompt,
+                    policy=runtime_policy,
+                    instructions=profile_instructions,
+                    temperature=profile_temperature,
+                )
             )
             _append_stage_telemetry(
                 stage_telemetry,
@@ -747,6 +790,8 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 model=runtime_policy.triage_model,
                 latency_ms=(perf_counter() - triage_started) * 1000,
                 retry_index=0,
+                prompt_tokens=triage_usage.get("prompt_tokens"),
+                completion_tokens=triage_usage.get("completion_tokens"),
             )
         except Exception as error:  # noqa: BLE001
             _append_stage_telemetry(
@@ -1049,12 +1094,14 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             }
             plan_started = perf_counter()
             try:
-                plan_tz = plan_task(
+                plan_tz, plan_usage = _extract_payload_and_usage(
+                    plan_task(
                     knowledge,
                     request.prompt,
                     policy=runtime_policy,
                     instructions=profile_instructions,
                     temperature=profile_temperature,
+                    )
                 )
                 _append_stage_telemetry(
                     stage_telemetry,
@@ -1062,6 +1109,8 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                     model=runtime_policy.analysis_model,
                     latency_ms=(perf_counter() - plan_started) * 1000,
                     retry_index=0,
+                    prompt_tokens=plan_usage.get("prompt_tokens"),
+                    completion_tokens=plan_usage.get("completion_tokens"),
                 )
             except Exception as error:  # noqa: BLE001
                 _append_stage_telemetry(
@@ -1131,12 +1180,14 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 knowledge["contract"] = contract_summary
             plan_started = perf_counter()
             try:
-                plan_tz = plan_task(
+                plan_tz, plan_usage = _extract_payload_and_usage(
+                    plan_task(
                     knowledge,
                     request.prompt,
                     policy=runtime_policy,
                     instructions=profile_instructions,
                     temperature=profile_temperature,
+                    )
                 )
                 _append_stage_telemetry(
                     stage_telemetry,
@@ -1144,6 +1195,8 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                     model=runtime_policy.analysis_model,
                     latency_ms=(perf_counter() - plan_started) * 1000,
                     retry_index=0,
+                    prompt_tokens=plan_usage.get("prompt_tokens"),
+                    completion_tokens=plan_usage.get("completion_tokens"),
                 )
             except Exception as error:  # noqa: BLE001
                 _append_stage_telemetry(
@@ -1370,6 +1423,12 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                     tool_output_chars=(
                         agentic_meta.total_tool_output_chars if agentic_meta is not None else None
                     ),
+                    prompt_tokens=(
+                        agentic_meta.prompt_tokens if agentic_meta is not None else None
+                    ),
+                    completion_tokens=(
+                        agentic_meta.completion_tokens if agentic_meta is not None else None
+                    ),
                 )
 
                 if stage_stop_reason is not None:
@@ -1555,12 +1614,14 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             }
             plan_started = perf_counter()
             try:
-                plan_tz = plan_task(
+                plan_tz, plan_usage = _extract_payload_and_usage(
+                    plan_task(
                     packed_dict,
                     request.prompt,
                     policy=runtime_policy,
                     instructions=profile_instructions,
                     temperature=profile_temperature,
+                    )
                 )
                 _append_stage_telemetry(
                     stage_telemetry,
@@ -1568,6 +1629,8 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                     model=runtime_policy.analysis_model,
                     latency_ms=(perf_counter() - plan_started) * 1000,
                     retry_index=0,
+                    prompt_tokens=plan_usage.get("prompt_tokens"),
+                    completion_tokens=plan_usage.get("completion_tokens"),
                 )
             except Exception as error:  # noqa: BLE001
                 _append_stage_telemetry(
@@ -1583,12 +1646,14 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             if mode == "analyze":
                 stage_started = perf_counter()
                 try:
-                    result = analyze(
+                    result, analyze_usage = _extract_payload_and_usage(
+                        analyze(
                         packed_dict,
                         request.prompt,
                         policy=runtime_policy,
                         instructions=profile_instructions,
                         temperature=profile_temperature,
+                        )
                     )
                     _append_stage_telemetry(
                         stage_telemetry,
@@ -1596,6 +1661,8 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         model=runtime_policy.analysis_model,
                         latency_ms=(perf_counter() - stage_started) * 1000,
                         retry_index=0,
+                        prompt_tokens=analyze_usage.get("prompt_tokens"),
+                        completion_tokens=analyze_usage.get("completion_tokens"),
                     )
                 except Exception as error:  # noqa: BLE001
                     _append_stage_telemetry(
@@ -1620,12 +1687,14 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             elif mode == "evolve":
                 stage_started = perf_counter()
                 try:
-                    result = evolve(
+                    result, evolve_usage = _extract_payload_and_usage(
+                        evolve(
                         packed_dict,
                         request.prompt,
                         policy=runtime_policy,
                         instructions=profile_instructions,
                         temperature=profile_temperature,
+                        )
                     )
                     _append_stage_telemetry(
                         stage_telemetry,
@@ -1633,6 +1702,8 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         model=runtime_policy.analysis_model,
                         latency_ms=(perf_counter() - stage_started) * 1000,
                         retry_index=0,
+                        prompt_tokens=evolve_usage.get("prompt_tokens"),
+                        completion_tokens=evolve_usage.get("completion_tokens"),
                     )
                 except Exception as error:  # noqa: BLE001
                     _append_stage_telemetry(
@@ -1657,12 +1728,14 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             elif mode == "fix":
                 stage_started = perf_counter()
                 try:
-                    result = fix(
+                    result, fix_usage = _extract_payload_and_usage(
+                        fix(
                         packed_dict,
                         request.prompt,
                         policy=runtime_policy,
                         instructions=profile_instructions,
                         temperature=profile_temperature,
+                        )
                     )
                     _append_stage_telemetry(
                         stage_telemetry,
@@ -1670,6 +1743,8 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         model=runtime_policy.patch_model,
                         latency_ms=(perf_counter() - stage_started) * 1000,
                         retry_index=0,
+                        prompt_tokens=fix_usage.get("prompt_tokens"),
+                        completion_tokens=fix_usage.get("completion_tokens"),
                     )
                 except Exception as error:  # noqa: BLE001
                     _append_stage_telemetry(

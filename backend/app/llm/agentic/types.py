@@ -15,3 +15,6 @@ class AgenticMeta:
     self_check_ok: bool | None = None
     self_check_notes: list[str] = field(default_factory=list)
     self_check_missing_context: list[str] = field(default_factory=list)
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None

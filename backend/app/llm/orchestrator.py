@@ -11,6 +11,7 @@ from .client import get_openai_client
 from .model_caps import supports_reasoning, supports_temperature
 from .policy import DEFAULT_POLICY, ModelPolicy
 from .schemas import ANALYZE_SCHEMA, DOCS_SCHEMA, FIX_SCHEMA, PLAN_TZ_SCHEMA, TRIAGE_SCHEMA
+from .usage import extract_usage
 
 SYSTEM_INSTRUCTIONS = (
     "Ты — StubGraph: сверхточный кодовый архитектор. Твоя цель — давать полезный, "
@@ -108,6 +109,25 @@ def _json_call(
     instructions: str | None = None,
     temperature: float | None = None,
 ) -> dict:
+    payload, _usage = _json_call_with_usage(
+        model=model,
+        schema=schema,
+        input_items=input_items,
+        reasoning_effort=reasoning_effort,
+        instructions=instructions,
+        temperature=temperature,
+    )
+    return payload
+
+
+def _json_call_with_usage(
+    model: str,
+    schema: dict,
+    input_items: list[dict[str, Any]],
+    reasoning_effort: str | None = None,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> tuple[dict, dict[str, int | None]]:
     client = get_openai_client()
     fmt = _normalize_responses_json_schema(schema)
     kwargs: dict[str, Any] = {
@@ -170,7 +190,7 @@ def _json_call(
         data = json.loads(txt)
         if not isinstance(data, dict):
             raise RuntimeError("Model returned JSON, but not an object")
-        return data
+        return data, extract_usage(resp)
     except Exception as e:
         txt = _extract_output_text(resp)
         start = txt.find("{")
@@ -179,7 +199,7 @@ def _json_call(
             try:
                 data = json.loads(txt[start : end + 1])
                 if isinstance(data, dict):
-                    return data
+                    return data, extract_usage(resp)
             except Exception:
                 pass
         refusal = _extract_refusal(resp)
@@ -195,6 +215,22 @@ def triage(
     instructions: str | None = None,
     temperature: float | None = None,
 ) -> dict:
+    payload, _usage = triage_with_usage(
+        user_prompt,
+        policy=policy,
+        instructions=instructions,
+        temperature=temperature,
+    )
+    return payload
+
+
+def triage_with_usage(
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> tuple[dict, dict[str, int | None]]:
     items = [
         {
             "role": "user",
@@ -205,7 +241,7 @@ def triage(
             ),
         },
     ]
-    return _json_call(
+    return _json_call_with_usage(
         policy.triage_model,
         TRIAGE_SCHEMA,
         items,
@@ -223,6 +259,24 @@ def analyze(
     instructions: str | None = None,
     temperature: float | None = None,
 ) -> dict:
+    payload, _usage = analyze_with_usage(
+        packed_context,
+        user_prompt,
+        policy=policy,
+        instructions=instructions,
+        temperature=temperature,
+    )
+    return payload
+
+
+def analyze_with_usage(
+    packed_context: dict,
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> tuple[dict, dict[str, int | None]]:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
         {
@@ -233,7 +287,7 @@ def analyze(
             ),
         },
     ]
-    return _json_call(
+    return _json_call_with_usage(
         policy.analysis_model,
         ANALYZE_SCHEMA,
         items,
@@ -251,6 +305,24 @@ def evolve(
     instructions: str | None = None,
     temperature: float | None = None,
 ) -> dict:
+    payload, _usage = evolve_with_usage(
+        packed_context,
+        user_prompt,
+        policy=policy,
+        instructions=instructions,
+        temperature=temperature,
+    )
+    return payload
+
+
+def evolve_with_usage(
+    packed_context: dict,
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> tuple[dict, dict[str, int | None]]:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
         {
@@ -263,7 +335,7 @@ def evolve(
             ),
         },
     ]
-    return _json_call(
+    return _json_call_with_usage(
         policy.analysis_model,
         ANALYZE_SCHEMA,
         items,
@@ -281,6 +353,24 @@ def plan_task(
     instructions: str | None = None,
     temperature: float | None = None,
 ) -> dict:
+    payload, _usage = plan_task_with_usage(
+        knowledge,
+        user_prompt,
+        policy=policy,
+        instructions=instructions,
+        temperature=temperature,
+    )
+    return payload
+
+
+def plan_task_with_usage(
+    knowledge: dict,
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> tuple[dict, dict[str, int | None]]:
     ctx = json.dumps(knowledge, ensure_ascii=False)
     items = [
         {
@@ -296,7 +386,7 @@ def plan_task(
             ),
         },
     ]
-    return _json_call(
+    return _json_call_with_usage(
         policy.analysis_model,
         PLAN_TZ_SCHEMA,
         items,
@@ -314,6 +404,24 @@ def fix(
     instructions: str | None = None,
     temperature: float | None = None,
 ) -> dict:
+    payload, _usage = fix_with_usage(
+        packed_context,
+        user_prompt,
+        policy=policy,
+        instructions=instructions,
+        temperature=temperature,
+    )
+    return payload
+
+
+def fix_with_usage(
+    packed_context: dict,
+    user_prompt: str,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> tuple[dict, dict[str, int | None]]:
     ctx = json.dumps(packed_context, ensure_ascii=False)
     items = [
         {
@@ -328,7 +436,7 @@ def fix(
             ),
         },
     ]
-    return _json_call(
+    return _json_call_with_usage(
         policy.patch_model,
         FIX_SCHEMA,
         items,
@@ -345,6 +453,22 @@ def generate_docs(
     instructions: str | None = None,
     temperature: float | None = None,
 ) -> dict:
+    payload, _usage = generate_docs_with_usage(
+        facts,
+        policy=policy,
+        instructions=instructions,
+        temperature=temperature,
+    )
+    return payload
+
+
+def generate_docs_with_usage(
+    facts: dict,
+    policy: ModelPolicy = DEFAULT_POLICY,
+    *,
+    instructions: str | None = None,
+    temperature: float | None = None,
+) -> tuple[dict, dict[str, int | None]]:
     ctx = json.dumps(facts, ensure_ascii=False)
     items = [
         {
@@ -368,7 +492,7 @@ def generate_docs(
             ),
         },
     ]
-    return _json_call(
+    return _json_call_with_usage(
         policy.analysis_model,
         DOCS_SCHEMA,
         items,
