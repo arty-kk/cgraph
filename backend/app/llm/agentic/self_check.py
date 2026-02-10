@@ -6,7 +6,7 @@ from typing import Any
 import openai
 
 from ...config import settings
-from ..model_caps import supports_temperature
+from ..model_caps import supports_reasoning, supports_temperature
 from ..schemas import SELF_CHECK_SCHEMA
 from .schema import _normalize_responses_json_schema, _parse_model_json
 
@@ -15,6 +15,7 @@ def _run_self_check(
     *,
     client: openai.Client,
     model: str,
+    reasoning_effort: str | None,
     user_prompt: str,
     seed: dict,
     response_payload: dict,
@@ -42,6 +43,8 @@ def _run_self_check(
     }
     if supports_temperature(model):
         kwargs["temperature"] = 0.0
+    if reasoning_effort and supports_reasoning(model):
+        kwargs["reasoning"] = {"effort": reasoning_effort}
     if (
         isinstance(settings.openai_prompt_cache_key, str)
         and settings.openai_prompt_cache_key.strip()

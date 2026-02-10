@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 
 from .config import settings
 
@@ -14,4 +15,14 @@ celery_app.conf.task_routes = {
     "stubgraph.scan": {"queue": "medium"},
     "stubgraph.docs": {"queue": "light"},
     "stubgraph.run_task": {"queue": "heavy"},
+    "stubgraph.routing_calibration": {"queue": "light"},
 }
+
+if bool(getattr(settings, "llm_routing_calibration_enabled", False)):
+    celery_app.conf.beat_schedule = {
+        "routing-policy-calibration": {
+            "task": "stubgraph.routing_calibration",
+            "schedule": crontab(minute=f"*/{max(1, int(settings.llm_routing_calibration_interval_minutes))}"),
+        }
+    }
+

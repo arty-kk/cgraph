@@ -190,6 +190,48 @@ class Settings(BaseSettings):
     llm_agentic_trace_enabled: bool = Field(
         default=True, alias="STUBGRAPH_LLM_AGENTIC_TRACE_ENABLED"
     )
+    llm_routing_sla_profile: str = Field(
+        default="balanced", alias="STUBGRAPH_LLM_ROUTING_SLA_PROFILE"
+    )
+    llm_routing_weight_quality: float = Field(
+        default=0.4, alias="STUBGRAPH_LLM_ROUTING_WEIGHT_QUALITY"
+    )
+    llm_routing_weight_latency: float = Field(
+        default=0.25, alias="STUBGRAPH_LLM_ROUTING_WEIGHT_LATENCY"
+    )
+    llm_routing_weight_token_cost: float = Field(
+        default=0.2, alias="STUBGRAPH_LLM_ROUTING_WEIGHT_TOKEN_COST"
+    )
+    llm_routing_weight_fail_rate: float = Field(
+        default=0.15, alias="STUBGRAPH_LLM_ROUTING_WEIGHT_FAIL_RATE"
+    )
+    llm_routing_low_confidence_threshold: float = Field(
+        default=0.55, alias="STUBGRAPH_LLM_ROUTING_LOW_CONFIDENCE_THRESHOLD"
+    )
+    llm_routing_model_stats_json: str = Field(
+        default="", alias="STUBGRAPH_LLM_ROUTING_MODEL_STATS_JSON"
+    )
+    llm_routing_threshold_low: float = Field(
+        default=1.35, alias="STUBGRAPH_LLM_ROUTING_THRESHOLD_LOW"
+    )
+    llm_routing_threshold_mid: float = Field(
+        default=1.5, alias="STUBGRAPH_LLM_ROUTING_THRESHOLD_MID"
+    )
+    llm_routing_threshold_high: float = Field(
+        default=1.7, alias="STUBGRAPH_LLM_ROUTING_THRESHOLD_HIGH"
+    )
+    llm_routing_policy_version: str = Field(
+        default="v1", alias="STUBGRAPH_LLM_ROUTING_POLICY_VERSION"
+    )
+    llm_routing_calibration_enabled: bool = Field(
+        default=True, alias="STUBGRAPH_LLM_ROUTING_CALIBRATION_ENABLED"
+    )
+    llm_routing_calibration_min_samples: int = Field(
+        default=20, alias="STUBGRAPH_LLM_ROUTING_CALIBRATION_MIN_SAMPLES"
+    )
+    llm_routing_calibration_interval_minutes: int = Field(
+        default=60, alias="STUBGRAPH_LLM_ROUTING_CALIBRATION_INTERVAL_MINUTES"
+    )
 
     go_build_tags: str = Field(default="", alias="STUBGRAPH_GO_BUILD_TAGS")
     go_include_unexported_symbols: bool = Field(
@@ -258,6 +300,33 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT должен быть положительным")
         if self.default_depth < 0:
             raise ValueError("STUBGRAPH_DEFAULT_DEPTH должен быть неотрицательным")
+        if (self.llm_routing_sla_profile or "balanced").strip().lower() not in {
+            "balanced",
+            "fast",
+            "quality",
+            "cheap",
+        }:
+            raise ValueError(
+                "STUBGRAPH_LLM_ROUTING_SLA_PROFILE должен быть balanced, fast, quality или cheap"
+            )
+        if not (0.0 <= self.llm_routing_low_confidence_threshold <= 1.0):
+            raise ValueError(
+                "STUBGRAPH_LLM_ROUTING_LOW_CONFIDENCE_THRESHOLD должен быть в диапазоне [0,1]"
+            )
+        if not (
+            1.0 <= self.llm_routing_threshold_low <= self.llm_routing_threshold_mid <= self.llm_routing_threshold_high <= 2.0
+        ):
+            raise ValueError(
+                "STUBGRAPH_LLM_ROUTING_THRESHOLD_* должны удовлетворять 1.0 <= low <= mid <= high <= 2.0"
+            )
+        if self.llm_routing_calibration_min_samples <= 0:
+            raise ValueError(
+                "STUBGRAPH_LLM_ROUTING_CALIBRATION_MIN_SAMPLES должен быть положительным"
+            )
+        if self.llm_routing_calibration_interval_minutes <= 0:
+            raise ValueError(
+                "STUBGRAPH_LLM_ROUTING_CALIBRATION_INTERVAL_MINUTES должен быть положительным"
+            )
         if self.max_root_path_chars <= 0:
             raise ValueError("Лимит длины пути до корня должен быть положительным")
         if self.max_rel_path_chars <= 0:

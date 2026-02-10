@@ -14,6 +14,7 @@ from .logging import get_logger
 from .models import TaskJob
 from .services.docs_service import build_project_docs
 from .services.project_service import _scan_and_update_graph
+from .services.routing_calibration_service import calibrate_routing_policy_thresholds
 from .services.task_queue import cleanup_completed_jobs
 from .services.task_service import TaskRequest, run_task
 
@@ -113,3 +114,12 @@ def _decrement_inflight(queue: str, job_id: str) -> None:
         client.srem(key, job_id)
     except RedisError as exc:
         logger.warning("Failed to decrement inflight counter", extra={"reason": str(exc)})
+
+
+@celery_app.task(name="stubgraph.routing_calibration")
+def routing_calibration_task() -> dict:
+    try:
+        return calibrate_routing_policy_thresholds()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Routing calibration task failed")
+        return {"updated": False, "reason": "error", "error": str(exc)}

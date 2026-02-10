@@ -202,6 +202,25 @@ class AnalysisRun(SQLModel, table=True):
     result_json: str
 
 
+class AnalysisStageTelemetry(SQLModel, table=True):
+    __tablename__ = "analysisstagetelemetry"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: int = Field(index=True)
+    org_id: int = Field(index=True)
+    project_id: int = Field(index=True)
+    stage_name: str = Field(index=True)
+    model: str = Field(default="")
+    prompt_tokens: int | None = Field(default=None)
+    completion_tokens: int | None = Field(default=None)
+    latency_ms: int | None = Field(default=None)
+    retry_index: int = Field(default=0)
+    self_check_result: str | None = Field(default=None)
+    failure_class: str | None = Field(default=None)
+    tool_calls: int | None = Field(default=None)
+    tool_output_chars: int | None = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class ProjectDoc(SQLModel, table=True):
     __tablename__ = "projectdoc"
     id: Optional[int] = Field(default=None, primary_key=True)

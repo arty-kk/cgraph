@@ -22,6 +22,7 @@ from ..infra.cache import cache_get_json, cache_invalidate_prefix, cache_set_jso
 from ..logging import get_logger
 from ..models import (
     AnalysisRun,
+    AnalysisStageTelemetry,
     ApiCall,
     ApiCallMeta,
     ApiInclude,
@@ -208,6 +209,7 @@ def delete_project(project_id: int, org_id: int) -> None:
                 session.exec(
                     delete(FileChunkEmbedding).where(FileChunkEmbedding.project_id == project_id)
                 )
+                session.exec(delete(AnalysisStageTelemetry).where(AnalysisStageTelemetry.project_id == project_id))
                 session.exec(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
                 session.exec(delete(ProjectDoc).where(ProjectDoc.project_id == project_id))
                 session.exec(delete(FileText).where(FileText.project_id == project_id))

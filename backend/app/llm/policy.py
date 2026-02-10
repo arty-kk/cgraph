@@ -1,10 +1,12 @@
 # backend/app/llm/policy.py
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 
 from ..config import settings
+from ..infra.cache import cache_get_json
 
 
 @dataclass(frozen=True)
@@ -12,13 +14,136 @@ class ModelPolicy:
     triage_model: str = settings.triage_model
     analysis_model: str = settings.analysis_model
     patch_model: str = settings.patch_model
+    verifier_model: str = settings.analysis_model
 
     triage_effort: str = settings.reasoning_effort_triage
     analysis_effort: str = settings.reasoning_effort_analysis
     patch_effort: str = settings.reasoning_effort_patch
+    verifier_effort: str = "low"
 
 
 DEFAULT_POLICY = ModelPolicy()
+
+
+def _routing_thresholds() -> tuple[float, float, float]:
+    defaults = (
+        float(settings.llm_routing_threshold_low),
+        float(settings.llm_routing_threshold_mid),
+        float(settings.llm_routing_threshold_high),
+    )
+    cached = cache_get_json(["routing_policy", "thresholds", settings.llm_routing_policy_version])
+    if isinstance(cached, dict):
+        try:
+            low = float(cached.get("low", defaults[0]))
+            mid = float(cached.get("mid", defaults[1]))
+            high = float(cached.get("high", defaults[2]))
+            if 1.0 <= low <= mid <= high <= 2.0:
+                return (low, mid, high)
+        except Exception:
+            return defaults
+    return defaults
+
+
+def _parse_model_pool(value: str) -> list[str]:
+    parts = [p.strip() for p in re.split(r"[|,]", str(value or ""))]
+    return [p for p in parts if p]
+
+
+def _select_model_from_pool(
+    pool: list[str],
+    complexity_coeff: float,
+    *,
+    threshold_low: float | None = None,
+    threshold_mid: float | None = None,
+    threshold_high: float | None = None,
+) -> str:
+    if not pool:
+        return ""
+    if len(pool) == 1:
+        return pool[0]
+    low, mid, high = _routing_thresholds()
+    if threshold_low is not None:
+        low = float(threshold_low)
+    if threshold_mid is not None:
+        mid = float(threshold_mid)
+    if threshold_high is not None:
+        high = float(threshold_high)
+
+    if len(pool) == 2:
+        return pool[1] if complexity_coeff >= mid else pool[0]
+    if complexity_coeff >= high:
+        return pool[-1]
+    if complexity_coeff >= low:
+        return pool[1]
+    return pool[0]
+
+
+def _resolve_verifier_effort(
+    task_kind: str | None,
+    eff_complexity: float,
+    prompt_factor: float,
+    *,
+    threshold_low: float,
+    threshold_high: float,
+) -> str:
+    edge_case = bool(task_kind == "fix" and (eff_complexity >= threshold_high or prompt_factor >= 0.8))
+    if edge_case:
+        return "high"
+    if eff_complexity >= threshold_low:
+        return "medium"
+    return "low"
+
+
+def resolve_runtime_policy(
+    *,
+    task_kind: str | None,
+    complexity_coeff: float,
+    prompt_len: int,
+) -> ModelPolicy:
+    triage_pool = _parse_model_pool(settings.triage_model)
+    analysis_pool = _parse_model_pool(settings.analysis_model)
+    patch_pool = _parse_model_pool(settings.patch_model)
+
+    prompt_factor = min(1.0, max(0.0, prompt_len / max(1, int(settings.max_prompt_chars))))
+    triage_complexity = 1.0 + prompt_factor
+    task_bias = 0.15 if task_kind == "fix" else 0.0
+    eff_complexity = max(1.0, min(2.0, float(complexity_coeff) + task_bias))
+
+    triage_model = _select_model_from_pool(triage_pool, triage_complexity) or settings.triage_model
+    analysis_model = (
+        _select_model_from_pool(analysis_pool, eff_complexity) or settings.analysis_model
+    )
+    patch_model = _select_model_from_pool(patch_pool, eff_complexity) or settings.patch_model
+
+    threshold_low, threshold_mid, threshold_high = _routing_thresholds()
+    verifier_model = (
+        _select_model_from_pool(
+            analysis_pool,
+            min(threshold_mid, eff_complexity),
+            threshold_low=threshold_low,
+            threshold_mid=threshold_mid,
+            threshold_high=threshold_high,
+        )
+        or settings.analysis_model
+    )
+    verifier_effort = _resolve_verifier_effort(
+        task_kind,
+        eff_complexity,
+        prompt_factor,
+        threshold_low=threshold_low,
+        threshold_high=threshold_high,
+    )
+
+    return ModelPolicy(
+        triage_model=triage_model,
+        analysis_model=analysis_model,
+        patch_model=patch_model,
+        verifier_model=verifier_model,
+        triage_effort=settings.reasoning_effort_triage,
+        analysis_effort=settings.reasoning_effort_analysis,
+        patch_effort=settings.reasoning_effort_patch,
+        verifier_effort=verifier_effort,
+    )
 
 
 class ProfileName(str, Enum):
