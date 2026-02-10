@@ -41,19 +41,18 @@ def create_org(name: str, owner_user_id: int) -> Organization:
     org_name = _normalize_org_name(name)
     now = datetime.now(timezone.utc)
     with get_session() as session:
-        org = Organization(name=org_name, created_at=now)
-        session.add(org)
-        session.commit()
-        session.refresh(org)
-        membership = OrgMembership(
-            org_id=org.id,
-            user_id=owner_user_id,
-            role="owner",
-            is_active=True,
-            created_at=now,
-        )
-        session.add(membership)
-        session.commit()
+        with session.begin():
+            org = Organization(name=org_name, created_at=now)
+            session.add(org)
+            session.flush()
+            membership = OrgMembership(
+                org_id=org.id,
+                user_id=owner_user_id,
+                role="owner",
+                is_active=True,
+                created_at=now,
+            )
+            session.add(membership)
     return org
 
 
