@@ -18,7 +18,7 @@ import {
   deleteRun,
   getTaskStatus,
   waitForTaskResult,
-  runTaskStatus,
+  runTask,
   scanProjectStatus,
   searchNodes,
   getFileDependencies,
@@ -2255,7 +2255,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
   const runTaskTracked = useCallback(
     async (projectId: number, body: RunTaskBody, label: string) => {
-      const initial = await runTaskStatus(projectId, body, { background: true })
+      const initial = await runTask(projectId, body, { background: true })
       if (isTaskStatus(initial)) {
         trackTaskStatus(initial, 'run', label)
       }
