@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
@@ -9,24 +10,9 @@ from app.llm.routing_selector import select_runtime_route
 
 
 class TestRoutingSelector(unittest.TestCase):
-    def test_returns_none_without_stats(self) -> None:
-        selection = select_runtime_route(
-            task_kind="analyze",
-            complexity_coeff=1.2,
-            prompt_len=120,
-            project_nodes=100,
-            sla_profile="balanced",
-            model_stats=None,
-            quality_weight=0.4,
-            latency_weight=0.25,
-            token_cost_weight=0.2,
-            fail_rate_weight=0.15,
-            low_confidence_threshold=0.55,
-        )
-        self.assertIsNone(selection)
-
-    def test_selects_telemetry_route_for_quality_profile(self) -> None:
-        stats = {
+    @staticmethod
+    def _model_stats() -> dict[str, dict[str, float]]:
+        return {
             "gpt-5-nano": {
                 "quality": 0.70,
                 "latency_ms": 400,
@@ -46,6 +32,25 @@ class TestRoutingSelector(unittest.TestCase):
                 "fail_rate": 0.02,
             },
         }
+
+    def test_returns_none_without_stats(self) -> None:
+        selection = select_runtime_route(
+            task_kind="analyze",
+            complexity_coeff=1.2,
+            prompt_len=120,
+            project_nodes=100,
+            sla_profile="balanced",
+            model_stats=None,
+            quality_weight=0.4,
+            latency_weight=0.25,
+            token_cost_weight=0.2,
+            fail_rate_weight=0.15,
+            low_confidence_threshold=0.55,
+        )
+        self.assertIsNone(selection)
+
+    def test_selects_telemetry_route_for_quality_profile(self) -> None:
+        stats = self._model_stats()
         old_triage = settings.triage_model
         old_analysis = settings.analysis_model
         old_patch = settings.patch_model
@@ -77,8 +82,101 @@ class TestRoutingSelector(unittest.TestCase):
         self.assertEqual(selection.reason, "telemetry_score")
         self.assertGreater(selection.confidence, 0.05)
         self.assertEqual(selection.policy.analysis_model, "gpt-5.2-codex")
-        self.assertTrue(isinstance(selection.policy.verifier_model, str) and selection.policy.verifier_model)
+        self.assertTrue(
+            isinstance(selection.policy.verifier_model, str)
+            and selection.policy.verifier_model
+        )
         self.assertIn(selection.policy.verifier_effort, ("medium", "high"))
+
+    def test_select_runtime_route_uses_thresholds_from_cache_override(self) -> None:
+        stats = self._model_stats()
+        old_triage = settings.triage_model
+        old_analysis = settings.analysis_model
+        old_patch = settings.patch_model
+        old_low = settings.llm_routing_threshold_low
+        old_mid = settings.llm_routing_threshold_mid
+        old_high = settings.llm_routing_threshold_high
+        try:
+            settings.triage_model = "gpt-5-nano|gpt-5-mini"
+            settings.analysis_model = "gpt-5-nano|gpt-5-mini"
+            settings.patch_model = "gpt-5-mini|gpt-5.2-codex"
+            settings.llm_routing_threshold_low = 1.0
+            settings.llm_routing_threshold_mid = 1.2
+            settings.llm_routing_threshold_high = 1.4
+
+            with patch(
+                "app.llm.routing_thresholds.cache_get_json",
+                return_value={"low": 1.0, "mid": 1.8, "high": 1.9},
+            ):
+                selection = select_runtime_route(
+                    task_kind="fix",
+                    complexity_coeff=1.4,
+                    prompt_len=120,
+                    project_nodes=0,
+                    sla_profile="balanced",
+                    model_stats=stats,
+                    quality_weight=0.4,
+                    latency_weight=0.25,
+                    token_cost_weight=0.2,
+                    fail_rate_weight=0.15,
+                    low_confidence_threshold=0.05,
+                )
+        finally:
+            settings.triage_model = old_triage
+            settings.analysis_model = old_analysis
+            settings.patch_model = old_patch
+            settings.llm_routing_threshold_low = old_low
+            settings.llm_routing_threshold_mid = old_mid
+            settings.llm_routing_threshold_high = old_high
+
+        self.assertIsNotNone(selection)
+        assert selection is not None
+        self.assertEqual(selection.policy.verifier_effort, "medium")
+
+    def test_select_runtime_route_falls_back_to_defaults_for_invalid_cache_thresholds(self) -> None:
+        stats = self._model_stats()
+        old_triage = settings.triage_model
+        old_analysis = settings.analysis_model
+        old_patch = settings.patch_model
+        old_low = settings.llm_routing_threshold_low
+        old_mid = settings.llm_routing_threshold_mid
+        old_high = settings.llm_routing_threshold_high
+        try:
+            settings.triage_model = "gpt-5-nano|gpt-5-mini"
+            settings.analysis_model = "gpt-5-nano|gpt-5-mini"
+            settings.patch_model = "gpt-5-mini|gpt-5.2-codex"
+            settings.llm_routing_threshold_low = 1.0
+            settings.llm_routing_threshold_mid = 1.2
+            settings.llm_routing_threshold_high = 1.4
+
+            with patch(
+                "app.llm.routing_thresholds.cache_get_json",
+                return_value={"low": 1.9, "mid": 1.5, "high": 2.1},
+            ):
+                selection = select_runtime_route(
+                    task_kind="fix",
+                    complexity_coeff=1.4,
+                    prompt_len=120,
+                    project_nodes=0,
+                    sla_profile="balanced",
+                    model_stats=stats,
+                    quality_weight=0.4,
+                    latency_weight=0.25,
+                    token_cost_weight=0.2,
+                    fail_rate_weight=0.15,
+                    low_confidence_threshold=0.05,
+                )
+        finally:
+            settings.triage_model = old_triage
+            settings.analysis_model = old_analysis
+            settings.patch_model = old_patch
+            settings.llm_routing_threshold_low = old_low
+            settings.llm_routing_threshold_mid = old_mid
+            settings.llm_routing_threshold_high = old_high
+
+        self.assertIsNotNone(selection)
+        assert selection is not None
+        self.assertEqual(selection.policy.verifier_effort, "high")
 
 
 if __name__ == "__main__":

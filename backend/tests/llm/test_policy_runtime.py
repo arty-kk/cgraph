@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
@@ -65,6 +66,62 @@ class TestRuntimePolicy(unittest.TestCase):
 
             self.assertEqual(low.analysis_model, "gpt-5-nano")
             self.assertEqual(high.analysis_model, "gpt-5-mini")
+        finally:
+            settings.analysis_model = old_analysis
+            settings.llm_routing_threshold_low = old_low
+            settings.llm_routing_threshold_mid = old_mid
+            settings.llm_routing_threshold_high = old_high
+
+    def test_runtime_policy_uses_thresholds_from_cache_override(self) -> None:
+        old_analysis = settings.analysis_model
+        old_low = settings.llm_routing_threshold_low
+        old_mid = settings.llm_routing_threshold_mid
+        old_high = settings.llm_routing_threshold_high
+        try:
+            settings.analysis_model = "gpt-5-nano|gpt-5-mini"
+            settings.llm_routing_threshold_low = 1.0
+            settings.llm_routing_threshold_mid = 1.2
+            settings.llm_routing_threshold_high = 1.4
+
+            with patch(
+                "app.llm.routing_thresholds.cache_get_json",
+                return_value={"low": 1.0, "mid": 1.8, "high": 1.9},
+            ):
+                policy = resolve_runtime_policy(
+                    task_kind="analyze",
+                    complexity_coeff=1.3,
+                    prompt_len=120,
+                )
+
+            self.assertEqual(policy.analysis_model, "gpt-5-nano")
+        finally:
+            settings.analysis_model = old_analysis
+            settings.llm_routing_threshold_low = old_low
+            settings.llm_routing_threshold_mid = old_mid
+            settings.llm_routing_threshold_high = old_high
+
+    def test_runtime_policy_falls_back_to_defaults_for_invalid_cache_thresholds(self) -> None:
+        old_analysis = settings.analysis_model
+        old_low = settings.llm_routing_threshold_low
+        old_mid = settings.llm_routing_threshold_mid
+        old_high = settings.llm_routing_threshold_high
+        try:
+            settings.analysis_model = "gpt-5-nano|gpt-5-mini"
+            settings.llm_routing_threshold_low = 1.0
+            settings.llm_routing_threshold_mid = 1.2
+            settings.llm_routing_threshold_high = 1.4
+
+            with patch(
+                "app.llm.routing_thresholds.cache_get_json",
+                return_value={"low": 1.9, "mid": 1.5, "high": 2.1},
+            ):
+                policy = resolve_runtime_policy(
+                    task_kind="analyze",
+                    complexity_coeff=1.3,
+                    prompt_len=120,
+                )
+
+            self.assertEqual(policy.analysis_model, "gpt-5-mini")
         finally:
             settings.analysis_model = old_analysis
             settings.llm_routing_threshold_low = old_low
