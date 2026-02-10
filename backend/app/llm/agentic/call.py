@@ -19,6 +19,31 @@ from .tools import _tool_definitions
 from .types import AgenticMeta
 
 
+def _has_valid_sources_structure(result: dict[str, Any]) -> tuple[bool, str]:
+    sources = result.get("sources")
+    if not isinstance(sources, list) or len(sources) == 0:
+        return False, "empty sources"
+
+    for item in sources:
+        if not isinstance(item, dict):
+            return False, "invalid sources"
+
+        path = item.get("path")
+        start_line = item.get("start_line")
+        end_line = item.get("end_line")
+
+        if not isinstance(path, str) or not path.strip():
+            return False, "invalid sources"
+        if not isinstance(start_line, int) or start_line < 1:
+            return False, "invalid sources"
+        if not isinstance(end_line, int) or end_line < 1:
+            return False, "invalid sources"
+        if end_line < start_line:
+            return False, "invalid sources"
+
+    return True, ""
+
+
 def _agentic_json_call(
     *,
     model: str,
@@ -278,14 +303,15 @@ def _agentic_json_call(
         if not function_calls:
             result = _parse_model_json(resp)
             if evidence_mode:
-                sources = result.get("sources") if isinstance(result, dict) else None
-                missing_sources = not isinstance(sources, list) or len(sources) == 0
-                if missing_sources:
+                valid_sources, sources_validation_reason = _has_valid_sources_structure(result)
+                if not valid_sources:
                     if allow_evidence_retry:
                         retry_prompt = (
                             f"{user_prompt}\n\n"
+                            f"Evidence validation error: {sources_validation_reason}. "
                             "Evidence mode requires sources with file paths and line ranges. "
-                            "Include non-empty sources and use get_file_lines when possible."
+                            "Fix sources format and include non-empty sources with path, "
+                            "start_line, end_line. Use get_file_lines when possible."
                         )
                         retry_result, retry_meta = _agentic_json_call(
                             model=model,
@@ -324,7 +350,9 @@ def _agentic_json_call(
                         )
                         retry_meta.total_tokens = merged_retry_usage.get("total_tokens")
                         return retry_result, retry_meta
-                    raise RuntimeError("Evidence mode requires non-empty sources in the response")
+                    raise RuntimeError(
+                        "Evidence mode requires valid non-empty sources in the response"
+                    )
             check_model = self_check_model or model
             try:
                 self_check = _run_self_check(
