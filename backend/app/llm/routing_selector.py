@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from ..config import settings
 from .policy import ModelPolicy
 from .routing_thresholds import resolve_routing_thresholds
+from .routing_weights import resolve_routing_weights
 
 
 @dataclass(frozen=True)
@@ -184,12 +185,21 @@ def select_runtime_route(
     if not isinstance(model_stats, dict) or not model_stats:
         return None
 
+    resolved_weights = resolve_routing_weights(
+        sla_profile,
+        {
+            "quality": quality_weight,
+            "latency": latency_weight,
+            "token_cost": token_cost_weight,
+            "fail_rate": fail_rate_weight,
+        },
+    )
     weights = _effective_weights(
         sla_profile=sla_profile,
-        quality_weight=quality_weight,
-        latency_weight=latency_weight,
-        token_cost_weight=token_cost_weight,
-        fail_rate_weight=fail_rate_weight,
+        quality_weight=resolved_weights["quality"],
+        latency_weight=resolved_weights["latency"],
+        token_cost_weight=resolved_weights["token_cost"],
+        fail_rate_weight=resolved_weights["fail_rate"],
     )
 
     threshold_low, threshold_mid, threshold_high = resolve_routing_thresholds()
