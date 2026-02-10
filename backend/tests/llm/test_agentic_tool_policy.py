@@ -9,6 +9,35 @@ from app.llm import agentic  # noqa: E402
 
 
 class TestAgenticToolPolicy(unittest.TestCase):
+    def test_empty_plan_retrieval_is_not_accepted_for_followup_tools(self) -> None:
+        meta = agentic.AgenticMeta()
+        meta.retrieval_plan = None
+
+        plan_result = agentic._dispatch_tool(
+            1,
+            Path("."),
+            meta,
+            "plan_retrieval",
+            {},
+            max_file_chars=200,
+        )
+
+        self.assertFalse(plan_result["ok"])
+        self.assertEqual(plan_result["error"]["code"], "bad_args")
+        self.assertIsNone(meta.retrieval_plan)
+
+        contract_result = agentic._dispatch_tool(
+            1,
+            Path("."),
+            meta,
+            "get_contract",
+            {},
+            max_file_chars=200,
+        )
+
+        self.assertFalse(contract_result["ok"])
+        self.assertEqual(contract_result["error"]["code"], "policy_violation")
+
     def test_get_file_requires_search_beforehand(self) -> None:
         meta = agentic.AgenticMeta()
         meta.tool_trace.append({"name": "plan_retrieval", "status": "ok"})
