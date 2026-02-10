@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+from functools import lru_cache
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -14,8 +15,8 @@ from .redis_client import get_redis_client
 logger = get_logger("stubgraph.rate_limit")
 
 
-def _trusted_proxy_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-    raw = (settings.trusted_proxy_cidrs or "").strip()
+@lru_cache(maxsize=1)
+def _parse_trusted_proxy_networks(raw: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     if not raw:
         return []
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
@@ -37,7 +38,8 @@ def _client_is_trusted_proxy(client_host: str) -> bool:
         client_ip = ipaddress.ip_address(client_host)
     except ValueError:
         return False
-    for network in _trusted_proxy_networks():
+    raw = (settings.trusted_proxy_cidrs or "").strip()
+    for network in _parse_trusted_proxy_networks(raw):
         if client_ip in network:
             return True
     return False
