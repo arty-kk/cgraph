@@ -90,15 +90,22 @@ def bootstrap_user(email: str, password: str) -> User:
                     text("SELECT pg_advisory_xact_lock(:key)"),
                     {"key": _BOOTSTRAP_LOCK_KEY},
                 )
-            else:
-                try:
-                    session.add(BootstrapSentinel(key=_BOOTSTRAP_SENTINEL_KEY))
-                    session.flush()
-                except IntegrityError as exc:
-                    raise BadRequestError("Bootstrap уже выполнен") from exc
-            existing = session.exec(select(User).limit(1)).first()
-            if existing:
+
+            existing_sentinel = session.exec(
+                select(BootstrapSentinel)
+                .where(BootstrapSentinel.key == _BOOTSTRAP_SENTINEL_KEY)
+                .limit(1)
+            ).first()
+            existing_user = session.exec(select(User).limit(1)).first()
+            if existing_sentinel or existing_user:
                 raise BadRequestError("Bootstrap уже выполнен")
+
+            try:
+                session.add(BootstrapSentinel(key=_BOOTSTRAP_SENTINEL_KEY))
+                session.flush()
+            except IntegrityError as exc:
+                raise BadRequestError("Bootstrap уже выполнен") from exc
+
             user = User(email=email.strip().lower(), password_hash=_hash_password(password))
             session.add(user)
             session.flush()

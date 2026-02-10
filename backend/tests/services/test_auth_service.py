@@ -16,7 +16,7 @@ class TestAuthServiceBootstrap(unittest.TestCase):
         try:
             from app.db import get_session  # noqa: E402
             from app.errors import BadRequestError  # noqa: E402
-            from app.models import User  # noqa: E402
+            from app.models import BootstrapSentinel, User  # noqa: E402
             from app.services.auth_service import bootstrap_user  # noqa: E402
         except ModuleNotFoundError:
             raise unittest.SkipTest("Postgres dependencies missing for auth service tests")
@@ -30,6 +30,8 @@ class TestAuthServiceBootstrap(unittest.TestCase):
                 raise unittest.SkipTest("Users already exist for auth service tests")
         cls.get_session = get_session
         cls.BadRequestError = BadRequestError
+        cls.BootstrapSentinel = BootstrapSentinel
+        cls.User = User
         cls.bootstrap_user = bootstrap_user
 
     def test_concurrent_bootstrap_user(self) -> None:
@@ -58,6 +60,21 @@ class TestAuthServiceBootstrap(unittest.TestCase):
 
         self.assertEqual(results.count("ok"), 1)
         self.assertEqual(results.count("bad_request"), 1)
+
+        with self.get_session() as session:
+            users = session.exec(select(self.User)).all()
+            for user in users:
+                session.delete(user)
+            session.commit()
+
+        with self.assertRaises(self.BadRequestError):
+            self.bootstrap_user(f"retry_{suffix}@example.com", password)
+
+        with self.get_session() as session:
+            sentinel = session.exec(
+                select(self.BootstrapSentinel).where(self.BootstrapSentinel.key == "bootstrap")
+            ).first()
+        self.assertIsNotNone(sentinel)
 
 
 if __name__ == "__main__":
