@@ -75,13 +75,16 @@ class ServerError(AppError):
 
 
 def _safe_context(context: dict[str, Any]) -> dict[str, Any]:
-    safe_ctx: dict[str, Any] = {}
-    for key, value in context.items():
-        if isinstance(value, (str, int, float, bool)):
-            safe_ctx[key] = value
-        else:
-            safe_ctx[key] = repr(value)
-    return safe_ctx
+    def _safe_value(value: Any) -> Any:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, list):
+            return [_safe_value(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): _safe_value(val) for key, val in value.items()}
+        return repr(value)
+
+    return {key: _safe_value(value) for key, value in context.items()}
 
 
 async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
