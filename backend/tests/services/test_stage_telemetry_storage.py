@@ -25,7 +25,9 @@ class TestStageTelemetryStorage(unittest.TestCase):
 
     def tearDown(self) -> None:
         with get_session() as session:
-            session.exec(delete(AnalysisStageTelemetry).where(AnalysisStageTelemetry.org_id == 9201))
+            session.exec(
+                delete(AnalysisStageTelemetry).where(AnalysisStageTelemetry.org_id == 9201)
+            )
             session.exec(delete(AnalysisRun).where(AnalysisRun.org_id == 9201))
             session.commit()
 
@@ -39,6 +41,7 @@ class TestStageTelemetryStorage(unittest.TestCase):
             retry_index=1,
             self_check_result="ok",
             failure_class=None,
+            stop_reason="completed",
             tool_calls=5,
             tool_output_chars=2048,
         )
@@ -52,6 +55,7 @@ class TestStageTelemetryStorage(unittest.TestCase):
         self.assertEqual(row["retry_index"], 1)
         self.assertEqual(row["self_check_result"], "ok")
         self.assertIsNone(row["failure_class"])
+        self.assertEqual(row["stop_reason"], "completed")
         self.assertEqual(row["tool_calls"], 5)
         self.assertEqual(row["tool_output_chars"], 2048)
 
@@ -69,6 +73,7 @@ class TestStageTelemetryStorage(unittest.TestCase):
                         "retry_index": 0,
                         "self_check_result": None,
                         "failure_class": None,
+                        "stop_reason": "completed",
                         "tool_calls": None,
                         "tool_output_chars": None,
                     }
@@ -99,6 +104,7 @@ class TestStageTelemetryStorage(unittest.TestCase):
                     model="gpt-5-mini",
                     latency_ms=42,
                     retry_index=0,
+                    stop_reason="completed",
                 )
             )
             session.commit()
@@ -116,6 +122,7 @@ class TestStageTelemetryStorage(unittest.TestCase):
             self.assertEqual(len(stages), 1)
             self.assertEqual(stages[0].stage_name, "plan_agentic")
             self.assertEqual(stages[0].latency_ms, 42)
+            self.assertEqual(stages[0].stop_reason, "completed")
 
 
 if __name__ == "__main__":

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from dataclasses import dataclass
-from time import perf_counter
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from fastapi import BackgroundTasks
@@ -157,6 +159,7 @@ def _append_stage_telemetry(
     retry_index: int = 0,
     self_check_result: str | None = None,
     failure_class: str | None = None,
+    stop_reason: str | None = None,
     tool_calls: int | None = None,
     tool_output_chars: int | None = None,
 ) -> None:
@@ -170,6 +173,7 @@ def _append_stage_telemetry(
             "retry_index": int(retry_index),
             "self_check_result": self_check_result,
             "failure_class": failure_class,
+            "stop_reason": stop_reason,
             "tool_calls": int(tool_calls) if tool_calls is not None else None,
             "tool_output_chars": int(tool_output_chars) if tool_output_chars is not None else None,
         }
@@ -225,6 +229,57 @@ SELF_CHECK_RETRY_MULTIPLIERS = {
 }
 SELF_CHECK_RETRY_TEMP_DELTA = 0.05
 SELF_CHECK_RETRY_REASONING_STEPS = 1
+
+
+def _normalize_missing_context_items(items: list[str] | None) -> list[str]:
+    if not items:
+        return []
+    normalized: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        value = re.sub(r"\s+", " ", item.strip().lower())
+        if value:
+            normalized.append(value)
+    return normalized
+
+
+def _missing_context_similarity(previous: list[str] | None, current: list[str] | None) -> float:
+    prev_counter = Counter(_normalize_missing_context_items(previous))
+    curr_counter = Counter(_normalize_missing_context_items(current))
+    if not prev_counter and not curr_counter:
+        return 1.0
+    union_keys = set(prev_counter) | set(curr_counter)
+    intersection_size = sum(min(prev_counter[key], curr_counter[key]) for key in union_keys)
+    union_size = sum(max(prev_counter[key], curr_counter[key]) for key in union_keys)
+    if union_size <= 0:
+        return 0.0
+    return intersection_size / union_size
+
+
+def _resolve_agentic_retry_stop_reason(
+    *,
+    retry_index: int,
+    retry_limit: int,
+    previous_missing_context: list[str] | None,
+    current_missing_context: list[str] | None,
+    stability_threshold: float,
+    stage_name: str,
+    escalation_count_by_stage: dict[str, int],
+    escalation_limit: int,
+) -> str | None:
+    normalized_current = _normalize_missing_context_items(current_missing_context)
+    if not normalized_current:
+        return None
+    if retry_index >= retry_limit:
+        return "retry_limit"
+    if previous_missing_context is not None:
+        similarity = _missing_context_similarity(previous_missing_context, normalized_current)
+        if similarity >= stability_threshold:
+            return "repeating_missing_context"
+    if escalation_count_by_stage.get(stage_name, 0) >= escalation_limit:
+        return "escalation_limit"
+    return None
 
 
 def _store_patch_blob(patch_text: str) -> dict:
@@ -1088,76 +1143,197 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                 _llm_http_error("plan", error)
             plan_source = "agentic"
             allowed_patch_paths = {target}
+            retry_limit = int(getattr(settings, "llm_agentic_max_retry_per_run", 1))
+            escalation_limit = int(getattr(settings, "llm_agentic_escalation_max_per_stage", 1))
+            missing_context_stability_threshold = float(
+                getattr(settings, "llm_agentic_missing_context_stability_threshold", 0.9)
+            )
+            stage_name = f"{mode}_agentic"
+            escalation_count_by_stage: dict[str, int] = {}
+            retry_count = 0
+            stop_reason = "completed"
             self_check_retry = False
             self_check_retry_missing_context: list[str] = []
             self_check_retry_budget: dict[str, float] | None = None
-            stage_started = perf_counter()
-            try:
-                if mode == "analyze":
-                    result, agentic_meta = analyze_agentic(
-                        project_id,
-                        root,
-                        target,
-                        policy=runtime_policy,
-                        depth=depth,
-                        user_prompt=request.prompt,
-                        instructions=profile_instructions,
-                        max_calls=agentic_max_calls,
-                        max_file_chars=agentic_max_file_chars,
-                        max_total_tool_output_chars=agentic_max_total_tool_output_chars,
-                        temperature=agentic_temperature,
-                        reasoning_effort=agentic_reasoning_effort,
-                        evidence_mode=evidence_mode,
-                        allow_self_check_retry=False,
-                        allow_evidence_retry=True,
+            previous_missing_context: list[str] | None = None
+
+            retrieval_settings["agentic"]["retry_count"] = retry_count
+            retrieval_settings["agentic"]["retry_limit"] = retry_limit
+            retrieval_settings["agentic"]["escalation_count_by_stage"] = escalation_count_by_stage
+            retrieval_settings["agentic"]["stop_reason"] = stop_reason
+
+            active_policy = runtime_policy
+            active_max_calls = agentic_max_calls
+            active_max_file_chars = agentic_max_file_chars
+            active_max_total_tool_output_chars = agentic_max_total_tool_output_chars
+            active_temperature = agentic_temperature
+            active_reasoning_effort = agentic_reasoning_effort
+
+            for retry_index in range(retry_limit + 1):
+                stage_started = perf_counter()
+                try:
+                    if mode == "analyze":
+                        result, agentic_meta = analyze_agentic(
+                            project_id,
+                            root,
+                            target,
+                            policy=active_policy,
+                            depth=depth,
+                            user_prompt=request.prompt,
+                            instructions=profile_instructions,
+                            max_calls=active_max_calls,
+                            max_file_chars=active_max_file_chars,
+                            max_total_tool_output_chars=active_max_total_tool_output_chars,
+                            temperature=active_temperature,
+                            reasoning_effort=active_reasoning_effort,
+                            evidence_mode=evidence_mode,
+                            allow_self_check_retry=False,
+                            allow_evidence_retry=True,
+                        )
+                        model_used = active_policy.analysis_model
+                    elif mode == "evolve":
+                        result, agentic_meta = evolve_agentic(
+                            project_id,
+                            root,
+                            target,
+                            policy=active_policy,
+                            depth=depth,
+                            user_prompt=request.prompt,
+                            instructions=profile_instructions,
+                            max_calls=active_max_calls,
+                            max_file_chars=active_max_file_chars,
+                            max_total_tool_output_chars=active_max_total_tool_output_chars,
+                            temperature=active_temperature,
+                            reasoning_effort=active_reasoning_effort,
+                            evidence_mode=evidence_mode,
+                            allow_self_check_retry=False,
+                            allow_evidence_retry=True,
+                        )
+                        model_used = active_policy.analysis_model
+                    elif mode == "fix":
+                        result, agentic_meta = fix_agentic(
+                            project_id,
+                            root,
+                            target,
+                            policy=active_policy,
+                            depth=depth,
+                            user_prompt=request.prompt,
+                            instructions=profile_instructions,
+                            max_calls=active_max_calls,
+                            max_file_chars=active_max_file_chars,
+                            max_total_tool_output_chars=active_max_total_tool_output_chars,
+                            temperature=active_temperature,
+                            reasoning_effort=active_reasoning_effort,
+                            evidence_mode=evidence_mode,
+                            allow_self_check_retry=False,
+                            allow_evidence_retry=True,
+                        )
+                        model_used = active_policy.patch_model
+                    else:
+                        raise BadRequestError("Неизвестный режим")
+                except Exception as error:  # noqa: BLE001
+                    _append_stage_telemetry(
+                        stage_telemetry,
+                        stage_name=stage_name,
+                        model=(
+                            active_policy.patch_model
+                            if mode == "fix"
+                            else active_policy.analysis_model
+                        ),
+                        latency_ms=(perf_counter() - stage_started) * 1000,
+                        retry_index=retry_index,
+                        failure_class=error.__class__.__name__,
                     )
-                    model_used = runtime_policy.analysis_model
-                elif mode == "evolve":
-                    result, agentic_meta = evolve_agentic(
-                        project_id,
-                        root,
-                        target,
-                        policy=runtime_policy,
-                        depth=depth,
-                        user_prompt=request.prompt,
-                        instructions=profile_instructions,
-                        max_calls=agentic_max_calls,
-                        max_file_chars=agentic_max_file_chars,
-                        max_total_tool_output_chars=agentic_max_total_tool_output_chars,
-                        temperature=agentic_temperature,
-                        reasoning_effort=agentic_reasoning_effort,
-                        evidence_mode=evidence_mode,
-                        allow_self_check_retry=False,
-                        allow_evidence_retry=True,
+                    _llm_http_error(mode or "agentic", error)
+
+                current_missing_context = list(
+                    (
+                        agentic_meta.self_check_missing_context
+                        if agentic_meta is not None
+                        else []
                     )
-                    model_used = runtime_policy.analysis_model
-                elif mode == "fix":
-                    result, agentic_meta = fix_agentic(
-                        project_id,
-                        root,
-                        target,
-                        policy=runtime_policy,
-                        depth=depth,
-                        user_prompt=request.prompt,
-                        instructions=profile_instructions,
-                        max_calls=agentic_max_calls,
-                        max_file_chars=agentic_max_file_chars,
-                        max_total_tool_output_chars=agentic_max_total_tool_output_chars,
-                        temperature=agentic_temperature,
-                        reasoning_effort=agentic_reasoning_effort,
-                        evidence_mode=evidence_mode,
-                        allow_self_check_retry=False,
-                        allow_evidence_retry=True,
+                    or []
+                )
+                stage_stop_reason = _resolve_agentic_retry_stop_reason(
+                    retry_index=retry_index,
+                    retry_limit=retry_limit,
+                    previous_missing_context=previous_missing_context,
+                    current_missing_context=current_missing_context,
+                    stability_threshold=missing_context_stability_threshold,
+                    stage_name=stage_name,
+                    escalation_count_by_stage=escalation_count_by_stage,
+                    escalation_limit=escalation_limit,
+                )
+                if current_missing_context:
+                    self_check_retry_missing_context = current_missing_context
+                    self_check_retry = True
+                if current_missing_context and stage_stop_reason is None:
+                    self_check_retry_budget = dict(SELF_CHECK_RETRY_MULTIPLIERS)
+                    retry_complexity_coeff = _clamp_float(
+                        complexity_coeff + 0.25,
+                        complexity_coeff,
+                        1.0,
+                        2.0,
                     )
-                    model_used = runtime_policy.patch_model
-                else:
-                    raise BadRequestError("Неизвестный режим")
+                    retry_prompt_len = prompt_len + sum(
+                        len(item)
+                        for item in self_check_retry_missing_context
+                        if isinstance(item, str)
+                    )
+                    active_policy = resolve_runtime_policy(
+                        task_kind=mode,
+                        complexity_coeff=retry_complexity_coeff,
+                        prompt_len=retry_prompt_len,
+                    )
+                    active_max_calls = min(
+                        int(round(active_max_calls * SELF_CHECK_RETRY_MULTIPLIERS["max_calls"])),
+                        srv_calls,
+                    )
+                    active_max_file_chars = min(
+                        int(
+                            round(
+                                active_max_file_chars
+                                * SELF_CHECK_RETRY_MULTIPLIERS["max_file_chars"]
+                            )
+                        ),
+                        srv_file,
+                    )
+                    active_max_total_tool_output_chars = min(
+                        int(
+                            round(
+                                active_max_total_tool_output_chars
+                                * SELF_CHECK_RETRY_MULTIPLIERS["max_total_tool_output_chars"]
+                            )
+                        ),
+                        srv_total,
+                    )
+                    active_temperature = _clamp_float(
+                        active_temperature + SELF_CHECK_RETRY_TEMP_DELTA,
+                        active_temperature,
+                        0.0,
+                        2.0,
+                    )
+                    active_reasoning_effort = _bump_reasoning_effort(
+                        active_reasoning_effort,
+                        SELF_CHECK_RETRY_REASONING_STEPS,
+                    )
+                    escalation_count_by_stage[stage_name] = (
+                        escalation_count_by_stage.get(stage_name, 0) + 1
+                    )
+                    retry_count = retry_index + 1
+                    retrieval_settings["agentic"]["self_check_retry_model_routing"] = {
+                        "triage_model": active_policy.triage_model,
+                        "analysis_model": active_policy.analysis_model,
+                        "patch_model": active_policy.patch_model,
+                        "verifier_model": active_policy.verifier_model,
+                    }
+                    previous_missing_context = current_missing_context
                 _append_stage_telemetry(
                     stage_telemetry,
-                    stage_name=f"{mode}_agentic",
+                    stage_name=stage_name,
                     model=model_used,
                     latency_ms=(perf_counter() - stage_started) * 1000,
-                    retry_index=0,
+                    retry_index=retry_index,
                     self_check_result=(
                         "ok"
                         if agentic_meta is not None and agentic_meta.self_check_ok is True
@@ -1165,180 +1341,40 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         if agentic_meta is not None and agentic_meta.self_check_ok is False
                         else None
                     ),
+                    stop_reason=stage_stop_reason,
                     tool_calls=(agentic_meta.tool_calls if agentic_meta is not None else None),
                     tool_output_chars=(
                         agentic_meta.total_tool_output_chars if agentic_meta is not None else None
                     ),
                 )
-            except Exception as error:  # noqa: BLE001
-                _append_stage_telemetry(
-                    stage_telemetry,
-                    stage_name=f"{mode}_agentic",
-                    model=(
-                        runtime_policy.patch_model if mode == "fix" else runtime_policy.analysis_model
-                    ),
-                    latency_ms=(perf_counter() - stage_started) * 1000,
-                    retry_index=0,
-                    failure_class=error.__class__.__name__,
-                )
-                _llm_http_error(mode or "agentic", error)
 
-            if agentic_meta is not None and agentic_meta.self_check_missing_context:
-                self_check_retry = True
-                self_check_retry_missing_context = list(
-                    agentic_meta.self_check_missing_context or []
-                )
-                self_check_retry_budget = dict(SELF_CHECK_RETRY_MULTIPLIERS)
-                retry_complexity_coeff = _clamp_float(complexity_coeff + 0.25, complexity_coeff, 1.0, 2.0)
-                retry_prompt_len = prompt_len + sum(
-                    len(item) for item in self_check_retry_missing_context if isinstance(item, str)
-                )
-                retry_policy = resolve_runtime_policy(
-                    task_kind=mode,
-                    complexity_coeff=retry_complexity_coeff,
-                    prompt_len=retry_prompt_len,
-                )
-                agentic_max_calls = min(
-                    int(round(agentic_max_calls * SELF_CHECK_RETRY_MULTIPLIERS["max_calls"])),
-                    srv_calls,
-                )
-                agentic_max_file_chars = min(
-                    int(
-                        round(
-                            agentic_max_file_chars * SELF_CHECK_RETRY_MULTIPLIERS["max_file_chars"]
-                        )
-                    ),
-                    srv_file,
-                )
-                agentic_max_total_tool_output_chars = min(
-                    int(
-                        round(
-                            agentic_max_total_tool_output_chars
-                            * SELF_CHECK_RETRY_MULTIPLIERS["max_total_tool_output_chars"]
-                        )
-                    ),
-                    srv_total,
-                )
-                agentic_temperature = _clamp_float(
-                    agentic_temperature + SELF_CHECK_RETRY_TEMP_DELTA,
-                    agentic_temperature,
-                    0.0,
-                    2.0,
-                )
-                agentic_reasoning_effort = _bump_reasoning_effort(
-                    agentic_reasoning_effort,
-                    SELF_CHECK_RETRY_REASONING_STEPS,
-                )
+                if stage_stop_reason is not None:
+                    stop_reason = stage_stop_reason
+                    break
+                if not current_missing_context:
+                    stop_reason = "completed"
+                    break
+
+            retrieval_settings["agentic"]["retry_count"] = retry_count
+            retrieval_settings["agentic"]["retry_limit"] = retry_limit
+            retrieval_settings["agentic"]["escalation_count_by_stage"] = dict(
+                escalation_count_by_stage
+            )
+            retrieval_settings["agentic"]["stop_reason"] = stop_reason
+            retrieval_settings["agentic"]["self_check_retry"] = self_check_retry
+            retrieval_settings["agentic"]["self_check_retry_reason"] = (
+                "missing_context" if self_check_retry else None
+            )
+            retrieval_settings["agentic"]["self_check_retry_missing_context"] = (
+                self_check_retry_missing_context if self_check_retry else []
+            )
+            retrieval_settings["agentic"]["self_check_retry_multiplier"] = (
+                self_check_retry_budget if self_check_retry else None
+            )
+            if self_check_retry:
                 retry_budget_reason = list(budget_reason)
                 retry_budget_reason.append("self_check_retry")
                 retrieval_settings["agentic"]["budget_reason"] = retry_budget_reason
-                retrieval_settings["agentic"]["self_check_retry"] = True
-                retrieval_settings["agentic"]["self_check_retry_reason"] = "missing_context"
-                retrieval_settings["agentic"]["self_check_retry_missing_context"] = (
-                    self_check_retry_missing_context
-                )
-                retrieval_settings["agentic"]["self_check_retry_multiplier"] = (
-                    self_check_retry_budget
-                )
-                retrieval_settings["agentic"]["self_check_retry_model_routing"] = {
-                    "triage_model": retry_policy.triage_model,
-                    "analysis_model": retry_policy.analysis_model,
-                    "patch_model": retry_policy.patch_model,
-                    "verifier_model": retry_policy.verifier_model,
-                }
-                retry_stage_started = perf_counter()
-                try:
-                    if mode == "analyze":
-                        result, agentic_meta = analyze_agentic(
-                            project_id,
-                            root,
-                            target,
-                            policy=retry_policy,
-                            depth=depth,
-                            user_prompt=request.prompt,
-                            instructions=profile_instructions,
-                            max_calls=agentic_max_calls,
-                            max_file_chars=agentic_max_file_chars,
-                            max_total_tool_output_chars=agentic_max_total_tool_output_chars,
-                            temperature=agentic_temperature,
-                            reasoning_effort=agentic_reasoning_effort,
-                            evidence_mode=evidence_mode,
-                            allow_self_check_retry=False,
-                            allow_evidence_retry=True,
-                        )
-                        model_used = retry_policy.analysis_model
-                    elif mode == "evolve":
-                        result, agentic_meta = evolve_agentic(
-                            project_id,
-                            root,
-                            target,
-                            policy=retry_policy,
-                            depth=depth,
-                            user_prompt=request.prompt,
-                            instructions=profile_instructions,
-                            max_calls=agentic_max_calls,
-                            max_file_chars=agentic_max_file_chars,
-                            max_total_tool_output_chars=agentic_max_total_tool_output_chars,
-                            temperature=agentic_temperature,
-                            reasoning_effort=agentic_reasoning_effort,
-                            evidence_mode=evidence_mode,
-                            allow_self_check_retry=False,
-                            allow_evidence_retry=True,
-                        )
-                        model_used = retry_policy.analysis_model
-                    elif mode == "fix":
-                        result, agentic_meta = fix_agentic(
-                            project_id,
-                            root,
-                            target,
-                            policy=retry_policy,
-                            depth=depth,
-                            user_prompt=request.prompt,
-                            instructions=profile_instructions,
-                            max_calls=agentic_max_calls,
-                            max_file_chars=agentic_max_file_chars,
-                            max_total_tool_output_chars=agentic_max_total_tool_output_chars,
-                            temperature=agentic_temperature,
-                            reasoning_effort=agentic_reasoning_effort,
-                            evidence_mode=evidence_mode,
-                            allow_self_check_retry=False,
-                            allow_evidence_retry=True,
-                        )
-                        model_used = retry_policy.patch_model
-                    _append_stage_telemetry(
-                        stage_telemetry,
-                        stage_name=f"{mode}_agentic",
-                        model=model_used,
-                        latency_ms=(perf_counter() - retry_stage_started) * 1000,
-                        retry_index=1,
-                        self_check_result=(
-                            "ok"
-                            if agentic_meta is not None and agentic_meta.self_check_ok is True
-                            else "failed"
-                            if agentic_meta is not None and agentic_meta.self_check_ok is False
-                            else None
-                        ),
-                        tool_calls=(agentic_meta.tool_calls if agentic_meta is not None else None),
-                        tool_output_chars=(
-                            agentic_meta.total_tool_output_chars if agentic_meta is not None else None
-                        ),
-                    )
-                except Exception as error:  # noqa: BLE001
-                    _append_stage_telemetry(
-                        stage_telemetry,
-                        stage_name=f"{mode}_agentic",
-                        model=(retry_policy.patch_model if mode == "fix" else retry_policy.analysis_model),
-                        latency_ms=(perf_counter() - retry_stage_started) * 1000,
-                        retry_index=1,
-                        failure_class=error.__class__.__name__,
-                    )
-                    _llm_http_error(mode or "agentic", error)
-
-            if not self_check_retry:
-                retrieval_settings["agentic"]["self_check_retry"] = False
-                retrieval_settings["agentic"]["self_check_retry_reason"] = None
-                retrieval_settings["agentic"]["self_check_retry_missing_context"] = []
-                retrieval_settings["agentic"]["self_check_retry_multiplier"] = None
 
             if agentic_meta is not None:
                 # Files read via get_contract/get_symbol are whitelisted for patching.
@@ -1347,13 +1383,13 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                     if isinstance(retrieval_settings, dict) and isinstance(
                         retrieval_settings.get("agentic"), dict
                     ):
-                        retrieval_settings["agentic"]["max_calls"] = agentic_max_calls
-                        retrieval_settings["agentic"]["max_file_chars"] = agentic_max_file_chars
+                        retrieval_settings["agentic"]["max_calls"] = active_max_calls
+                        retrieval_settings["agentic"]["max_file_chars"] = active_max_file_chars
                         retrieval_settings["agentic"]["max_total_tool_output_chars"] = (
-                            agentic_max_total_tool_output_chars
+                            active_max_total_tool_output_chars
                         )
-                        retrieval_settings["agentic"]["temperature"] = agentic_temperature
-                        retrieval_settings["agentic"]["reasoning_effort"] = agentic_reasoning_effort
+                        retrieval_settings["agentic"]["temperature"] = active_temperature
+                        retrieval_settings["agentic"]["reasoning_effort"] = active_reasoning_effort
                         retrieval_settings["agentic"]["tool_calls_used"] = int(
                             agentic_meta.tool_calls
                         )
@@ -1675,6 +1711,11 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                     failure_class=(
                         str(stage.get("failure_class"))
                         if stage.get("failure_class") is not None
+                        else None
+                    ),
+                    stop_reason=(
+                        str(stage.get("stop_reason"))
+                        if stage.get("stop_reason") is not None
                         else None
                     ),
                     tool_calls=stage.get("tool_calls"),

@@ -190,6 +190,18 @@ class Settings(BaseSettings):
     llm_agentic_trace_enabled: bool = Field(
         default=True, alias="STUBGRAPH_LLM_AGENTIC_TRACE_ENABLED"
     )
+    llm_agentic_max_retry_per_run: int = Field(
+        default=1,
+        alias="STUBGRAPH_LLM_AGENTIC_MAX_RETRY_PER_RUN",
+    )
+    llm_agentic_missing_context_stability_threshold: float = Field(
+        default=0.9,
+        alias="STUBGRAPH_LLM_AGENTIC_MISSING_CONTEXT_STABILITY_THRESHOLD",
+    )
+    llm_agentic_escalation_max_per_stage: int = Field(
+        default=1,
+        alias="STUBGRAPH_LLM_AGENTIC_ESCALATION_MAX_PER_STAGE",
+    )
     llm_routing_sla_profile: str = Field(
         default="balanced", alias="STUBGRAPH_LLM_ROUTING_SLA_PROFILE"
     )
@@ -385,6 +397,17 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_FILE_CHARS должен быть положительным")
         if self.llm_agentic_temperature < 0 or self.llm_agentic_temperature > 2:
             raise ValueError("STUBGRAPH_LLM_AGENTIC_TEMPERATURE должен быть в диапазоне 0..2")
+        if self.llm_agentic_max_retry_per_run < 0:
+            raise ValueError("STUBGRAPH_LLM_AGENTIC_MAX_RETRY_PER_RUN должен быть неотрицательным")
+        if not (0.0 <= self.llm_agentic_missing_context_stability_threshold <= 1.0):
+            raise ValueError(
+                "STUBGRAPH_LLM_AGENTIC_MISSING_CONTEXT_STABILITY_THRESHOLD должен быть в "
+                "диапазоне [0,1]"
+            )
+        if self.llm_agentic_escalation_max_per_stage < 0:
+            raise ValueError(
+                "STUBGRAPH_LLM_AGENTIC_ESCALATION_MAX_PER_STAGE должен быть неотрицательным"
+            )
         if self.project_lock_timeout_seconds < 0:
             raise ValueError("STUBGRAPH_PROJECT_LOCK_TIMEOUT_SECONDS должен быть неотрицательным")
         if self.project_lock_poll_interval_seconds <= 0:
