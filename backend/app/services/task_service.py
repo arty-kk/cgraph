@@ -29,6 +29,7 @@ from ..errors import (
 )
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.agentic import AgenticMeta, analyze_agentic, evolve_agentic, fix_agentic
+from ..llm.quality_gates import QualityGateError, validate_llm_result
 from ..llm.orchestrator import analyze, evolve, fix, plan_task, triage
 from ..llm.policy import (
     DEFAULT_POLICY,
@@ -648,6 +649,19 @@ def _plan_tz_skipped(reason: str) -> dict:
     return skipped
 
 
+def _raise_quality_gate_error(error: QualityGateError) -> None:
+    raise BadRequestError(
+        "Ответ LLM не прошёл quality gate",
+        code="quality_gate_failed",
+        context={
+            "mode": error.mode,
+            "evidence_mode": error.evidence_mode,
+            "min_sources": error.min_sources,
+            "reasons": error.reasons_payload(),
+        },
+    )
+
+
 def _enforce_llm_entitlements(org_id: int) -> None:
     ent_llm_enabled = get_entitlement_bool(org_id, "llm_enabled")
     if ent_llm_enabled is False:
@@ -1246,6 +1260,16 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                     )
                     _llm_http_error(mode or "agentic", error)
 
+                try:
+                    validate_llm_result(
+                        mode=mode,
+                        result=result,
+                        evidence_mode=evidence_mode,
+                        settings=settings,
+                    )
+                except QualityGateError as error:
+                    _raise_quality_gate_error(error)
+
                 current_missing_context = list(
                     (
                         agentic_meta.self_check_missing_context
@@ -1583,6 +1607,15 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         failure_class=error.__class__.__name__,
                     )
                     _llm_http_error("analyze", error)
+                try:
+                    validate_llm_result(
+                        mode=mode,
+                        result=result,
+                        evidence_mode=evidence_mode,
+                        settings=settings,
+                    )
+                except QualityGateError as error:
+                    _raise_quality_gate_error(error)
                 model_used = runtime_policy.analysis_model
             elif mode == "evolve":
                 stage_started = perf_counter()
@@ -1611,6 +1644,15 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         failure_class=error.__class__.__name__,
                     )
                     _llm_http_error("evolve", error)
+                try:
+                    validate_llm_result(
+                        mode=mode,
+                        result=result,
+                        evidence_mode=evidence_mode,
+                        settings=settings,
+                    )
+                except QualityGateError as error:
+                    _raise_quality_gate_error(error)
                 model_used = runtime_policy.analysis_model
             elif mode == "fix":
                 stage_started = perf_counter()
@@ -1639,6 +1681,15 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
                         failure_class=error.__class__.__name__,
                     )
                     _llm_http_error("fix", error)
+                try:
+                    validate_llm_result(
+                        mode=mode,
+                        result=result,
+                        evidence_mode=evidence_mode,
+                        settings=settings,
+                    )
+                except QualityGateError as error:
+                    _raise_quality_gate_error(error)
                 model_used = runtime_policy.patch_model
             else:
                 raise BadRequestError("Неизвестный режим")

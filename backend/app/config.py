@@ -202,6 +202,10 @@ class Settings(BaseSettings):
         default=1,
         alias="STUBGRAPH_LLM_AGENTIC_ESCALATION_MAX_PER_STAGE",
     )
+    llm_evidence_min_sources: int = Field(
+        default=1,
+        alias="STUBGRAPH_LLM_EVIDENCE_MIN_SOURCES",
+    )
     llm_routing_sla_profile: str = Field(
         default="balanced", alias="STUBGRAPH_LLM_ROUTING_SLA_PROFILE"
     )
@@ -408,6 +412,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "STUBGRAPH_LLM_AGENTIC_ESCALATION_MAX_PER_STAGE должен быть неотрицательным"
             )
+        if self.llm_evidence_min_sources < 1:
+            raise ValueError("STUBGRAPH_LLM_EVIDENCE_MIN_SOURCES должен быть >= 1")
         if self.project_lock_timeout_seconds < 0:
             raise ValueError("STUBGRAPH_PROJECT_LOCK_TIMEOUT_SECONDS должен быть неотрицательным")
         if self.project_lock_poll_interval_seconds <= 0:
