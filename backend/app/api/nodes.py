@@ -187,7 +187,7 @@ def update_file(
     body: FileUpdate,
     background_tasks: BackgroundTasks,
 ):
-    # Response contract: docs/file-mutation-contract.md
+    # Single source of truth for mutation response: docs/file-mutation-contract.md
     project = require_project_access(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
