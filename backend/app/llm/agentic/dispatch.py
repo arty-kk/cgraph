@@ -90,7 +90,42 @@ def _dispatch_tool(
         return getattr(tools, attr)
 
     if name == "plan_retrieval":
-        meta.retrieval_plan = dict(args) if isinstance(args, dict) else None
+        required_fields = (
+            "goal",
+            "hypotheses",
+            "search_steps",
+            "read_steps",
+            "candidate_ranking",
+        )
+        if not isinstance(args, dict):
+            return _validate_tool_result(
+                name,
+                _tool_error(
+                    "bad_args",
+                    "Invalid plan_retrieval args: expected object with required fields "
+                    f"{', '.join(required_fields)}; got {type(args).__name__}.",
+                ),
+            )
+        missing_fields = [field for field in required_fields if field not in args]
+        invalid_fields = [
+            field
+            for field in required_fields
+            if field in args and args.get(field) is None
+        ]
+        if missing_fields or invalid_fields:
+            details: list[str] = []
+            if missing_fields:
+                details.append(f"missing fields: {', '.join(missing_fields)}")
+            if invalid_fields:
+                details.append(f"invalid fields: {', '.join(invalid_fields)}")
+            return _validate_tool_result(
+                name,
+                _tool_error(
+                    "bad_args",
+                    "Invalid plan_retrieval args: " + "; ".join(details) + ".",
+                ),
+            )
+        meta.retrieval_plan = dict(args)
         return _validate_tool_result(name, _tool_ok({"stored": True}))
     plan_ready = bool(meta.retrieval_plan) or any(
         entry.get("name") == "plan_retrieval" and entry.get("status") == "ok"
