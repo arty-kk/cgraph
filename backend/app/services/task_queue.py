@@ -13,7 +13,7 @@ from sqlmodel import delete, select
 
 from ..config import settings
 from ..db import get_session
-from ..errors import BadRequestError
+from ..errors import BadRequestError, ExternalServiceError
 from ..infra.redis_client import get_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
@@ -219,6 +219,10 @@ def _guard_inflight(queue: str, job_id: str | None = None) -> None:
             raise BadRequestError("Превышен лимит одновременных heavy задач")
     except RedisError as exc:
         logger.warning("In-flight queue check failed", extra={"reason": str(exc)})
+        raise ExternalServiceError(
+            "Не удалось проверить лимит heavy-задач: Redis недоступен",
+            context={"queue": "heavy", "limit": limit},
+        ) from exc
 
 
 def _release_inflight(queue: str, job_id: str) -> None:

@@ -2,8 +2,10 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
+from redis import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
 
@@ -11,7 +13,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.config import settings  # noqa: E402
 from app.db import get_session  # noqa: E402
-from app.errors import BadRequestError  # noqa: E402
+from app.errors import BadRequestError, ExternalServiceError  # noqa: E402
 from app.infra.redis_client import get_redis_client  # noqa: E402
 from app.models import TaskJob  # noqa: E402
 from app.services.task_queue import (  # noqa: E402
@@ -123,6 +125,26 @@ class TestTaskQueueStatus(unittest.TestCase):
                 if existing:
                     session.delete(existing)
                     session.commit()
+
+
+class TestTaskQueueInflightGuard(unittest.TestCase):
+    def test_inflight_guard_raises_external_service_error_when_redis_unavailable(self) -> None:
+        previous_limit = settings.task_queue_inflight_heavy_limit
+        settings.task_queue_inflight_heavy_limit = 1
+        try:
+            with patch(
+                "app.services.task_queue.get_redis_client",
+                side_effect=RedisError("redis unavailable"),
+            ):
+                with self.assertRaises(ExternalServiceError) as exc_ctx:
+                    _guard_inflight("heavy", uuid4().hex)
+        finally:
+            settings.task_queue_inflight_heavy_limit = previous_limit
+
+        err = exc_ctx.exception
+        self.assertEqual(err.code, "external_service_error")
+        self.assertIn("Не удалось проверить лимит heavy-задач", err.message)
+        self.assertEqual(err.context, {"queue": "heavy", "limit": 1})
 
 
 if __name__ == "__main__":
