@@ -216,6 +216,7 @@ class AnalysisStageTelemetry(SQLModel, table=True):
     retry_index: int = Field(default=0)
     self_check_result: str | None = Field(default=None)
     failure_class: str | None = Field(default=None)
+    stop_reason: str | None = Field(default=None)
     tool_calls: int | None = Field(default=None)
     tool_output_chars: int | None = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
