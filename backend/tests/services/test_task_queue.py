@@ -2,6 +2,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -125,6 +126,33 @@ class TestTaskQueueStatus(unittest.TestCase):
                 if existing:
                     session.delete(existing)
                     session.commit()
+
+    def test_submit_run_marks_job_failed_when_apply_async_raises(self) -> None:
+        job_id = uuid4().hex
+        payload = {"cmd": "echo hello"}
+        with patch("app.services.task_queue._guard_inflight"), patch(
+            "app.services.task_queue._release_inflight"
+        ) as release_mock, patch(
+            "app.services.task_queue.uuid4", return_value=SimpleNamespace(hex=job_id)
+        ), patch(
+            "app.celery_tasks.run_task_job.apply_async",
+            side_effect=RuntimeError("queue unavailable"),
+        ):
+            with self.assertRaises(ExternalServiceError) as exc_ctx:
+                task_queue.submit_run(project_id=101, org_id=202, payload=payload)
+
+        err = exc_ctx.exception
+        self.assertEqual(err.code, "external_service_error")
+        self.assertEqual(err.context, {"task_id": job_id, "queue": "heavy"})
+        release_mock.assert_called_once_with("heavy", job_id)
+
+        with get_session() as session:
+            job = session.get(TaskJob, job_id)
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error, "queue unavailable")
+        self.assertIsNotNone(job.completed_at)
 
 
 class TestTaskQueueInflightGuard(unittest.TestCase):
