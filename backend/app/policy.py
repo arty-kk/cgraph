@@ -213,10 +213,16 @@ def require_project_access(
     if min_role not in ORG_ROLES:
         raise BadRequestError("Некорректная роль доступа")
     if not settings.auth_enabled:
+        org_id = _resolve_org_id_unauth(request)
         with get_session() as session:
-            project = session.get(Project, project_id)
+            project = session.exec(
+                select(Project).where(
+                    Project.id == project_id,
+                    Project.org_id == org_id,
+                )
+            ).first()
         if not project:
-            raise NotFoundError("Проект не найден", context={"project_id": project_id})
+            raise ForbiddenError("Нет доступа к проекту")
         return project
     user = require_user(request)
     with get_session() as session:
