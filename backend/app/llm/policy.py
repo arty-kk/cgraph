@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..config import settings
-from ..infra.cache import cache_get_json
+from .routing_thresholds import resolve_routing_thresholds
 
 
 @dataclass(frozen=True)
@@ -23,25 +23,6 @@ class ModelPolicy:
 
 
 DEFAULT_POLICY = ModelPolicy()
-
-
-def _routing_thresholds() -> tuple[float, float, float]:
-    defaults = (
-        float(settings.llm_routing_threshold_low),
-        float(settings.llm_routing_threshold_mid),
-        float(settings.llm_routing_threshold_high),
-    )
-    cached = cache_get_json(["routing_policy", "thresholds", settings.llm_routing_policy_version])
-    if isinstance(cached, dict):
-        try:
-            low = float(cached.get("low", defaults[0]))
-            mid = float(cached.get("mid", defaults[1]))
-            high = float(cached.get("high", defaults[2]))
-            if 1.0 <= low <= mid <= high <= 2.0:
-                return (low, mid, high)
-        except Exception:
-            return defaults
-    return defaults
 
 
 def _parse_model_pool(value: str) -> list[str]:
@@ -61,7 +42,7 @@ def _select_model_from_pool(
         return ""
     if len(pool) == 1:
         return pool[0]
-    low, mid, high = _routing_thresholds()
+    low, mid, high = resolve_routing_thresholds()
     if threshold_low is not None:
         low = float(threshold_low)
     if threshold_mid is not None:
@@ -86,7 +67,9 @@ def _resolve_verifier_effort(
     threshold_low: float,
     threshold_high: float,
 ) -> str:
-    edge_case = bool(task_kind == "fix" and (eff_complexity >= threshold_high or prompt_factor >= 0.8))
+    edge_case = bool(
+        task_kind == "fix" and (eff_complexity >= threshold_high or prompt_factor >= 0.8)
+    )
     if edge_case:
         return "high"
     if eff_complexity >= threshold_low:
@@ -115,7 +98,7 @@ def resolve_runtime_policy(
     )
     patch_model = _select_model_from_pool(patch_pool, eff_complexity) or settings.patch_model
 
-    threshold_low, threshold_mid, threshold_high = _routing_thresholds()
+    threshold_low, threshold_mid, threshold_high = resolve_routing_thresholds()
     verifier_model = (
         _select_model_from_pool(
             analysis_pool,

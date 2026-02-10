@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from ..config import settings
 from .policy import ModelPolicy
+from .routing_thresholds import resolve_routing_thresholds
 
 
 @dataclass(frozen=True)
@@ -83,8 +84,16 @@ def _score_model(
     all_latency = [float(v.get("latency_ms", 0.0)) for v in stats.values() if isinstance(v, dict)]
     all_cost = [float(v.get("token_cost", 0.0)) for v in stats.values() if isinstance(v, dict)]
 
-    latency_norm = _normalize_metric(latency_ms, min(all_latency or [latency_ms]), max(all_latency or [latency_ms]))
-    token_norm = _normalize_metric(token_cost, min(all_cost or [token_cost]), max(all_cost or [token_cost]))
+    latency_norm = _normalize_metric(
+        latency_ms,
+        min(all_latency or [latency_ms]),
+        max(all_latency or [latency_ms]),
+    )
+    token_norm = _normalize_metric(
+        token_cost,
+        min(all_cost or [token_cost]),
+        max(all_cost or [token_cost]),
+    )
     fail_norm = max(0.0, min(1.0, fail_rate))
     quality_norm = max(0.0, min(1.0, quality))
 
@@ -183,9 +192,7 @@ def select_runtime_route(
         fail_rate_weight=fail_rate_weight,
     )
 
-    threshold_low = float(settings.llm_routing_threshold_low)
-    threshold_mid = float(settings.llm_routing_threshold_mid)
-    threshold_high = float(settings.llm_routing_threshold_high)
+    threshold_low, threshold_mid, threshold_high = resolve_routing_thresholds()
 
     eff_complexity = max(1.0, min(2.0, float(complexity_coeff) + min(0.2, project_nodes / 10000.0)))
     if task_kind == "fix":
@@ -225,8 +232,13 @@ def select_runtime_route(
         fail_rate_weight=weights["fail_rate"],
     )
 
-    verifier_edge_case = bool(task_kind == "fix" and (eff_complexity >= threshold_high or prompt_len >= 6000))
-    verifier_complexity = max(1.0, min(2.0, eff_complexity if verifier_edge_case else min(threshold_mid, eff_complexity)))
+    verifier_edge_case = bool(
+        task_kind == "fix" and (eff_complexity >= threshold_high or prompt_len >= 6000)
+    )
+    verifier_complexity = max(
+        1.0,
+        min(2.0, eff_complexity if verifier_edge_case else min(threshold_mid, eff_complexity)),
+    )
     verifier_weights = dict(weights)
     if not verifier_edge_case:
         verifier_weights["latency"] *= 1.15
