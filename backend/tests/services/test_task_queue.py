@@ -154,6 +154,50 @@ class TestTaskQueueStatus(unittest.TestCase):
         self.assertEqual(job.error, "queue unavailable")
         self.assertIsNotNone(job.completed_at)
 
+    def test_submit_scan_marks_job_failed_when_apply_async_raises(self) -> None:
+        with patch(
+            "app.celery_tasks.scan_task.apply_async",
+            side_effect=RuntimeError("scan queue unavailable"),
+        ):
+            with self.assertRaises(ExternalServiceError) as exc_ctx:
+                task_queue.submit_scan(project_id=301, org_id=401)
+
+        err = exc_ctx.exception
+        self.assertEqual(err.code, "external_service_error")
+        self.assertEqual(err.message, "Не удалось отправить задачу в очередь")
+        self.assertEqual(err.context["queue"], "medium")
+        self.assertIn("task_id", err.context)
+
+        with get_session() as session:
+            job = session.get(TaskJob, err.context["task_id"])
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error, "scan queue unavailable")
+        self.assertIsNotNone(job.completed_at)
+
+    def test_submit_docs_marks_job_failed_when_apply_async_raises(self) -> None:
+        with patch(
+            "app.celery_tasks.docs_task.apply_async",
+            side_effect=RuntimeError("docs queue unavailable"),
+        ):
+            with self.assertRaises(ExternalServiceError) as exc_ctx:
+                task_queue.submit_docs(project_id=302, org_id=402)
+
+        err = exc_ctx.exception
+        self.assertEqual(err.code, "external_service_error")
+        self.assertEqual(err.message, "Не удалось отправить задачу в очередь")
+        self.assertEqual(err.context["queue"], "light")
+        self.assertIn("task_id", err.context)
+
+        with get_session() as session:
+            job = session.get(TaskJob, err.context["task_id"])
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error, "docs queue unavailable")
+        self.assertIsNotNone(job.completed_at)
+
 
 class TestTaskQueueInflightGuard(unittest.TestCase):
     def test_inflight_guard_raises_external_service_error_when_redis_unavailable(self) -> None:

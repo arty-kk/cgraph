@@ -44,7 +44,39 @@ class TaskQueue:
         if created:
             from ..celery_tasks import scan_task
 
-            scan_task.apply_async(args=[task_id, project_id, org_id], queue="medium")
+            try:
+                scan_task.apply_async(args=[task_id, project_id, org_id], queue="medium")
+            except Exception as exc:
+                logger.warning(
+                    "Failed to enqueue task",
+                    extra={
+                        "task_id": task_id,
+                        "queue": "medium",
+                        "project_id": project_id,
+                        "org_id": org_id,
+                        "reason": str(exc),
+                    },
+                )
+                now = datetime.now(timezone.utc)
+                try:
+                    with get_session() as session:
+                        job = session.get(TaskJob, task_id)
+                        if job:
+                            job.status = "failed"
+                            job.error = str(exc)
+                            job.completed_at = now
+                            job.updated_at = now
+                            session.add(job)
+                            session.commit()
+                except Exception as update_exc:
+                    logger.warning(
+                        "Failed to persist enqueue failure status",
+                        extra={"task_id": task_id, "reason": str(update_exc)},
+                    )
+                raise ExternalServiceError(
+                    "Не удалось отправить задачу в очередь",
+                    context={"task_id": task_id, "queue": "medium"},
+                ) from exc
         return task_id
 
     def submit_docs(self, project_id: int, org_id: int) -> str:
@@ -63,7 +95,39 @@ class TaskQueue:
         if created:
             from ..celery_tasks import docs_task
 
-            docs_task.apply_async(args=[task_id, project_id, org_id], queue="light")
+            try:
+                docs_task.apply_async(args=[task_id, project_id, org_id], queue="light")
+            except Exception as exc:
+                logger.warning(
+                    "Failed to enqueue task",
+                    extra={
+                        "task_id": task_id,
+                        "queue": "light",
+                        "project_id": project_id,
+                        "org_id": org_id,
+                        "reason": str(exc),
+                    },
+                )
+                now = datetime.now(timezone.utc)
+                try:
+                    with get_session() as session:
+                        job = session.get(TaskJob, task_id)
+                        if job:
+                            job.status = "failed"
+                            job.error = str(exc)
+                            job.completed_at = now
+                            job.updated_at = now
+                            session.add(job)
+                            session.commit()
+                except Exception as update_exc:
+                    logger.warning(
+                        "Failed to persist enqueue failure status",
+                        extra={"task_id": task_id, "reason": str(update_exc)},
+                    )
+                raise ExternalServiceError(
+                    "Не удалось отправить задачу в очередь",
+                    context={"task_id": task_id, "queue": "light"},
+                ) from exc
         return task_id
 
     def submit_run(self, project_id: int, org_id: int, payload: dict) -> str:
