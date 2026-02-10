@@ -299,6 +299,52 @@ export function NodePanel({
     return raw.length > maxLen ? `${raw.slice(0, maxLen)}…` : raw
   }
 
+  const quoteShell = (value: unknown): string => {
+    const raw = String(value ?? '').trim()
+    if (!raw) return "''"
+    return `'${raw.replace(/'/g, "'\\''")}'`
+  }
+
+  const formatTraceCommand = (entry: Record<string, unknown>): string => {
+    const name = String(entry.name ?? '')
+    const args = isRecord(entry.args) ? entry.args : {}
+
+    if (name === 'search_paths') {
+      const query = String(args.query ?? '').trim()
+      return query ? `rg --files | rg ${quoteShell(query)}` : 'rg --files'
+    }
+    if (name === 'search_tests') {
+      const query = String(args.query ?? '').trim()
+      const base = "rg --files | rg 'test|tests|spec'"
+      return query ? `${base} | rg ${quoteShell(query)}` : base
+    }
+    if (name === 'search_text') {
+      const query = String(args.query ?? '').trim()
+      const paths = Array.isArray(args.paths)
+        ? args.paths.filter((p): p is string => typeof p === 'string').map((p) => quoteShell(p))
+        : []
+      if (query && paths.length > 0) return `rg -n ${quoteShell(query)} ${paths.join(' ')}`
+      if (query) return `rg -n ${quoteShell(query)}`
+      return 'rg -n <pattern>'
+    }
+    if (name === 'get_file_lines') {
+      const path = String(args.path ?? '').trim()
+      const start = Number(args.start_line)
+      const end = Number(args.end_line)
+      if (path && Number.isFinite(start) && Number.isFinite(end)) {
+        return `sed -n '${start},${end}p' ${quoteShell(path)}`
+      }
+      return 'sed -n <start>,<end>p <path>'
+    }
+    if (name === 'get_file') {
+      const path = String(args.path ?? '').trim()
+      return path ? `cat ${quoteShell(path)}` : 'cat <path>'
+    }
+
+    return name || 'tool'
+  }
+
+
   const retrievalSummary = useMemo(() => {
     if (!isRecord(retrievalSettings)) return null
 
@@ -1460,19 +1506,21 @@ export function NodePanel({
                 )}
                 {agenticTrace.length > 0 && (
                   <div className="mt-3">
-                    <div className="text-xs font-semibold text-neutral-200">Tool trace</div>
+                    <div className="text-xs font-semibold text-neutral-200">Static analysis trace</div>
                     <div className="mt-2 space-y-2">
                       {agenticTrace.map((entry, idx) => {
                         const status = String((entry as any).status || '—')
                         const ok = status === 'ok'
+                        const statusIcon = ok ? '✅' : '❌'
+                        const commandLine = formatTraceCommand(entry)
                         return (
                           <div
                             key={`${(entry as any).name ?? 'tool'}-${idx}`}
                             className="rounded-md border border-neutral-800 bg-neutral-950/60 px-2 py-2 text-xs"
                           >
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="font-mono text-[11px] text-indigo-200">
-                                {(entry as any).name ?? '—'}
+                              <div className="font-mono text-[11px] text-indigo-200 break-all">
+                                {statusIcon} {commandLine}
                               </div>
                               <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
                                 <span className={ok ? 'text-emerald-300' : 'text-red-300'}>
