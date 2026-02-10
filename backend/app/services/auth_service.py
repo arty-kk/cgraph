@@ -40,9 +40,24 @@ def _verify_password(password: str, stored: str) -> bool:
         return False
     if scheme != "pbkdf2_sha256":
         return False
-    salt = base64.b64decode(salt_b64.encode("ascii"))
-    calc = _hash_password(password, salt=salt)
-    return hmac.compare_digest(calc, stored)
+    try:
+        iterations_int = int(iterations)
+    except ValueError:
+        return False
+    if iterations_int <= 0:
+        return False
+
+    try:
+        salt = base64.b64decode(salt_b64.encode("ascii"), validate=True)
+        stored_hash_bytes = base64.b64decode(hash_b64.encode("ascii"), validate=True)
+    except (ValueError, UnicodeEncodeError):
+        return False
+
+    pepper = settings.auth_password_pepper.encode("utf-8")
+    dk = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8") + pepper, salt, iterations_int
+    )
+    return hmac.compare_digest(dk, stored_hash_bytes)
 
 
 def _hash_token(token: str) -> str:
