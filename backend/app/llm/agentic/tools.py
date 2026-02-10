@@ -1481,15 +1481,17 @@ def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_c
         max_results=max_results,
         prefix=prefix_norm,
     )
-    results = semantic.get("results") if isinstance(semantic, dict) else None
-    if isinstance(semantic, dict) and ("error" in semantic or not results):
+    if not isinstance(semantic, dict):
+        return _tool_error("semantic_failed", "semantic search returned invalid response")
+
+    results = semantic.get("results")
+    if "error" in semantic or not results:
         reason = ""
-        if isinstance(semantic, dict):
-            meta = semantic.get("meta")
-            if isinstance(meta, dict):
-                reason = str(meta.get("reason") or "")
-            if not reason:
-                reason = str(semantic.get("error") or "no_results")
+        meta = semantic.get("meta")
+        if isinstance(meta, dict):
+            reason = str(meta.get("reason") or "")
+        if not reason:
+            reason = str(semantic.get("error") or "no_results")
         fallback_args: dict[str, Any] = {"query": query, "prefix": prefix_norm}
         if args.get("max_matches") is not None:
             fallback_args["max_matches"] = args.get("max_matches")
@@ -1514,8 +1516,6 @@ def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_c
         meta = {}
     meta["fallback_used"] = False
     semantic["meta"] = meta
-    if not isinstance(semantic, dict):
-        return _tool_error("semantic_failed", "semantic search returned invalid response")
     return _tool_ok(semantic)
 
 
