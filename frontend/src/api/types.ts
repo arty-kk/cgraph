@@ -298,6 +298,7 @@ export type TaskStatus = {
 export type TaskPollOptions = {
   background?: boolean
   pollIntervalMs?: number
+  timeoutMs?: number
   maxAttempts?: number
 }
 
