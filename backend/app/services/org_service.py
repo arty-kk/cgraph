@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from ..db import get_session
 from ..errors import BadRequestError, NotFoundError
@@ -35,6 +35,20 @@ def _validate_role(role: str) -> str:
     if role not in ORG_ROLES:
         raise BadRequestError("Некорректная роль")
     return role
+
+
+def _ensure_not_last_active_owner(session: Session, org_id: int, user_id: int) -> None:
+    active_owner_user_ids = session.exec(
+        select(OrgMembership.user_id)
+        .where(
+            OrgMembership.org_id == org_id,
+            OrgMembership.role == "owner",
+            OrgMembership.is_active.is_(True),
+        )
+        .with_for_update()
+    ).all()
+    if len(active_owner_user_ids) == 1 and int(active_owner_user_ids[0]) == user_id:
+        raise BadRequestError("Нельзя удалить или понизить последнего активного owner")
 
 
 def create_org(name: str, owner_user_id: int) -> Organization:
@@ -107,41 +121,48 @@ def add_or_update_member(org_id: int, user_id: int, role: str) -> OrgMembership:
     role = _validate_role(role)
     now = datetime.now(timezone.utc)
     with get_session() as session:
-        existing = session.exec(
-            select(OrgMembership).where(
-                OrgMembership.org_id == org_id,
-                OrgMembership.user_id == user_id,
-            )
-        ).first()
-        if existing:
-            existing.role = role
-            existing.is_active = True
-            session.add(existing)
-            session.commit()
-            session.refresh(existing)
-            return existing
-        membership = OrgMembership(
-            org_id=org_id,
-            user_id=user_id,
-            role=role,
-            is_active=True,
-            created_at=now,
-        )
-        session.add(membership)
-        session.commit()
+        with session.begin():
+            existing = session.exec(
+                select(OrgMembership)
+                .where(
+                    OrgMembership.org_id == org_id,
+                    OrgMembership.user_id == user_id,
+                )
+                .with_for_update()
+            ).first()
+            if existing:
+                if existing.role == "owner" and existing.is_active and role != "owner":
+                    _ensure_not_last_active_owner(session, org_id, user_id)
+                existing.role = role
+                existing.is_active = True
+                session.add(existing)
+                membership = existing
+            else:
+                membership = OrgMembership(
+                    org_id=org_id,
+                    user_id=user_id,
+                    role=role,
+                    is_active=True,
+                    created_at=now,
+                )
+                session.add(membership)
         session.refresh(membership)
         return membership
 
 
 def remove_member(org_id: int, user_id: int) -> None:
     with get_session() as session:
-        membership = session.exec(
-            select(OrgMembership).where(
-                OrgMembership.org_id == org_id,
-                OrgMembership.user_id == user_id,
-            )
-        ).first()
-        if not membership:
-            raise NotFoundError("Участник не найден")
-        session.delete(membership)
-        session.commit()
+        with session.begin():
+            membership = session.exec(
+                select(OrgMembership)
+                .where(
+                    OrgMembership.org_id == org_id,
+                    OrgMembership.user_id == user_id,
+                )
+                .with_for_update()
+            ).first()
+            if not membership:
+                raise NotFoundError("Участник не найден")
+            if membership.role == "owner" and membership.is_active:
+                _ensure_not_last_active_owner(session, org_id, user_id)
+            session.delete(membership)
