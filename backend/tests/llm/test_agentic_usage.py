@@ -10,9 +10,11 @@ from app.llm.agentic.call import _agentic_json_call
 class _FakeResponses:
     def __init__(self, payloads):
         self._payloads = list(payloads)
+        self.calls = 0
 
     def create(self, **kwargs):
         assert kwargs.get("model") == "gpt-5-mini"
+        self.calls += 1
         return self._payloads.pop(0)
 
 
@@ -24,14 +26,17 @@ class _FakeClient:
 def test_agentic_retry_aggregates_usage_tokens(monkeypatch):
     first_resp = SimpleNamespace(
         output=[],
-        output_text='{"summary": "first", "sources": []}',
+        output_text=(
+            '{"summary": "first", "sources": '
+            '[{"path": "a.py", "line_start": 1, "line_end": 1}]}'
+        ),
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens="2", total_tokens=12),
     )
     second_resp = SimpleNamespace(
         output=[],
         output_text=(
             '{"summary": "second", "sources": '
-            '[{"path": "a.py", "line_start": 1, "line_end": 1}]}'
+            '[{"path": "a.py", "start_line": 1, "end_line": 1}]}'
         ),
         usage={"prompt_tokens": "7", "completion_tokens": 3, "total_tokens": "10"},
     )
@@ -62,6 +67,7 @@ def test_agentic_retry_aggregates_usage_tokens(monkeypatch):
 
     assert result["summary"] == "second"
     assert isinstance(result.get("sources"), list)
+    assert fake_client.responses.calls == 2
     assert meta.prompt_tokens == 17
     assert meta.completion_tokens == 5
     assert meta.total_tokens == 22
