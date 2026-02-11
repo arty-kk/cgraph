@@ -38,18 +38,16 @@ export async function deleteProject(projectId: number): Promise<{ ok: boolean }>
 }
 
 export async function scanProject(projectId: number, opts: TaskPollOptions = {}): Promise<ScanResult> {
-  const background = opts.background ?? true
-  const r = await api.post(`/api/projects/${projectId}/scan`, null, { params: { background } })
-  const initial = r.data as ScanResult | TaskStatus
+  const initial = await scanProjectStatus(projectId, opts)
   return waitForTaskResult<ScanResult>(initial, opts)
 }
 
 export async function scanProjectStatus(
   projectId: number,
   opts: TaskPollOptions = {},
-): Promise<ScanResult | TaskStatus> {
-  const background = opts.background ?? true
-  const r = await api.post(`/api/projects/${projectId}/scan`, null, { params: { background } })
+): Promise<TaskStatus> {
+  void opts
+  const r = await api.post(`/api/projects/${projectId}/scan`)
   return r.data
 }
 
@@ -94,17 +92,16 @@ export async function getProjectDocs(projectId: number, kind = 'overview'): Prom
 }
 
 export async function buildProjectDocs(projectId: number, opts: TaskPollOptions = {}): Promise<ProjectDocs> {
-  const background = opts.background ?? true
-  const r = await api.post(`/api/projects/${projectId}/docs/build`, null, { params: { background } })
-  return waitForTaskResult<ProjectDocs>(r.data, opts)
+  const initial = await buildProjectDocsStatus(projectId, opts)
+  return waitForTaskResult<ProjectDocs>(initial, opts)
 }
 
 export async function buildProjectDocsStatus(
   projectId: number,
   opts: TaskPollOptions = {},
-): Promise<ProjectDocs | TaskStatus> {
-  const background = opts.background ?? true
-  const r = await api.post(`/api/projects/${projectId}/docs/build`, null, { params: { background } })
+): Promise<TaskStatus> {
+  void opts
+  const r = await api.post(`/api/projects/${projectId}/docs/build`)
   return r.data
 }
 

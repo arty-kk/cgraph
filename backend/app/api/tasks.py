@@ -1,7 +1,9 @@
 # backend/app/api/tasks.py
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from typing import Literal
+
+from fastapi import APIRouter, BackgroundTasks, Query, Request
 from pydantic import BaseModel, Field
 
 from ..llm.policy import ProfileName
@@ -19,6 +21,12 @@ from ..services.task_service import (
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+
+
+
+class TaskStatusEnvelope(BaseModel):
+    task_id: str = Field(..., description="Background task identifier")
+    status: Literal["pending", "running"] = Field(..., description="Task status: pending|running")
 
 class RunTask(BaseModel):
     target_path: str = Field(..., description="Path relative to project root")
@@ -89,13 +97,16 @@ class RunTask(BaseModel):
     )
 
 
-@router.post("/{project_id}/run")
+@router.post("/{project_id}/run", response_model=TaskStatusEnvelope)
 def run_task(
     request: Request,
     project_id: int,
     body: RunTask,
     background_tasks: BackgroundTasks,
-    background: bool = False,
+    background: bool = Query(
+        default=False,
+        description="Deprecated compatibility flag; ignored and task is always queued",
+    ),
 ):
     project = require_project_access(request, project_id, min_role="member")
     provided_fields = set(getattr(body, "model_fields_set", set()))

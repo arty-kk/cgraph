@@ -1,12 +1,14 @@
 # backend/app/api/projects.py
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
+from typing import Literal
+
+from fastapi import APIRouter, BackgroundTasks, File, Form, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from ..errors import BadRequestError
 from ..policy import require_org_context, require_project_access
-from ..services.docs_service import build_project_docs, get_latest_project_doc
+from ..services.docs_service import get_latest_project_doc
 from ..services.project_service import (
     create_project as create_project_service,
 )
@@ -52,6 +54,11 @@ class ProjectResponse(BaseModel):
     name: str
     root_path: str | None = None
     source: ProjectSource | None = None
+
+
+class TaskStatusEnvelope(BaseModel):
+    task_id: str = Field(..., description="Background task identifier")
+    status: Literal["pending", "running"] = Field(..., description="Task status: pending|running")
 
 
 def _project_response(project, snapshot_label: str | None = None) -> dict:
@@ -113,12 +120,15 @@ def list_projects(request: Request):
     return responses
 
 
-@router.post("/{project_id}/scan")
+@router.post("/{project_id}/scan", response_model=TaskStatusEnvelope)
 def scan(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    background: bool = False,
+    background: bool = Query(
+        default=False,
+        description="Deprecated compatibility flag; ignored and scan always runs in queue",
+    ),
 ):
     project = require_project_access(request, project_id, min_role="member")
     return scan_with_background(
@@ -253,20 +263,22 @@ def file_dependencies(
     )
 
 
-@router.post("/{project_id}/docs/build")
+@router.post("/{project_id}/docs/build", response_model=TaskStatusEnvelope)
 def build_docs(
     request: Request,
     project_id: int,
     background_tasks: BackgroundTasks,
-    background: bool = False,
+    background: bool = Query(
+        default=False,
+        description="Deprecated compatibility flag; ignored and docs build always runs in queue",
+    ),
 ):
+    _ = background
     project = require_project_access(request, project_id, min_role="member")
-    if background:
-        task_id = task_queue.submit_docs(project.id, project.org_id)
-        if background_tasks is not None:
-            background_tasks.add_task(lambda: None)
-        return {"task_id": task_id, "status": "pending"}
-    return build_project_docs(project.id, project.org_id)
+    task_id = task_queue.submit_docs(project.id, project.org_id)
+    if background_tasks is not None:
+        background_tasks.add_task(lambda: None)
+    return {"task_id": task_id, "status": "pending"}
 
 
 @router.get("/{project_id}/docs")
