@@ -3,24 +3,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
-from fastapi import BackgroundTasks
 from pydantic import BaseModel, Field
 
-from ..errors import LockedError
 from ..graph import update_graph_metrics_incremental
-from ..logging import get_logger
 from ..scan import scan_files
-from ..services.project_service import scan_with_background
-from ..utils import ProjectLockTimeout
 
 IndexStatus = Literal["ok", "rescan_scheduled", "failed"]
+TaskStatus = Literal["pending", "running", "succeeded", "failed"]
 
 
 class FileMutationResponse(BaseModel):
     path: str
     saved: bool
+    task_id: str | None = None
+    task_status: TaskStatus | None = None
     reindexed: object | None = None
     index_status: IndexStatus
     warnings: list[str] = Field(default_factory=list)
@@ -55,138 +53,55 @@ def scan_aborted(reindexed: object) -> bool:
     return False
 
 
-def _build_response(
+def build_mutation_queued_response(
     *,
     path: str,
-    saved: bool,
-    reindexed: object | None,
-    index_status: IndexStatus,
-    warnings: list[str] | None = None,
-    rescan_task: dict | None = None,
-    rescan_scheduled: bool | None = None,
-    aborted: bool | None = None,
-    rollback: str | None = None,
-    partial: bool | None = None,
-    conflict: bool | None = None,
-    conflict_reason: str | None = None,
-    error: str | None = None,
-    metrics_pending: bool | None = None,
+    task_id: str,
+    task_status: Literal["pending", "running"],
 ) -> dict:
     payload = FileMutationResponse(
         path=path,
-        saved=saved,
-        reindexed=reindexed,
-        index_status=index_status,
-        warnings=warnings or [],
-        rescan_task=rescan_task,
-        rescan_scheduled=rescan_scheduled,
-        aborted=aborted,
-        rollback=rollback,
-        partial=partial,
-        conflict=conflict,
-        conflict_reason=conflict_reason,
-        error=error,
-        metrics_pending=metrics_pending,
+        saved=True,
+        task_id=task_id,
+        task_status=task_status,
+        reindexed=False,
+        index_status="rescan_scheduled",
+        warnings=[],
+        rescan_task={"task_id": task_id, "status": task_status},
+        rescan_scheduled=True,
     )
     return payload.model_dump(exclude_none=True)
 
 
-def _warn(code: str, warnings: list[str]) -> None:
-    if code not in warnings:
-        warnings.append(code)
-
-
-def handle_mutation_scan(
+def run_mutation_indexing(
     *,
     project_id: int,
     org_id: int,
     root: Path,
     rel_paths: list[str],
-    response_path: str,
-    operation: str,
-    background_tasks: BackgroundTasks | None,
-    rollback: Callable[[], RollbackResult],
 ) -> dict:
-    logger = get_logger("stubgraph.file_mutation")
-    try:
-        reindexed = scan_files(project_id, org_id, root, rel_paths)
-        if scan_aborted(reindexed):
-            logger.warning(
-                "Scan aborted after %s",
-                operation,
-                extra={"path": response_path, "operation": operation},
-            )
-            rescan_task = scan_with_background(
-                project_id,
-                org_id,
-                background=True,
-                background_tasks=background_tasks,
-            )
-            return _build_response(
-                path=response_path,
-                saved=True,
-                reindexed=False,
-                index_status="rescan_scheduled",
-                warnings=["scan_aborted"],
-                rescan_task=rescan_task,
-                rescan_scheduled=True,
-                aborted=True,
-            )
-        removed = removed_neighbors(reindexed)
-        metrics_pending = update_graph_metrics_incremental(
-            project_id,
-            rel_paths,
-            removed_edge_neighbors=removed,
-            background_tasks=background_tasks,
-        )
-        return _build_response(
-            path=response_path,
-            saved=True,
-            reindexed=reindexed,
-            index_status="ok",
-            warnings=[],
-            metrics_pending=metrics_pending,
-        )
-    except ProjectLockTimeout as exc:
-        raise LockedError(
-            "Проект сейчас занят, повторите позже",
-            context={"project_id": project_id},
-        ) from exc
-    except Exception as error:  # noqa: BLE001
-        logger.exception(
-            "Scan failed after %s",
-            operation,
-            extra={"path": response_path, "operation": operation},
-        )
-        rescan_task = scan_with_background(
-            project_id,
-            org_id,
-            background=True,
-            background_tasks=background_tasks,
-        )
-        rollback_result = rollback()
-        warnings: list[str] = ["scan_failed"]
-        if rollback_result.status == "ok":
-            _warn("rollback_ok", warnings)
-        elif rollback_result.status == "skipped":
-            _warn("rollback_skipped", warnings)
-        else:
-            _warn("rollback_failed", warnings)
+    reindexed = scan_files(project_id, org_id, root, rel_paths)
+    if scan_aborted(reindexed):
+        return {
+            "ok": False,
+            "aborted": True,
+            "reindexed": False,
+            "index_status": "failed",
+            "warnings": ["scan_aborted"],
+            "metrics_pending": False,
+        }
 
-        saved = rollback_result.status != "ok"
-        partial = rollback_result.status != "ok"
-        index_status: IndexStatus = "failed" if not saved else "rescan_scheduled"
-        return _build_response(
-            path=response_path,
-            saved=saved,
-            reindexed=False,
-            index_status=index_status,
-            warnings=warnings,
-            rescan_task=rescan_task,
-            rescan_scheduled=True,
-            rollback=rollback_result.status,
-            partial=partial,
-            conflict=rollback_result.conflict,
-            conflict_reason=rollback_result.conflict_reason,
-            error=str(error),
-        )
+    removed = removed_neighbors(reindexed)
+    metrics_pending = update_graph_metrics_incremental(
+        project_id,
+        rel_paths,
+        removed_edge_neighbors=removed,
+    )
+    return {
+        "ok": True,
+        "aborted": False,
+        "reindexed": reindexed,
+        "index_status": "ok",
+        "warnings": [],
+        "metrics_pending": bool(metrics_pending),
+    }

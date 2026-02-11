@@ -62,17 +62,16 @@ def _create_project(client: TestClient, headers: dict) -> int:
     return int(response.json().get("id"))
 
 
-def test_update_file_scan_aborted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     client, headers = _get_client_and_headers()
     project_id = _create_project(client, headers)
 
-    from app.services import file_mutation_service  # noqa: E402
+    from app.api import nodes as nodes_api  # noqa: E402
 
-    monkeypatch.setattr(file_mutation_service, "scan_files", lambda *args, **kwargs: {"aborted": True})
     monkeypatch.setattr(
-        file_mutation_service,
-        "scan_with_background",
-        lambda *args, **kwargs: {"task_id": "scan-1", "status": "pending"},
+        nodes_api.task_queue,
+        "submit_mutation_indexing",
+        lambda **kwargs: ("mutation-1", "pending"),
     )
 
     response = client.put(
@@ -83,71 +82,32 @@ def test_update_file_scan_aborted(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["saved"] is True
-    assert payload["reindexed"] is False
+    assert payload["task_id"] == "mutation-1"
+    assert payload["task_status"] == "pending"
     assert payload["index_status"] == "rescan_scheduled"
-    assert "scan_aborted" in payload.get("warnings", [])
-    assert payload.get("rescan_scheduled") is True
+    assert payload.get("rescan_task", {}).get("task_id") == "mutation-1"
 
 
-def test_update_file_scan_failure_rollback_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rename_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     client, headers = _get_client_and_headers()
     project_id = _create_project(client, headers)
 
-    from app.services import file_mutation_service  # noqa: E402
     from app.api import nodes as nodes_api  # noqa: E402
 
-    def _raise(*_args, **_kwargs):
-        raise RuntimeError("scan failed")
-
-    monkeypatch.setattr(file_mutation_service, "scan_files", _raise)
     monkeypatch.setattr(
-        file_mutation_service,
-        "scan_with_background",
-        lambda *args, **kwargs: {"task_id": "scan-2", "status": "pending"},
+        nodes_api.task_queue,
+        "submit_mutation_indexing",
+        lambda **kwargs: ("mutation-2", "running"),
     )
-    monkeypatch.setattr(nodes_api, "sha256_file", lambda *_args, **_kwargs: "mismatch")
 
-    response = client.put(
-        f"/api/nodes/{project_id}/repo/README.md/file",
-        json={"content": "updated again"},
+    response = client.post(
+        f"/api/nodes/{project_id}/repo/README.md/rename",
+        json={"new_path": "repo/RENAMED.md", "create_dirs": True},
         headers=headers,
     )
     assert response.status_code == 200
     payload = response.json()
+    assert payload["path"] == "repo/RENAMED.md"
     assert payload["saved"] is True
-    assert payload["rollback"] == "skipped"
-    assert payload["conflict"] is True
-    assert payload["conflict_reason"] == "concurrent_change"
-    assert payload["index_status"] == "rescan_scheduled"
-    assert "scan_failed" in payload.get("warnings", [])
-    assert "rollback_skipped" in payload.get("warnings", [])
-
-
-def test_update_file_scan_failure_rollback_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, headers = _get_client_and_headers()
-    project_id = _create_project(client, headers)
-
-    from app.services import file_mutation_service  # noqa: E402
-
-    def _raise(*_args, **_kwargs):
-        raise RuntimeError("scan failed")
-
-    monkeypatch.setattr(file_mutation_service, "scan_files", _raise)
-    monkeypatch.setattr(
-        file_mutation_service,
-        "scan_with_background",
-        lambda *args, **kwargs: {"task_id": "scan-3", "status": "pending"},
-    )
-
-    response = client.put(
-        f"/api/nodes/{project_id}/repo/README.md/file",
-        json={"content": "updated third"},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["saved"] is False
-    assert payload["rollback"] == "ok"
-    assert payload["index_status"] == "failed"
-    assert "scan_failed" in payload.get("warnings", [])
-    assert "rollback_ok" in payload.get("warnings", [])
+    assert payload["task_id"] == "mutation-2"
+    assert payload["task_status"] == "running"
