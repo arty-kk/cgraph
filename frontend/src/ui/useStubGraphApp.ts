@@ -218,6 +218,18 @@ function isTaskStatus(payload: unknown): payload is TaskStatus {
   )
 }
 
+export const GRAPH_NOT_BUILT_WARNING = 'graph not built'
+
+export function getRunGraphStaleState(warning: unknown): { stale: boolean; message: string | null } {
+  if (typeof warning === 'string' && warning.trim().toLowerCase() === GRAPH_NOT_BUILT_WARNING) {
+    return {
+      stale: true,
+      message: 'Graph index is not ready. Run Scan/Rescan now to refresh context.',
+    }
+  }
+  return { stale: false, message: null }
+}
+
 
 export function getMutationTaskSeed(payload: FileSaveResult | null | undefined): TaskStatus | null {
   const taskId = asStr(payload?.task_id) || asStr(payload?.rescan_task?.task_id)
@@ -2176,6 +2188,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
           applied: r.applied ?? undefined,
           warning: r.warning ?? undefined,
         })
+        const runGraphState = getRunGraphStaleState(r.warning)
+        if (runGraphState.stale) {
+          setGraphStale(true)
+          setGraphStaleMessage(runGraphState.message)
+        }
         setFullPatch(null)
       } catch (e: any) {
         setErrorMessage(extractError(e))
