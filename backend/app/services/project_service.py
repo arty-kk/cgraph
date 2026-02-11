@@ -608,16 +608,15 @@ def scan_with_background(
     background: bool = False,
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
-    if background:
-        task_id, status = _get_active_scan_task(project_id, org_id)
-        if task_id and status in ("pending", "running"):
-            return {"task_id": task_id, "status": status}
+    _ = background
+    task_id, status = _get_active_scan_task(project_id, org_id)
+    if task_id and status in ("pending", "running"):
+        return {"task_id": task_id, "status": status}
 
-        task_id = task_queue.submit_scan(project_id, org_id)
-        if background_tasks is not None:
-            background_tasks.add_task(lambda: None)
-        return {"task_id": task_id, "status": "pending"}
-    return _scan_and_update_graph(project_id, org_id, background_tasks=background_tasks)
+    task_id = task_queue.submit_scan(project_id, org_id)
+    if background_tasks is not None:
+        background_tasks.add_task(lambda: None)
+    return {"task_id": task_id, "status": "pending"}
 
 
 def load_graph(project_id: int, org_id: int, limit_nodes: int | None = None) -> dict:

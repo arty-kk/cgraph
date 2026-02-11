@@ -78,9 +78,9 @@ export async function runTask(
   projectId: number,
   body: RunTaskBody,
   opts: TaskPollOptions = {}
-): Promise<RunTaskResult | TaskStatus> {
-  const background = opts.background ?? true
-  const r = await api.post(`/api/tasks/${projectId}/run`, body, { params: { background } })
+): Promise<TaskStatus> {
+  void opts
+  const r = await api.post(`/api/tasks/${projectId}/run`, body)
   return r.data
 }
 

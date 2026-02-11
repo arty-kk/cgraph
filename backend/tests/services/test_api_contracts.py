@@ -12,6 +12,13 @@ from sqlmodel import select  # noqa: E402
 
 
 class TestApiContracts(unittest.TestCase):
+    def _assert_task_envelope(self, payload: dict) -> None:
+        self.assertIsInstance(payload, dict)
+        self.assertIn("task_id", payload)
+        self.assertIsInstance(payload["task_id"], str)
+        self.assertIn("status", payload)
+        self.assertIn(payload["status"], ("pending", "running"))
+
     @classmethod
     def setUpClass(cls) -> None:
         try:
@@ -119,6 +126,39 @@ class TestApiContracts(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertIsInstance(response.json(), list)
+
+    def test_run_scan_docs_endpoints_return_task_envelope_ignoring_background(self) -> None:
+        run_payload = {
+            "target_path": "repo/README.md",
+            "prompt": "contract-check",
+            "agentic": False,
+        }
+
+        for background in (False, True):
+            run_response = self.client.post(
+                f"/api/tasks/{self.project_id}/run",
+                params={"background": str(background).lower()},
+                json=run_payload,
+                headers=self.headers,
+            )
+            self.assertEqual(run_response.status_code, 200)
+            self._assert_task_envelope(run_response.json())
+
+            scan_response = self.client.post(
+                f"/api/projects/{self.project_id}/scan",
+                params={"background": str(background).lower()},
+                headers=self.headers,
+            )
+            self.assertEqual(scan_response.status_code, 200)
+            self._assert_task_envelope(scan_response.json())
+
+            docs_response = self.client.post(
+                f"/api/projects/{self.project_id}/docs/build",
+                params={"background": str(background).lower()},
+                headers=self.headers,
+            )
+            self.assertEqual(docs_response.status_code, 200)
+            self._assert_task_envelope(docs_response.json())
 
 
 if __name__ == "__main__":

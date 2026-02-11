@@ -1898,12 +1898,11 @@ def run_task_with_background(
     background: bool = False,
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
-    if background:
-        task_id = task_queue.submit_run(project_id, org_id, _serialize_request(request))
-        if background_tasks is not None:
-            background_tasks.add_task(lambda: None)
-        return {"task_id": task_id, "status": "pending"}
-    return run_task(project_id, org_id, request)
+    _ = background
+    task_id = task_queue.submit_run(project_id, org_id, _serialize_request(request))
+    if background_tasks is not None:
+        background_tasks.add_task(lambda: None)
+    return {"task_id": task_id, "status": "pending"}
 
 
 def _serialize_request(request: TaskRequest) -> dict:

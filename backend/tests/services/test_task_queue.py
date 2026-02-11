@@ -89,6 +89,76 @@ class TestTaskQueueStatus(unittest.TestCase):
             ).all()
         self.assertEqual(len(count), 1)
 
+
+    def test_submit_docs_reuses_existing_job(self) -> None:
+        project_id = 52
+        org_id = 8
+        job_id = uuid4().hex
+        idempotency_key = f"docs-existing-job-{uuid4().hex}"
+        now = datetime.now(timezone.utc)
+        with get_session() as session:
+            job = TaskJob(
+                id=job_id,
+                org_id=org_id,
+                status="running",
+                queue="light",
+                idempotency_key=idempotency_key,
+                result_json=None,
+                error=None,
+                created_at=now,
+                updated_at=now,
+                completed_at=None,
+            )
+            session.add(job)
+            session.commit()
+
+        with patch(
+            "app.services.task_queue._idempotency_key", return_value=idempotency_key
+        ), patch("app.celery_tasks.docs_task.apply_async") as apply_mock:
+            returned_id = task_queue.submit_docs(project_id, org_id)
+
+        self.assertEqual(returned_id, job_id)
+        apply_mock.assert_not_called()
+
+    def test_submit_run_reuses_existing_job(self) -> None:
+        project_id = 62
+        org_id = 9
+        payload = {"target_path": "repo/README.md", "prompt": "idempotency"}
+        job_id = uuid4().hex
+        idempotency_key = f"run-existing-job-{uuid4().hex}"
+        now = datetime.now(timezone.utc)
+        with get_session() as session:
+            job = TaskJob(
+                id=job_id,
+                org_id=org_id,
+                status="pending",
+                queue="heavy",
+                idempotency_key=idempotency_key,
+                result_json=None,
+                error=None,
+                created_at=now,
+                updated_at=now,
+                completed_at=None,
+            )
+            session.add(job)
+            session.commit()
+
+        with patch(
+            "app.services.task_queue._idempotency_key",
+            return_value=idempotency_key,
+        ), patch("app.services.task_queue._guard_inflight") as guard_mock, patch(
+            "app.celery_tasks.run_task_job.apply_async"
+        ) as apply_mock:
+            returned_id = task_queue.submit_run(
+                project_id=project_id,
+                org_id=org_id,
+                payload=payload,
+            )
+
+        self.assertEqual(returned_id, job_id)
+        guard_mock.assert_not_called()
+        apply_mock.assert_not_called()
+
     def test_inflight_guard_blocks_when_redis_state_expired(self) -> None:
         try:
             client = get_redis_client()
