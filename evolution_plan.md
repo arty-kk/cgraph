@@ -19,6 +19,9 @@
   - P1: Mixed concurrency model (sync services + async endpoints/middleware) lacks clear boundary policy, so blocking calls are easy to reintroduce. Evidence: almost all service layer functions are sync (`backend/app/services/*.py`), while app has async middlewares and selected async endpoints (e.g., `create_project_from_snapshot` in `backend/app/api/projects.py`). Root cause: no explicit architecture guardrails or lint/tests for blocking-in-async boundaries. Impact: migration risk is high; regressions likely after partial refactors.
   - P1: File-upload endpoint is async but uses blocking stream/storage path directly. Evidence: `backend/app/api/projects.py:create_project_from_snapshot` is `async`, calls `store_snapshot_stream(archive.file, ...)`; `store_snapshot_stream` in `backend/app/snapshots.py` is synchronous and performs disk/S3 I/O. Root cause: blocking I/O executed inside coroutine context. Impact: large uploads block event loop and degrade unrelated request latency.
   - P1: Database/Redis application wiring is sync-oriented in current implementation, preventing safe end-to-end async request handling. Evidence: `backend/app/db.py` uses `create_engine` + sync `Session`; `backend/app/infra/redis_client.py` returns `redis.Redis`; these are invoked from request-time logic (`backend/app/main.py`, `backend/app/infra/rate_limit.py`). Root cause: infrastructure layer was implemented around synchronous clients for API request path. Impact: full async migration cannot be delivered incrementally without introducing async-safe infra boundaries and compatibility adapters.
+  - P1: Project lock mechanism is synchronous and uses `time.sleep`, so async endpoint migration can reintroduce event-loop blocking in write paths. Evidence: `backend/app/utils.py:project_lock` uses sync connection with advisory-lock polling and `time.sleep`; lock is used in request/write paths (`backend/app/api/nodes.py`, `backend/app/services/project_service.py`, `backend/app/services/task_service.py`, `backend/app/scan.py`). Root cause: lock primitive is built for sync execution model. Impact: lock contention can stall async request workers on mutation/scan hot-paths.
+  - P1: Request-serving read paths use synchronous cache I/O, while plan currently isolates only rate-limit Redis path. Evidence: `backend/app/infra/cache.py` uses sync Redis client; cache helpers are used by API-serving paths (`backend/app/services/project_service.py`, `backend/app/context_pack.py`, `backend/app/llm/routing_thresholds.py`, `backend/app/llm/routing_weights.py`). Root cause: shared cache abstraction is synchronous. Impact: partial migration leaves blocking Redis operations in core read flows.
+  - P2: DB readiness probe runs at import-time, not explicit app lifecycle stage. Evidence: `backend/app/main.py` invokes `init_db()` at module import; `backend/app/db.py:init_db` executes sync probe query. Root cause: startup logic is coupled to import side effect. Impact: harder controlled startup/retry/readiness orchestration during async rollout.
   - P2: Background and API paths duplicate job state persistence logic, increasing migration surface and inconsistency risk. Evidence: status transitions in `backend/app/celery_tasks.py:_set_job_status` and enqueue-failure writebacks in multiple branches in `backend/app/services/task_queue.py`. Root cause: job state management not centralized. Impact: async migration requires touching many duplicated branches, increasing defect probability.
 - Constraints:
   - Queue stack is RabbitMQ + Celery and already asynchronous out-of-process (`docker-compose.yml`, `backend/app/celery_app.py`); migration must keep this contract.
@@ -49,14 +52,15 @@
   1) Introduce async DB engine/session provider for API process and request dependency wrappers.
   2) Introduce async Redis client for request-time features (rate limit, optional auth/session cache if used).
   3) Refactor `auth_guard` and `rate_limit` middleware to async-safe service calls.
-  4) Add guard tests verifying no sync session/client usage from async middleware paths.
-  5) Feature flag to run API in compatibility mode (old sync adapters) for rollback.
+  4) Move DB initialization from import-time call to explicit app startup/lifespan path with equivalent fail-fast semantics.
+  5) Add guard tests verifying no sync session/client usage from async middleware paths.
+  6) Feature flag to run API in compatibility mode (old sync adapters) for rollback.
 - Dependencies:
   - Async drivers and wiring added before middleware refactor.
   - Contract tests added before enabling async path by default.
 - Risk & Rollback strategy:
   - Risk: auth/rate-limit outage due to infra mismatch.
-  - Rollback: env flag switches middleware back to existing sync adapters; keep old code path until Phase 2 stabilization.
+  - Rollback: switch middleware back to existing sync adapters in the same release branch; keep old code path until Phase 2 stabilization.
 - Validation (как проверить):
   - `pytest backend/tests/services/test_auth_service.py backend/tests/services/test_rate_limit.py`
   - `pytest backend/tests/services/test_auth_logout_api.py backend/tests/services/test_task_queue.py`
@@ -70,9 +74,10 @@
   1) Convert API routers to async handlers with injected async dependencies (DB session/unit of work).
   2) Migrate org/project/task auth/policy checks to async DB access.
   3) Refactor snapshot upload path to async stream handling (no blocking storage calls in coroutine).
-  4) Centralize task job state writes into one async-capable repository/service used by both enqueue and worker adapters.
-  5) Preserve queue API contract (`task_id/status/result/error`) and add regression tests.
-  6) Add migration docs for developers (how to write new async services, forbidden sync patterns in async context).
+  4) Replace request-path cache operations with async-safe cache adapter in project/context/routing reads.
+  5) Centralize task job state writes into one async-capable repository/service used by both enqueue and worker adapters.
+  6) Preserve queue API contract (`task_id/status/result/error`) and add regression tests.
+  7) Add migration docs for developers (how to write new async services, forbidden sync patterns in async context).
 - Dependencies:
   - Phase 1 async infra baseline.
   - Shared task state repository before removing duplicated write branches.
@@ -91,10 +96,11 @@
   - Do not touch: frontend protocol model (polling) unless contract issue is proven.
 - Deliverables:
   1) Remove legacy sync adapters from API process after parity confirmation.
-  2) Add async-focused telemetry (request latency buckets around auth/rate-limit/upload hot-paths).
-  3) Harden connection pool/timeouts/backpressure settings for async DB/Redis clients.
-  4) Add CI checks preventing blocking calls inside async API modules.
-  5) Align developer docs and runbooks with final async architecture.
+  2) Replace synchronous project lock primitive in async request paths with async-safe lock adapter while preserving semantics.
+  3) Add async-focused telemetry (request latency buckets around auth/rate-limit/upload/cache/lock hot-paths).
+  4) Harden connection pool/timeouts/backpressure settings for async DB/Redis clients.
+  5) Add CI checks preventing blocking calls inside async API modules.
+  6) Align developer docs and runbooks with final async architecture.
 - Dependencies:
   - Full parity in Phase 2.
 - Risk & Rollback strategy:
@@ -265,6 +271,67 @@
     - `npm --prefix frontend run test -- frontend/src/api/tasks.test.ts`
   - Migration/Rollback:
     - If regression appears, deploy rollback to previous backend while contract tests are fixed.
+
+
+- ID: EVO-009
+  - Priority: P1
+  - Theme: Platform
+  - Problem: Project lock implementation (`project_lock`) is synchronous and relies on blocking sleep/polling.
+  - Evidence: `backend/app/utils.py:project_lock` uses sync `engine.connect()`, advisory-lock polling loop and `time.sleep`; lock is used by request/write flows (`backend/app/api/nodes.py`, `backend/app/services/project_service.py`, `backend/app/services/task_service.py`, `backend/app/scan.py`).
+  - Root Cause: lock primitive predates async request model and is not async-safe.
+  - Impact: migrated async write endpoints can still block worker event loop during lock contention.
+  - Fix (single solution): introduce async-safe project-lock adapter for API request paths and keep sync lock for legacy/worker paths until full parity.
+  - Steps:
+    1) Implement async lock adapter with non-blocking wait strategy.
+    2) Integrate adapter into async API write paths.
+    3) Preserve timeout/error contract (`project_locked`) and add parity tests.
+  - Acceptance Criteria (проверяемо):
+    - Async write handlers do not call blocking lock primitive.
+    - Lock timeout behavior remains contract-compatible.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_nodes_mutation_responses.py backend/tests/services/test_task_service_quality_gate.py`
+  - Migration/Rollback:
+    - Keep existing sync lock path for rollback while async adapter is phased in.
+
+- ID: EVO-010
+  - Priority: P1
+  - Theme: Platform
+  - Problem: Cache access in API-facing services remains sync and can block request loop after partial migration.
+  - Evidence: `backend/app/infra/cache.py` uses sync Redis client; used in `backend/app/services/project_service.py`, `backend/app/context_pack.py`, `backend/app/llm/routing_thresholds.py`, `backend/app/llm/routing_weights.py`.
+  - Root Cause: shared cache abstraction was implemented only for synchronous callers.
+  - Impact: async request paths still perform blocking Redis operations on graph/search/context/routing reads.
+  - Fix (single solution): provide async cache adapter and migrate API request-serving reads to it while preserving key format/TTL semantics.
+  - Steps:
+    1) Add async cache get/set/invalidate operations.
+    2) Migrate request-path consumers (project/context/routing reads).
+    3) Add tests for cache hit/miss parity and fallback-on-Redis-error behavior.
+  - Acceptance Criteria (проверяемо):
+    - Async request-serving cache calls avoid sync Redis client usage.
+    - Cache behavior (key namespace/TTL/degraded fallback) remains unchanged.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_search_layer.py backend/tests/llm/test_routing_selector.py`
+  - Migration/Rollback:
+    - Retain sync cache adapter for non-async callers until migration completion.
+
+- ID: EVO-011
+  - Priority: P2
+  - Theme: Reliability
+  - Problem: DB init probe runs on module import, not explicit startup lifecycle.
+  - Evidence: `backend/app/main.py` calls `init_db()` at import-time; `backend/app/db.py:init_db` executes sync probe query.
+  - Root Cause: startup readiness logic is coupled to import side effects.
+  - Impact: migration to async app lifecycle lacks controlled startup/retry hooks and clean readiness sequencing.
+  - Fix (single solution): move DB initialization into FastAPI startup/lifespan routine with explicit failure handling preserving current startup-fail behavior.
+  - Steps:
+    1) Remove import-time DB probe call from module body.
+    2) Add startup/lifespan initialization hook.
+    3) Preserve health/auth/router behavior and startup failure semantics.
+  - Acceptance Criteria (проверяемо):
+    - DB probe executes in startup lifecycle, not at import-time.
+    - App still fails fast on unreachable DB during startup.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_api_contracts.py`
+  - Migration/Rollback:
+    - Keep old probe function and restore import-time call if startup hook causes deployment regression.
 
 ## 4. Explicit Non-Goals
 - Do not replace Celery/RabbitMQ architecture with another queue system.
