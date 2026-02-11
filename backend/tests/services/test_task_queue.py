@@ -120,6 +120,70 @@ class TestTaskQueueStatus(unittest.TestCase):
         self.assertEqual(returned_id, job_id)
         apply_mock.assert_not_called()
 
+
+    def test_submit_mutation_indexing_reuses_existing_job(self) -> None:
+        project_id = 72
+        org_id = 10
+        job_id = uuid4().hex
+        idempotency_key = f"mutation-existing-job-{uuid4().hex}"
+        now = datetime.now(timezone.utc)
+        with get_session() as session:
+            job = TaskJob(
+                id=job_id,
+                org_id=org_id,
+                status="pending",
+                queue="medium",
+                idempotency_key=idempotency_key,
+                result_json=None,
+                error=None,
+                created_at=now,
+                updated_at=now,
+                completed_at=None,
+            )
+            session.add(job)
+            session.commit()
+
+        with patch(
+            "app.services.task_queue._idempotency_key",
+            return_value=idempotency_key,
+        ), patch("app.celery_tasks.mutation_indexing_task.apply_async") as apply_mock:
+            returned_id, status = task_queue.submit_mutation_indexing(
+                project_id=project_id,
+                org_id=org_id,
+                rel_paths=["repo/README.md"],
+                operation="update_file",
+            )
+
+        self.assertEqual(returned_id, job_id)
+        self.assertEqual(status, "pending")
+        apply_mock.assert_not_called()
+
+    def test_submit_mutation_indexing_marks_job_failed_when_apply_async_raises(self) -> None:
+        with patch(
+            "app.celery_tasks.mutation_indexing_task.apply_async",
+            side_effect=RuntimeError("mutation queue unavailable"),
+        ):
+            with self.assertRaises(ExternalServiceError) as exc_ctx:
+                task_queue.submit_mutation_indexing(
+                    project_id=303,
+                    org_id=403,
+                    rel_paths=["repo/README.md"],
+                    operation="update_file",
+                )
+
+        err = exc_ctx.exception
+        self.assertEqual(err.code, "external_service_error")
+        self.assertEqual(err.message, "Не удалось отправить задачу в очередь")
+        self.assertEqual(err.context["queue"], "medium")
+        self.assertIn("task_id", err.context)
+
+        with get_session() as session:
+            job = session.get(TaskJob, err.context["task_id"])
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error, "mutation queue unavailable")
+        self.assertIsNotNone(job.completed_at)
     def test_submit_run_reuses_existing_job(self) -> None:
         project_id = 62
         org_id = 9

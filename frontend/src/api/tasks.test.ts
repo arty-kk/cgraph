@@ -171,4 +171,31 @@ describe('tasks api polling', () => {
     await expect(promise).resolves.toEqual(finalResult)
     expect(get).toHaveBeenCalledTimes(5)
   })
+
+  it('polls mutation indexing task until succeeded', async () => {
+    const taskId = 'mutation-42'
+    const initial: TaskStatus = { task_id: taskId, status: 'pending' }
+    const finalResult = { ok: true, index_status: 'ok', rel_paths: ['repo/README.md'] }
+
+    const statuses: TaskStatus[] = [
+      { task_id: taskId, status: 'running' },
+      { task_id: taskId, status: 'succeeded', result: finalResult },
+    ]
+
+    get.mockImplementation(async (url: string) => {
+      expect(url).toBe(`/api/tasks/status/${taskId}`)
+      const next = statuses.shift()
+      if (!next) throw new Error('No status prepared')
+      return { data: next }
+    })
+
+    const result = await waitForTaskResult<typeof finalResult>(initial, {
+      pollIntervalMs: 100,
+      maxAttempts: 5,
+    })
+
+    expect(result).toEqual(finalResult)
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
 })

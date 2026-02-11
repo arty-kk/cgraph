@@ -180,11 +180,6 @@ function asInt(v: any, fallback: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, i))
 }
 
-function asIndexStatus(v: any): IndexStatus | null {
-  if (v === 'ok' || v === 'rescan_scheduled' || v === 'failed') return v
-  return null
-}
-
 function asWarnings(v: any): string[] {
   if (!Array.isArray(v)) return []
   return v.map((item) => String(item || '').trim()).filter(Boolean)
@@ -221,6 +216,15 @@ function isTaskStatus(payload: unknown): payload is TaskStatus {
     typeof (payload as TaskStatus).task_id === 'string' &&
     typeof (payload as TaskStatus).status === 'string'
   )
+}
+
+
+export function getMutationTaskSeed(payload: FileSaveResult | null | undefined): TaskStatus | null {
+  const taskId = asStr(payload?.task_id) || asStr(payload?.rescan_task?.task_id)
+  if (!taskId) return null
+  const rawStatus = asStr(payload?.task_status) || asStr(payload?.rescan_task?.status)
+  const status: TaskStatus['status'] = rawStatus === 'running' ? 'running' : 'pending'
+  return { task_id: taskId, status }
 }
 
 export type NotificationKind = 'info' | 'error'
@@ -1577,6 +1581,70 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     await loadFileEditor(activeFilePath)
   }, [activeFilePath, fileEditorsByPath, loadFileEditor])
 
+  const queueMutationIndexingPoll = useCallback(
+    (projectId: number, path: string, res: FileSaveResult | null | undefined, successMessage: string) => {
+      notifyInfo(successMessage)
+      const taskSeed = getMutationTaskSeed(res)
+      if (!taskSeed) {
+        setGraphStale(true)
+        setGraphStaleMessage('Indexing task was not scheduled. Run a rescan manually.')
+        return
+      }
+
+      setFileSaveBanner({
+        path,
+        status: 'rescan_scheduled',
+        warnings: [],
+        rescanTask: { task_id: taskSeed.task_id, status: taskSeed.status },
+      })
+      setGraphStale(true)
+      setGraphStaleMessage('Indexing in progress…')
+
+      void waitForTaskResult<Record<string, any>>(
+        taskSeed,
+        { pollIntervalMs: 1200, maxAttempts: 300 },
+      )
+        .then(async (result) => {
+          const failed = Boolean(result?.aborted) || asStr(result?.index_status) === 'failed'
+          if (failed) {
+            const error = asStr(result?.error) || 'Indexing failed.'
+            setFileSaveBanner({
+              path,
+              status: 'failed',
+              warnings: asWarnings(result?.warnings),
+              error,
+              metricsPending: Boolean(result?.metrics_pending),
+            })
+            setGraphStale(true)
+            setGraphStaleMessage(error)
+            return
+          }
+
+          setFileSaveBanner(null)
+          setGraphStale(false)
+          setGraphStaleMessage(null)
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, projectId] }),
+            queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, projectId] }),
+            queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, projectId] }),
+          ])
+        })
+        .catch((e: any) => {
+          const error = extractError(e)
+          setFileSaveBanner({
+            path,
+            status: 'failed',
+            warnings: ['scan_failed'],
+            error,
+          })
+          setGraphStale(true)
+          setGraphStaleMessage(error)
+        })
+    },
+    [notifyInfo, queryClient, selectedOrgId],
+  )
+
+
   const saveFileEditorPath = useCallback(async (path: string): Promise<boolean> => {
     if (!activeProject) return false
     const p = String(path || '').trim()
@@ -1586,66 +1654,21 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     updateFileEditorEntry(p, (current) => ({ ...current, saving: true, error: null }))
     try {
       const res: FileSaveResult = await updateFileContent(activeProject.id, p, entry.content)
-      const status = asIndexStatus(res?.index_status)
-      const warnings = asWarnings(res?.warnings)
-      const partial = status ? status !== 'ok' : res?.reindexed === false
-      if (res?.saved) {
-        updateFileEditorEntry(p, (current) => ({
-          ...current,
-          original: current.content,
-          dirty: false,
-          truncated: false,
-        }))
-        if (!partial) {
-          notifyInfo('File saved')
-        }
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
-          queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
-        ])
-        if (partial) {
-          const message =
-            status === 'failed'
-              ? 'Indexing failed and the change may be rolled back.'
-              : 'Indexing incomplete — run a rescan.'
-          setFileSaveBanner({
-            path: p,
-            status: status ?? 'rescan_scheduled',
-            warnings,
-            rollback: res?.rollback,
-            conflict: res?.conflict,
-            conflictReason: res?.conflict_reason,
-            error: res?.error,
-            rescanTask: res?.rescan_task,
-            metricsPending: res?.metrics_pending,
-          })
-          setGraphStale(true)
-          setGraphStaleMessage(message)
-        } else {
-          setFileSaveBanner(null)
-        }
-        return true
-      }
-      if (res && partial) {
-        const message =
-          status === 'failed'
-            ? 'Indexing failed and the change was rolled back.'
-            : 'Indexing incomplete — run a rescan.'
-        setFileSaveBanner({
-          path: p,
-          status: status ?? 'failed',
-          warnings,
-          rollback: res?.rollback,
-          conflict: res?.conflict,
-          conflictReason: res?.conflict_reason,
-          error: res?.error,
-          rescanTask: res?.rescan_task,
-          metricsPending: res?.metrics_pending,
-        })
-        setGraphStale(true)
-        setGraphStaleMessage(message)
-      }
+      if (!res?.saved) return false
+
+      updateFileEditorEntry(p, (current) => ({
+        ...current,
+        original: current.content,
+        dirty: false,
+        truncated: false,
+      }))
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['node', selectedOrgId, activeProject.id] }),
+        queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
+      ])
+      queueMutationIndexingPoll(activeProject.id, p, res, 'File saved')
+      return true
     } catch (e: any) {
       updateFileEditorEntry(p, (current) => ({ ...current, error: extractError(e) }))
     } finally {
@@ -1655,8 +1678,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [
     activeProject,
     fileEditorsByPath,
-    notifyInfo,
     queryClient,
+    queueMutationIndexingPoll,
     selectedOrgId,
     updateFileEditorEntry,
   ])
@@ -1942,24 +1965,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     })
   }, [activeProject, queryClient, runOp, selectedOrgId])
 
-  const handleMutationResponse = useCallback(
-    (res: FileSaveResult | null | undefined, successMessage: string) => {
-      const status = asIndexStatus(res?.index_status)
-      const partial = status ? status !== 'ok' : res?.reindexed === false
-      if (!partial) {
-        notifyInfo(successMessage)
-        return
-      }
-      const message =
-        status === 'failed'
-          ? 'Indexing failed and the change may have been rolled back.'
-          : 'Indexing incomplete — run a rescan.'
-      setGraphStale(true)
-      setGraphStaleMessage(message)
-    },
-    [notifyInfo],
-  )
-
   const onCreateFile = useCallback(
     async (path: string, content?: string) => {
       if (!activeProject) return
@@ -1970,7 +1975,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         const res = await createFile(activeProject.id, p, content)
         const nextPath = String(res?.path || p).trim() || p
         createdPath = nextPath
-        handleMutationResponse(res, 'File created')
+        queueMutationIndexingPoll(activeProject.id, nextPath, res, 'File created')
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
@@ -1981,7 +1986,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         setSelection(createdPath, { pushHistory: true })
       }
     },
-    [activeProject, handleMutationResponse, queryClient, runOpThrow, selectedOrgId, setSelection],
+    [activeProject, queryClient, queueMutationIndexingPoll, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onRenameFile = useCallback(
@@ -2007,7 +2012,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         if (selectedPathRef.current === oldPath) {
           setSelection(nextPath, { pushHistory: false })
         }
-        handleMutationResponse(res, 'File renamed')
+        queueMutationIndexingPoll(activeProject.id, nextPath, res, 'File renamed')
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
@@ -2015,7 +2020,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         ])
       })
     },
-    [activeProject, handleMutationResponse, queryClient, runOpThrow, selectedOrgId, setSelection],
+    [activeProject, queryClient, queueMutationIndexingPoll, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onDeleteFile = useCallback(
@@ -2037,7 +2042,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         if (selectedPathRef.current === p) {
           setSelection(null, { pushHistory: false })
         }
-        handleMutationResponse(res, 'File deleted')
+        queueMutationIndexingPoll(activeProject.id, p, res, 'File deleted')
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['files', selectedOrgId, activeProject.id] }),
           queryClient.invalidateQueries({ queryKey: ['graph', selectedOrgId, activeProject.id] }),
@@ -2045,7 +2050,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
         ])
       })
     },
-    [activeProject, handleMutationResponse, queryClient, runOpThrow, selectedOrgId, setSelection],
+    [activeProject, queryClient, queueMutationIndexingPoll, runOpThrow, selectedOrgId, setSelection],
   )
 
   const onDeleteRun = useCallback(

@@ -13,10 +13,12 @@ from .infra.redis_client import get_redis_client
 from .logging import get_logger
 from .models import TaskJob
 from .services.docs_service import build_project_docs
-from .services.project_service import _scan_and_update_graph
+from .services.file_mutation_service import run_mutation_indexing
+from .services.project_service import _scan_and_update_graph, get_project
 from .services.routing_calibration_service import calibrate_routing_policy_thresholds
 from .services.task_queue import cleanup_completed_jobs
 from .services.task_service import TaskRequest, run_task
+from .utils import normalize_project_root
 
 logger = get_logger("stubgraph.celery")
 
@@ -89,6 +91,42 @@ def run_task_job(job_id: str, project_id: int, org_id: int, payload: dict) -> No
         result = run_task(project_id, org_id, request)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Run task failed", extra={"job_id": job_id})
+        _set_job_status(job_id, "failed", org_id=org_id, error=str(exc))
+        return
+    _set_job_status(job_id, "succeeded", org_id=org_id, result=result)
+
+
+@celery_app.task(name="stubgraph.mutation_indexing")
+def mutation_indexing_task(
+    job_id: str,
+    project_id: int,
+    org_id: int,
+    rel_paths: list[str],
+    operation: str,
+) -> None:
+    _set_job_status(job_id, "running", org_id=org_id)
+    project = get_project(project_id, org_id=org_id)
+    root = normalize_project_root(project.root_path)
+    try:
+        result = run_mutation_indexing(
+            project_id=project_id,
+            org_id=org_id,
+            root=root,
+            rel_paths=[str(path) for path in rel_paths],
+        )
+        result["operation"] = str(operation)
+        result["rel_paths"] = [str(path) for path in rel_paths]
+        if result.get("aborted"):
+            _set_job_status(
+                job_id,
+                "failed",
+                org_id=org_id,
+                error="Mutation indexing aborted",
+                result=result,
+            )
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Mutation indexing task failed", extra={"job_id": job_id})
         _set_job_status(job_id, "failed", org_id=org_id, error=str(exc))
         return
     _set_job_status(job_id, "succeeded", org_id=org_id, result=result)

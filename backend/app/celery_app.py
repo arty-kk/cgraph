@@ -13,6 +13,7 @@ celery_app.conf.accept_content = ["json"]
 celery_app.conf.result_backend = None
 celery_app.conf.task_routes = {
     "stubgraph.scan": {"queue": "medium"},
+    "stubgraph.mutation_indexing": {"queue": "medium"},
     "stubgraph.docs": {"queue": "light"},
     "stubgraph.run_task": {"queue": "heavy"},
     "stubgraph.routing_calibration": {"queue": "light"},
@@ -25,4 +26,3 @@ if bool(getattr(settings, "llm_routing_calibration_enabled", False)):
             "schedule": crontab(minute=f"*/{max(1, int(settings.llm_routing_calibration_interval_minutes))}"),
         }
     }
-

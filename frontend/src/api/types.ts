@@ -122,6 +122,8 @@ export type FileContent = { path: string; content: string; truncated?: boolean; 
 export type FileSaveResult = {
   path: string
   saved: boolean
+  task_id?: string
+  task_status?: 'pending' | 'running' | 'succeeded' | 'failed'
   reindexed?: unknown
   index_status?: 'ok' | 'rescan_scheduled' | 'failed'
   warnings?: string[]

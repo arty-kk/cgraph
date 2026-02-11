@@ -130,6 +130,70 @@ class TaskQueue:
                 ) from exc
         return task_id
 
+    def submit_mutation_indexing(
+        self,
+        project_id: int,
+        org_id: int,
+        rel_paths: list[str],
+        operation: str,
+    ) -> tuple[str, str]:
+        payload = {
+            "project_id": project_id,
+            "rel_paths": [str(path) for path in rel_paths],
+            "operation": str(operation),
+        }
+        idempotency_key = _idempotency_key("mutation_indexing", org_id, payload)
+        existing = _find_existing_job(org_id, idempotency_key)
+        if existing:
+            return existing
+        _guard_inflight("medium")
+        task_id, created = _create_job(
+            "mutation_indexing",
+            org_id=org_id,
+            queue="medium",
+            idempotency_key=idempotency_key,
+        )
+        if created:
+            from ..celery_tasks import mutation_indexing_task
+
+            try:
+                mutation_indexing_task.apply_async(
+                    args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
+                    queue="medium",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to enqueue task",
+                    extra={
+                        "task_id": task_id,
+                        "queue": "medium",
+                        "project_id": project_id,
+                        "org_id": org_id,
+                        "reason": str(exc),
+                    },
+                )
+                now = datetime.now(timezone.utc)
+                try:
+                    with get_session() as session:
+                        job = session.get(TaskJob, task_id)
+                        if job:
+                            job.status = "failed"
+                            job.error = str(exc)
+                            job.completed_at = now
+                            job.updated_at = now
+                            session.add(job)
+                            session.commit()
+                except Exception as update_exc:
+                    logger.warning(
+                        "Failed to persist enqueue failure status",
+                        extra={"task_id": task_id, "reason": str(update_exc)},
+                    )
+                raise ExternalServiceError(
+                    "Не удалось отправить задачу в очередь",
+                    context={"task_id": task_id, "queue": "medium"},
+                ) from exc
+        return task_id, "pending"
+
     def submit_run(self, project_id: int, org_id: int, payload: dict) -> str:
         normalized_payload = _normalize_payload(payload)
         idempotency_key = _idempotency_key(
@@ -321,6 +385,22 @@ def _release_inflight(queue: str, job_id: str) -> None:
         client.srem(key, job_id)
     except RedisError as exc:
         logger.warning("Failed to release inflight job", extra={"reason": str(exc)})
+
+
+def _find_existing_job(org_id: int, idempotency_key: str) -> tuple[str, str] | None:
+    with get_session() as session:
+        existing = session.exec(
+            select(TaskJob.id, TaskJob.status).where(
+                TaskJob.org_id == org_id,
+                TaskJob.idempotency_key == idempotency_key,
+                TaskJob.status.in_(("pending", "running")),
+            )
+        ).first()
+    if isinstance(existing, (tuple, list)) and len(existing) >= 2:
+        task_id, status = existing[0], existing[1]
+        if isinstance(task_id, str) and task_id and status in {"pending", "running"}:
+            return task_id, status
+    return None
 
 
 def _find_existing_job_id(org_id: int, idempotency_key: str) -> str | None:

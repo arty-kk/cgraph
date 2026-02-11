@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
@@ -17,14 +17,17 @@ from ..logging import get_logger
 from ..models import FileNode
 from ..policy import require_project_access
 from ..scan import scan_files
-from ..services.file_mutation_service import RollbackResult, handle_mutation_scan, removed_neighbors, scan_aborted
+from ..services.file_mutation_service import (
+    build_mutation_queued_response,
+    removed_neighbors,
+    scan_aborted,
+)
+from ..services.task_queue import task_queue
 from ..utils import (
     ProjectLockTimeout,
     normalize_project_root,
     project_lock,
     resolve_under_root,
-    sha256_file,
-    sha256_text,
 )
 
 
@@ -185,7 +188,6 @@ def update_file(
     project_id: int,
     path: str,
     body: FileUpdate,
-    background_tasks: BackgroundTasks,
 ):
     # Single source of truth for mutation response: docs/file-mutation-contract.md
     project = require_project_access(request, project_id, min_role="member")
@@ -200,67 +202,27 @@ def update_file(
     if not isinstance(content, str):
         raise BadRequestError("Некорректное содержимое файла")
 
-    expected_hash = None
     try:
         with project_lock(project_id):
             if not abs_path.exists():
                 raise NotFoundError("Файл не найден", context={"path": rel_norm})
             if not abs_path.is_file():
                 raise BadRequestError("Цель должна быть файлом")
-            previous_content = abs_path.read_text(encoding="utf-8", errors="replace")
             abs_path.write_text(content, encoding="utf-8")
-            expected_hash = sha256_text(content)
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
             context={"project_id": project_id},
         ) from exc
 
-    def rollback() -> RollbackResult:
-        try:
-            with project_lock(project_id):
-                if (
-                    expected_hash
-                    and abs_path.exists()
-                    and abs_path.is_file()
-                    and sha256_file(abs_path) == expected_hash
-                ):
-                    abs_path.write_text(previous_content, encoding="utf-8")
-                    return RollbackResult(status="ok")
-                logger.warning(
-                    "Rollback skipped due to concurrent change",
-                    extra={"path": rel_norm, "operation": "update_file"},
-                )
-                return RollbackResult(
-                    status="skipped",
-                    conflict=True,
-                    conflict_reason="concurrent_change",
-                )
-        except ProjectLockTimeout:
-            logger.warning(
-                "Rollback lock timeout after update_file",
-                extra={"path": rel_norm, "operation": "update_file"},
-            )
-            return RollbackResult(status="failed")
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Rollback failed after update_file",
-                extra={"path": rel_norm, "operation": "update_file"},
-            )
-            return RollbackResult(status="failed")
-
-    response = handle_mutation_scan(
+    _invalidate_pack_cache(project_id)
+    task_id, task_status = task_queue.submit_mutation_indexing(
         project_id=project_id,
         org_id=project.org_id,
-        root=root,
         rel_paths=[rel_norm],
-        response_path=rel_norm,
         operation="update_file",
-        background_tasks=background_tasks,
-        rollback=rollback,
     )
-    _invalidate_pack_cache(project_id)
-    return response
+    return build_mutation_queued_response(path=rel_norm, task_id=task_id, task_status=task_status)
 
 
 @router.post("/{project_id}/{path:path}/file")
@@ -269,7 +231,6 @@ def create_file(
     project_id: int,
     path: str,
     body: FileCreate,
-    background_tasks: BackgroundTasks,
 ):
     project = require_project_access(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
@@ -280,7 +241,6 @@ def create_file(
         raise BadRequestError("Некорректное содержимое файла")
     content = content or ""
 
-    expected_hash = None
     try:
         with project_lock(project_id):
             if abs_path.exists():
@@ -292,58 +252,20 @@ def create_file(
                 parent.mkdir(parents=True, exist_ok=True)
 
             abs_path.write_text(content, encoding="utf-8")
-            expected_hash = sha256_text(content)
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
             context={"project_id": project_id},
         ) from exc
 
-    def rollback() -> RollbackResult:
-        try:
-            with project_lock(project_id):
-                if (
-                    expected_hash
-                    and abs_path.exists()
-                    and abs_path.is_file()
-                    and sha256_file(abs_path) == expected_hash
-                ):
-                    abs_path.unlink()
-                    return RollbackResult(status="ok")
-                logger.warning(
-                    "Rollback skipped due to concurrent change",
-                    extra={"path": rel_norm, "operation": "create_file"},
-                )
-                return RollbackResult(
-                    status="skipped",
-                    conflict=True,
-                    conflict_reason="concurrent_change",
-                )
-        except ProjectLockTimeout:
-            logger.warning(
-                "Rollback lock timeout after create_file",
-                extra={"path": rel_norm, "operation": "create_file"},
-            )
-            return RollbackResult(status="failed")
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Rollback failed after create_file",
-                extra={"path": rel_norm, "operation": "create_file"},
-            )
-            return RollbackResult(status="failed")
-
-    response = handle_mutation_scan(
+    _invalidate_pack_cache(project_id)
+    task_id, task_status = task_queue.submit_mutation_indexing(
         project_id=project_id,
         org_id=project.org_id,
-        root=root,
         rel_paths=[rel_norm],
-        response_path=rel_norm,
         operation="create_file",
-        background_tasks=background_tasks,
-        rollback=rollback,
     )
-    _invalidate_pack_cache(project_id)
-    return response
+    return build_mutation_queued_response(path=rel_norm, task_id=task_id, task_status=task_status)
 
 
 @router.post("/{project_id}/{path:path}/rename")
@@ -352,7 +274,6 @@ def rename_file(
     project_id: int,
     path: str,
     body: FileRename,
-    background_tasks: BackgroundTasks,
 ):
     project = require_project_access(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
@@ -365,7 +286,6 @@ def rename_file(
     if rel_norm == new_rel:
         raise BadRequestError("Новый путь совпадает со старым", context={"path": rel_norm})
 
-    expected_hash = None
     try:
         with project_lock(project_id):
             if not abs_path.exists():
@@ -386,7 +306,6 @@ def rename_file(
             if not new_parent.is_dir():
                 raise BadRequestError("Родительский путь должен быть директорией")
 
-            expected_hash = sha256_file(abs_path)
             abs_path.rename(new_abs)
     except ProjectLockTimeout as exc:
         raise LockedError(
@@ -394,52 +313,14 @@ def rename_file(
             context={"project_id": project_id},
         ) from exc
 
-    def rollback() -> RollbackResult:
-        try:
-            with project_lock(project_id):
-                if (
-                    expected_hash
-                    and not abs_path.exists()
-                    and new_abs.exists()
-                    and new_abs.is_file()
-                    and sha256_file(new_abs) == expected_hash
-                ):
-                    new_abs.rename(abs_path)
-                    return RollbackResult(status="ok")
-                logger.warning(
-                    "Rollback skipped due to concurrent change",
-                    extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
-                )
-                return RollbackResult(
-                    status="skipped",
-                    conflict=True,
-                    conflict_reason="concurrent_change",
-                )
-        except ProjectLockTimeout:
-            logger.warning(
-                "Rollback lock timeout after rename_file",
-                extra={"path": rel_norm, "new_path": new_rel, "operation": "rename_file"},
-            )
-            return RollbackResult(status="failed")
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Rollback failed after rename_file",
-                extra={"path": rel_norm, "operation": "rename_file"},
-            )
-            return RollbackResult(status="failed")
-
-    response = handle_mutation_scan(
+    _invalidate_pack_cache(project_id)
+    task_id, task_status = task_queue.submit_mutation_indexing(
         project_id=project_id,
         org_id=project.org_id,
-        root=root,
         rel_paths=[rel_norm, new_rel],
-        response_path=new_rel,
         operation="rename_file",
-        background_tasks=background_tasks,
-        rollback=rollback,
     )
-    _invalidate_pack_cache(project_id)
-    return response
+    return build_mutation_queued_response(path=new_rel, task_id=task_id, task_status=task_status)
 
 
 @router.delete("/{project_id}/{path:path}/file")
@@ -447,7 +328,6 @@ def delete_file(
     request: Request,
     project_id: int,
     path: str,
-    background_tasks: BackgroundTasks,
 ):
     project = require_project_access(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
@@ -460,7 +340,6 @@ def delete_file(
             if not abs_path.is_file():
                 raise BadRequestError("Цель должна быть файлом")
 
-            previous_content = abs_path.read_text(encoding="utf-8", errors="replace")
             abs_path.unlink()
     except ProjectLockTimeout as exc:
         raise LockedError(
@@ -468,43 +347,11 @@ def delete_file(
             context={"project_id": project_id},
         ) from exc
 
-    def rollback() -> RollbackResult:
-        try:
-            with project_lock(project_id):
-                if not abs_path.exists():
-                    abs_path.write_text(previous_content, encoding="utf-8")
-                    return RollbackResult(status="ok")
-                logger.warning(
-                    "Rollback skipped due to concurrent change",
-                    extra={"path": rel_norm, "operation": "delete_file"},
-                )
-                return RollbackResult(
-                    status="skipped",
-                    conflict=True,
-                    conflict_reason="concurrent_change",
-                )
-        except ProjectLockTimeout:
-            logger.warning(
-                "Rollback lock timeout after delete_file",
-                extra={"path": rel_norm, "operation": "delete_file"},
-            )
-            return RollbackResult(status="failed")
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Rollback failed after delete_file",
-                extra={"path": rel_norm, "operation": "delete_file"},
-            )
-            return RollbackResult(status="failed")
-
-    response = handle_mutation_scan(
+    _invalidate_pack_cache(project_id)
+    task_id, task_status = task_queue.submit_mutation_indexing(
         project_id=project_id,
         org_id=project.org_id,
-        root=root,
         rel_paths=[rel_norm],
-        response_path=rel_norm,
         operation="delete_file",
-        background_tasks=background_tasks,
-        rollback=rollback,
     )
-    _invalidate_pack_cache(project_id)
-    return response
+    return build_mutation_queued_response(path=rel_norm, task_id=task_id, task_status=task_status)
