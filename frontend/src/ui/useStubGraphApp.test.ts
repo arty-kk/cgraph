@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { getMutationTaskSeed } from './useStubGraphApp'
+import { getMutationTaskSeed, getRunGraphStaleState } from './useStubGraphApp'
 
 describe('useStubGraphApp mutation task helpers', () => {
   it('builds task seed from direct task fields', () => {
@@ -34,5 +34,18 @@ describe('useStubGraphApp mutation task helpers', () => {
     })
 
     expect(seed).toBeNull()
+  })
+})
+
+describe('useStubGraphApp run warning handling', () => {
+  it("marks graph as stale for 'graph not built' warning", () => {
+    expect(getRunGraphStaleState('graph not built')).toEqual({
+      stale: true,
+      message: 'Graph index is not ready. Run Scan/Rescan now to refresh context.',
+    })
+  })
+
+  it('does not mark graph as stale for other warnings', () => {
+    expect(getRunGraphStaleState('other warning')).toEqual({ stale: false, message: null })
   })
 })

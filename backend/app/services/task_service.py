@@ -1959,11 +1959,6 @@ def get_run(project_id: int, org_id: int, run_id: int) -> dict:
         applied = None
 
     warning = _graph_warning(project_id)
-    graph_scan_task: dict | None = None
-    if warning == GRAPH_NOT_READY_WARNING:
-        graph_scan_task = scan_with_background(project_id, org_id, background=True)
-    graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
-    graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 
     return {
         "id": run.id,
@@ -1981,8 +1976,6 @@ def get_run(project_id: int, org_id: int, run_id: int) -> dict:
         "created_at": run.created_at.isoformat(),
         "result": result,
         "warning": warning,
-        "graph_scan_task_id": graph_scan_task_id,
-        "graph_scan_status": graph_scan_status,
     }
 
 
