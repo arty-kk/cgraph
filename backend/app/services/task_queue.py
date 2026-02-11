@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from redis import RedisError
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import delete, select
 
@@ -369,11 +370,33 @@ def _guard_inflight(queue: str, job_id: str | None = None) -> None:
         if int(added) != 1:
             raise BadRequestError("Превышен лимит одновременных heavy задач")
     except RedisError as exc:
-        logger.warning("In-flight queue check failed", extra={"reason": str(exc)})
-        raise ExternalServiceError(
-            "Не удалось проверить лимит heavy-задач: Redis недоступен",
-            context={"queue": "heavy", "limit": limit},
-        ) from exc
+        with get_session() as session:
+            active_count_row = session.exec(
+                select(func.count()).select_from(TaskJob).where(
+                    TaskJob.queue == "heavy",
+                    TaskJob.status.in_(("pending", "running")),
+                )
+            ).one()
+            if isinstance(active_count_row, (tuple, list)):
+                active_count_val = active_count_row[0] if active_count_row else 0
+            else:
+                try:
+                    active_count_val = active_count_row[0]
+                except Exception:
+                    active_count_val = active_count_row
+            active_count = int(active_count_val)
+        logger.warning(
+            "In-flight queue check degraded to DB fallback",
+            extra={
+                "redis_unavailable_fallback": True,
+                "queue": queue,
+                "limit": limit,
+                "active_count": active_count,
+                "reason": str(exc),
+            },
+        )
+        if active_count >= limit:
+            raise BadRequestError("Превышен лимит одновременных heavy задач")
 
 
 def _release_inflight(queue: str, job_id: str) -> None:
