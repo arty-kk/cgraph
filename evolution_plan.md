@@ -18,7 +18,7 @@
   - P0: Async request path executes blocking Redis I/O in middleware on every request when rate limiting is enabled. Evidence: `backend/app/main.py` (`rate_limit` is `async`) calls sync `allow_request` (`backend/app/infra/rate_limit.py`), which uses sync redis client (`backend/app/infra/redis_client.py`). Root cause: sync Redis client wired into async middleware. Impact: event-loop stalls on network jitter/Redis latency; request throughput collapses under load.
   - P1: Mixed concurrency model (sync services + async endpoints/middleware) lacks clear boundary policy, so blocking calls are easy to reintroduce. Evidence: almost all service layer functions are sync (`backend/app/services/*.py`), while app has async middlewares and selected async endpoints (e.g., `create_project_from_snapshot` in `backend/app/api/projects.py`). Root cause: no explicit architecture guardrails or lint/tests for blocking-in-async boundaries. Impact: migration risk is high; regressions likely after partial refactors.
   - P1: File-upload endpoint is async but uses blocking stream/storage path directly. Evidence: `backend/app/api/projects.py:create_project_from_snapshot` is `async`, calls `store_snapshot_stream(archive.file, ...)`; `store_snapshot_stream` in `backend/app/snapshots.py` is synchronous and performs disk/S3 I/O. Root cause: blocking I/O executed inside coroutine context. Impact: large uploads block event loop and degrade unrelated request latency.
-  - P1: Database/Redis dependencies are sync-only in current manifests, preventing safe end-to-end async stack. Evidence: `backend/requirements.txt` includes `sqlmodel`, `psycopg[binary]`, `redis`, but no async driver/runtime wiring in app layer (`backend/app/db.py` uses `create_engine`, sync `Session`; Redis uses `redis.Redis`). Root cause: infrastructure layer is built for sync execution model. Impact: full async migration cannot be delivered incrementally without compatibility bridge and dependency updates.
+  - P1: Database/Redis application wiring is sync-oriented in current implementation, preventing safe end-to-end async request handling. Evidence: `backend/app/db.py` uses `create_engine` + sync `Session`; `backend/app/infra/redis_client.py` returns `redis.Redis`; these are invoked from request-time logic (`backend/app/main.py`, `backend/app/infra/rate_limit.py`). Root cause: infrastructure layer was implemented around synchronous clients for API request path. Impact: full async migration cannot be delivered incrementally without introducing async-safe infra boundaries and compatibility adapters.
   - P2: Background and API paths duplicate job state persistence logic, increasing migration surface and inconsistency risk. Evidence: status transitions in `backend/app/celery_tasks.py:_set_job_status` and enqueue-failure writebacks in multiple branches in `backend/app/services/task_queue.py`. Root cause: job state management not centralized. Impact: async migration requires touching many duplicated branches, increasing defect probability.
 - Constraints:
   - Queue stack is RabbitMQ + Celery and already asynchronous out-of-process (`docker-compose.yml`, `backend/app/celery_app.py`); migration must keep this contract.
@@ -126,7 +126,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_auth_service.py backend/tests/services/test_auth_logout_api.py`
   - Migration/Rollback:
-    - `STUBGRAPH_API_ASYNC_MODE=false` switches back to legacy sync resolver.
+    - Keep legacy sync resolver implementation in code during rollout; rollback is immediate switch to that legacy path in the same release branch.
 
 - ID: EVO-002
   - Priority: P0
@@ -147,7 +147,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_rate_limit.py`
   - Migration/Rollback:
-    - Feature flag to revert to legacy sync rate limiter.
+    - Keep legacy sync rate-limiter implementation in code during rollout; rollback is immediate switch to that legacy path in the same release branch.
 
 - ID: EVO-003
   - Priority: P1
