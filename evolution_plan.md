@@ -38,9 +38,9 @@
   - Single source of truth for task-job state transitions (pending/running/succeeded/failed) across enqueue and worker execution.
   - Storage and indexing flows preserve current business contracts while moving I/O to async-safe boundaries.
 - Engineering outcomes:
-  - Async-ready infra layer (DB session factory, Redis client abstraction, request-scoped dependencies) with compatibility path for legacy sync services.
+  - Async-only infra layer in API process (DB session factory, Redis client abstraction, request-scoped dependencies) without dual-path runtime.
   - Contract tests protecting API behavior during migration.
-  - Reduced regression risk by phase-gated rollout and explicit rollback toggles.
+  - Reduced regression risk by phase-gated rollout and release-level rollback (without keeping fallback branches in code).
 
 ## 2. Roadmap (инкрементально)
 ### Phase 1 (Stabilize Core)
@@ -54,13 +54,13 @@
   3) Refactor `auth_guard` and `rate_limit` middleware to async-safe service calls.
   4) Move DB initialization from import-time call to explicit app startup/lifespan path with equivalent fail-fast semantics.
   5) Add guard tests verifying no sync session/client usage from async middleware paths.
-  6) Feature flag to run API in compatibility mode (old sync adapters) for rollback.
+  6) Remove sync adapter usage from API request path immediately after async parity tests pass in this phase.
 - Dependencies:
   - Async drivers and wiring added before middleware refactor.
-  - Contract tests added before enabling async path by default.
+  - Contract tests added before replacing sync request-path adapters.
 - Risk & Rollback strategy:
   - Risk: auth/rate-limit outage due to infra mismatch.
-  - Rollback: switch middleware back to existing sync adapters in the same release branch; keep old code path until Phase 2 stabilization.
+  - Rollback: rollback deployment to previous release image/commit; do not keep runtime fallback branches in target code.
 - Validation (как проверить):
   - `pytest backend/tests/services/test_auth_service.py backend/tests/services/test_rate_limit.py`
   - `pytest backend/tests/services/test_auth_logout_api.py backend/tests/services/test_task_queue.py`
@@ -83,7 +83,7 @@
   - Shared task state repository before removing duplicated write branches.
 - Risk & Rollback strategy:
   - Risk: partial migration may create sync/async dead zones and hidden blocking.
-  - Rollback: endpoint-level toggles keep selected routers on legacy sync path until parity tests pass.
+  - Rollback: release rollback to previous stable build if parity tests or production checks fail.
 - Validation (как проверить):
   - `pytest backend/tests/services/test_project_service_create_from_snapshot.py backend/tests/services/test_nodes_mutation_responses.py`
   - `pytest backend/tests/services/test_task_service_get_run.py backend/tests/services/test_task_service_impact.py backend/tests/services/test_task_service_agentic_retry.py`
@@ -92,11 +92,11 @@
 ### Phase 3 (Scale & Maintainability)
 - Goal: finish platform hardening for async operations and remove migration debt that blocks future evolution.
 - Scope (что затрагиваем / что не трогаем):
-  - Touch: residual sync adapters, observability, concurrency limits, docs.
+  - Touch: observability, concurrency limits, docs, final async-only hardening.
   - Do not touch: frontend protocol model (polling) unless contract issue is proven.
 - Deliverables:
-  1) Remove legacy sync adapters from API process after parity confirmation.
-  2) Replace synchronous project lock primitive in async request paths with async-safe lock adapter while preserving semantics.
+  1) Replace synchronous project lock primitive in async request paths with async-safe lock adapter while preserving semantics.
+  2) Confirm API request path has no sync DB/Redis/cache adapters and remove migration debt.
   3) Add async-focused telemetry (request latency buckets around auth/rate-limit/upload/cache/lock hot-paths).
   4) Harden connection pool/timeouts/backpressure settings for async DB/Redis clients.
   5) Add CI checks preventing blocking calls inside async API modules.
@@ -104,8 +104,8 @@
 - Dependencies:
   - Full parity in Phase 2.
 - Risk & Rollback strategy:
-  - Risk: aggressive removal of adapters can hinder emergency rollback.
-  - Rollback: keep one release window with dormant compatibility toggle before full removal.
+  - Risk: strict async-only target increases release sensitivity.
+  - Rollback: revert to previous stable release artifact; forward-fix and redeploy, without preserving compatibility code in main branch.
 - Validation (как проверить):
   - `pytest backend/tests/services`
   - `pytest backend/tests/llm`
@@ -124,7 +124,7 @@
   - Steps:
     1) Add async DB engine/session factory module for API process.
     2) Implement async `get_user_from_token` path using async session.
-    3) Switch `auth_guard` to async resolver, keep sync fallback under feature flag.
+    3) Switch `auth_guard` to async resolver and remove sync resolver usage from request middleware path.
     4) Add tests for authorized/unauthorized middleware behavior on async path.
   - Acceptance Criteria (проверяемо):
     - `auth_guard` no longer calls sync session provider in default mode.
@@ -132,7 +132,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_auth_service.py backend/tests/services/test_auth_logout_api.py`
   - Migration/Rollback:
-    - Keep legacy sync resolver implementation in code during rollout; rollback is immediate switch to that legacy path in the same release branch.
+    - Rollback via deployment rollback to previous stable release; target branch keeps only async middleware path.
 
 - ID: EVO-002
   - Priority: P0
@@ -153,7 +153,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_rate_limit.py`
   - Migration/Rollback:
-    - Keep legacy sync rate-limiter implementation in code during rollout; rollback is immediate switch to that legacy path in the same release branch.
+    - Rollback via deployment rollback to previous stable release; target branch keeps only async middleware path.
 
 - ID: EVO-003
   - Priority: P1
@@ -172,7 +172,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_policy_roles.py backend/tests/services/test_policy_unauth_org_resolution.py`
   - Migration/Rollback:
-    - Keep sync `db.py` for Celery/legacy code until full migration completion.
+    - Keep sync `db.py` only for worker/migration runtime that is not part of API event-loop path; rollback is release rollback.
 
 - ID: EVO-004
   - Priority: P1
@@ -192,7 +192,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_project_service_create_from_snapshot.py`
   - Migration/Rollback:
-    - Temporary adapter can delegate to old sync storage in worker thread when async backend unavailable.
+    - If async storage path fails validation, rollback release and fix before redeploy; do not ship dual runtime adapters in API path.
 
 - ID: EVO-005
   - Priority: P1
@@ -211,7 +211,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_policy_roles.py backend/tests/services/test_policy_project_access_unauth.py`
   - Migration/Rollback:
-    - Keep sync policy module as fallback during staged endpoint migration.
+    - Rollback by reverting release; migrated API policy checks remain async-only in target branch.
 
 - ID: EVO-006
   - Priority: P2
@@ -231,7 +231,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_task_queue.py backend/tests/services/test_task_service_get_run.py`
   - Migration/Rollback:
-    - Repository can internally call legacy sync session while interface remains stable.
+    - Keep repository interface stable; rollback is release rollback, not runtime fallback branches.
 
 - ID: EVO-007
   - Priority: P1
@@ -250,7 +250,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_api_contracts.py`
   - Migration/Rollback:
-    - Rule is additive and can be temporarily relaxed via explicit allowlist entry.
+    - Rule is mandatory for API async modules; rollback only by reverting offending change.
 
 - ID: EVO-008
   - Priority: P1
@@ -280,7 +280,7 @@
   - Evidence: `backend/app/utils.py:project_lock` uses sync `engine.connect()`, advisory-lock polling loop and `time.sleep`; lock is used by request/write flows (`backend/app/api/nodes.py`, `backend/app/services/project_service.py`, `backend/app/services/task_service.py`, `backend/app/scan.py`).
   - Root Cause: lock primitive predates async request model and is not async-safe.
   - Impact: migrated async write endpoints can still block worker event loop during lock contention.
-  - Fix (single solution): introduce async-safe project-lock adapter for API request paths and keep sync lock for legacy/worker paths until full parity.
+  - Fix (single solution): introduce async-safe project-lock adapter for API request paths and remove sync lock usage from API handlers.
   - Steps:
     1) Implement async lock adapter with non-blocking wait strategy.
     2) Integrate adapter into async API write paths.
@@ -291,7 +291,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_nodes_mutation_responses.py backend/tests/services/test_task_service_quality_gate.py`
   - Migration/Rollback:
-    - Keep existing sync lock path for rollback while async adapter is phased in.
+    - Rollback by release revert if lock parity tests fail; target branch keeps async lock path for API handlers.
 
 - ID: EVO-010
   - Priority: P1
@@ -311,7 +311,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_search_layer.py backend/tests/llm/test_routing_selector.py`
   - Migration/Rollback:
-    - Retain sync cache adapter for non-async callers until migration completion.
+    - Rollback by release revert if cache parity tests fail; target API paths remain async-only.
 
 - ID: EVO-011
   - Priority: P2
@@ -331,7 +331,7 @@
   - Validation Commands:
     - `pytest backend/tests/services/test_api_contracts.py`
   - Migration/Rollback:
-    - Keep old probe function and restore import-time call if startup hook causes deployment regression.
+    - Rollback via deployment rollback to previous stable release; target branch keeps startup/lifespan initialization only.
 
 ## 4. Explicit Non-Goals
 - Do not replace Celery/RabbitMQ architecture with another queue system.
