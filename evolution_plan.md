@@ -1,326 +1,341 @@
 # Evolution Plan
 
 ## 0. Baseline (from audit)
-- Architecture map: Backend — FastAPI app with routers for projects/nodes/tasks/auth/orgs, domain services, SQLModel persistence, graph/scanning utilities, and snapshot/storage handling. Frontend — React/Vite app with a single state hook (`useStubGraphApp`) orchestrating data flows and UI components (graph, explorer, editor). Evidence: `backend/app/main.py`, `backend/app/api/*`, `backend/app/services/*`, `backend/app/graph.py`, `backend/app/scan.py`, `backend/app/snapshots.py`, `frontend/src/ui/App.tsx`, `frontend/src/ui/useStubGraphApp.ts`.
+- Architecture map:
+  - Backend: FastAPI app (`backend/app/main.py`) with HTTP routers in `backend/app/api/*`, domain logic in `backend/app/services/*`, persistence via SQLModel/SQLAlchemy sync engine (`backend/app/db.py`, `backend/app/models.py`), background workload in Celery (`backend/app/celery_app.py`, `backend/app/celery_tasks.py`), Redis for rate-limit/queue guards (`backend/app/infra/*`).
+  - Frontend: React + Vite SPA (`frontend/src/ui/*`) with API client over HTTP polling (`frontend/src/api/tasks.ts`) and app state orchestration in `frontend/src/ui/useStubGraphApp.ts`.
+  - Data/migrations: Alembic sync env and revisions (`backend/alembic/env.py`, `backend/alembic/versions/*`), Postgres via `postgresql+psycopg` DSN (`backend/app/config.py`).
 - Critical flows:
-  1) Create project (local or snapshot) → scan → graph view. Evidence: `backend/app/api/projects.py`, `backend/app/services/project_service.py`, `frontend/src/ui/useStubGraphApp.ts`.
-  2) Browse tree → open file editor → edit/save → reindex/graph updates. Evidence: `frontend/src/ui/components/ExplorerTree.tsx`, `frontend/src/ui/useStubGraphApp.ts`, `backend/app/api/nodes.py`, `backend/app/graph.py`.
-  3) Search nodes / semantic / text. Evidence: `backend/app/api/projects.py`, `backend/app/services/project_service.py`, `backend/app/search.py`, `frontend/src/ui/useStubGraphApp.ts`.
-  4) Run LLM task → receive patch → apply. Evidence: `backend/app/api/tasks.py`, `backend/app/services/task_service.py`, `frontend/src/ui/useStubGraphApp.ts`.
-  5) Build docs → read docs. Evidence: `backend/app/api/projects.py`, `backend/app/services/docs_service.py`, `frontend/src/ui/useStubGraphApp.ts`.
+  1) Auth bootstrap/login/logout/token resolution (`backend/app/api/auth.py`, `backend/app/services/auth_service.py`, `backend/app/main.py`).
+  2) Org/project access checks on each request (`backend/app/policy.py`, `backend/app/api/projects.py`, `backend/app/api/tasks.py`).
+  3) Project creation (path/snapshot) and indexing kickoff (`backend/app/api/projects.py`, `backend/app/services/project_service.py`, `backend/app/snapshots.py`).
+  4) Graph/search/dependencies read path (`backend/app/api/projects.py`, `backend/app/services/project_service.py`, `backend/app/graph.py`).
+  5) Task execution via queue + status polling (`backend/app/services/task_queue.py`, `backend/app/celery_tasks.py`, `backend/app/api/tasks.py`, `frontend/src/api/tasks.ts`).
+  6) File mutations with follow-up mutation indexing (`backend/app/api/nodes.py`, `backend/app/services/file_mutation_service.py`).
+  7) Docs build as async background job (`backend/app/api/projects.py`, `backend/app/services/docs_service.py`, `backend/app/celery_tasks.py`).
 - Current pain points:
-  - P1: File-save success can mask failed reindexing, causing graph/UI desync. Evidence: `backend/app/api/nodes.py` (`update_file` returns `saved: true` with `reindexed: false` + `error` in several branches), `frontend/src/ui/useStubGraphApp.ts` (`saveFileEditorPath` treats any `saved` as success and clears dirty state without checking `reindexed`/`error`). Root cause: inconsistent response contract + UI only checks `saved`. Impact: users believe graph is updated when it is not; potential incorrect dependency/risk info.
-  - P1: Empty files are reloaded repeatedly when opened. Evidence: `frontend/src/ui/useStubGraphApp.ts` (`openFileEditor` computes `shouldLoad` using falsy checks on `content`/`original`, so empty strings trigger repeated fetch). Root cause: `content` presence is used as load sentinel. Impact: unnecessary network calls, slower navigation.
-  - P1: Dependency lists can be truncated without UX disclosure/action. Evidence: `backend/app/services/project_service.py` returns `truncated_inbound`/`truncated_outbound` in `get_file_dependencies`; `frontend/src/ui/useStubGraphApp.ts` and `frontend/src/ui/App.tsx` only use inbound/outbound arrays and total counts. Root cause: metadata not surfaced in UI. Impact: users may miss dependencies without knowing the list is partial.
-  - P2: Workspace persistence drops unsaved content on reload (only `dirty` flags are stored). Evidence: `frontend/src/ui/useStubGraphApp.ts` (`buildWorkspaceState` stores only `dirty` flags; restore recreates empty editors). Root cause: storage schema omits buffer contents. Impact: unsaved work lost after crash/refresh despite a dirty indicator.
-  - P2: File mutation logic is duplicated across create/update/rename/delete paths. Evidence: repeated `scan_files` + `update_graph_metrics_incremental` + rescan handling in `backend/app/api/nodes.py`. Root cause: no shared service helper. Impact: higher risk of inconsistent behavior/bugs when modifying file-flow logic.
-  - P2: `list_project_files` returns large payloads (default limit 50k) without cursor pagination. Evidence: `backend/app/services/project_service.py` (`list_project_files`), `backend/app/api/projects.py` endpoint. Root cause: no pagination strategy for file lists. Impact: performance risk for large repos and external clients.
-- Constraints: auth can be disabled; local root paths can be disabled; Redis-based rate limit/cache; Postgres DB; snapshot and file-size limits; LLM/embeddings are optional and gated by config. Evidence: `backend/app/config.py`, `backend/app/infra/rate_limit.py`.
+  - P0: Async request path executes blocking DB I/O in middleware on every protected request. Evidence: `backend/app/main.py` (`auth_guard` is `async`), it calls sync `get_user_from_token` (`backend/app/services/auth_service.py`) which uses sync `get_session()` (`backend/app/db.py`). Root cause: async middleware directly invokes sync persistence layer. Impact: event-loop stalls under concurrent auth traffic, reducing API availability/latency predictability.
+  - P0: Async request path executes blocking Redis I/O in middleware on every request when rate limiting is enabled. Evidence: `backend/app/main.py` (`rate_limit` is `async`) calls sync `allow_request` (`backend/app/infra/rate_limit.py`), which uses sync redis client (`backend/app/infra/redis_client.py`). Root cause: sync Redis client wired into async middleware. Impact: event-loop stalls on network jitter/Redis latency; request throughput collapses under load.
+  - P1: Mixed concurrency model (sync services + async endpoints/middleware) lacks clear boundary policy, so blocking calls are easy to reintroduce. Evidence: almost all service layer functions are sync (`backend/app/services/*.py`), while app has async middlewares and selected async endpoints (e.g., `create_project_from_snapshot` in `backend/app/api/projects.py`). Root cause: no explicit architecture guardrails or lint/tests for blocking-in-async boundaries. Impact: migration risk is high; regressions likely after partial refactors.
+  - P1: File-upload endpoint is async but uses blocking stream/storage path directly. Evidence: `backend/app/api/projects.py:create_project_from_snapshot` is `async`, calls `store_snapshot_stream(archive.file, ...)`; `store_snapshot_stream` in `backend/app/snapshots.py` is synchronous and performs disk/S3 I/O. Root cause: blocking I/O executed inside coroutine context. Impact: large uploads block event loop and degrade unrelated request latency.
+  - P1: Database/Redis application wiring is sync-oriented in current implementation, preventing safe end-to-end async request handling. Evidence: `backend/app/db.py` uses `create_engine` + sync `Session`; `backend/app/infra/redis_client.py` returns `redis.Redis`; these are invoked from request-time logic (`backend/app/main.py`, `backend/app/infra/rate_limit.py`). Root cause: infrastructure layer was implemented around synchronous clients for API request path. Impact: full async migration cannot be delivered incrementally without introducing async-safe infra boundaries and compatibility adapters.
+  - P1: Project lock mechanism is synchronous and uses `time.sleep`, so async endpoint migration can reintroduce event-loop blocking in write paths. Evidence: `backend/app/utils.py:project_lock` uses sync connection with advisory-lock polling and `time.sleep`; lock is used in request/write paths (`backend/app/api/nodes.py`, `backend/app/services/project_service.py`, `backend/app/services/task_service.py`, `backend/app/scan.py`). Root cause: lock primitive is built for sync execution model. Impact: lock contention can stall async request workers on mutation/scan hot-paths.
+  - P1: Request-serving read paths use synchronous cache I/O, while plan currently isolates only rate-limit Redis path. Evidence: `backend/app/infra/cache.py` uses sync Redis client; cache helpers are used by API-serving paths (`backend/app/services/project_service.py`, `backend/app/context_pack.py`, `backend/app/llm/routing_thresholds.py`, `backend/app/llm/routing_weights.py`). Root cause: shared cache abstraction is synchronous. Impact: partial migration leaves blocking Redis operations in core read flows.
+  - P2: DB readiness probe runs at import-time, not explicit app lifecycle stage. Evidence: `backend/app/main.py` invokes `init_db()` at module import; `backend/app/db.py:init_db` executes sync probe query. Root cause: startup logic is coupled to import side effect. Impact: harder controlled startup/retry/readiness orchestration during async rollout.
+  - P2: Background and API paths duplicate job state persistence logic, increasing migration surface and inconsistency risk. Evidence: status transitions in `backend/app/celery_tasks.py:_set_job_status` and enqueue-failure writebacks in multiple branches in `backend/app/services/task_queue.py`. Root cause: job state management not centralized. Impact: async migration requires touching many duplicated branches, increasing defect probability.
+- Constraints:
+  - Queue stack is RabbitMQ + Celery and already asynchronous out-of-process (`docker-compose.yml`, `backend/app/celery_app.py`); migration must keep this contract.
+  - Existing API consumers rely on task polling contract (`/api/tasks/status/{task_id}` + frontend `waitForTaskResult`), so transport/protocol changes must be non-breaking (`backend/app/api/tasks.py`, `frontend/src/api/tasks.ts`).
+  - Alembic migrations currently run with sync engine (`backend/alembic/env.py`), so schema migration path should stay stable during app-layer async transition.
 
-## 1. North Star (12–16 недель)
-- UX outcomes: 
-  - 100% file save attempts show explicit indexing status (ok/rescan/failed) and actionable guidance.
-  - Empty-file navigation avoids redundant reloads (≤1 fetch per tab open).
-  - Dependency panels indicate truncation and offer a “show more/open in graph” action when partial.
-  - Optional “recover drafts” flow for unsaved buffers after reload (with size guard).
+## 1. North Star
+- UX outcomes:
+  - P95 latency of authenticated read endpoints remains stable under concurrent uploads/rate-limit checks (proxy metric: no event-loop blocking in middleware).
+  - Long-running operations keep current async UX (queued task + poll) with no new client-side steps.
+  - Error responses remain deterministic during queue/DB/Redis transient failures (same status semantics as now).
 - Domain outcomes:
-  - Single, consistent file-mutation response contract across create/update/rename/delete.
-  - Clear invariant: `saved` means file on disk updated; `reindexed` reflects graph freshness; `rescan_task`/`warnings` communicate eventual consistency.
+  - Single invariant for API process: request handlers/middleware never perform blocking network/disk DB calls on event loop.
+  - Single source of truth for task-job state transitions (pending/running/succeeded/failed) across enqueue and worker execution.
+  - Storage and indexing flows preserve current business contracts while moving I/O to async-safe boundaries.
 - Engineering outcomes:
-  - Regression risk reduced via backend tests for file-mutation responses and UI handling of partial saves.
-  - Shared service helpers replace duplicated file-mutation logic.
+  - Async-only infra layer in API process (DB session factory, Redis client abstraction, request-scoped dependencies) without dual-path runtime.
+  - Contract tests protecting API behavior during migration.
+  - Reduced regression risk by phase-gated rollout and release-level rollback (without keeping fallback branches in code).
 
 ## 2. Roadmap (инкрементально)
 ### Phase 1 (Stabilize Core)
-- Goal: Eliminate incorrect success signals and reduce high-friction UI issues in core edit flow.
-- Scope: File save/update workflow, dependency panel signaling, editor open behavior. No changes to external behavior beyond adding response fields and UI messaging.
+- Goal: remove blocking I/O from FastAPI async request path without changing external API contracts.
+- Scope (что затрагиваем / что не трогаем):
+  - Touch: middleware, auth/rate-limit boundaries, infra abstractions for DB/Redis in request path.
+  - Do not touch: Celery task protocol, frontend task polling contract, domain logic semantics.
 - Deliverables:
-  1) Standardized file mutation response contract with explicit indexing status and warnings.
-  2) UI handling of partial save/reindex failures (status banner + rescan CTA).
-  3) Fix empty-file reload sentinel.
-  4) Surface dependency truncation indicators and “show more/open graph” actions.
-  5) Backend tests covering file-mutation response paths.
-  6) Frontend API types updated to include new response fields.
-- Dependencies: Backend response contract before frontend handling and type updates.
-- Risk & Rollback strategy: Additive response fields (backward-compatible). UI changes gated by presence of new fields; fall back to previous behavior if fields are absent.
-- Validation: `pytest` (backend), `npm run lint` (frontend).
+  1) Introduce async DB engine/session provider for API process and request dependency wrappers.
+  2) Introduce async Redis client for request-time features (rate limit, optional auth/session cache if used).
+  3) Refactor `auth_guard` and `rate_limit` middleware to async-safe service calls.
+  4) Move DB initialization from import-time call to explicit app startup/lifespan path with equivalent fail-fast semantics.
+  5) Add guard tests verifying no sync session/client usage from async middleware paths.
+  6) Remove sync adapter usage from API request path immediately after async parity tests pass in this phase.
+- Dependencies:
+  - Async drivers and wiring added before middleware refactor.
+  - Contract tests added before replacing sync request-path adapters.
+- Risk & Rollback strategy:
+  - Risk: auth/rate-limit outage due to infra mismatch.
+  - Rollback: rollback deployment to previous release image/commit; do not keep runtime fallback branches in target code.
+- Validation (как проверить):
+  - `pytest backend/tests/services/test_auth_service.py backend/tests/services/test_rate_limit.py`
+  - `pytest backend/tests/services/test_auth_logout_api.py backend/tests/services/test_task_queue.py`
 
 ### Phase 2 (UX & Domain Consolidation)
-- Goal: Consolidate file-flow logic and introduce recovery/visibility features for consistency.
-- Scope: File editor persistence, global graph-stale indicators, shared backend helper.
+- Goal: migrate business services and write paths to consistent async boundaries while keeping user-visible behavior unchanged.
+- Scope (что затрагиваем / что не трогаем):
+  - Touch: project/task/node API handlers, core service functions, upload/snapshot pipeline.
+  - Do not touch: domain response schema unless required for parity fixes.
 - Deliverables:
-  1) Draft recovery for dirty buffers with size guard and user confirmation.
-  2) Global “graph stale / rescan pending” indicator cleared on successful scan.
-  3) Shared backend helper for file mutation + reindex/rescan logic.
-  4) UI handling of conflict/rollback statuses with explicit messaging.
-  5) Lightweight API doc/update for file mutation contract (developer-facing).
-- Dependencies: Phase 1 response contract.
-- Risk & Rollback strategy: Draft recovery behind opt-in toggle; ability to clear stored drafts.
-- Validation: `pytest`, `npm run lint`.
+  1) Convert API routers to async handlers with injected async dependencies (DB session/unit of work).
+  2) Migrate org/project/task auth/policy checks to async DB access.
+  3) Refactor snapshot upload path to async stream handling (no blocking storage calls in coroutine).
+  4) Replace request-path cache operations with async-safe cache adapter in project/context/routing reads.
+  5) Centralize task job state writes into one async-capable repository/service used by both enqueue and worker adapters.
+  6) Preserve queue API contract (`task_id/status/result/error`) and add regression tests.
+  7) Add migration docs for developers (how to write new async services, forbidden sync patterns in async context).
+- Dependencies:
+  - Phase 1 async infra baseline.
+  - Shared task state repository before removing duplicated write branches.
+- Risk & Rollback strategy:
+  - Risk: partial migration may create sync/async dead zones and hidden blocking.
+  - Rollback: release rollback to previous stable build if parity tests or production checks fail.
+- Validation (как проверить):
+  - `pytest backend/tests/services/test_project_service_create_from_snapshot.py backend/tests/services/test_nodes_mutation_responses.py`
+  - `pytest backend/tests/services/test_task_service_get_run.py backend/tests/services/test_task_service_impact.py backend/tests/services/test_task_service_agentic_retry.py`
+  - `pytest backend/tests/services/test_api_contracts.py`
 
 ### Phase 3 (Scale & Maintainability)
-- Goal: Reduce performance risk for large repos and make heavy operations safer.
-- Scope: File list pagination, search hot paths, graph metric computation.
+- Goal: finish platform hardening for async operations and remove migration debt that blocks future evolution.
+- Scope (что затрагиваем / что не трогаем):
+  - Touch: observability, concurrency limits, docs, final async-only hardening.
+  - Do not touch: frontend protocol model (polling) unless contract issue is proven.
 - Deliverables:
-  1) Cursor-based pagination for `list_project_files` with backward-compatible defaults.
-  2) Optimize text search snippet extraction to avoid disk reads when `filetext` can serve snippets.
-  3) Background/async graph-metric recomputation for large components or slow runs.
-  4) Extend dependency queries with pagination parameters (cursor/offset) for large fan-in/out.
-  5) Add performance regression checks for large-project fixtures (where available).
-- Dependencies: Schema/API extensions and client usage updates.
-- Risk & Rollback strategy: Keep old parameters working; new pagination optional.
-- Validation: `pytest`.
+  1) Replace synchronous project lock primitive in async request paths with async-safe lock adapter while preserving semantics.
+  2) Confirm API request path has no sync DB/Redis/cache adapters and remove migration debt.
+  3) Add async-focused telemetry (request latency buckets around auth/rate-limit/upload/cache/lock hot-paths).
+  4) Harden connection pool/timeouts/backpressure settings for async DB/Redis clients.
+  5) Add CI checks preventing blocking calls inside async API modules.
+  6) Align developer docs and runbooks with final async architecture.
+- Dependencies:
+  - Full parity in Phase 2.
+- Risk & Rollback strategy:
+  - Risk: strict async-only target increases release sensitivity.
+  - Rollback: revert to previous stable release artifact; forward-fix and redeploy, without preserving compatibility code in main branch.
+- Validation (как проверить):
+  - `pytest backend/tests/services`
+  - `pytest backend/tests/llm`
+  - `npm --prefix frontend run lint`
+  - `npm --prefix frontend run test`
 
 ## 3. Task Specs (атомарно, по одной стратегии)
 - ID: EVO-001
-  - Priority: P1
-  - Theme: Domain | Reliability
-  - Problem: File-save responses do not distinguish “saved but not reindexed” vs fully consistent updates.
-  - Evidence: `backend/app/api/nodes.py` (`update_file` returns `saved: true` with `reindexed: false` and `error`), `frontend/src/ui/useStubGraphApp.ts` (`saveFileEditorPath` assumes `saved` is fully successful).
-  - Root Cause: Ad-hoc response payloads across file mutation endpoints.
-  - Impact: UI reports success while graph state is stale or partially updated.
-  - Fix (single solution): Introduce a consistent response schema with `saved`, `reindexed`, `index_status` (`ok|rescan_scheduled|failed`), `warnings`, and optional `rescan_task` across create/update/rename/delete.
+  - Priority: P0
+  - Theme: Reliability
+  - Problem: `auth_guard` middleware performs blocking DB token resolution inside coroutine context.
+  - Evidence: `backend/app/main.py:auth_guard` → `get_user_from_token`; `backend/app/services/auth_service.py:get_user_from_token`; `backend/app/db.py:get_session`.
+  - Root Cause: sync DB session is used from async middleware.
+  - Impact: event-loop blocking on every authenticated request.
+  - Fix (single solution): implement async token resolution service and wire middleware to it via async session dependency.
   - Steps:
-    1) Define response model (Pydantic) and apply to file mutation endpoints.
-    2) Ensure each branch populates `index_status` and `warnings` consistently.
-    3) Update tests for response fields.
-  - Acceptance Criteria:
-    - All file mutation endpoints return the same response shape with `index_status`.
-    - Responses include `warnings` when `reindexed` is false.
-  - Validation Commands: `pytest`
-  - Migration/Rollback: Additive fields only; no breaking change.
+    1) Add async DB engine/session factory module for API process.
+    2) Implement async `get_user_from_token` path using async session.
+    3) Switch `auth_guard` to async resolver and remove sync resolver usage from request middleware path.
+    4) Add tests for authorized/unauthorized middleware behavior on async path.
+  - Acceptance Criteria (проверяемо):
+    - `auth_guard` no longer calls sync session provider in default mode.
+    - Auth endpoints and protected routes keep current status codes and payload shape.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_auth_service.py backend/tests/services/test_auth_logout_api.py`
+  - Migration/Rollback:
+    - Rollback via deployment rollback to previous stable release; target branch keeps only async middleware path.
 
 - ID: EVO-002
-  - Priority: P1
-  - Theme: UX | Reliability
-  - Problem: UI clears dirty state and shows “File saved” even when reindexing failed.
-  - Evidence: `frontend/src/ui/useStubGraphApp.ts` (`saveFileEditorPath` checks only `res.saved`).
-  - Root Cause: Frontend ignores reindex/error metadata.
-  - Impact: Users trust stale graph and dependencies.
-  - Fix (single solution): Handle `index_status`/`reindexed`/`warnings` and show a banner with rescan CTA; only show success toast when `index_status=ok`.
+  - Priority: P0
+  - Theme: Reliability
+  - Problem: `rate_limit` middleware performs blocking Redis operations in coroutine context.
+  - Evidence: `backend/app/main.py:rate_limit` calls `allow_request`; `backend/app/infra/rate_limit.py:allow_request`; `backend/app/infra/redis_client.py:get_redis_client`.
+  - Root Cause: sync Redis client in async middleware.
+  - Impact: event-loop stalls and degraded throughput during Redis latency spikes.
+  - Fix (single solution): replace middleware path with async Redis client and async rate-limit helper.
   - Steps:
-    1) Extend API types for new fields.
-    2) Update save logic to set UI banner state and avoid success toast on partial saves.
-    3) Add CTA to trigger scan when rescan scheduled.
-  - Acceptance Criteria:
-    - Partial save shows warning banner and no success toast.
-    - Rescan CTA triggers scan and clears stale banner on completion.
-  - Validation Commands: `npm run lint`
-  - Migration/Rollback: If new fields missing, fallback to current behavior.
+    1) Add async Redis client provider.
+    2) Implement async `allow_request` variant.
+    3) Update middleware to await async helper.
+    4) Keep degraded fallback semantics (allow request on Redis error) unchanged.
+  - Acceptance Criteria (проверяемо):
+    - Middleware path does not use sync Redis client in default mode.
+    - Existing 429 contract remains unchanged.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_rate_limit.py`
+  - Migration/Rollback:
+    - Rollback via deployment rollback to previous stable release; target branch keeps only async middleware path.
 
 - ID: EVO-003
   - Priority: P1
-  - Theme: Performance | UX
-  - Problem: Empty files are reloaded every time they are opened.
-  - Evidence: `frontend/src/ui/useStubGraphApp.ts` (`shouldLoad` uses falsy checks on `content`/`original`).
-  - Root Cause: Empty string treated as “not loaded”.
-  - Impact: Extra network calls and slower navigation.
-  - Fix (single solution): Add explicit `loaded` flag (or sentinel) on file editor entries; use it for `shouldLoad`.
+  - Theme: Platform
+  - Problem: API process has no async DB infrastructure; only sync SQLModel session exists.
+  - Evidence: `backend/app/db.py` uses `create_engine` + sync `Session`; `backend/requirements.txt` lacks async DB wiring.
+  - Root Cause: initial architecture designed for sync request handlers.
+  - Impact: blocks systematic migration of services/endpoints to async model.
+  - Fix (single solution): introduce dedicated async DB infra module with request-scoped sessions and transaction helper.
   - Steps:
-    1) Add `loaded` boolean in `FileEditorEntry`.
-    2) Set `loaded=true` on successful `getFileContent`.
-    3) Update `shouldLoad` to check `loaded` instead of `content` truthiness.
-  - Acceptance Criteria:
-    - Opening a previously loaded empty file does not trigger a new fetch.
-  - Validation Commands: `npm run lint`
-  - Migration/Rollback: Safe local state change.
+    1) Add async DB dependency module for FastAPI.
+    2) Provide explicit transaction boundaries for service methods.
+    3) Update selected API dependencies to consume new session provider.
+  - Acceptance Criteria (проверяемо):
+    - At least auth/policy/project read endpoints use async session provider in default mode.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_policy_roles.py backend/tests/services/test_policy_unauth_org_resolution.py`
+  - Migration/Rollback:
+    - Keep sync `db.py` only for worker/migration runtime that is not part of API event-loop path; rollback is release rollback.
 
 - ID: EVO-004
   - Priority: P1
-  - Theme: UX | Domain
-  - Problem: Dependency lists can be truncated without UI disclosure.
-  - Evidence: `backend/app/services/project_service.py` (`truncated_inbound/outbound` in `get_file_dependencies`), `frontend/src/ui/useStubGraphApp.ts` ignores truncation metadata.
-  - Root Cause: UI discards backend truncation metadata.
-  - Impact: Incomplete dependency context for users.
-  - Fix (single solution): Carry truncation flags to UI and show “partial results” with an explicit “Open in graph” or “Load more” action.
+  - Theme: Reliability
+  - Problem: Upload endpoint is async but executes blocking snapshot storage operations.
+  - Evidence: `backend/app/api/projects.py:create_project_from_snapshot` (`async`) calls `store_snapshot_stream`; `backend/app/snapshots.py:store_snapshot_stream` does blocking disk/S3 I/O.
+  - Root Cause: sync storage abstraction invoked directly in coroutine.
+  - Impact: large uploads block unrelated requests in API worker.
+  - Fix (single solution): implement async upload/storage pipeline and use non-blocking stream consumption in endpoint.
   - Steps:
-    1) Extend dependency state to track truncation.
-    2) Update editor panel to show truncation warning and CTA.
-  - Acceptance Criteria:
-    - When `truncated_*` is true, UI shows a warning and CTA.
-  - Validation Commands: `npm run lint`
-  - Migration/Rollback: Additive UI state only.
+    1) Add async snapshot storage adapter.
+    2) Change endpoint to consume `UploadFile` asynchronously.
+    3) Preserve existing validation and error payloads.
+  - Acceptance Criteria (проверяемо):
+    - Endpoint no longer calls blocking snapshot storage in coroutine path.
+    - Existing response schema remains unchanged.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_project_service_create_from_snapshot.py`
+  - Migration/Rollback:
+    - If async storage path fails validation, rollback release and fix before redeploy; do not ship dual runtime adapters in API path.
 
 - ID: EVO-005
   - Priority: P1
-  - Theme: Reliability
-  - Problem: File mutation response branches are untested for partial/failure states.
-  - Evidence: Lack of test coverage for `update_file` error branches in `backend/tests`.
-  - Root Cause: No tests around scan-abort/rescan/rollback branches.
-  - Impact: High regression risk.
-  - Fix (single solution): Add targeted tests covering response fields for scan abort, rollback skipped, and rescan scheduled flows (using monkeypatch/mocks).
+  - Theme: Domain
+  - Problem: Policy/access checks are sync and repeatedly open short-lived sessions across endpoints.
+  - Evidence: `backend/app/policy.py` (`require_org_context`, `require_project_access`, etc.) uses `with get_session()`.
+  - Root Cause: access control designed around sync helper calls.
+  - Impact: duplicated DB access patterns complicate async migration and increase latency variance.
+  - Fix (single solution): convert policy layer to async repository-backed checks with shared request session.
   - Steps:
-    1) Add unit tests for `update_file` (and optionally create/rename/delete) response fields.
-    2) Mock `scan_files` and `update_graph_metrics_incremental` to force branches.
-  - Acceptance Criteria:
-    - Tests assert `index_status`, `reindexed`, and `warnings` in relevant branches.
-  - Validation Commands: `pytest`
-  - Migration/Rollback: Test-only change.
+    1) Add async policy repository methods.
+    2) Inject request session into policy checks.
+    3) Update API routers to await async policy guards.
+  - Acceptance Criteria (проверяемо):
+    - Policy guards execute within one request-scoped async session.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_policy_roles.py backend/tests/services/test_policy_project_access_unauth.py`
+  - Migration/Rollback:
+    - Rollback by reverting release; migrated API policy checks remain async-only in target branch.
 
 - ID: EVO-006
   - Priority: P2
   - Theme: Platform
-  - Problem: Frontend types do not model new file mutation response fields.
-  - Evidence: `frontend/src/api/types.ts` (current `FileSaveResult` lacks fields for reindex status/warnings).
-  - Root Cause: API contract change not reflected in types.
-  - Impact: Type gaps and unsafe access in UI.
-  - Fix (single solution): Extend `FileSaveResult` to include `index_status`, `warnings`, and `rescan_task` metadata.
+  - Problem: Task job status persistence is duplicated across queue submit and worker execution code.
+  - Evidence: status writes in `backend/app/celery_tasks.py:_set_job_status` and multiple enqueue failure branches in `backend/app/services/task_queue.py`.
+  - Root Cause: no single task-job repository abstraction.
+  - Impact: migration to async-safe persistence requires repeated changes and risks inconsistent status behavior.
+  - Fix (single solution): extract unified task-job repository with one status transition API used by both modules.
   - Steps:
-    1) Update TypeScript types.
-    2) Update code that consumes these fields.
-  - Acceptance Criteria:
-    - TypeScript compiles with strict types for new response fields.
-  - Validation Commands: `npm run lint`
-  - Migration/Rollback: Backward-compatible typing change.
+    1) Create repository for create/update/fail/complete transitions.
+    2) Replace direct session writes in queue and worker modules.
+    3) Add regression tests for idempotency and status transitions.
+  - Acceptance Criteria (проверяемо):
+    - Queue and worker paths use one shared transition API.
+    - Task status contract unchanged.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_task_queue.py backend/tests/services/test_task_service_get_run.py`
+  - Migration/Rollback:
+    - Keep repository interface stable; rollback is release rollback, not runtime fallback branches.
 
 - ID: EVO-007
-  - Priority: P2
-  - Theme: UX | Reliability
-  - Problem: Unsaved editor content is lost on reload/crash.
-  - Evidence: `frontend/src/ui/useStubGraphApp.ts` only persists dirty flags and recreates empty editors.
-  - Root Cause: Workspace persistence schema omits buffer contents.
-  - Impact: User data loss on reload/crash.
-  - Fix (single solution): Persist draft content with size guard and explicit “restore draft” prompt on reopen.
+  - Priority: P1
+  - Theme: Reliability
+  - Problem: There are no guardrails preventing blocking sync calls from reappearing inside async API modules.
+  - Evidence: current codebase has mixed sync/async without boundary checks (`backend/app/main.py`, `backend/app/api/projects.py`, `backend/app/infra/*`).
+  - Root Cause: missing static/dynamic checks for async-safety rules.
+  - Impact: regression risk remains high after migration.
+  - Fix (single solution): add CI lint/test rule that fails when forbidden sync providers are imported/used in async API modules.
   - Steps:
-    1) Store drafts per path with size limit.
-    2) On reopen, prompt to restore or discard.
-    3) Provide “clear drafts” action.
-  - Acceptance Criteria:
-    - Reloading the app offers to restore unsaved buffers.
-  - Validation Commands: `npm run lint`
-  - Migration/Rollback: Drafts are optional and can be cleared.
+    1) Define forbidden import/use list (sync DB/Redis providers) for async modules.
+    2) Add lightweight test/lint script integrated into existing backend test run.
+    3) Document exceptions for Celery/sync-only runtime.
+  - Acceptance Criteria (проверяемо):
+    - CI fails on new sync provider usage in async request path modules.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_api_contracts.py`
+  - Migration/Rollback:
+    - Rule is mandatory for API async modules; rollback only by reverting offending change.
 
 - ID: EVO-008
   - Priority: P1
   - Theme: UX
-  - Problem: Rescan status for partial saves is not visible at the project level.
-  - Evidence: `backend/app/api/nodes.py` returns `rescan_task`/`rescan_scheduled` in some branches; UI does not surface global status.
-  - Root Cause: No shared UI state for graph freshness.
-  - Impact: Users miss necessary rescans and continue with stale graph data.
-  - Fix (single solution): Track a “graph stale” flag in app state and show a project-level banner with rescan CTA.
+  - Problem: Async migration can break current long-running UX if task-status contract changes implicitly.
+  - Evidence: frontend strictly depends on polling contract (`frontend/src/api/tasks.ts:waitForTaskResult`), backend status endpoint in `backend/app/api/tasks.py:get_task_status`.
+  - Root Cause: no explicit contract freeze during migration.
+  - Impact: user-visible failures (stuck polling/unknown status) during backend refactor.
+  - Fix (single solution): formalize and lock task-status API contract with contract tests before/through migration.
   - Steps:
-    1) Set flag when `index_status` is `rescan_scheduled`/`failed`.
-    2) Clear flag on successful scan completion.
-  - Acceptance Criteria:
-    - Banner appears after partial saves and clears after scan.
-  - Validation Commands: `npm run lint`
-  - Migration/Rollback: UI-only; safe to revert.
+    1) Add/extend contract tests for status transitions and payload fields.
+    2) Require these tests in migration PR gate.
+    3) Keep response schema backward compatible.
+  - Acceptance Criteria (проверяемо):
+    - Frontend polling works unchanged against migrated backend.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_api_contracts.py`
+    - `npm --prefix frontend run test -- frontend/src/api/tasks.test.ts`
+  - Migration/Rollback:
+    - If regression appears, deploy rollback to previous backend while contract tests are fixed.
+
 
 - ID: EVO-009
-  - Priority: P2
+  - Priority: P1
   - Theme: Platform
-  - Problem: File mutation endpoints duplicate scan/reindex/rescan logic.
-  - Evidence: `backend/app/api/nodes.py` repeated patterns across `update_file`, `create_file`, `rename_file`, `delete_file`.
-  - Root Cause: No shared helper/service.
-  - Impact: Higher maintenance cost and inconsistent behavior risk.
-  - Fix (single solution): Extract a shared service helper to perform “write → scan → reindex → rescan on failure” and reuse across endpoints.
+  - Problem: Project lock implementation (`project_lock`) is synchronous and relies on blocking sleep/polling.
+  - Evidence: `backend/app/utils.py:project_lock` uses sync `engine.connect()`, advisory-lock polling loop and `time.sleep`; lock is used by request/write flows (`backend/app/api/nodes.py`, `backend/app/services/project_service.py`, `backend/app/services/task_service.py`, `backend/app/scan.py`).
+  - Root Cause: lock primitive predates async request model and is not async-safe.
+  - Impact: migrated async write endpoints can still block worker event loop during lock contention.
+  - Fix (single solution): introduce async-safe project-lock adapter for API request paths and remove sync lock usage from API handlers.
   - Steps:
-    1) Create helper in a services module.
-    2) Replace repeated logic in endpoints.
-    3) Update tests accordingly.
-  - Acceptance Criteria:
-    - File mutation endpoints call the shared helper.
-  - Validation Commands: `pytest`
-  - Migration/Rollback: Refactor only; verify behavior parity with tests.
+    1) Implement async lock adapter with non-blocking wait strategy.
+    2) Integrate adapter into async API write paths.
+    3) Preserve timeout/error contract (`project_locked`) and add parity tests.
+  - Acceptance Criteria (проверяемо):
+    - Async write handlers do not call blocking lock primitive.
+    - Lock timeout behavior remains contract-compatible.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_nodes_mutation_responses.py backend/tests/services/test_task_service_quality_gate.py`
+  - Migration/Rollback:
+    - Rollback by release revert if lock parity tests fail; target branch keeps async lock path for API handlers.
 
 - ID: EVO-010
   - Priority: P1
-  - Theme: UX | Reliability
-  - Problem: Conflict/rollback statuses are not surfaced to users.
-  - Evidence: `backend/app/api/nodes.py` returns `conflict_reason`/`rollback` fields in some branches; UI ignores them.
-  - Root Cause: UI does not display error metadata when `saved=true` with partial flags.
-  - Impact: Users are unaware of conflicts and stale data.
-  - Fix (single solution): Add a dedicated warning banner that surfaces `conflict_reason`/`rollback` and suggests reload/rescan.
+  - Theme: Platform
+  - Problem: Cache access in API-facing services remains sync and can block request loop after partial migration.
+  - Evidence: `backend/app/infra/cache.py` uses sync Redis client; used in `backend/app/services/project_service.py`, `backend/app/context_pack.py`, `backend/app/llm/routing_thresholds.py`, `backend/app/llm/routing_weights.py`.
+  - Root Cause: shared cache abstraction was implemented only for synchronous callers.
+  - Impact: async request paths still perform blocking Redis operations on graph/search/context/routing reads.
+  - Fix (single solution): provide async cache adapter and migrate API request-serving reads to it while preserving key format/TTL semantics.
   - Steps:
-    1) Extend UI state for conflict warnings.
-    2) Show banner and actionable buttons (reload file, rescan).
-  - Acceptance Criteria:
-    - Conflict banners appear when backend returns conflict metadata.
-  - Validation Commands: `npm run lint`
-  - Migration/Rollback: UI-only change.
+    1) Add async cache get/set/invalidate operations.
+    2) Migrate request-path consumers (project/context/routing reads).
+    3) Add tests for cache hit/miss parity and fallback-on-Redis-error behavior.
+  - Acceptance Criteria (проверяемо):
+    - Async request-serving cache calls avoid sync Redis client usage.
+    - Cache behavior (key namespace/TTL/degraded fallback) remains unchanged.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_search_layer.py backend/tests/llm/test_routing_selector.py`
+  - Migration/Rollback:
+    - Rollback by release revert if cache parity tests fail; target API paths remain async-only.
 
 - ID: EVO-011
   - Priority: P2
-  - Theme: Platform
-  - Problem: Developers have no single reference for file-mutation response contract.
-  - Evidence: Contract details spread across `backend/app/api/nodes.py` and UI usage.
-  - Root Cause: Lack of centralized documentation.
-  - Impact: Higher risk of regressions when changing response shapes.
-  - Fix (single solution): Add a short developer doc describing the file mutation response contract and state transitions.
+  - Theme: Reliability
+  - Problem: DB init probe runs on module import, not explicit startup lifecycle.
+  - Evidence: `backend/app/main.py` calls `init_db()` at import-time; `backend/app/db.py:init_db` executes sync probe query.
+  - Root Cause: startup readiness logic is coupled to import side effects.
+  - Impact: migration to async app lifecycle lacks controlled startup/retry hooks and clean readiness sequencing.
+  - Fix (single solution): move DB initialization into FastAPI startup/lifespan routine with explicit failure handling preserving current startup-fail behavior.
   - Steps:
-    1) Add doc near API or in repo root.
-    2) Link it from relevant code comments.
-  - Acceptance Criteria:
-    - Doc exists and is referenced in code.
-  - Validation Commands: `pytest`
-  - Migration/Rollback: Documentation-only change.
-
-- ID: EVO-012
-  - Priority: P2
-  - Theme: Performance | Platform
-  - Problem: Large file lists are returned in a single response without pagination.
-  - Evidence: `backend/app/services/project_service.py` (`list_project_files` limit default 50_000).
-  - Root Cause: No cursor pagination for file list endpoint.
-  - Impact: Large responses and slow clients for big repos.
-  - Fix (single solution): Add cursor-based pagination (`cursor`, `next_cursor`) to `list_project_files` similar to tree entries.
-  - Steps:
-    1) Extend API parameters and response meta.
-    2) Update clients to use paging when needed.
-  - Acceptance Criteria:
-    - API returns `next_cursor` when truncated.
-  - Validation Commands: `pytest`
-  - Migration/Rollback: Keep old params; default behavior unchanged.
-
-- ID: EVO-013
-  - Priority: P2
-  - Theme: Performance
-  - Problem: Text search reads file contents from disk for each query.
-  - Evidence: `backend/app/services/project_service.py` (`search_project_text` opens files to build snippets).
-  - Root Cause: Snippet extraction bypasses indexed text storage.
-  - Impact: Slow searches for large repos and high I/O.
-  - Fix (single solution): Use indexed `filetext` data for snippets when available; fall back to disk read only when necessary.
-  - Steps:
-    1) Extend `search_text_paths` or add helper to fetch stored text snippets.
-    2) Use fallback only for missing indexed data.
-  - Acceptance Criteria:
-    - Searches avoid disk reads when `filetext` contains content.
-  - Validation Commands: `pytest`
-  - Migration/Rollback: Fallback preserves old behavior.
-
-- ID: EVO-014
-  - Priority: P2
-  - Theme: Performance | Reliability
-  - Problem: Graph metric recomputation can be expensive and is invoked inline.
-  - Evidence: `backend/app/graph.py` `compute_graph_metrics` loads full graphs; invoked by scan and file updates.
-  - Root Cause: Synchronous computation on request path.
-  - Impact: Slow responses on large repos.
-  - Fix (single solution): Move large recomputations to background tasks when size thresholds are exceeded; return “metrics pending” status.
-  - Steps:
-    1) Add threshold check and task submission.
-    2) Update responses to include “metrics pending” indicator.
-  - Acceptance Criteria:
-    - Large graphs trigger async computation without blocking requests.
-  - Validation Commands: `pytest`
-  - Migration/Rollback: Keep synchronous path for small graphs.
-
-- ID: EVO-015
-  - Priority: P2
-  - Theme: Performance | UX
-  - Problem: Dependency lists can become too large without pagination, leading to big payloads.
-  - Evidence: `backend/app/services/project_service.py` (`get_file_dependencies` uses a limit but no cursor).
-  - Root Cause: Missing pagination for dependency edges.
-  - Impact: Heavy responses for high fan-in/out files.
-  - Fix (single solution): Add cursor/offset pagination for inbound/outbound edges and expose it in UI when needed.
-  - Steps:
-    1) Extend API with pagination params.
-    2) Update UI to load additional pages on demand.
-  - Acceptance Criteria:
-    - Dependencies can be paged without increasing `limit`.
-  - Validation Commands: `pytest`, `npm run lint`
-  - Migration/Rollback: Default behavior unchanged unless pagination params provided.
+    1) Remove import-time DB probe call from module body.
+    2) Add startup/lifespan initialization hook.
+    3) Preserve health/auth/router behavior and startup failure semantics.
+  - Acceptance Criteria (проверяемо):
+    - DB probe executes in startup lifecycle, not at import-time.
+    - App still fails fast on unreachable DB during startup.
+  - Validation Commands:
+    - `pytest backend/tests/services/test_api_contracts.py`
+  - Migration/Rollback:
+    - Rollback via deployment rollback to previous stable release; target branch keeps startup/lifespan initialization only.
 
 ## 4. Explicit Non-Goals
-- Rewriting the graph/scanner pipeline or changing scanning algorithms without a concrete defect.
-- Adding new LLM features or models outside of the existing task flow.
-- Large refactors of frontend architecture (state management migration, routing changes).
-- Changing auth defaults or deployment topology without explicit requirements.
+- Do not replace Celery/RabbitMQ architecture with another queue system.
+- Do not change frontend transport from polling to websocket/SSE in this migration.
+- Do not redesign domain models or business rules unrelated to async-safety.
+- Do not rewrite Alembic migration runtime to async during this initiative.
+- Do not introduce broad refactors outside modules needed for async boundary migration.
