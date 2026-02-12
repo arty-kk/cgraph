@@ -334,26 +334,7 @@ class TestTaskQueueStatus(unittest.TestCase):
 
 
 class TestTaskQueueInflightGuard(unittest.TestCase):
-    @staticmethod
-    def _fake_session_with_count(active_count: int):
-        class _FakeExecResult:
-            def one(self):
-                return active_count
-
-        class _FakeSession:
-            def exec(self, _query):
-                return _FakeExecResult()
-
-        class _FakeSessionContext:
-            def __enter__(self):
-                return _FakeSession()
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-        return _FakeSessionContext()
-
-    def test_inflight_guard_raises_bad_request_when_redis_unavailable(
+    def test_inflight_guard_raises_external_service_error_when_redis_unavailable(
         self,
     ) -> None:
         active_count = 3
@@ -363,27 +344,23 @@ class TestTaskQueueInflightGuard(unittest.TestCase):
             with patch("app.services.task_queue.logger.warning") as warning_mock, patch(
                 "app.services.task_queue.get_redis_client",
                 side_effect=RedisError("redis unavailable"),
-            ), patch(
-                "app.services.task_queue.get_session",
-                return_value=self._fake_session_with_count(active_count),
             ):
-                with self.assertRaises(BadRequestError) as exc_ctx:
+                with self.assertRaises(ExternalServiceError) as exc_ctx:
                     _guard_inflight("heavy", uuid4().hex)
         finally:
             settings.task_queue_inflight_heavy_limit = previous_limit
 
         err = exc_ctx.exception
-        self.assertEqual(err.code, "bad_request")
-        self.assertEqual(err.message, "Превышен лимит одновременных heavy задач")
+        self.assertEqual(err.code, "external_service_error")
+        self.assertEqual(err.message, "Не удалось проверить лимит очереди")
+        self.assertEqual(err.context["queue"], "heavy")
         warning_mock.assert_called_once()
         warning_extra = warning_mock.call_args.kwargs["extra"]
-        self.assertTrue(warning_extra["redis_unavailable_fallback"])
         self.assertEqual(warning_extra["queue"], "heavy")
         self.assertEqual(warning_extra["limit"], active_count)
-        self.assertEqual(warning_extra["active_count"], active_count)
         self.assertEqual(warning_extra["reason"], "redis unavailable")
 
-    def test_inflight_guard_allows_enqueue_when_redis_unavailable(
+    def test_inflight_guard_raises_external_service_error_when_redis_unavailable_below_limit(
         self,
     ) -> None:
         active_count = 3
@@ -393,20 +370,16 @@ class TestTaskQueueInflightGuard(unittest.TestCase):
             with patch("app.services.task_queue.logger.warning") as warning_mock, patch(
                 "app.services.task_queue.get_redis_client",
                 side_effect=RedisError("redis unavailable"),
-            ), patch(
-                "app.services.task_queue.get_session",
-                return_value=self._fake_session_with_count(active_count),
             ):
-                _guard_inflight("heavy", uuid4().hex)
+                with self.assertRaises(ExternalServiceError):
+                    _guard_inflight("heavy", uuid4().hex)
         finally:
             settings.task_queue_inflight_heavy_limit = previous_limit
 
         warning_mock.assert_called_once()
         warning_extra = warning_mock.call_args.kwargs["extra"]
-        self.assertTrue(warning_extra["redis_unavailable_fallback"])
         self.assertEqual(warning_extra["queue"], "heavy")
         self.assertEqual(warning_extra["limit"], active_count + 1)
-        self.assertEqual(warning_extra["active_count"], active_count)
         self.assertEqual(warning_extra["reason"], "redis unavailable")
 
 

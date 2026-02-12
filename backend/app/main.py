@@ -1,6 +1,8 @@
 # backend/app/main.py
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -13,15 +15,19 @@ from .api.projects import router as projects_router
 from .api.tasks import router as tasks_router
 from .auth import extract_token
 from .config import settings
-from .db import init_db
+from .async_db import AsyncSessionLocal, init_async_db
 from .errors import install_exception_handlers
-from .infra.rate_limit import allow_request, rate_limit_response
+from .infra.rate_limit import allow_request_async, rate_limit_response
 from .logging import log_requests, setup_logging
-from .services.auth_service import get_user_from_token
+from .services.auth_service import get_user_from_token_async
 
-init_db()
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await init_async_db()
+    yield
 
-app = FastAPI(title="StubGraph", version="0.1.0")
+
+app = FastAPI(title="StubGraph", version="0.1.0", lifespan=lifespan)
 
 setup_logging()
 install_exception_handlers(app)
@@ -39,7 +45,7 @@ app.middleware("http")(log_requests)
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
-    if not allow_request(request):
+    if not await allow_request_async(request):
         return rate_limit_response()
     return await call_next(request)
 
@@ -62,9 +68,15 @@ async def auth_guard(request: Request, call_next):
                 status_code=401,
                 content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
             )
-        user = get_user_from_token(token)
+        user = await get_user_from_token_async(request.state.db_session, token)
         request.state.user = user
     return await call_next(request)
+
+@app.middleware("http")
+async def db_session_middleware(request: Request, call_next):
+    async with AsyncSessionLocal() as session:
+        request.state.db_session = session
+        return await call_next(request)
 
 
 app.include_router(projects_router, prefix="/api")

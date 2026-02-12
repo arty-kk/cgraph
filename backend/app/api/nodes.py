@@ -8,14 +8,13 @@ from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from ..config import settings
-from ..contracts import get_or_build_contract
-from ..db import get_session
+from ..contracts import get_or_build_contract_async
 from ..errors import BadRequestError, LockedError, NotFoundError
 from ..graph import update_graph_metrics_incremental
 from ..infra.cache import cache_invalidate_prefix
 from ..logging import get_logger
 from ..models import FileNode
-from ..policy import require_project_access
+from ..policy import require_project_access_async
 from ..scan import scan_files
 from ..services.file_mutation_service import (
     build_mutation_queued_response,
@@ -26,7 +25,7 @@ from ..services.task_queue import task_queue
 from ..utils import (
     ProjectLockTimeout,
     normalize_project_root,
-    project_lock,
+    project_lock_async,
     resolve_under_root,
 )
 
@@ -75,8 +74,8 @@ def _invalidate_pack_cache(project_id: int) -> None:
 
 
 @router.get("/{project_id}/{path:path}/contract")
-def contract(request: Request, project_id: int, path: str):
-    project = require_project_access(request, project_id, min_role="viewer")
+async def contract(request: Request, project_id: int, path: str):
+    project = await require_project_access_async(request, project_id, min_role="viewer")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     if not abs_path.exists():
@@ -85,7 +84,7 @@ def contract(request: Request, project_id: int, path: str):
         raise BadRequestError("Цель должна быть файлом")
 
     try:
-        c = get_or_build_contract(project_id, root, rel_norm)
+        c = await get_or_build_contract_async(request.state.db_session, project_id, root, rel_norm)
         return c
     except FileNotFoundError:
         raise NotFoundError("Файл не найден", context={"path": rel_norm})
@@ -94,8 +93,8 @@ def contract(request: Request, project_id: int, path: str):
 
 
 @router.get("/{project_id}/{path:path}/node")
-def node(request: Request, project_id: int, path: str):
-    project = require_project_access(request, project_id, min_role="viewer")
+async def node(request: Request, project_id: int, path: str):
+    project = await require_project_access_async(request, project_id, min_role="viewer")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(
         root,
@@ -107,13 +106,18 @@ def node(request: Request, project_id: int, path: str):
     if not abs_path.is_file():
         raise BadRequestError("Цель должна быть файлом")
 
-    with get_session() as s:
-        n = s.exec(
-            select(FileNode).where(
-                FileNode.project_id == project_id,
-                FileNode.path == rel_norm,
+    n = (
+        (
+            await request.state.db_session.execute(
+                select(FileNode).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path == rel_norm,
+                )
             )
-        ).first()
+        )
+        .scalars()
+        .first()
+    )
     if not n:
         try:
             if not abs_path.exists():
@@ -138,13 +142,18 @@ def node(request: Request, project_id: int, path: str):
                 "Проект сейчас занят, повторите позже",
                 context={"project_id": project_id},
             ) from exc
-        with get_session() as s:
-            n = s.exec(
-                select(FileNode).where(
-                    FileNode.project_id == project_id,
-                    FileNode.path == rel_norm,
+        n = (
+            (
+                await request.state.db_session.execute(
+                    select(FileNode).where(
+                        FileNode.project_id == project_id,
+                        FileNode.path == rel_norm,
+                    )
                 )
-            ).first()
+            )
+            .scalars()
+            .first()
+        )
         if not n:
             raise NotFoundError("Узел не найден", context={"path": rel_norm})
     return {
@@ -160,8 +169,8 @@ def node(request: Request, project_id: int, path: str):
 
 
 @router.get("/{project_id}/{path:path}/file")
-def get_file(request: Request, project_id: int, path: str, max_chars: int | None = None):
-    project = require_project_access(request, project_id, min_role="viewer")
+async def get_file(request: Request, project_id: int, path: str, max_chars: int | None = None):
+    project = await require_project_access_async(request, project_id, min_role="viewer")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     if not abs_path.exists():
@@ -183,14 +192,14 @@ def get_file(request: Request, project_id: int, path: str, max_chars: int | None
 
 
 @router.put("/{project_id}/{path:path}/file")
-def update_file(
+async def update_file(
     request: Request,
     project_id: int,
     path: str,
     body: FileUpdate,
 ):
     # Single source of truth for mutation response: docs/file-mutation-contract.md
-    project = require_project_access(request, project_id, min_role="member")
+    project = await require_project_access_async(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     if not abs_path.exists():
@@ -203,7 +212,7 @@ def update_file(
         raise BadRequestError("Некорректное содержимое файла")
 
     try:
-        with project_lock(project_id):
+        async with project_lock_async(request.state.db_session, project_id):
             if not abs_path.exists():
                 raise NotFoundError("Файл не найден", context={"path": rel_norm})
             if not abs_path.is_file():
@@ -216,7 +225,7 @@ def update_file(
         ) from exc
 
     _invalidate_pack_cache(project_id)
-    task_id, task_status = task_queue.submit_mutation_indexing(
+    task_id, task_status = await task_queue.submit_mutation_indexing_async(
         project_id=project_id,
         org_id=project.org_id,
         rel_paths=[rel_norm],
@@ -226,13 +235,13 @@ def update_file(
 
 
 @router.post("/{project_id}/{path:path}/file")
-def create_file(
+async def create_file(
     request: Request,
     project_id: int,
     path: str,
     body: FileCreate,
 ):
-    project = require_project_access(request, project_id, min_role="member")
+    project = await require_project_access_async(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
 
@@ -242,7 +251,7 @@ def create_file(
     content = content or ""
 
     try:
-        with project_lock(project_id):
+        async with project_lock_async(request.state.db_session, project_id):
             if abs_path.exists():
                 raise BadRequestError("Файл уже существует", context={"path": rel_norm})
             parent = abs_path.parent
@@ -259,7 +268,7 @@ def create_file(
         ) from exc
 
     _invalidate_pack_cache(project_id)
-    task_id, task_status = task_queue.submit_mutation_indexing(
+    task_id, task_status = await task_queue.submit_mutation_indexing_async(
         project_id=project_id,
         org_id=project.org_id,
         rel_paths=[rel_norm],
@@ -269,13 +278,13 @@ def create_file(
 
 
 @router.post("/{project_id}/{path:path}/rename")
-def rename_file(
+async def rename_file(
     request: Request,
     project_id: int,
     path: str,
     body: FileRename,
 ):
-    project = require_project_access(request, project_id, min_role="member")
+    project = await require_project_access_async(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     new_abs, new_rel = resolve_under_root(
@@ -287,7 +296,7 @@ def rename_file(
         raise BadRequestError("Новый путь совпадает со старым", context={"path": rel_norm})
 
     try:
-        with project_lock(project_id):
+        async with project_lock_async(request.state.db_session, project_id):
             if not abs_path.exists():
                 raise NotFoundError("Файл не найден", context={"path": rel_norm})
             if not abs_path.is_file():
@@ -314,7 +323,7 @@ def rename_file(
         ) from exc
 
     _invalidate_pack_cache(project_id)
-    task_id, task_status = task_queue.submit_mutation_indexing(
+    task_id, task_status = await task_queue.submit_mutation_indexing_async(
         project_id=project_id,
         org_id=project.org_id,
         rel_paths=[rel_norm, new_rel],
@@ -324,17 +333,17 @@ def rename_file(
 
 
 @router.delete("/{project_id}/{path:path}/file")
-def delete_file(
+async def delete_file(
     request: Request,
     project_id: int,
     path: str,
 ):
-    project = require_project_access(request, project_id, min_role="member")
+    project = await require_project_access_async(request, project_id, min_role="member")
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
     abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
 
     try:
-        with project_lock(project_id):
+        async with project_lock_async(request.state.db_session, project_id):
             if not abs_path.exists():
                 raise NotFoundError("Файл не найден", context={"path": rel_norm})
             if not abs_path.is_file():
@@ -348,7 +357,7 @@ def delete_file(
         ) from exc
 
     _invalidate_pack_cache(project_id)
-    task_id, task_status = task_queue.submit_mutation_indexing(
+    task_id, task_status = await task_queue.submit_mutation_indexing_async(
         project_id=project_id,
         org_id=project.org_id,
         rel_paths=[rel_norm],

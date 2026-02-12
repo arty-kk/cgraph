@@ -51,13 +51,3 @@ def iter_nodes(root: Node | None) -> Iterator[Node]:
         children: Sequence[Node] = node.children or []
         for child in reversed(children):
             stack.append(child)
-
-
-def first_child(node: Node | None, types: Iterable[str]) -> Node | None:
-    if node is None:
-        return None
-    type_set = set(types)
-    for ch in node.children:
-        if ch.type in type_set:
-            return ch
-    return None

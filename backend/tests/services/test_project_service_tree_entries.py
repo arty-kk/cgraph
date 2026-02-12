@@ -9,7 +9,7 @@ from app.models import FileNode
 from app.services import project_service
 
 
-class _FakeResult:
+class _FakeScalars:
     def __init__(self, rows):
         self._rows = rows
 
@@ -17,32 +17,35 @@ class _FakeResult:
         return self._rows
 
 
-class _FakeSession:
+class _FakeResult:
     def __init__(self, rows):
         self._rows = rows
 
-    def __enter__(self):
-        return self
+    def scalars(self):
+        return _FakeScalars(self._rows)
 
-    def __exit__(self, exc_type, exc, tb):
-        return False
 
-    def exec(self, query):
+class _FakeAsyncSession:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def get(self, model, project_id):
+        return type('P', (), {'id': project_id, 'org_id': 1})()
+
+    async def execute(self, query):
         return _FakeResult(self._rows)
 
 
-def test_list_project_tree_entries_exact_limit_without_extra_rows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.anyio
+async def test_list_project_tree_entries_exact_limit_without_extra_rows() -> None:
     rows = [
         FileNode(project_id=1, path="a.py", language="python"),
         FileNode(project_id=1, path="b.py", language="python"),
     ]
 
-    monkeypatch.setattr(project_service, "get_project", lambda project_id, org_id: object())
-    monkeypatch.setattr(project_service, "get_session", lambda: _FakeSession(rows))
-
-    result = project_service.list_project_tree_entries(project_id=1, org_id=1, limit=2)
+    result = await project_service.list_project_tree_entries_async(
+        _FakeAsyncSession(rows), project_id=1, org_id=1, limit=2
+    )
 
     assert result["meta"]["returned"] == 2
     assert result["meta"]["truncated"] is False

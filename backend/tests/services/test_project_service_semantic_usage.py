@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,8 @@ from app.config import settings  # noqa: E402
 from app.db import get_session  # noqa: E402
 from app.errors import BadRequestError  # noqa: E402
 from app.models import OrgEntitlement, OrgUsage, Project  # noqa: E402
-from app.services.project_service import search_project_semantic  # noqa: E402
+from app.async_db import AsyncSessionLocal  # noqa: E402
+from app.services.project_service import search_project_semantic_async  # noqa: E402
 from app.services.usage_service import EMBEDDING_QUERY_KIND  # noqa: E402
 
 
@@ -41,7 +43,11 @@ class TestProjectServiceSemanticUsage(unittest.TestCase):
                     project_id = project.id
 
                 with self.assertRaises(BadRequestError):
-                    search_project_semantic(project_id, org_id, "test query")
+                    async def _run() -> None:
+                        async with AsyncSessionLocal() as session:
+                            await search_project_semantic_async(session, project_id, org_id, "test query")
+
+                    asyncio.run(_run())
 
                 day = datetime.now(timezone.utc).date()
                 with get_session() as session:

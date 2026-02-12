@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 
 from sqlmodel import select
 
+from ..async_db import AsyncSessionLocal
 from ..config import settings
-from ..db import get_session
-from ..infra.cache import cache_set_json
+from ..infra.cache import cache_set_json_async
 from ..logging import get_logger
 from ..models import AnalysisStageTelemetry
 
@@ -164,7 +164,7 @@ def _derive_base_weights(
     return _validate_and_normalize_weights(raw) or default_weights
 
 
-def calibrate_routing_policy_thresholds() -> dict[str, object]:
+async def calibrate_routing_policy_thresholds_async() -> dict[str, object]:
     if not bool(settings.llm_routing_calibration_enabled):
         return {"updated": False, "reason": "disabled"}
 
@@ -180,24 +180,30 @@ def calibrate_routing_policy_thresholds() -> dict[str, object]:
         "fail_rate": float(settings.llm_routing_weight_fail_rate),
     }
 
-    with get_session() as session:
-        rows = session.exec(
-            select(AnalysisStageTelemetry)
-            .where(
-                AnalysisStageTelemetry.stage_name.in_(
-                    [
-                        "analyze_agentic",
-                        "evolve_agentic",
-                        "fix_agentic",
-                        "analyze_pack",
-                        "evolve_pack",
-                        "fix_pack",
-                    ]
+    async with AsyncSessionLocal() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(AnalysisStageTelemetry)
+                    .where(
+                        AnalysisStageTelemetry.stage_name.in_(
+                            [
+                                "analyze_agentic",
+                                "evolve_agentic",
+                                "fix_agentic",
+                                "analyze_pack",
+                                "evolve_pack",
+                                "fix_pack",
+                            ]
+                        )
+                    )
+                    .order_by(AnalysisStageTelemetry.id.desc())
+                    .limit(max(2000, int(settings.llm_routing_calibration_min_samples) * 2))
                 )
             )
-            .order_by(AnalysisStageTelemetry.id.desc())
-            .limit(max(2000, int(settings.llm_routing_calibration_min_samples) * 2))
-        ).all()
+            .scalars()
+            .all()
+        )
 
     if len(rows) < int(settings.llm_routing_calibration_min_samples):
         return {
@@ -216,7 +222,7 @@ def calibrate_routing_policy_thresholds() -> dict[str, object]:
         "samples": len(rows),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    cache_set_json(
+    await cache_set_json_async(
         ["routing_policy", "thresholds", settings.llm_routing_policy_version], thresholds_payload
     )
 
@@ -237,7 +243,7 @@ def calibrate_routing_policy_thresholds() -> dict[str, object]:
             "samples": len(rows),
             "updated_at": thresholds_payload["updated_at"],
         }
-        cache_set_json(
+        await cache_set_json_async(
             ["routing_policy", "weights", settings.llm_routing_policy_version, sla_profile],
             weight_payload,
         )
