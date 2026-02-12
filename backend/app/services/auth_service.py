@@ -219,6 +219,28 @@ def register_user(email: str, password: str) -> User:
         return user
 
 
+def register_user(email: str, password: str) -> User:
+    if not settings.auth_allow_public_signup:
+        raise BadRequestError("Регистрация отключена")
+    if not isinstance(email, str) or not email.strip():
+        raise BadRequestError("Email обязателен")
+    if not isinstance(password, str) or len(password) < 8:
+        raise BadRequestError("Пароль должен быть не короче 8 символов")
+
+    with get_session() as session:
+        user = User(email=email.strip().lower(), password_hash=_hash_password(password))
+        session.add(user)
+        try:
+            session.flush()
+            _create_default_org(session, user)
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise BadRequestError("Пользователь уже существует") from exc
+        session.refresh(user)
+        return user
+
+
 async def register_user_async(session: AsyncSession, email: str, password: str) -> User:
     if not settings.auth_allow_public_signup:
         raise BadRequestError("Регистрация отключена")
