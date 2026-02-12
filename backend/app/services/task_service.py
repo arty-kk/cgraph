@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import asyncio
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any
 from fastapi import BackgroundTasks
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..async_db import AsyncSessionLocal
 from sqlmodel import delete, select
 from unidiff import PatchSet
 
@@ -68,7 +71,7 @@ from ..utils import (
     project_lock_async,
     resolve_under_root,
 )
-from .task_queue import get_scan_idempotency_key, submit_run_async, task_queue
+from .task_queue import get_scan_idempotency_key, submit_run_async, submit_scan_async
 
 MAX_PATCH_STORE_CHARS = 50_000
 MAX_GRAPH_DEPS_FOR_LLM = 500
@@ -96,16 +99,24 @@ def get_project(project_id: int, org_id: int | None = None) -> Project:
     return project
 
 
-def _get_active_scan_task(project_id: int, org_id: int) -> tuple[str | None, str | None]:
+
+
+async def _get_active_scan_task_async(project_id: int, org_id: int) -> tuple[str | None, str | None]:
     idempotency_key = get_scan_idempotency_key(org_id, project_id)
-    with get_session() as session:
-        job = session.exec(
-            select(TaskJob).where(
-                TaskJob.org_id == org_id,
-                TaskJob.idempotency_key == idempotency_key,
-                TaskJob.status.in_(("pending", "running")),
+    async with AsyncSessionLocal() as session:
+        job = (
+            (
+                await session.execute(
+                    select(TaskJob).where(
+                        TaskJob.org_id == org_id,
+                        TaskJob.idempotency_key == idempotency_key,
+                        TaskJob.status.in_(("pending", "running")),
+                    )
+                )
             )
-        ).first()
+            .scalars()
+            .first()
+        )
     if not job:
         return None, None
     return job.id, job.status
@@ -118,11 +129,11 @@ def scan_with_background(
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
     _ = background
-    task_id, status = _get_active_scan_task(project_id, org_id)
+    task_id, status = asyncio.run(_get_active_scan_task_async(project_id, org_id))
     if task_id and status in ("pending", "running"):
         return {"task_id": task_id, "status": status}
 
-    task_id = task_queue.submit_scan(project_id, org_id)
+    task_id = asyncio.run(submit_scan_async(project_id, org_id))
     if background_tasks is not None:
         background_tasks.add_task(lambda: None)
     return {"task_id": task_id, "status": "pending"}
@@ -2092,7 +2103,7 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
 
 
 async def run_task_async(project_id: int, org_id: int, request: TaskRequest) -> dict:
-    return run_task(project_id, org_id, request)
+    return await asyncio.to_thread(run_task, project_id, org_id, request)
 
 
 async def run_task_with_background_async(
