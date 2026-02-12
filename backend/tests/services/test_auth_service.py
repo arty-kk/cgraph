@@ -5,10 +5,11 @@ import unittest
 from pathlib import Path
 from threading import Barrier, Lock, Thread
 from time import time
+from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError  # noqa: E402
 from sqlmodel import select  # noqa: E402
 
 
@@ -141,6 +142,99 @@ class TestAuthServiceAuthenticate(unittest.TestCase):
 
         self.assertEqual(user.email, "user@example.com")
 
+
+class TestAuthServiceRegister(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        from app.errors import BadRequestError  # noqa: E402
+        from app.services.auth_service import register_user  # noqa: E402
+
+        cls.BadRequestError = BadRequestError
+        cls.register_user = staticmethod(register_user)
+
+    def test_register_user_integrity_error_rolls_back_and_raises_bad_request(self) -> None:
+        class _FakeResult:
+            def first(self):
+                return None
+
+        class _FakeSession:
+            def __init__(self):
+                self.rollback_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def exec(self, _query):
+                return _FakeResult()
+
+            def add(self, _obj):
+                return None
+
+            def flush(self):
+                return None
+
+            def commit(self):
+                raise IntegrityError("INSERT", {}, Exception("duplicate key value"))
+
+            def rollback(self):
+                self.rollback_called = True
+
+            def refresh(self, _obj):
+                return None
+
+        fake_session = _FakeSession()
+
+        with patch("app.services.auth_service.get_session", return_value=fake_session):
+            with patch("app.services.auth_service.settings.auth_allow_public_signup", True):
+                with self.assertRaises(self.BadRequestError):
+                    self.register_user("duplicate@example.com", "password-123")
+
+        self.assertTrue(fake_session.rollback_called)
+
+    def test_register_user_flush_integrity_error_rolls_back_and_raises_bad_request(self) -> None:
+        class _FakeResult:
+            def first(self):
+                return None
+
+        class _FakeSession:
+            def __init__(self):
+                self.rollback_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def exec(self, _query):
+                return _FakeResult()
+
+            def add(self, _obj):
+                return None
+
+            def flush(self):
+                raise IntegrityError("INSERT", {}, Exception("duplicate key value"))
+
+            def commit(self):
+                return None
+
+            def rollback(self):
+                self.rollback_called = True
+
+            def refresh(self, _obj):
+                return None
+
+        fake_session = _FakeSession()
+
+        with patch("app.services.auth_service.get_session", return_value=fake_session):
+            with patch("app.services.auth_service.settings.auth_allow_public_signup", True):
+                with self.assertRaises(self.BadRequestError):
+                    self.register_user("duplicate@example.com", "password-123")
+
+        self.assertTrue(fake_session.rollback_called)
 
 
 if __name__ == "__main__":

@@ -185,33 +185,15 @@ async def bootstrap_user_async(session: AsyncSession, email: str, password: str)
 
         user = User(email=email.strip().lower(), password_hash=_hash_password(password))
         session.add(user)
-        await session.flush()
-        await _create_default_org_async(session, user)
-
-    await session.refresh(user)
-    return user
-
-
-async def register_user_async(session: AsyncSession, email: str, password: str) -> User:
-    if not settings.auth_allow_public_signup:
-        raise BadRequestError("Публичная регистрация отключена")
-    if not isinstance(email, str) or not email.strip():
-        raise BadRequestError("Email обязателен")
-    if not isinstance(password, str) or len(password) < 8:
-        raise BadRequestError("Пароль должен быть не короче 8 символов")
-    normalized_email = email.strip().lower()
-    existing = (
-        (await session.execute(select(User).where(User.email == normalized_email))).scalars().first()
-    )
-    if existing:
-        raise BadRequestError("Пользователь уже существует")
-    user = User(email=normalized_email, password_hash=_hash_password(password))
-    session.add(user)
-    await session.flush()
-    await _create_default_org_async(session, user)
-    await session.commit()
-    await session.refresh(user)
-    return user
+        try:
+            session.flush()
+            _create_default_org(session, user)
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            raise BadRequestError("Пользователь уже существует") from exc
+        session.refresh(user)
+        return user
 
 
 def authenticate_user(email: str, password: str) -> User:
