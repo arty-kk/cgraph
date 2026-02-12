@@ -1,16 +1,15 @@
 import sys
-import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
+import pytest
 from starlette.requests import Request
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app import policy  # noqa: E402
-from app.models import Organization  # noqa: E402
+from app import policy
+from app.models import Organization
 
 
 class _FakeDialect:
@@ -25,42 +24,29 @@ class _FakeResult:
     def __init__(self, values: list[Any]) -> None:
         self._values = values
 
+    def scalars(self):
+        return self
+
     def all(self) -> list[Any]:
         return self._values
 
     def first(self) -> Any | None:
-        if not self._values:
-            return None
-        return self._values[0]
+        return self._values[0] if self._values else None
 
 
-class _FakeBegin:
-    def __enter__(self) -> "_FakeBegin":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-
-class _FakeSession:
+class _FakeAsyncSession:
     def __init__(self) -> None:
+        self.bind = _FakeBind()
         self.advisory_called = False
         self.select_calls = 0
         self.added: Organization | None = None
 
-    def __enter__(self) -> "_FakeSession":
-        return self
+    async def get(self, model, org_id: int):
+        _ = model
+        _ = org_id
+        return None
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def begin(self) -> _FakeBegin:
-        return _FakeBegin()
-
-    def get_bind(self) -> _FakeBind:
-        return _FakeBind()
-
-    def exec(self, statement, params=None) -> _FakeResult:
+    async def execute(self, statement, params=None):
         sql_text = str(statement)
         if "pg_advisory_xact_lock" in sql_text:
             self.advisory_called = True
@@ -73,13 +59,17 @@ class _FakeSession:
     def add(self, obj: Organization) -> None:
         self.added = obj
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         if self.added is not None and self.added.id is None:
             self.added.id = 1
 
+    async def rollback(self) -> None:
+        return None
 
-class _FakeSessionIntegrity:
+
+class _FakeAsyncSessionIntegrity:
     def __init__(self) -> None:
+        self.bind = _FakeBind()
         self.advisory_called = False
         self.select_calls = 0
         self.added: list[Organization] = []
@@ -94,19 +84,12 @@ class _FakeSessionIntegrity:
         self.flush_calls = 0
         self.rollback_calls = 0
 
-    def __enter__(self) -> "_FakeSessionIntegrity":
-        return self
+    async def get(self, model, org_id: int):
+        _ = model
+        _ = org_id
+        return None
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def begin(self) -> _FakeBegin:
-        return _FakeBegin()
-
-    def get_bind(self) -> _FakeBind:
-        return _FakeBind()
-
-    def exec(self, statement, params=None) -> _FakeResult:
+    async def execute(self, statement, params=None):
         sql_text = str(statement)
         if "pg_advisory_xact_lock" in sql_text:
             self.advisory_called = True
@@ -121,49 +104,37 @@ class _FakeSessionIntegrity:
     def add(self, obj: Organization) -> None:
         self.added.append(obj)
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         self.flush_calls += 1
         raise policy.IntegrityError("INSERT", {}, Exception("conflict"))
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         self.rollback_calls += 1
         self.added = []
 
 
-class TestResolveOrgUnauthSqlite(unittest.TestCase):
-    def _request(self) -> Request:
-        scope = {"type": "http", "headers": []}
-        return Request(scope)
+@pytest.mark.anyio
+async def test_creates_org_without_advisory_lock():
+    session = _FakeAsyncSession()
+    request = Request({"type": "http", "headers": [], "state": {"db_session": session}})
 
-    def test_creates_org_without_advisory_lock(self) -> None:
-        session = _FakeSession()
+    org_id = await policy._resolve_org_id_unauth_async(request)
 
-        def _get_session() -> _FakeSession:
-            return session
-
-        with mock.patch("app.policy.get_session", _get_session):
-            org_id = policy._resolve_org_id_unauth(self._request())
-
-        self.assertEqual(org_id, 1)
-        self.assertFalse(session.advisory_called)
-        self.assertEqual(session.select_calls, 2)
-        self.assertIsInstance(session.added, Organization)
-        self.assertEqual(session.added.slug, "personal")
-
-    def test_reuses_personal_on_slug_conflict(self) -> None:
-        session = _FakeSessionIntegrity()
-
-        def _get_session() -> _FakeSessionIntegrity:
-            return session
-
-        with mock.patch("app.policy.get_session", _get_session):
-            org_id = policy._resolve_org_id_unauth(self._request())
-
-        self.assertEqual(org_id, session.persisted[0].id)
-        self.assertEqual(len(session.persisted), 1)
-        self.assertEqual(session.flush_calls, 1)
-        self.assertEqual(session.rollback_calls, 1)
+    assert org_id == 1
+    assert not session.advisory_called
+    assert session.select_calls == 2
+    assert isinstance(session.added, Organization)
+    assert session.added.slug == "personal"
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.anyio
+async def test_reuses_personal_on_slug_conflict():
+    session = _FakeAsyncSessionIntegrity()
+    request = Request({"type": "http", "headers": [], "state": {"db_session": session}})
+
+    org_id = await policy._resolve_org_id_unauth_async(request)
+
+    assert org_id == session.persisted[0].id
+    assert len(session.persisted) == 1
+    assert session.flush_calls == 1
+    assert session.rollback_calls == 1

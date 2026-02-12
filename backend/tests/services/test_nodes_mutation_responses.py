@@ -73,7 +73,7 @@ def test_update_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch
         return "mutation-1", "pending"
 
     monkeypatch.setattr(
-        nodes_api.task_queue,
+        nodes_api,
         "submit_mutation_indexing_async",
         _submit_mutation_indexing_async,
     )
@@ -103,7 +103,7 @@ def test_rename_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch
         return "mutation-2", "running"
 
     monkeypatch.setattr(
-        nodes_api.task_queue,
+        nodes_api,
         "submit_mutation_indexing_async",
         _submit_mutation_indexing_async,
     )
