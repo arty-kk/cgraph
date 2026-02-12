@@ -160,7 +160,10 @@ async def bootstrap_user_async(session: AsyncSession, email: str, password: str)
     async with session.begin():
         dialect = session.bind.dialect.name if session.bind is not None else ""
         if dialect == "postgresql":
-            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": _BOOTSTRAP_LOCK_KEY},
+            )
 
         existing_sentinel = (
             (
@@ -183,6 +186,26 @@ async def bootstrap_user_async(session: AsyncSession, email: str, password: str)
         except IntegrityError as exc:
             raise BadRequestError("Bootstrap уже выполнен") from exc
 
+        user = User(email=email.strip().lower(), password_hash=_hash_password(password))
+        session.add(user)
+        try:
+            await session.flush()
+            await _create_default_org_async(session, user)
+        except IntegrityError as exc:
+            raise BadRequestError("Пользователь уже существует") from exc
+        await session.refresh(user)
+        return user
+
+
+def register_user(email: str, password: str) -> User:
+    if not settings.auth_allow_public_signup:
+        raise BadRequestError("Регистрация отключена")
+    if not isinstance(email, str) or not email.strip():
+        raise BadRequestError("Email обязателен")
+    if not isinstance(password, str) or len(password) < 8:
+        raise BadRequestError("Пароль должен быть не короче 8 символов")
+
+    with get_session() as session:
         user = User(email=email.strip().lower(), password_hash=_hash_password(password))
         session.add(user)
         try:
@@ -259,7 +282,9 @@ async def authenticate_user_async(session: AsyncSession, email: str, password: s
     if not isinstance(password, str):
         raise BadRequestError("Пароль обязателен")
     user = (
-        (await session.execute(select(User).where(User.email == email.strip().lower()))).scalars().first()
+        (await session.execute(select(User).where(User.email == email.strip().lower())))
+        .scalars()
+        .first()
     )
     if not user or not user.is_active:
         raise UnauthorizedError("Неверные учетные данные")
@@ -303,7 +328,11 @@ async def create_session_async(session: AsyncSession, user_id: int) -> tuple[str
 
 async def revoke_session_async(session: AsyncSession, token: str) -> None:
     token_hash = _hash_token(token)
-    row = (await session.execute(select(UserSession).where(UserSession.token_hash == token_hash))).scalars().first()
+    row = (
+        (await session.execute(select(UserSession).where(UserSession.token_hash == token_hash)))
+        .scalars()
+        .first()
+    )
     if not row:
         return
     row.revoked_at = datetime.now(timezone.utc)
@@ -405,7 +434,9 @@ async def get_user_from_token_async(session: AsyncSession, token: str) -> User:
     raise UnauthorizedError("Неверный токен")
 
 
-async def create_api_key_async(session: AsyncSession, user_id: int, name: str) -> tuple[str, ApiKey]:
+async def create_api_key_async(
+    session: AsyncSession, user_id: int, name: str
+) -> tuple[str, ApiKey]:
     token, token_hash = _generate_token("api")
     prefix = token.split("_", 1)[0]
     expires_at = None
@@ -427,7 +458,11 @@ async def create_api_key_async(session: AsyncSession, user_id: int, name: str) -
 
 
 async def list_api_keys_async(session: AsyncSession, user_id: int) -> list[ApiKey]:
-    return list((await session.execute(select(ApiKey).where(ApiKey.user_id == user_id))).scalars().all())
+    return list(
+        (await session.execute(select(ApiKey).where(ApiKey.user_id == user_id)))
+        .scalars()
+        .all()
+    )
 
 
 async def revoke_api_key_async(session: AsyncSession, user_id: int, key_id: int) -> None:
