@@ -68,10 +68,14 @@ def test_update_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch
 
     from app.api import nodes as nodes_api  # noqa: E402
 
+    async def _submit_mutation_indexing_async(**kwargs):
+        _ = kwargs
+        return "mutation-1", "pending"
+
     monkeypatch.setattr(
         nodes_api.task_queue,
-        "submit_mutation_indexing",
-        lambda **kwargs: ("mutation-1", "pending"),
+        "submit_mutation_indexing_async",
+        _submit_mutation_indexing_async,
     )
 
     response = client.put(
@@ -94,10 +98,14 @@ def test_rename_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch
 
     from app.api import nodes as nodes_api  # noqa: E402
 
+    async def _submit_mutation_indexing_async(**kwargs):
+        _ = kwargs
+        return "mutation-2", "running"
+
     monkeypatch.setattr(
         nodes_api.task_queue,
-        "submit_mutation_indexing",
-        lambda **kwargs: ("mutation-2", "running"),
+        "submit_mutation_indexing_async",
+        _submit_mutation_indexing_async,
     )
 
     response = client.post(

@@ -4,10 +4,12 @@ from __future__ import annotations
 import hashlib
 import time
 from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Iterator, Tuple
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
 from .db import engine
@@ -145,3 +147,33 @@ def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
         if chunk:
             chunks.append(chunk)
     return chunks
+
+
+@asynccontextmanager
+async def project_lock_async(session: AsyncSession, project_id: int):
+    timeout_seconds = float(getattr(settings, "project_lock_timeout_seconds", 30.0))
+    poll_interval = float(getattr(settings, "project_lock_poll_interval_seconds", 0.25))
+    if timeout_seconds < 0:
+        timeout_seconds = 0.0
+    if poll_interval <= 0:
+        poll_interval = 0.1
+
+    start = time.monotonic()
+    locked = False
+    while not locked:
+        result = await session.execute(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": int(project_id)}
+        )
+        locked = bool(result.scalar())
+        if locked:
+            break
+        elapsed = time.monotonic() - start
+        if elapsed >= timeout_seconds:
+            raise ProjectLockTimeout("Timeout while waiting for project lock")
+        import asyncio
+
+        await asyncio.sleep(min(poll_interval, max(0.0, timeout_seconds - elapsed)))
+    try:
+        yield
+    finally:
+        await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": int(project_id)})

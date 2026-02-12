@@ -1,6 +1,7 @@
 # backend/app/services/docs_service.py
 from __future__ import annotations
 
+import asyncio
 import heapq
 import json
 import re
@@ -9,11 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ..config import settings
-from ..contracts import get_or_build_contract
-from ..db import get_session
+from ..async_db import AsyncSessionLocal
+from ..contracts import get_or_build_contract_async
 from ..errors import BadRequestError, ExternalServiceError, NotFoundError
 from ..llm.orchestrator import generate_docs
 from ..models import (
@@ -22,9 +24,9 @@ from ..models import (
     ApiRoute,
     FileEdge,
     FileNode,
+    Project,
     ProjectDoc,
 )
-from ..services.project_service import get_project
 from ..utils import normalize_project_root, resolve_under_root
 
 _KEY_FILE_MAX_CHARS = 4_000
@@ -482,58 +484,39 @@ def _route_prefix(path: str) -> str:
     return "/" + parts[0]
 
 
-def _build_api_summary(project_id: int) -> dict:
+async def _build_api_summary_async(session: AsyncSession, project_id: int) -> dict:
     try:
-        with get_session() as s:
-            routes_total_row = s.exec(
-                select(func.count()).select_from(ApiRoute).where(ApiRoute.project_id == project_id)
-            ).one()
-            calls_total_row = s.exec(
-                select(func.count()).select_from(ApiCall).where(ApiCall.project_id == project_id)
-            ).one()
-            includes_total_row = s.exec(
-                select(func.count())
-                .select_from(ApiInclude)
-                .where(ApiInclude.project_id == project_id)
-            ).one()
+        routes_total = int((await session.execute(select(func.count()).select_from(ApiRoute).where(ApiRoute.project_id == project_id))).scalar_one() or 0)
+        calls_total = int((await session.execute(select(func.count()).select_from(ApiCall).where(ApiCall.project_id == project_id))).scalar_one() or 0)
+        includes_total = int((await session.execute(select(func.count()).select_from(ApiInclude).where(ApiInclude.project_id == project_id))).scalar_one() or 0)
 
-            routes_total = int(
-                routes_total_row[0]
-                if isinstance(routes_total_row, (tuple, list))
-                else routes_total_row
-            )
-            calls_total = int(
-                calls_total_row[0]
-                if isinstance(calls_total_row, (tuple, list))
-                else calls_total_row
-            )
-            includes_total = int(
-                includes_total_row[0]
-                if isinstance(includes_total_row, (tuple, list))
-                else includes_total_row
-            )
-
-            route_methods_rows = s.exec(
+        route_methods_rows = (
+            await session.execute(
                 select(ApiRoute.method, func.count())
                 .where(ApiRoute.project_id == project_id)
                 .group_by(ApiRoute.method)
                 .order_by(ApiRoute.method)
-            ).all()
-            call_methods_rows = s.exec(
+            )
+        ).all()
+        call_methods_rows = (
+            await session.execute(
                 select(ApiCall.method, func.count())
                 .where(ApiCall.project_id == project_id)
                 .group_by(ApiCall.method)
                 .order_by(ApiCall.method)
-            ).all()
+            )
+        ).all()
 
-            ROUTE_SAMPLE = 20_000
-            CALL_SAMPLE = 20_000
-            route_paths_rows = s.exec(
-                select(ApiRoute.path).where(ApiRoute.project_id == project_id).limit(ROUTE_SAMPLE)
-            ).all()
-            call_paths_rows = s.exec(
-                select(ApiCall.path).where(ApiCall.project_id == project_id).limit(CALL_SAMPLE)
-            ).all()
+        route_paths_rows = (
+            await session.execute(
+                select(ApiRoute.path).where(ApiRoute.project_id == project_id).limit(20_000)
+            )
+        ).all()
+        call_paths_rows = (
+            await session.execute(
+                select(ApiCall.path).where(ApiCall.project_id == project_id).limit(20_000)
+            )
+        ).all()
     except Exception as e:
         return {"error": "api_summary_failed", "message": str(e)}
 
@@ -929,122 +912,125 @@ def _api_summary_md(api_summary: dict) -> str:
     return "\n".join(out).strip() + "\n"
 
 
-def build_project_docs(project_id: int, org_id: int) -> dict:
-    project = get_project(project_id, org_id=org_id)
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+async def build_project_docs_async(project_id: int, org_id: int) -> dict:
+    async with AsyncSessionLocal() as session:
+        project = await session.get(Project, project_id)
+        if not project or project.org_id != org_id:
+            raise NotFoundError("Проект не найден", context={"project_id": project_id})
 
-    with get_session() as s:
-        nodes = s.exec(
-            select(
-                FileNode.path,
-                FileNode.language,
-                FileNode.loc,
-                FileNode.complexity,
-                FileNode.fan_in,
-                FileNode.fan_out,
-                FileNode.status,
+        root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+
+        nodes = (
+            await session.execute(
+                select(
+                    FileNode.path,
+                    FileNode.language,
+                    FileNode.loc,
+                    FileNode.complexity,
+                    FileNode.fan_in,
+                    FileNode.fan_out,
+                    FileNode.status,
+                )
+                .where(FileNode.project_id == project_id)
+                .order_by(FileNode.path)
             )
-            .where(FileNode.project_id == project_id)
-            .order_by(FileNode.path)
         ).all()
-        edges_total_row = s.exec(
-            select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
-        ).one()
         edges_total = int(
-            edges_total_row[0] if isinstance(edges_total_row, (tuple, list)) else edges_total_row
+            (
+                await session.execute(
+                    select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
+                )
+            ).scalar_one()
+            or 0
         )
 
-    if not nodes:
-        raise BadRequestError("Проект не проиндексирован. Сначала сделай Scan.")
+        if not nodes:
+            raise BadRequestError("Проект не проиндексирован. Сначала сделай Scan.")
 
-    summary = _compute_project_summary_facts(nodes)
-    risks = summary["risks"]
-    paths = summary["paths"]
-    lang_count = summary["languages"]
-    total_loc = summary["counts"]["loc"]
-    hotspots = summary["hotspots"]
-    hubs = summary["hubs_by_fan_in"]
-    module_rows = summary["module_rows"]
+        summary = _compute_project_summary_facts(nodes)
+        risks = summary["risks"]
+        paths = summary["paths"]
+        lang_count = summary["languages"]
+        total_loc = summary["counts"]["loc"]
+        hotspots = summary["hotspots"]
+        hubs = summary["hubs_by_fan_in"]
+        module_rows = summary["module_rows"]
+
+        contracts: list[dict] = []
+        contract_paths: list[str] = []
+
+        def _push_path(path_value: str) -> None:
+            if not isinstance(path_value, str) or not path_value.strip():
+                return
+            normalized = path_value.strip()
+            if normalized not in contract_paths:
+                contract_paths.append(normalized)
+
+        for item in hotspots[:15]:
+            _push_path(str(item.get("path") or ""))
+
+        for item in hubs[:8]:
+            _push_path(str(item.get("path") or ""))
+
+        top_fan_out = heapq.nlargest(
+            8,
+            risks,
+            key=lambda x: (
+                int(x.get("fan_out", 0)),
+                float(x.get("risk", 0.0)),
+                _invert_str(x.get("path", "")),
+            ),
+        )
+        for item in top_fan_out:
+            _push_path(str(item.get("path") or ""))
+
+        entry_names = (
+            "main.py",
+            "__main__.py",
+            "app.py",
+            "wsgi.py",
+            "asgi.py",
+            "manage.py",
+            "index.ts",
+            "index.js",
+            "main.ts",
+            "main.js",
+            "server.ts",
+            "server.js",
+            "app.ts",
+            "app.js",
+            "main.go",
+            "main.rs",
+            "Program.cs",
+            "Main.java",
+            "Application.java",
+            "Main.kt",
+            "Application.kt",
+        )
+        entry_candidates = [path for path in paths if isinstance(path, str) and path.endswith(entry_names)]
+        for path in sorted(entry_candidates, key=lambda x: (len(x.split("/")), x))[:4]:
+            _push_path(path)
+
+        for path in contract_paths[:_MAX_CONTRACTS]:
+            try:
+                contract = await get_or_build_contract_async(session, project_id, root, path)
+                if isinstance(contract, dict):
+                    contracts.append({"path": path, "contract": _compact_contract(contract)})
+            except Exception:
+                continue
+
+        api_summary = await _build_api_summary_async(session, project_id)
 
     module_table = [
         "| module | files | loc | risk_max | top hotspots |",
         "|---|---:|---:|---:|---|",
     ]
-    for m in module_rows[:30]:
-        hs = ", ".join([f"`{p}`" for _, p in (m.get("top_hotspots") or [])])
+    for row in module_rows[:30]:
+        hotspots_md = ", ".join([f"`{path}`" for _, path in (row.get("top_hotspots") or [])])
         module_table.append(
-            f"| `{m['module']}` | {int(m['files'])} | {int(m['loc'])} | "
-            f"{float(m['risk_max']):.2f} | {hs} |"
+            f"| `{row['module']}` | {int(row['files'])} | {int(row['loc'])} | "
+            f"{float(row['risk_max']):.2f} | {hotspots_md} |"
         )
-
-    # Contracts for top hotspots (lightweight)
-    contracts: list[dict] = []
-    contract_paths: list[str] = []
-
-    def _push_path(p: str) -> None:
-        if not isinstance(p, str) or not p.strip():
-            return
-        pp = p.strip()
-        if pp not in contract_paths:
-            contract_paths.append(pp)
-
-    for item in hotspots[:15]:
-        _push_path(str(item.get("path") or ""))
-
-    for item in hubs[:8]:
-        _push_path(str(item.get("path") or ""))
-
-    top_fan_out = heapq.nlargest(
-        8,
-        risks,
-        key=lambda x: (
-            int(x.get("fan_out", 0)),
-            float(x.get("risk", 0.0)),
-            _invert_str(x.get("path", "")),
-        ),
-    )
-    for item in top_fan_out:
-        _push_path(str(item.get("path") or ""))
-
-    entry_names = (
-        # python
-        "main.py",
-        "__main__.py",
-        "app.py",
-        "wsgi.py",
-        "asgi.py",
-        "manage.py",
-        # node
-        "index.ts",
-        "index.js",
-        "main.ts",
-        "main.js",
-        "server.ts",
-        "server.js",
-        "app.ts",
-        "app.js",
-        # go / rust
-        "main.go",
-        "main.rs",
-        # dotnet
-        "Program.cs",
-        # java/kotlin
-        "Main.java",
-        "Application.java",
-        "Main.kt",
-        "Application.kt",
-    )
-    entry_candidates = [p for p in paths if isinstance(p, str) and p.endswith(entry_names)]
-    for p in sorted(entry_candidates, key=lambda x: (len(x.split("/")), x))[:4]:
-        _push_path(p)
-
-    for p in contract_paths[:_MAX_CONTRACTS]:
-        try:
-            c = get_or_build_contract(project_id, root, p)
-            if isinstance(c, dict):
-                contracts.append({"path": p, "contract": _compact_contract(c)})
-        except Exception:
-            continue
 
     outline = _tree_outline(paths, max_lines=1200)
 
@@ -1052,27 +1038,22 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
         "| # | path | risk | loc | fan_in | fan_out | complexity | status |",
         "|---:|---|---:|---:|---:|---:|---:|---|",
     ]
-    for i, h in enumerate(hotspots, start=1):
+    for idx, item in enumerate(hotspots, start=1):
         hotspots_table.append(
-            f"| {i} | `{h['path']}` | {h['risk']:.2f} | {h['loc']} | {h['fan_in']} | "
-            f"{h['fan_out']} | {h['complexity']} | {h['status']} |"
+            f"| {idx} | `{item['path']}` | {item['risk']:.2f} | {item['loc']} | {item['fan_in']} | "
+            f"{item['fan_out']} | {item['complexity']} | {item['status']} |"
         )
 
-    api_summary = _build_api_summary(project_id)
     key_files, key_files_parsed = _collect_key_files(root, paths)
     run_hints = _build_run_hints(key_files, key_files_parsed)
 
     facts = {
         "project": {"id": project_id, "name": project.name, "root_path": project.root_path},
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "counts": {
-            "files": len(paths),
-            "edges": edges_total,
-            "loc": total_loc,
-        },
+        "counts": {"files": len(paths), "edges": edges_total, "loc": total_loc},
         "languages": [
-            {"language": k, "files": v}
-            for k, v in sorted(lang_count.items(), key=lambda x: (-x[1], x[0]))
+            {"language": lang, "files": count}
+            for lang, count in sorted(lang_count.items(), key=lambda x: (-x[1], x[0]))
         ],
         "hotspots": hotspots,
         "hubs_by_fan_in": hubs,
@@ -1086,9 +1067,8 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
         "module_map_table_md": "\n".join(module_table),
     }
 
-    md = ""
     try:
-        llm = generate_docs(facts)
+        llm = await asyncio.to_thread(generate_docs, facts)
         md = str(llm.get("markdown") or "").strip()
     except Exception as e:
         raise ExternalServiceError(
@@ -1104,23 +1084,20 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
         tree_md += "\n\n> (Tree truncated)\n"
 
     api_md = _api_summary_md(api_summary)
-    run_md = ""
-    if run_hints:
-        run_md = "\n".join([f"- `{h}`" for h in run_hints[:25]]) + "\n"
-    else:
+    run_md = "\n".join([f"- `{hint}`" for hint in run_hints[:25]]) + "\n"
+    if not run_hints:
         run_md = "> No obvious run commands found in README/Makefile/compose/package manifests.\n"
 
-    key_files_md = ""
     if key_files:
-        rows = []
-        for kf in key_files[:15]:
-            if isinstance(kf, dict):
-                p = str(kf.get("path") or "")
-                role = str(kf.get("role") or "")
-                if p:
+        key_rows = []
+        for item in key_files[:15]:
+            if isinstance(item, dict):
+                path_value = str(item.get("path") or "")
+                role = str(item.get("role") or "")
+                if path_value:
                     suffix = f" ({role})" if role else ""
-                    rows.append(f"- `{p}`{suffix}")
-        key_files_md = "\n".join(rows).strip() + "\n"
+                    key_rows.append(f"- `{path_value}`{suffix}")
+        key_files_md = "\n".join(key_rows).strip() + "\n"
     else:
         key_files_md = (
             "> No key files (README/Makefile/compose/pyproject/package.json) were found "
@@ -1149,11 +1126,11 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
         f"{md}\n"
     ).strip() + "\n"
 
-    with get_session() as s:
+    async with AsyncSessionLocal() as session:
         doc = ProjectDoc(project_id=project_id, kind="overview", content_md=final_md)
-        s.add(doc)
-        s.commit()
-        s.refresh(doc)
+        session.add(doc)
+        await session.commit()
+        await session.refresh(doc)
 
     return {
         "project_id": project_id,
@@ -1163,14 +1140,23 @@ def build_project_docs(project_id: int, org_id: int) -> dict:
     }
 
 
-def get_latest_project_doc(project_id: int, org_id: int, kind: str = "overview") -> dict:
-    get_project(project_id, org_id=org_id)
-    with get_session() as s:
-        doc = s.exec(
-            select(ProjectDoc)
-            .where(ProjectDoc.project_id == project_id, ProjectDoc.kind == kind)
-            .order_by(ProjectDoc.id.desc())
-        ).first()
+async def get_latest_project_doc_async(
+    session: AsyncSession, project_id: int, org_id: int, kind: str = "overview"
+) -> dict:
+    project = await session.get(Project, project_id)
+    if not project or project.org_id != org_id:
+        raise NotFoundError("Проект не найден", context={"project_id": project_id})
+    doc = (
+        (
+            await session.execute(
+                select(ProjectDoc)
+                .where(ProjectDoc.project_id == project_id, ProjectDoc.kind == kind)
+                .order_by(ProjectDoc.id.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
     if not doc:
         raise NotFoundError(
             "Документация не найдена. Сначала нажми Build docs.", context={"kind": kind}

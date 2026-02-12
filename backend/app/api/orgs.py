@@ -5,18 +5,17 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
-from ..db import get_session
 from ..errors import BadRequestError, NotFoundError
 from ..models import User
-from ..policy import require_org_role, require_user
+from ..policy import require_org_role_async, require_user_async
 from ..rbac import ORG_ROLES
 from ..services.org_service import (
-    add_or_update_member,
-    create_org,
-    get_org,
-    list_members,
-    list_orgs_for_user,
-    remove_member,
+    add_or_update_member_async,
+    create_org_async,
+    get_org_async,
+    list_members_async,
+    list_orgs_for_user_async,
+    remove_member_async,
 )
 
 router = APIRouter(prefix="/orgs", tags=["orgs"])
@@ -32,50 +31,50 @@ class MemberUpsert(BaseModel):
 
 
 @router.get("")
-def list_orgs(request: Request):
-    user = require_user(request)
-    orgs = list_orgs_for_user(user.id)
+async def list_orgs(request: Request):
+    user = await require_user_async(request)
+    orgs = await list_orgs_for_user_async(request.state.db_session, user.id)
     return [{"id": o.id, "name": o.name, "created_at": o.created_at.isoformat()} for o in orgs]
 
 
 @router.post("")
-def create_org_endpoint(request: Request, body: OrgCreate):
-    user = require_user(request)
-    org = create_org(body.name, user.id)
+async def create_org_endpoint(request: Request, body: OrgCreate):
+    user = await require_user_async(request)
+    org = await create_org_async(request.state.db_session, body.name, user.id)
     return {"id": org.id, "name": org.name, "created_at": org.created_at.isoformat()}
 
 
 @router.get("/{org_id}")
-def get_org_endpoint(request: Request, org_id: int):
-    require_org_role(request, org_id, min_role="viewer")
-    org = get_org(org_id)
+async def get_org_endpoint(request: Request, org_id: int):
+    await require_org_role_async(request, org_id, min_role="viewer")
+    org = await get_org_async(request.state.db_session, org_id)
     return {"id": org.id, "name": org.name, "created_at": org.created_at.isoformat()}
 
 
 @router.get("/{org_id}/members")
-def get_org_members(request: Request, org_id: int):
-    require_org_role(request, org_id, min_role="admin")
-    return list_members(org_id)
+async def get_org_members(request: Request, org_id: int):
+    await require_org_role_async(request, org_id, min_role="admin")
+    return await list_members_async(request.state.db_session, org_id)
 
 
 @router.post("/{org_id}/members")
-def upsert_member(request: Request, org_id: int, body: MemberUpsert):
-    require_org_role(request, org_id, min_role="admin")
+async def upsert_member(request: Request, org_id: int, body: MemberUpsert):
+    await require_org_role_async(request, org_id, min_role="admin")
     email = body.email.strip().lower()
     if not email:
         raise BadRequestError("Email обязателен")
     if body.role not in ORG_ROLES:
         raise BadRequestError("Некорректная роль")
-    with get_session() as session:
-        user = session.exec(select(User).where(User.email == email)).first()
+    session = request.state.db_session
+    user = (await session.execute(select(User).where(User.email == email))).scalars().first()
     if not user:
         raise NotFoundError("Пользователь не найден")
-    membership = add_or_update_member(org_id, user.id, body.role)
+    membership = await add_or_update_member_async(request.state.db_session, org_id, user.id, body.role)
     return {"user_id": membership.user_id, "role": membership.role, "org_id": membership.org_id}
 
 
 @router.delete("/{org_id}/members/{user_id}")
-def delete_member(request: Request, org_id: int, user_id: int):
-    require_org_role(request, org_id, min_role="admin")
-    remove_member(org_id, user_id)
+async def delete_member(request: Request, org_id: int, user_id: int):
+    await require_org_role_async(request, org_id, min_role="admin")
+    await remove_member_async(request.state.db_session, org_id, user_id)
     return {"ok": True}

@@ -3,26 +3,23 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.services import task_service
 
 
-class _FakeSession:
+class _FakeAsyncSession:
     def __init__(self, run):
         self._run = run
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def get(self, model, run_id):
+    async def get(self, model, run_id):
         return self._run
 
 
-def test_get_run_does_not_start_scan_from_read_path(monkeypatch):
+@pytest.mark.anyio
+async def test_get_run_does_not_start_scan_from_read_path(monkeypatch):
     run = SimpleNamespace(
         id=101,
         project_id=77,
@@ -41,8 +38,8 @@ def test_get_run_does_not_start_scan_from_read_path(monkeypatch):
         result_json=json.dumps({'ok': True}),
     )
 
-    monkeypatch.setattr(task_service, 'get_session', lambda: _FakeSession(run))
-    monkeypatch.setattr(task_service, '_graph_warning', lambda project_id: task_service.GRAPH_NOT_READY_WARNING)
+    async def _graph_warning_async(session, project_id: int):
+        return task_service.GRAPH_NOT_READY_WARNING
 
     scan_calls: list[tuple[int, int, bool]] = []
 
@@ -50,9 +47,12 @@ def test_get_run_does_not_start_scan_from_read_path(monkeypatch):
         scan_calls.append((project_id, org_id, background))
         return {'task_id': 'scan-1', 'status': 'pending'}
 
+    monkeypatch.setattr(task_service, '_graph_warning_async', _graph_warning_async)
     monkeypatch.setattr(task_service, 'scan_with_background', _scan_with_background)
 
-    payload = task_service.get_run(project_id=77, org_id=55, run_id=101)
+    payload = await task_service.get_run_async(
+        _FakeAsyncSession(run), project_id=77, org_id=55, run_id=101
+    )
 
     assert payload['warning'] == task_service.GRAPH_NOT_READY_WARNING
     assert 'graph_scan_task_id' not in payload
