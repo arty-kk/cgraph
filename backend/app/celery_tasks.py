@@ -1,27 +1,30 @@
 # backend/app/celery_tasks.py
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
 
-from redis import RedisError
+from redis.asyncio import RedisError as AsyncRedisError
 
 from .celery_app import celery_app
-from .db import get_session
-from .infra.redis_client import get_redis_client
+from .async_db import AsyncSessionLocal
+from .infra.redis_client import async_redis_client
 from .logging import get_logger
-from .models import TaskJob
-from .services.docs_service import build_project_docs
-from .services.project_service import _scan_and_update_graph
-from .services.routing_calibration_service import calibrate_routing_policy_thresholds
-from .services.task_queue import cleanup_completed_jobs
-from .services.task_service import TaskRequest, run_task
+from .models import Project, TaskJob
+from .services.docs_service import build_project_docs_async
+from .services.file_mutation_service import run_mutation_indexing
+from .services.project_service import _scan_and_update_graph_async
+from .services.routing_calibration_service import calibrate_routing_policy_thresholds_async
+from .services.task_queue import cleanup_completed_jobs_async
+from .services.task_service import TaskRequest, run_task_async
+from .utils import normalize_project_root
 
 logger = get_logger("stubgraph.celery")
 
 
-def _set_job_status(
+async def _set_job_status_async(
     job_id: str,
     status: str,
     *,
@@ -30,8 +33,8 @@ def _set_job_status(
     error: str | None = None,
 ) -> None:
     now = datetime.now(timezone.utc)
-    with get_session() as session:
-        job = session.get(TaskJob, job_id)
+    async with AsyncSessionLocal() as session:
+        job = await session.get(TaskJob, job_id)
         if not job:
             if org_id is None:
                 raise RuntimeError("org_id обязателен для создания задачи")
@@ -39,87 +42,145 @@ def _set_job_status(
             session.add(job)
         job.status = status
         job.updated_at = now
-        if status == "running":
-            _touch_inflight(job.queue, job.id)
+        if status == "running" and job.queue == "heavy":
+            await _touch_inflight_async(job.id)
         if status in {"succeeded", "failed"}:
             job.completed_at = now
-            _decrement_inflight(job.queue, job.id)
+            if job.queue == "heavy":
+                await _decrement_inflight_async(job.id)
         if error is not None:
             job.error = error
         if result is not None:
             job.result_json = json.dumps(result, ensure_ascii=False)
         session.add(job)
-        session.commit()
-    if status in {"succeeded", "failed"}:
-        cleanup_completed_jobs()
+        await session.commit()
+        if status in {"succeeded", "failed"}:
+            await cleanup_completed_jobs_async(session)
+
+
+async def _scan_task_async(job_id: str, project_id: int, org_id: int) -> None:
+    await _set_job_status_async(job_id, "running", org_id=org_id)
+    try:
+        result = await _scan_and_update_graph_async(project_id, org_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Scan task failed", extra={"job_id": job_id})
+        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
+        return
+    await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
 
 
 @celery_app.task(name="stubgraph.scan")
 def scan_task(job_id: str, project_id: int, org_id: int) -> None:
-    _set_job_status(job_id, "running", org_id=org_id)
+    asyncio.run(_scan_task_async(job_id, project_id, org_id))
+
+
+async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
+    await _set_job_status_async(job_id, "running", org_id=org_id)
     try:
-        result = _scan_and_update_graph(project_id, org_id)
+        result = await build_project_docs_async(project_id, org_id)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Scan task failed", extra={"job_id": job_id})
-        _set_job_status(job_id, "failed", org_id=org_id, error=str(exc))
+        logger.exception("Docs task failed", extra={"job_id": job_id})
+        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
         return
-    _set_job_status(job_id, "succeeded", org_id=org_id, result=result)
+    await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
 
 
 @celery_app.task(name="stubgraph.docs")
 def docs_task(job_id: str, project_id: int, org_id: int) -> None:
-    _set_job_status(job_id, "running", org_id=org_id)
-    try:
-        result = build_project_docs(project_id, org_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Docs task failed", extra={"job_id": job_id})
-        _set_job_status(job_id, "failed", org_id=org_id, error=str(exc))
-        return
-    _set_job_status(job_id, "succeeded", org_id=org_id, result=result)
+    asyncio.run(_docs_task_async(job_id, project_id, org_id))
 
 
-@celery_app.task(name="stubgraph.run_task")
-def run_task_job(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
-    _set_job_status(job_id, "running", org_id=org_id)
+async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
+    await _set_job_status_async(job_id, "running", org_id=org_id)
     try:
         provided = payload.get("provided_fields")
         if isinstance(provided, list):
             payload["provided_fields"] = set(provided)
         request = TaskRequest(**payload)
-        result = run_task(project_id, org_id, request)
+        result = await run_task_async(project_id, org_id, request)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Run task failed", extra={"job_id": job_id})
-        _set_job_status(job_id, "failed", org_id=org_id, error=str(exc))
+        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
         return
-    _set_job_status(job_id, "succeeded", org_id=org_id, result=result)
+    await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
 
 
-def _touch_inflight(queue: str, job_id: str) -> None:
-    if queue != "heavy":
-        return
+@celery_app.task(name="stubgraph.run_task")
+def run_task_job(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
+    asyncio.run(_run_task_job_async(job_id, project_id, org_id, payload))
+
+
+async def _mutation_indexing_task_async(
+    job_id: str,
+    project_id: int,
+    org_id: int,
+    rel_paths: list[str],
+    operation: str,
+) -> None:
+    await _set_job_status_async(job_id, "running", org_id=org_id)
+    root = await _resolve_project_root_async(project_id, org_id)
     try:
-        client = get_redis_client()
-        key = "stubgraph:queue:heavy:inflight"
-        client.sadd(key, job_id)
-    except RedisError as exc:
-        logger.warning("Failed to refresh inflight job state", extra={"reason": str(exc)})
-
-
-def _decrement_inflight(queue: str, job_id: str) -> None:
-    if queue != "heavy":
+        str_paths = [str(path) for path in rel_paths]
+        result = await asyncio.to_thread(
+            run_mutation_indexing,
+            project_id=project_id,
+            org_id=org_id,
+            root=root,
+            rel_paths=str_paths,
+        )
+        result["operation"] = str(operation)
+        result["rel_paths"] = str_paths
+        if result.get("aborted"):
+            await _set_job_status_async(
+                job_id,
+                "failed",
+                org_id=org_id,
+                error="Mutation indexing aborted",
+                result=result,
+            )
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Mutation indexing task failed", extra={"job_id": job_id})
+        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
         return
-    try:
-        client = get_redis_client()
-        key = "stubgraph:queue:heavy:inflight"
-        client.srem(key, job_id)
-    except RedisError as exc:
-        logger.warning("Failed to decrement inflight counter", extra={"reason": str(exc)})
+    await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
+
+
+@celery_app.task(name="stubgraph.mutation_indexing")
+def mutation_indexing_task(
+    job_id: str,
+    project_id: int,
+    org_id: int,
+    rel_paths: list[str],
+    operation: str,
+) -> None:
+    asyncio.run(_mutation_indexing_task_async(job_id, project_id, org_id, rel_paths, operation))
 
 
 @celery_app.task(name="stubgraph.routing_calibration")
 def routing_calibration_task() -> dict:
     try:
-        return calibrate_routing_policy_thresholds()
+        return asyncio.run(calibrate_routing_policy_thresholds_async())
     except Exception as exc:  # noqa: BLE001
         logger.exception("Routing calibration task failed")
         return {"updated": False, "reason": "error", "error": str(exc)}
+
+
+async def _resolve_project_root_async(project_id: int, org_id: int) -> str:
+    async with AsyncSessionLocal() as session:
+        project = await session.get(Project, project_id)
+        if not project or project.org_id != org_id:
+            raise RuntimeError("Проект не найден")
+        return normalize_project_root(project.root_path)
+
+
+async def _touch_inflight_async(job_id: str) -> None:
+    key = "stubgraph:queue:heavy:inflight"
+    async with async_redis_client() as client:
+        await client.sadd(key, job_id)
+
+
+async def _decrement_inflight_async(job_id: str) -> None:
+    key = "stubgraph:queue:heavy:inflight"
+    async with async_redis_client() as client:
+        await client.srem(key, job_id)

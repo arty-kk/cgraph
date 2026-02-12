@@ -388,3 +388,8 @@ def delete_snapshot(meta: SnapshotMeta) -> None:
             _s3_client().delete_object(Bucket=meta.bucket, Key=meta.key)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to delete snapshot from S3", extra={"reason": str(exc)})
+
+
+async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
+    data = await upload_file.read()
+    return store_snapshot_blob(data, archive_name)

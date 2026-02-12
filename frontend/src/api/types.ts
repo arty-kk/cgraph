@@ -122,6 +122,8 @@ export type FileContent = { path: string; content: string; truncated?: boolean; 
 export type FileSaveResult = {
   path: string
   saved: boolean
+  task_id?: string
+  task_status?: 'pending' | 'running' | 'succeeded' | 'failed'
   reindexed?: unknown
   index_status?: 'ok' | 'rescan_scheduled' | 'failed'
   warnings?: string[]
@@ -259,8 +261,6 @@ export type RunDetails = {
   created_at: string
   result: unknown
   warning?: string | null
-  graph_scan_task_id?: string | null
-  graph_scan_status?: 'pending' | 'running' | 'succeeded' | 'failed' | null
 }
 
 export type RunTaskResult = {
@@ -296,8 +296,10 @@ export type TaskStatus = {
 }
 
 export type TaskPollOptions = {
+  /** @deprecated background mode is always enabled by backend and ignored by client */
   background?: boolean
   pollIntervalMs?: number
+  timeoutMs?: number
   maxAttempts?: number
 }
 

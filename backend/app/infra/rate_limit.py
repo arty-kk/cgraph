@@ -2,20 +2,21 @@
 from __future__ import annotations
 
 import ipaddress
+from functools import lru_cache
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from redis import RedisError
+from redis.asyncio import RedisError as AsyncRedisError
 
 from ..config import settings
 from ..logging import get_logger
-from .redis_client import get_redis_client
+from .redis_client import async_redis_client
 
 logger = get_logger("stubgraph.rate_limit")
 
 
-def _trusted_proxy_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-    raw = (settings.trusted_proxy_cidrs or "").strip()
+@lru_cache(maxsize=1)
+def _parse_trusted_proxy_networks(raw: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     if not raw:
         return []
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
@@ -37,7 +38,8 @@ def _client_is_trusted_proxy(client_host: str) -> bool:
         client_ip = ipaddress.ip_address(client_host)
     except ValueError:
         return False
-    for network in _trusted_proxy_networks():
+    raw = (settings.trusted_proxy_cidrs or "").strip()
+    for network in _parse_trusted_proxy_networks(raw):
         if client_ip in network:
             return True
     return False
@@ -68,17 +70,17 @@ def rate_limit_response() -> JSONResponse:
     )
 
 
-def allow_request(request: Request) -> bool:
+async def allow_request_async(request: Request) -> bool:
     if not settings.rate_limit_enabled:
         return True
     limit = int(settings.rate_limit_requests_per_minute)
     key = f"stubgraph:rl:{_client_id(request)}"
     try:
-        client = get_redis_client()
-        count = client.incr(key)
-        if count == 1:
-            client.expire(key, 60)
-        return count <= limit
-    except RedisError as exc:
+        async with async_redis_client() as client:
+            count = await client.incr(key)
+            if count == 1:
+                await client.expire(key, 60)
+            return count <= limit
+    except AsyncRedisError as exc:
         logger.warning("Rate limit check failed", extra={"reason": str(exc)})
-        return True
+        return False

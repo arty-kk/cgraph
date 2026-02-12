@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ..config import settings
@@ -92,6 +93,27 @@ def _create_default_org(session, user: User) -> Organization:
     return org
 
 
+async def _create_default_org_async(session: AsyncSession, user: User) -> Organization:
+    name = "Personal"
+    if isinstance(user.email, str) and "@" in user.email:
+        prefix = user.email.split("@", 1)[0].strip()
+        if prefix:
+            name = prefix[:200]
+    org = Organization(name=name, created_at=datetime.now(timezone.utc))
+    session.add(org)
+    await session.flush()
+    session.add(
+        OrgMembership(
+            org_id=org.id,
+            user_id=user.id,
+            role="owner",
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    return org
+
+
 def bootstrap_user(email: str, password: str) -> User:
     if not isinstance(email, str) or not email.strip():
         raise BadRequestError("Email обязателен")
@@ -129,17 +151,38 @@ def bootstrap_user(email: str, password: str) -> User:
         return user
 
 
-def register_user(email: str, password: str) -> User:
-    if not settings.auth_allow_public_signup:
-        raise BadRequestError("Публичная регистрация отключена")
+async def bootstrap_user_async(session: AsyncSession, email: str, password: str) -> User:
     if not isinstance(email, str) or not email.strip():
         raise BadRequestError("Email обязателен")
     if not isinstance(password, str) or len(password) < 8:
         raise BadRequestError("Пароль должен быть не короче 8 символов")
-    with get_session() as session:
-        existing = session.exec(select(User).where(User.email == email.strip().lower())).first()
-        if existing:
-            raise BadRequestError("Пользователь уже существует")
+
+    async with session.begin():
+        dialect = session.bind.dialect.name if session.bind is not None else ""
+        if dialect == "postgresql":
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
+
+        existing_sentinel = (
+            (
+                await session.execute(
+                    select(BootstrapSentinel)
+                    .where(BootstrapSentinel.key == _BOOTSTRAP_SENTINEL_KEY)
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        existing_user = (await session.execute(select(User).limit(1))).scalars().first()
+        if existing_sentinel or existing_user:
+            raise BadRequestError("Bootstrap уже выполнен")
+
+        try:
+            session.add(BootstrapSentinel(key=_BOOTSTRAP_SENTINEL_KEY))
+            await session.flush()
+        except IntegrityError as exc:
+            raise BadRequestError("Bootstrap уже выполнен") from exc
+
         user = User(email=email.strip().lower(), password_hash=_hash_password(password))
         session.add(user)
         try:
@@ -167,6 +210,21 @@ def authenticate_user(email: str, password: str) -> User:
     return user
 
 
+async def authenticate_user_async(session: AsyncSession, email: str, password: str) -> User:
+    if not isinstance(email, str) or not email.strip():
+        raise BadRequestError("Email обязателен")
+    if not isinstance(password, str):
+        raise BadRequestError("Пароль обязателен")
+    user = (
+        (await session.execute(select(User).where(User.email == email.strip().lower()))).scalars().first()
+    )
+    if not user or not user.is_active:
+        raise UnauthorizedError("Неверные учетные данные")
+    if not _verify_password(password, user.password_hash):
+        raise UnauthorizedError("Неверные учетные данные")
+    return user
+
+
 def create_session(user_id: int) -> tuple[str, datetime]:
     token, token_hash = _generate_token("sess")
     expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.auth_session_ttl_hours)
@@ -184,15 +242,30 @@ def create_session(user_id: int) -> tuple[str, datetime]:
     return token, expires_at
 
 
-def revoke_session(token: str) -> None:
+async def create_session_async(session: AsyncSession, user_id: int) -> tuple[str, datetime]:
+    token, token_hash = _generate_token("sess")
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.auth_session_ttl_hours)
+    session.add(
+        UserSession(
+            user_id=user_id,
+            token_hash=token_hash,
+            created_at=datetime.now(timezone.utc),
+            expires_at=expires_at,
+            revoked_at=None,
+        )
+    )
+    await session.commit()
+    return token, expires_at
+
+
+async def revoke_session_async(session: AsyncSession, token: str) -> None:
     token_hash = _hash_token(token)
-    with get_session() as session:
-        row = session.exec(select(UserSession).where(UserSession.token_hash == token_hash)).first()
-        if not row:
-            return
-        row.revoked_at = datetime.now(timezone.utc)
-        session.add(row)
-        session.commit()
+    row = (await session.execute(select(UserSession).where(UserSession.token_hash == token_hash))).scalars().first()
+    if not row:
+        return
+    row.revoked_at = datetime.now(timezone.utc)
+    session.add(row)
+    await session.commit()
 
 
 def _get_valid_session(token: str) -> UserSession | None:
@@ -241,7 +314,55 @@ def get_user_from_token(token: str) -> User:
     raise UnauthorizedError("Неверный токен")
 
 
-def create_api_key(user_id: int, name: str) -> tuple[str, ApiKey]:
+async def _get_valid_session_async(session: AsyncSession, token: str) -> UserSession | None:
+    token_hash = _hash_token(token)
+    now = datetime.now(timezone.utc)
+    row = (
+        (
+            await session.execute(
+                select(UserSession).where(
+                    UserSession.token_hash == token_hash,
+                    UserSession.revoked_at.is_(None),
+                    UserSession.expires_at > now,
+                )
+            )
+        ).scalars().first()
+    )
+    return row
+
+
+async def _get_valid_api_key_async(session: AsyncSession, token: str) -> ApiKey | None:
+    token_hash = _hash_token(token)
+    now = datetime.now(timezone.utc)
+    row = (
+        (
+            await session.execute(
+                select(ApiKey).where(
+                    ApiKey.token_hash == token_hash,
+                    ApiKey.revoked_at.is_(None),
+                    (ApiKey.expires_at.is_(None) | (ApiKey.expires_at > now)),
+                )
+            )
+        ).scalars().first()
+    )
+    return row
+
+
+async def get_user_from_token_async(session: AsyncSession, token: str) -> User:
+    user_session = await _get_valid_session_async(session, token)
+    if user_session:
+        user = await session.get(User, user_session.user_id)
+        if user:
+            return user
+    key = await _get_valid_api_key_async(session, token)
+    if key:
+        user = await session.get(User, key.user_id)
+        if user:
+            return user
+    raise UnauthorizedError("Неверный токен")
+
+
+async def create_api_key_async(session: AsyncSession, user_id: int, name: str) -> tuple[str, ApiKey]:
     token, token_hash = _generate_token("api")
     prefix = token.split("_", 1)[0]
     expires_at = None
@@ -256,23 +377,20 @@ def create_api_key(user_id: int, name: str) -> tuple[str, ApiKey]:
         expires_at=expires_at,
         revoked_at=None,
     )
-    with get_session() as session:
-        session.add(key)
-        session.commit()
-        session.refresh(key)
+    session.add(key)
+    await session.commit()
+    await session.refresh(key)
     return token, key
 
 
-def list_api_keys(user_id: int) -> list[ApiKey]:
-    with get_session() as session:
-        return session.exec(select(ApiKey).where(ApiKey.user_id == user_id)).all()
+async def list_api_keys_async(session: AsyncSession, user_id: int) -> list[ApiKey]:
+    return list((await session.execute(select(ApiKey).where(ApiKey.user_id == user_id))).scalars().all())
 
 
-def revoke_api_key(user_id: int, key_id: int) -> None:
-    with get_session() as session:
-        key = session.get(ApiKey, key_id)
-        if not key or key.user_id != user_id:
-            raise NotFoundError("API key не найден")
-        key.revoked_at = datetime.now(timezone.utc)
-        session.add(key)
-        session.commit()
+async def revoke_api_key_async(session: AsyncSession, user_id: int, key_id: int) -> None:
+    key = await session.get(ApiKey, key_id)
+    if not key or key.user_id != user_id:
+        raise NotFoundError("API key не найден")
+    key.revoked_at = datetime.now(timezone.utc)
+    session.add(key)
+    await session.commit()

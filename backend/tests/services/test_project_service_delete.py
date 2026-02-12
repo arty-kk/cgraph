@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 import tempfile
@@ -75,7 +76,7 @@ class TestProjectServiceDelete(unittest.TestCase):
 
             cache_calls: list[list[str]] = []
 
-            def _cache_set_json(parts: list[str], payload: object, *, ttl_seconds=None) -> None:
+            async def _cache_set_json_async(parts: list[str], payload: object, *, ttl_seconds=None) -> None:
                 cache_calls.append(parts)
 
             with (
@@ -94,9 +95,10 @@ class TestProjectServiceDelete(unittest.TestCase):
                     "delete_snapshot",
                     side_effect=RuntimeError("snapshot delete failed"),
                 ),
-                mock.patch.object(project_service, "cache_set_json", side_effect=_cache_set_json),
+                mock.patch.object(project_service, "cache_set_json_async", side_effect=_cache_set_json_async),
             ):
-                project_service.delete_project(project_id, org_id)
+                with get_session() as session:
+                    asyncio.run(project_service.delete_project_async(session, project_id, org_id))
 
             with get_session() as session:
                 project_row = session.get(Project, project_id)

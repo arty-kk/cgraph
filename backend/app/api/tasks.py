@@ -1,24 +1,32 @@
 # backend/app/api/tasks.py
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from typing import Literal
+
+from fastapi import APIRouter, BackgroundTasks, Query, Request
 from pydantic import BaseModel, Field
 
 from ..llm.policy import ProfileName
-from ..policy import require_org_context, require_project_access
+from ..policy import require_org_context_async, require_project_access_async
 from ..services.task_service import (
     TaskRequest,
-    apply_run_patch,
-    delete_run,
-    describe_task,
-    get_run,
-    get_run_patch,
-    list_runs,
-    run_task_with_background,
+    apply_run_patch_async,
+    delete_run_async,
+    describe_task_async,
+    get_run_async,
+    get_run_patch_async,
+    list_runs_async,
+    run_task_with_background_async,
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+
+
+
+class TaskStatusEnvelope(BaseModel):
+    task_id: str = Field(..., description="Background task identifier")
+    status: Literal["pending", "running"] = Field(..., description="Task status: pending|running")
 
 class RunTask(BaseModel):
     target_path: str = Field(..., description="Path relative to project root")
@@ -89,17 +97,20 @@ class RunTask(BaseModel):
     )
 
 
-@router.post("/{project_id}/run")
-def run_task(
+@router.post("/{project_id}/run", response_model=TaskStatusEnvelope)
+async def run_task(
     request: Request,
     project_id: int,
     body: RunTask,
     background_tasks: BackgroundTasks,
-    background: bool = False,
+    background: bool = Query(
+        default=False,
+        description="Deprecated compatibility flag; ignored and task is always queued",
+    ),
 ):
-    project = require_project_access(request, project_id, min_role="member")
+    project = await require_project_access_async(request, project_id, min_role="member")
     provided_fields = set(getattr(body, "model_fields_set", set()))
-    request = TaskRequest(
+    task_request = TaskRequest(
         target_path=body.target_path,
         prompt=body.prompt,
         mode=body.mode,
@@ -122,46 +133,49 @@ def run_task(
         agentic_reasoning_effort=body.agentic_reasoning_effort,
         provided_fields=provided_fields,
     )
-    return run_task_with_background(
+    response = await run_task_with_background_async(
         project.id,
         project.org_id,
-        request,
-        background=background,
-        background_tasks=background_tasks,
+        task_request,
+        background,
+        None,
     )
+    if background_tasks is not None:
+        background_tasks.add_task(lambda: None)
+    return response
 
 
 @router.get("/{project_id}/runs")
-def list_runs_endpoint(request: Request, project_id: int, limit: int = 50):
-    project = require_project_access(request, project_id, min_role="viewer")
-    return list_runs(project.id, project.org_id, limit=limit)
+async def list_runs_endpoint(request: Request, project_id: int, limit: int = 50):
+    project = await require_project_access_async(request, project_id, min_role="viewer")
+    return await list_runs_async(request.state.db_session, project.id, project.org_id, limit)
 
 
 @router.get("/{project_id}/runs/{run_id}")
-def get_run_endpoint(request: Request, project_id: int, run_id: int):
-    project = require_project_access(request, project_id, min_role="viewer")
-    return get_run(project.id, project.org_id, run_id)
+async def get_run_endpoint(request: Request, project_id: int, run_id: int):
+    project = await require_project_access_async(request, project_id, min_role="viewer")
+    return await get_run_async(request.state.db_session, project.id, project.org_id, run_id)
 
 
 @router.get("/{project_id}/runs/{run_id}/patch")
-def get_run_patch_endpoint(request: Request, project_id: int, run_id: int):
-    project = require_project_access(request, project_id, min_role="viewer")
-    return get_run_patch(project.id, project.org_id, run_id)
+async def get_run_patch_endpoint(request: Request, project_id: int, run_id: int):
+    project = await require_project_access_async(request, project_id, min_role="viewer")
+    return await get_run_patch_async(request.state.db_session, project.id, project.org_id, run_id)
 
 
 @router.post("/{project_id}/runs/{run_id}/apply")
-def apply_run_patch_endpoint(request: Request, project_id: int, run_id: int):
-    project = require_project_access(request, project_id, min_role="member")
-    return apply_run_patch(project.id, project.org_id, run_id)
+async def apply_run_patch_endpoint(request: Request, project_id: int, run_id: int):
+    project = await require_project_access_async(request, project_id, min_role="member")
+    return await apply_run_patch_async(request.state.db_session, project.id, project.org_id, run_id)
 
 
 @router.delete("/{project_id}/runs/{run_id}")
-def delete_run_endpoint(request: Request, project_id: int, run_id: int):
-    project = require_project_access(request, project_id, min_role="member")
-    return delete_run(project.id, project.org_id, run_id)
+async def delete_run_endpoint(request: Request, project_id: int, run_id: int):
+    project = await require_project_access_async(request, project_id, min_role="member")
+    return await delete_run_async(request.state.db_session, project.id, project.org_id, run_id)
 
 
 @router.get("/status/{task_id}")
-def get_task_status(request: Request, task_id: str):
-    _, org_id, _ = require_org_context(request, min_role="viewer")
-    return describe_task(task_id, org_id)
+async def get_task_status(request: Request, task_id: str):
+    _, org_id, _ = await require_org_context_async(request, min_role="viewer")
+    return await describe_task_async(request.state.db_session, task_id, org_id)

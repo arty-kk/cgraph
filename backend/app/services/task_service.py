@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import asyncio
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,9 @@ from typing import Any
 
 from fastapi import BackgroundTasks
 from sqlalchemy import func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..async_db import AsyncSessionLocal
 from sqlmodel import delete, select
 from unidiff import PatchSet
 
@@ -52,6 +56,7 @@ from ..models import (
     FileEdge,
     FileNode,
     ModuleContract,
+    Project,
     TaskJob,
 )
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
@@ -59,9 +64,14 @@ from ..scan import scan_files
 from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
 from ..services.usage_service import LLM_REQUESTS_KIND, check_and_increment
 from ..storage import StorageError, get_patch_download_url, read_patch_blob, store_patch_blob
-from ..utils import ProjectLockTimeout, normalize_project_root, project_lock, resolve_under_root
-from .project_service import get_project, scan_with_background
-from .task_queue import TaskState, task_queue
+from ..utils import (
+    ProjectLockTimeout,
+    normalize_project_root,
+    project_lock,
+    project_lock_async,
+    resolve_under_root,
+)
+from .task_queue import get_scan_idempotency_key, submit_run_async, submit_scan_async
 
 MAX_PATCH_STORE_CHARS = 50_000
 MAX_GRAPH_DEPS_FOR_LLM = 500
@@ -74,6 +84,59 @@ MIN_GRAPH_EDGES_FOR_READY = 1
 GRAPH_NOT_READY_WARNING = "graph not built"
 
 logger = get_logger("stubgraph.api")
+
+
+def get_project(project_id: int, org_id: int | None = None) -> Project:
+    with get_session() as session:
+        if org_id is None:
+            project = session.get(Project, project_id)
+        else:
+            project = session.exec(
+                select(Project).where(Project.id == project_id, Project.org_id == org_id)
+            ).first()
+    if not project:
+        raise NotFoundError("Проект не найден", context={"project_id": project_id})
+    return project
+
+
+
+
+async def _get_active_scan_task_async(project_id: int, org_id: int) -> tuple[str | None, str | None]:
+    idempotency_key = get_scan_idempotency_key(org_id, project_id)
+    async with AsyncSessionLocal() as session:
+        job = (
+            (
+                await session.execute(
+                    select(TaskJob).where(
+                        TaskJob.org_id == org_id,
+                        TaskJob.idempotency_key == idempotency_key,
+                        TaskJob.status.in_(("pending", "running")),
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+    if not job:
+        return None, None
+    return job.id, job.status
+
+
+def scan_with_background(
+    project_id: int,
+    org_id: int,
+    background: bool = False,
+    background_tasks: BackgroundTasks | None = None,
+) -> dict:
+    _ = background
+    task_id, status = asyncio.run(_get_active_scan_task_async(project_id, org_id))
+    if task_id and status in ("pending", "running"):
+        return {"task_id": task_id, "status": status}
+
+    task_id = asyncio.run(submit_scan_async(project_id, org_id))
+    if background_tasks is not None:
+        background_tasks.add_task(lambda: None)
+    return {"task_id": task_id, "status": "pending"}
 
 # Backward-compatible callables for tests/monkeypatching inside task_service.
 triage = triage_with_usage
@@ -477,6 +540,134 @@ def _apply_patch_and_record(
     return applied
 
 
+
+
+async def _apply_patch_and_record_async(
+    session: AsyncSession,
+    project_id: int,
+    org_id: int,
+    run_id: int,
+    root: Path,
+    patch_text: str,
+    allowed_patch_paths: set[str] | None,
+    allow_out_of_context_patch: bool,
+) -> dict | None:
+    applied: dict | None = None
+    try:
+        if not isinstance(patch_text, str) or not patch_text.strip():
+            raise PatchApplyError("Empty or missing patch_unified_diff")
+
+        async with project_lock_async(session, project_id):
+            diff_paths = _parse_diff_paths(root, patch_text)
+            require_in_context = bool(getattr(settings, "patch_require_in_context", True))
+            allowed = None
+            blocked_paths: list[str] = []
+            if require_in_context:
+                allowed = set(allowed_patch_paths or [])
+                if allow_out_of_context_patch:
+                    allowed |= set(diff_paths)
+                blocked_paths = sorted({p for p in diff_paths if p not in allowed})
+
+            if blocked_paths:
+                applied = {
+                    "error": ("Patch затрагивает файлы вне контекста: " + ", ".join(blocked_paths)),
+                    "blocked_paths": blocked_paths,
+                    "blocked_reason": "out_of_context",
+                }
+            else:
+                modified = apply_unified_diff(
+                    root,
+                    patch_text,
+                    allowed_rel_paths=allowed,
+                    allow_new_files=bool(getattr(settings, "patch_allow_new_files", False)),
+                )
+                modified = sorted(set(modified))
+                applied = {"modified": modified}
+
+        if applied and "modified" in applied:
+            modified = list(applied.get("modified") or [])
+            try:
+                applied["reindexed"] = scan_files(project_id, org_id, root, modified)
+                if isinstance(applied.get("reindexed"), dict) and applied["reindexed"].get(
+                    "aborted"
+                ):
+                    applied["reindex_aborted"] = True
+                else:
+                    removed_edge_neighbors = None
+                    if isinstance(applied.get("reindexed"), dict):
+                        removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
+                    update_graph_metrics_incremental(
+                        project_id,
+                        modified,
+                        removed_edge_neighbors=removed_edge_neighbors,
+                    )
+
+                updated_contracts: list[str] = []
+                removed_contracts: list[str] = []
+                for rel_path in modified:
+                    try:
+                        abs_path, rel_norm = resolve_under_root(
+                            root, rel_path, max_length=settings.max_rel_path_chars
+                        )
+                        if not abs_path.exists():
+                            removed_contracts.append(rel_norm)
+                            continue
+                        if not abs_path.is_file():
+                            continue
+                        contract = get_or_build_contract(project_id, root, rel_norm)
+                        if isinstance(contract, dict) and contract.get("path"):
+                            updated_contracts.append(str(contract["path"]))
+                    except Exception:  # noqa: BLE001
+                        continue
+                applied["contracts_updated"] = sorted(set(updated_contracts))
+
+                removed_contracts = sorted(set(removed_contracts))
+                if removed_contracts:
+                    await session.execute(
+                        delete(ModuleContract).where(
+                            ModuleContract.project_id == project_id,
+                            ModuleContract.path.in_(removed_contracts),
+                        )
+                    )
+                    await session.commit()
+                    applied["contracts_removed"] = removed_contracts
+            except Exception as error:  # noqa: BLE001
+                applied["reindex_error"] = str(error)
+
+                patched_nodes = (
+                    (
+                        await session.execute(
+                            select(FileNode).where(
+                                FileNode.project_id == project_id,
+                                FileNode.path.in_(modified),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for node in patched_nodes:
+                    node.status = "patched"
+                    session.add(node)
+                await session.commit()
+    except ProjectLockTimeout as exc:
+        raise LockedError(
+            "Проект сейчас занят, повторите позже",
+            context={"project_id": project_id},
+        ) from exc
+    except PatchApplyError as error:
+        applied = {"error": str(error)}
+
+    if applied is not None:
+        run_update = await session.get(AnalysisRun, run_id)
+        if run_update:
+            run_update.applied_json = json.dumps(applied, ensure_ascii=False)
+            session.add(run_update)
+            await session.commit()
+
+    return applied
+
+
 def _llm_http_error(phase: str, error: Exception) -> None:
     if isinstance(error, RuntimeError):
         raise ExternalServiceError(str(error), context={"phase": phase})
@@ -612,6 +803,26 @@ def _graph_warning(project_id: int) -> str | None:
         edges_row = session.exec(
             select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
         ).one()
+
+    node_count = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
+    edge_count = int(edges_row[0] if isinstance(edges_row, (tuple, list)) else edges_row or 0)
+
+    if node_count < MIN_GRAPH_NODES_FOR_READY or edge_count < MIN_GRAPH_EDGES_FOR_READY:
+        return GRAPH_NOT_READY_WARNING
+    return None
+
+
+async def _graph_warning_async(session: AsyncSession, project_id: int) -> str | None:
+    nodes_row = (
+        await session.execute(
+            select(func.count()).select_from(FileNode).where(FileNode.project_id == project_id)
+        )
+    ).one()
+    edges_row = (
+        await session.execute(
+            select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
+        )
+    ).one()
 
     node_count = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
     edge_count = int(edges_row[0] if isinstance(edges_row, (tuple, list)) else edges_row or 0)
@@ -1891,19 +2102,22 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
     }
 
 
-def run_task_with_background(
+async def run_task_async(project_id: int, org_id: int, request: TaskRequest) -> dict:
+    return await asyncio.to_thread(run_task, project_id, org_id, request)
+
+
+async def run_task_with_background_async(
     project_id: int,
     org_id: int,
     request: TaskRequest,
     background: bool = False,
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
-    if background:
-        task_id = task_queue.submit_run(project_id, org_id, _serialize_request(request))
-        if background_tasks is not None:
-            background_tasks.add_task(lambda: None)
-        return {"task_id": task_id, "status": "pending"}
-    return run_task(project_id, org_id, request)
+    _ = background
+    task_id = await submit_run_async(project_id, org_id, _serialize_request(request))
+    if background_tasks is not None:
+        background_tasks.add_task(lambda: None)
+    return {"task_id": task_id, "status": "pending"}
 
 
 def _serialize_request(request: TaskRequest) -> dict:
@@ -1912,16 +2126,23 @@ def _serialize_request(request: TaskRequest) -> dict:
     return payload
 
 
-def list_runs(project_id: int, org_id: int, limit: int = 50) -> list[dict]:
+async def list_runs_async(
+    session: AsyncSession, project_id: int, org_id: int, limit: int = 50
+) -> list[dict]:
     if limit < 1 or limit > 200:
         raise BadRequestError("limit должен быть в диапазоне 1..200")
-    with get_session() as session:
-        runs = session.exec(
-            select(AnalysisRun)
-            .where(AnalysisRun.project_id == project_id, AnalysisRun.org_id == org_id)
-            .order_by(AnalysisRun.id.desc())
-            .limit(limit)
-        ).all()
+    runs = list(
+        (
+            await session.execute(
+                select(AnalysisRun)
+                .where(AnalysisRun.project_id == project_id, AnalysisRun.org_id == org_id)
+                .order_by(AnalysisRun.id.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [
         {
             "id": run.id,
@@ -1935,9 +2156,8 @@ def list_runs(project_id: int, org_id: int, limit: int = 50) -> list[dict]:
     ]
 
 
-def get_run(project_id: int, org_id: int, run_id: int) -> dict:
-    with get_session() as session:
-        run = session.get(AnalysisRun, run_id)
+async def get_run_async(session: AsyncSession, project_id: int, org_id: int, run_id: int) -> dict:
+    run = await session.get(AnalysisRun, run_id)
     if not run or run.project_id != project_id or run.org_id != org_id:
         raise NotFoundError(
             "Запуск не найден",
@@ -1959,12 +2179,7 @@ def get_run(project_id: int, org_id: int, run_id: int) -> dict:
     except Exception:  # noqa: BLE001
         applied = None
 
-    warning = _graph_warning(project_id)
-    graph_scan_task: dict | None = None
-    if warning == GRAPH_NOT_READY_WARNING:
-        graph_scan_task = scan_with_background(project_id, org_id, background=True)
-    graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
-    graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
+    warning = await _graph_warning_async(session, project_id)
 
     return {
         "id": run.id,
@@ -1982,14 +2197,11 @@ def get_run(project_id: int, org_id: int, run_id: int) -> dict:
         "created_at": run.created_at.isoformat(),
         "result": result,
         "warning": warning,
-        "graph_scan_task_id": graph_scan_task_id,
-        "graph_scan_status": graph_scan_status,
     }
 
 
-def get_run_patch(project_id: int, org_id: int, run_id: int) -> dict:
-    with get_session() as session:
-        run = session.get(AnalysisRun, run_id)
+async def get_run_patch_async(session: AsyncSession, project_id: int, org_id: int, run_id: int) -> dict:
+    run = await session.get(AnalysisRun, run_id)
     if not run or run.project_id != project_id or run.org_id != org_id:
         raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
 
@@ -2031,16 +2243,23 @@ def get_run_patch(project_id: int, org_id: int, run_id: int) -> dict:
     raise NotFoundError("Патч не найден", context={"run_id": run_id})
 
 
-def apply_run_patch(project_id: int, org_id: int, run_id: int) -> dict:
-    project = get_project(project_id, org_id=org_id)
+async def apply_run_patch_async(
+    session: AsyncSession,
+    project_id: int,
+    org_id: int,
+    run_id: int,
+) -> dict:
+    project = await session.get(Project, project_id)
+    if not project or project.org_id != org_id:
+        raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
+
     root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
 
-    with get_session() as session:
-        run = session.get(AnalysisRun, run_id)
+    run = await session.get(AnalysisRun, run_id)
     if not run or run.project_id != project_id or run.org_id != org_id:
         raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
 
-    patch_payload = get_run_patch(project_id, org_id, run_id)
+    patch_payload = await get_run_patch_async(session, project_id, org_id, run_id)
     patch_text = patch_payload.get("patch_unified_diff") if isinstance(patch_payload, dict) else ""
 
     allowed_patch_paths: set[str] | None = None
@@ -2053,7 +2272,8 @@ def apply_run_patch(project_id: int, org_id: int, run_id: int) -> dict:
         if isinstance(data, list):
             allowed_patch_paths = {p for p in data if isinstance(p, str) and p}
 
-    applied = _apply_patch_and_record(
+    applied = await _apply_patch_and_record_async(
+        session,
         project_id,
         org_id,
         run_id,
@@ -2065,40 +2285,41 @@ def apply_run_patch(project_id: int, org_id: int, run_id: int) -> dict:
     return {"applied": applied}
 
 
-def delete_run(project_id: int, org_id: int, run_id: int) -> dict:
-    with get_session() as session:
-        run = session.get(AnalysisRun, run_id)
-        if not run or run.project_id != project_id or run.org_id != org_id:
-            raise NotFoundError(
-                "Запуск не найден",
-                context={"run_id": run_id, "project_id": project_id},
-            )
-        try:
-            data = json.loads(run.result_json or "{}")
-        except Exception:  # noqa: BLE001
-            data = {}
-        if isinstance(data, dict):
-            meta = data.get("patch_unified_diff_meta")
-            if isinstance(meta, dict):
-                sha = meta.get("sha256")
-                if isinstance(sha, str) and sha:
-                    delete_patch_blob_for_sha(sha)
-        session.delete(run)
-        session.commit()
+async def delete_run_async(session: AsyncSession, project_id: int, org_id: int, run_id: int) -> dict:
+    run = await session.get(AnalysisRun, run_id)
+    if not run or run.project_id != project_id or run.org_id != org_id:
+        raise NotFoundError(
+            "Запуск не найден",
+            context={"run_id": run_id, "project_id": project_id},
+        )
+    try:
+        data = json.loads(run.result_json or "{}")
+    except Exception:  # noqa: BLE001
+        data = {}
+    if isinstance(data, dict):
+        meta = data.get("patch_unified_diff_meta")
+        if isinstance(meta, dict):
+            sha = meta.get("sha256")
+            if isinstance(sha, str) and sha:
+                delete_patch_blob_for_sha(sha)
+    await session.delete(run)
+    await session.commit()
     return {"ok": True}
 
 
-def describe_task(task_id: str, org_id: int) -> dict:
-    state: TaskState | None = task_queue.get(task_id)
-    if not state:
-        raise NotFoundError("Задача не найдена", context={"task_id": task_id})
-    with get_session() as session:
-        job = session.get(TaskJob, task_id)
+async def describe_task_async(session: AsyncSession, task_id: str, org_id: int) -> dict:
+    job = await session.get(TaskJob, task_id)
     if not job or job.org_id != org_id:
         raise NotFoundError("Задача не найдена", context={"task_id": task_id})
-    payload: dict[str, Any] = {"task_id": task_id, "status": state.status}
-    if state.error:
-        payload["error"] = state.error
-    if state.result is not None:
-        payload["result"] = state.result
+    result = None
+    if isinstance(job.result_json, str) and job.result_json:
+        try:
+            result = json.loads(job.result_json)
+        except Exception:  # noqa: BLE001
+            result = None
+    payload: dict[str, Any] = {"task_id": task_id, "status": job.status}
+    if job.error:
+        payload["error"] = job.error
+    if result is not None:
+        payload["result"] = result
     return payload

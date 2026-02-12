@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -9,30 +10,13 @@ from sqlmodel import delete, select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from app.async_db import AsyncSessionLocal  # noqa: E402
 from app.db import engine, get_session  # noqa: E402
 from app.models import Project, RepoSnapshot  # noqa: E402
 from app.services import project_service  # noqa: E402
 from app.snapshots import SnapshotMeta  # noqa: E402
 
 
-class _FailingSnapshotSession:
-    def __init__(self, session):
-        self._session = session
-
-    def __enter__(self):
-        self._session.__enter__()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return self._session.__exit__(exc_type, exc, tb)
-
-    def add(self, instance, _warn: bool = True):
-        if isinstance(instance, RepoSnapshot):
-            raise RuntimeError("snapshot persist failed")
-        return self._session.add(instance, _warn=_warn)
-
-    def __getattr__(self, attr):
-        return getattr(self._session, attr)
 
 
 class TestProjectServiceCreateFromSnapshot(unittest.TestCase):
@@ -64,23 +48,25 @@ class TestProjectServiceCreateFromSnapshot(unittest.TestCase):
                 root_dir="snapshots/test/repo",
             )
 
-            def _failing_get_session() -> _FailingSnapshotSession:
-                return _FailingSnapshotSession(get_session())
-
             with (
                 mock.patch.object(
                     project_service,
                     "prepare_project_snapshot_root",
                     return_value=Path(tmpdir),
                 ),
-                mock.patch.object(project_service, "get_session", side_effect=_failing_get_session),
+                mock.patch.object(project_service, "RepoSnapshot", side_effect=RuntimeError("snapshot persist failed")),
             ):
                 with self.assertRaises(RuntimeError):
-                    project_service.create_project_from_snapshot(
-                        name="rollback-test",
-                        meta=meta,
-                        org_id=org_id,
-                    )
+                    async def _run() -> None:
+                        async with AsyncSessionLocal() as session:
+                            await project_service.create_project_from_snapshot_async(
+                                session=session,
+                                name="rollback-test",
+                                meta=meta,
+                                org_id=org_id,
+                            )
+
+                    asyncio.run(_run())
 
             with get_session() as session:
                 project_row = session.exec(
