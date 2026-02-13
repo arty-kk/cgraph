@@ -145,7 +145,9 @@ async def test_json_loads_or_async_uses_to_thread(monkeypatch):
 @pytest.mark.anyio
 async def test_build_patch_payload_from_run_async_uses_blob_meta(monkeypatch):
     run = SimpleNamespace(
-        result_json=json.dumps({"patch_unified_diff_meta": {"sha256": "sha-1", "expires_at": "soon"}})
+        result_json=json.dumps(
+            {"patch_unified_diff_meta": {"sha256": "sha-1", "expires_at": "soon"}}
+        )
     )
 
     async def _fake_json_loads_or_async(raw, fallback):
@@ -187,6 +189,11 @@ async def test_apply_run_patch_async_does_not_call_get_run_patch_async(monkeypat
     async def _fake_apply_patch_and_record_async(*args, **kwargs):
         return {"modified": ["a.py"]}
 
+    async def _fake_normalize_project_root_async(root_path: str, *, max_length: int):
+        _ = max_length
+        assert root_path == "."
+        return Path("/normalized")
+
     async def _boom(*args, **kwargs):
         raise AssertionError("get_run_patch_async must not be called")
 
@@ -201,10 +208,42 @@ async def test_apply_run_patch_async_does_not_call_get_run_patch_async(monkeypat
         "_apply_patch_and_record_async",
         _fake_apply_patch_and_record_async,
     )
+    monkeypatch.setattr(
+        task_service,
+        "_normalize_project_root_async",
+        _fake_normalize_project_root_async,
+    )
+    monkeypatch.setattr(
+        task_service,
+        "normalize_project_root",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("sync normalize_project_root must not be used")
+        ),
+    )
 
     result = await task_service.apply_run_patch_async(_Session(), 77, 55, 101)
 
     assert result == {"applied": {"modified": ["a.py"]}}
+
+
+@pytest.mark.anyio
+async def test_normalize_project_root_async_uses_to_thread(monkeypatch):
+    calls: dict[str, object] = {}
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return Path("/repo")
+
+    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+
+    result = await task_service._normalize_project_root_async("/repo", max_length=111)
+
+    assert result == Path("/repo")
+    assert calls["func"] is task_service.normalize_project_root
+    assert calls["args"] == ("/repo",)
+    assert calls["kwargs"] == {"max_length": 111}
 
 
 @pytest.mark.anyio

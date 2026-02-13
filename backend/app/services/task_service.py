@@ -165,6 +165,10 @@ async def _json_loads_or_async(raw: str | None, fallback):
     return await asyncio.to_thread(_json_loads_or, raw, fallback)
 
 
+async def _normalize_project_root_async(root_path: str, *, max_length: int) -> Path:
+    return await asyncio.to_thread(normalize_project_root, root_path, max_length=max_length)
+
+
 def get_project(project_id: int, org_id: int | None = None) -> Project:
     with get_session() as session:
         if org_id is None:
@@ -2332,7 +2336,10 @@ async def apply_run_patch_async(
     if not project or project.org_id != org_id:
         raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
 
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+    root = await _normalize_project_root_async(
+        project.root_path,
+        max_length=settings.max_root_path_chars,
+    )
 
     run = await session.get(AnalysisRun, run_id)
     if not run or run.project_id != project_id or run.org_id != org_id:
