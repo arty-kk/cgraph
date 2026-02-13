@@ -1,113 +1,126 @@
 import sys
-import unittest
+import time
 from pathlib import Path
-from time import time
+
+import pytest
+from sqlalchemy.exc import SQLAlchemyError
+from sqlmodel import select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
-from sqlmodel import select  # noqa: E402
+from app.async_db import AsyncSessionLocal
+from app.db import get_session
+from app.errors import BadRequestError
+from app.models import OrgMembership, User
+from app.services import org_service
 
 
-class TestOrgServiceOwnerInvariant(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        try:
-            from app.db import get_session  # noqa: E402
-            from app.errors import BadRequestError  # noqa: E402
-            from app.models import OrgMembership, User  # noqa: E402
-            from app.services.org_service import (  # noqa: E402
-                add_or_update_member,
-                create_org,
-                remove_member,
-            )
-        except ModuleNotFoundError:
-            raise unittest.SkipTest("Postgres dependencies are not available for org service tests")
-        try:
-            with get_session() as session:
-                session.exec(select(1)).first()
-        except SQLAlchemyError:
-            raise unittest.SkipTest("Postgres is not available for org service tests")
+@pytest.fixture
+def ensure_postgres():
+    try:
+        with get_session() as session:
+            session.exec(select(1)).first()
+    except SQLAlchemyError:
+        pytest.skip("Postgres is not available for org service tests")
 
-        cls.get_session = get_session
-        cls.BadRequestError = BadRequestError
-        cls.OrgMembership = OrgMembership
-        cls.User = User
-        cls.create_org = create_org
-        cls.add_or_update_member = add_or_update_member
-        cls.remove_member = remove_member
 
-    def _create_user(self, label: str) -> int:
-        suffix = int(time() * 1000000)
-        user = self.User(email=f"orgsvc_{label}_{suffix}@example.com", password_hash="x")
-        with self.get_session() as session:
-            session.add(user)
-            session.commit()
-            session.refresh(user)
-            return int(user.id)
+async def _create_user(label: str) -> int:
+    suffix = int(time.time() * 1000000)
+    user = User(email=f"orgsvc_{label}_{suffix}@example.com", password_hash="x")
+    async with AsyncSessionLocal() as session:
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        return int(user.id)
 
-    def _membership(self, org_id: int, user_id: int):
-        with self.get_session() as session:
-            return session.exec(
-                select(self.OrgMembership).where(
-                    self.OrgMembership.org_id == org_id,
-                    self.OrgMembership.user_id == user_id,
+
+async def _membership(org_id: int, user_id: int):
+    async with AsyncSessionLocal() as session:
+        return (
+            (
+                await session.execute(
+                    select(OrgMembership).where(
+                        OrgMembership.org_id == org_id,
+                        OrgMembership.user_id == user_id,
+                    )
                 )
-            ).first()
-
-    def test_cannot_remove_last_owner(self) -> None:
-        owner_id = self._create_user("remove_last_owner")
-        org = self.create_org("remove-last-owner", owner_id)
-
-        with self.assertRaises(self.BadRequestError) as exc:
-            self.remove_member(int(org.id), owner_id)
-        self.assertEqual(exc.exception.code, "bad_request")
-
-        membership = self._membership(int(org.id), owner_id)
-        self.assertIsNotNone(membership)
-        self.assertEqual(membership.role, "owner")
-        self.assertTrue(membership.is_active)
-
-    def test_cannot_downgrade_last_owner(self) -> None:
-        owner_id = self._create_user("downgrade_last_owner")
-        org = self.create_org("downgrade-last-owner", owner_id)
-
-        with self.assertRaises(self.BadRequestError) as exc:
-            self.add_or_update_member(int(org.id), owner_id, "member")
-        self.assertEqual(exc.exception.code, "bad_request")
-
-        membership = self._membership(int(org.id), owner_id)
-        self.assertIsNotNone(membership)
-        self.assertEqual(membership.role, "owner")
-        self.assertTrue(membership.is_active)
-
-    def test_can_remove_or_downgrade_owner_when_second_active_owner_exists(self) -> None:
-        owner_one_id = self._create_user("owner_one")
-        owner_two_id = self._create_user("owner_two")
-        org = self.create_org("with-two-owners", owner_one_id)
-        org_id = int(org.id)
-
-        self.add_or_update_member(org_id, owner_two_id, "owner")
-
-        self.remove_member(org_id, owner_one_id)
-        owner_one_membership = self._membership(org_id, owner_one_id)
-        self.assertIsNone(owner_one_membership)
-
-        self.add_or_update_member(org_id, owner_one_id, "owner")
-        updated = self.add_or_update_member(org_id, owner_two_id, "member")
-        self.assertEqual(updated.role, "member")
-        self.assertTrue(updated.is_active)
-
-        owner_two_membership = self._membership(org_id, owner_two_id)
-        self.assertIsNotNone(owner_two_membership)
-        self.assertEqual(owner_two_membership.role, "member")
-        self.assertTrue(owner_two_membership.is_active)
-
-        owner_one_membership = self._membership(org_id, owner_one_id)
-        self.assertIsNotNone(owner_one_membership)
-        self.assertEqual(owner_one_membership.role, "owner")
-        self.assertTrue(owner_one_membership.is_active)
+            )
+            .scalars()
+            .first()
+        )
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.anyio
+async def test_cannot_remove_last_owner(ensure_postgres) -> None:
+    owner_id = await _create_user("remove_last_owner")
+    async with AsyncSessionLocal() as session:
+        org = await org_service.create_org_async(session, "remove-last-owner", owner_id)
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(BadRequestError) as exc:
+            await org_service.remove_member_async(session, int(org.id), owner_id)
+    assert exc.value.code == "bad_request"
+
+    membership = await _membership(int(org.id), owner_id)
+    assert membership is not None
+    assert membership.role == "owner"
+    assert membership.is_active is True
+
+
+@pytest.mark.anyio
+async def test_cannot_downgrade_last_owner(ensure_postgres) -> None:
+    owner_id = await _create_user("downgrade_last_owner")
+    async with AsyncSessionLocal() as session:
+        org = await org_service.create_org_async(session, "downgrade-last-owner", owner_id)
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(BadRequestError) as exc:
+            await org_service.add_or_update_member_async(session, int(org.id), owner_id, "member")
+    assert exc.value.code == "bad_request"
+
+    membership = await _membership(int(org.id), owner_id)
+    assert membership is not None
+    assert membership.role == "owner"
+    assert membership.is_active is True
+
+
+@pytest.mark.anyio
+async def test_can_remove_or_downgrade_owner_when_second_active_owner_exists(
+    ensure_postgres,
+) -> None:
+    owner_one_id = await _create_user("owner_one")
+    owner_two_id = await _create_user("owner_two")
+
+    async with AsyncSessionLocal() as session:
+        org = await org_service.create_org_async(session, "with-two-owners", owner_one_id)
+    org_id = int(org.id)
+
+    async with AsyncSessionLocal() as session:
+        await org_service.add_or_update_member_async(session, org_id, owner_two_id, "owner")
+
+    async with AsyncSessionLocal() as session:
+        await org_service.remove_member_async(session, org_id, owner_one_id)
+    owner_one_membership = await _membership(org_id, owner_one_id)
+    assert owner_one_membership is None
+
+    async with AsyncSessionLocal() as session:
+        await org_service.add_or_update_member_async(session, org_id, owner_one_id, "owner")
+    async with AsyncSessionLocal() as session:
+        updated = await org_service.add_or_update_member_async(
+            session,
+            org_id,
+            owner_two_id,
+            "member",
+        )
+    assert updated.role == "member"
+    assert updated.is_active is True
+
+    owner_two_membership = await _membership(org_id, owner_two_id)
+    assert owner_two_membership is not None
+    assert owner_two_membership.role == "member"
+    assert owner_two_membership.is_active is True
+
+    owner_one_membership = await _membership(org_id, owner_one_id)
+    assert owner_one_membership is not None
+    assert owner_one_membership.role == "owner"
+    assert owner_one_membership.is_active is True

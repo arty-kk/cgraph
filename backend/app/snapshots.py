@@ -1,6 +1,7 @@
 # backend/app/snapshots.py
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import shutil
 import tarfile
@@ -391,5 +392,5 @@ def delete_snapshot(meta: SnapshotMeta) -> None:
 
 
 async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
-    data = await upload_file.read()
-    return store_snapshot_blob(data, archive_name)
+    await upload_file.seek(0)
+    return await asyncio.to_thread(store_snapshot_stream, upload_file.file, archive_name)

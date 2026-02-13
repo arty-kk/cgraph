@@ -1,6 +1,7 @@
 # backend/app/services/auth_service.py
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -34,6 +35,10 @@ def _hash_password(password: str, *, salt: bytes | None = None) -> str:
     )
 
 
+async def _hash_password_async(password: str, *, salt: bytes | None = None) -> str:
+    return await asyncio.to_thread(_hash_password, password, salt=salt)
+
+
 def _verify_password(password: str, stored: str) -> bool:
     try:
         scheme, iterations, salt_b64, hash_b64 = stored.split("$", 3)
@@ -59,6 +64,10 @@ def _verify_password(password: str, stored: str) -> bool:
         "sha256", password.encode("utf-8") + pepper, salt, iterations_int
     )
     return hmac.compare_digest(dk, stored_hash_bytes)
+
+
+async def _verify_password_async(password: str, stored: str) -> bool:
+    return await asyncio.to_thread(_verify_password, password, stored)
 
 
 def _hash_token(token: str) -> str:
@@ -186,7 +195,8 @@ async def bootstrap_user_async(session: AsyncSession, email: str, password: str)
         except IntegrityError as exc:
             raise BadRequestError("Bootstrap уже выполнен") from exc
 
-        user = User(email=email.strip().lower(), password_hash=_hash_password(password))
+        password_hash = await _hash_password_async(password)
+        user = User(email=email.strip().lower(), password_hash=password_hash)
         session.add(user)
         try:
             await session.flush()
@@ -249,7 +259,8 @@ async def register_user_async(session: AsyncSession, email: str, password: str) 
     if not isinstance(password, str) or len(password) < 8:
         raise BadRequestError("Пароль должен быть не короче 8 символов")
 
-    user = User(email=email.strip().lower(), password_hash=_hash_password(password))
+    password_hash = await _hash_password_async(password)
+    user = User(email=email.strip().lower(), password_hash=password_hash)
     session.add(user)
     try:
         await session.flush()
@@ -288,7 +299,7 @@ async def authenticate_user_async(session: AsyncSession, email: str, password: s
     )
     if not user or not user.is_active:
         raise UnauthorizedError("Неверные учетные данные")
-    if not _verify_password(password, user.password_hash):
+    if not await _verify_password_async(password, user.password_hash):
         raise UnauthorizedError("Неверные учетные данные")
     return user
 

@@ -107,12 +107,94 @@ async def _path_exists_async(path: Path) -> bool:
     return await asyncio.to_thread(path.exists)
 
 
-async def _path_is_file_async(path: Path) -> bool:
-    return await asyncio.to_thread(path.is_file)
+def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
+    exists = path.exists()
+    return exists, bool(exists and path.is_file())
 
 
-async def _path_is_dir_async(path: Path) -> bool:
-    return await asyncio.to_thread(path.is_dir)
+async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
+    return await asyncio.to_thread(_path_exists_and_is_file, path)
+
+
+def _path_exists_and_is_dir(path: Path) -> tuple[bool, bool]:
+    exists = path.exists()
+    return exists, bool(exists and path.is_dir())
+
+
+async def _path_exists_and_is_dir_async(path: Path) -> tuple[bool, bool]:
+    return await asyncio.to_thread(_path_exists_and_is_dir, path)
+
+
+async def _ensure_existing_file_async(path: Path, rel_norm: str) -> None:
+    exists, is_file = await _path_exists_and_is_file_async(path)
+    if not exists:
+        raise NotFoundError("Файл не найден", context={"path": rel_norm})
+    if not is_file:
+        raise BadRequestError("Цель должна быть файлом")
+
+
+
+
+async def _normalize_project_root_async(root_path: str) -> Path:
+    return await asyncio.to_thread(
+        normalize_project_root,
+        root_path,
+        max_length=settings.max_root_path_chars,
+    )
+
+async def _resolve_under_root_async(
+    root: Path,
+    path: str,
+    *,
+    max_length: int,
+) -> tuple[Path, str]:
+    return await asyncio.to_thread(
+        resolve_under_root,
+        root,
+        path,
+        max_length=max_length,
+    )
+
+
+async def _resolve_rename_paths_async(
+    root: Path,
+    path: str,
+    new_path: str,
+    *,
+    max_length: int,
+) -> tuple[tuple[Path, str], tuple[Path, str]]:
+    current, target = await asyncio.gather(
+        _resolve_under_root_async(root, path, max_length=max_length),
+        _resolve_under_root_async(root, new_path, max_length=max_length),
+    )
+    return current, target
+
+
+async def _collect_create_path_state_async(
+    abs_path: Path,
+    parent: Path,
+) -> tuple[bool, bool, bool]:
+    abs_exists, (parent_exists, parent_is_dir) = await asyncio.gather(
+        _path_exists_async(abs_path),
+        _path_exists_and_is_dir_async(parent),
+    )
+    return abs_exists, parent_exists, parent_is_dir
+
+
+async def _collect_rename_path_state_async(
+    abs_path: Path,
+    new_abs: Path,
+    new_parent: Path,
+) -> tuple[bool, bool, bool, bool]:
+    (source_exists, source_is_file), new_abs_exists, (
+        parent_exists,
+        parent_is_dir,
+    ) = await asyncio.gather(
+        _path_exists_and_is_file_async(abs_path),
+        _path_exists_async(new_abs),
+        _path_exists_and_is_dir_async(new_parent),
+    )
+    return source_exists, source_is_file, new_abs_exists, parent_exists, parent_is_dir
 
 
 
@@ -127,12 +209,13 @@ async def _invalidate_pack_cache_async(project_id: int) -> None:
 @router.get("/{project_id}/{path:path}/contract")
 async def contract(request: Request, project_id: int, path: str):
     project = await require_project_access_async(request, project_id, min_role="viewer")
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-    if not await _path_exists_async(abs_path):
-        raise NotFoundError("Файл не найден", context={"path": rel_norm})
-    if not await _path_is_file_async(abs_path):
-        raise BadRequestError("Цель должна быть файлом")
+    root = await _normalize_project_root_async(project.root_path)
+    abs_path, rel_norm = await _resolve_under_root_async(
+        root,
+        path,
+        max_length=settings.max_rel_path_chars,
+    )
+    await _ensure_existing_file_async(abs_path, rel_norm)
 
     try:
         c = await get_or_build_contract_async(request.state.db_session, project_id, root, rel_norm)
@@ -146,16 +229,13 @@ async def contract(request: Request, project_id: int, path: str):
 @router.get("/{project_id}/{path:path}/node")
 async def node(request: Request, project_id: int, path: str):
     project = await require_project_access_async(request, project_id, min_role="viewer")
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    abs_path, rel_norm = resolve_under_root(
+    root = await _normalize_project_root_async(project.root_path)
+    abs_path, rel_norm = await _resolve_under_root_async(
         root,
         path,
         max_length=settings.max_rel_path_chars,
     )
-    if not await _path_exists_async(abs_path):
-        raise NotFoundError("Файл не найден", context={"path": rel_norm})
-    if not await _path_is_file_async(abs_path):
-        raise BadRequestError("Цель должна быть файлом")
+    await _ensure_existing_file_async(abs_path, rel_norm)
 
     n = (
         (
@@ -171,10 +251,7 @@ async def node(request: Request, project_id: int, path: str):
     )
     if not n:
         try:
-            if not await _path_exists_async(abs_path):
-                raise NotFoundError("Файл не найден", context={"path": rel_norm})
-            if not await _path_is_file_async(abs_path):
-                raise BadRequestError("Цель должна быть файлом")
+            await _ensure_existing_file_async(abs_path, rel_norm)
             reindexed = await _scan_files_async(project_id, project.org_id, root, [rel_norm])
             if scan_aborted(reindexed):
                 logger.warning(
@@ -222,12 +299,13 @@ async def node(request: Request, project_id: int, path: str):
 @router.get("/{project_id}/{path:path}/file")
 async def get_file(request: Request, project_id: int, path: str, max_chars: int | None = None):
     project = await require_project_access_async(request, project_id, min_role="viewer")
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-    if not await _path_exists_async(abs_path):
-        raise NotFoundError("Файл не найден", context={"path": rel_norm})
-    if not await _path_is_file_async(abs_path):
-        raise BadRequestError("Цель должна быть файлом")
+    root = await _normalize_project_root_async(project.root_path)
+    abs_path, rel_norm = await _resolve_under_root_async(
+        root,
+        path,
+        max_length=settings.max_rel_path_chars,
+    )
+    await _ensure_existing_file_async(abs_path, rel_norm)
 
     limit = None
     if max_chars is not None:
@@ -251,12 +329,13 @@ async def update_file(
 ):
     # Single source of truth for mutation response: docs/file-mutation-contract.md
     project = await require_project_access_async(request, project_id, min_role="member")
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-    if not await _path_exists_async(abs_path):
-        raise NotFoundError("Файл не найден", context={"path": rel_norm})
-    if not await _path_is_file_async(abs_path):
-        raise BadRequestError("Цель должна быть файлом")
+    root = await _normalize_project_root_async(project.root_path)
+    abs_path, rel_norm = await _resolve_under_root_async(
+        root,
+        path,
+        max_length=settings.max_rel_path_chars,
+    )
+    await _ensure_existing_file_async(abs_path, rel_norm)
 
     content = body.content
     if not isinstance(content, str):
@@ -264,10 +343,7 @@ async def update_file(
 
     try:
         async with project_lock_async(request.state.db_session, project_id):
-            if not await _path_exists_async(abs_path):
-                raise NotFoundError("Файл не найден", context={"path": rel_norm})
-            if not await _path_is_file_async(abs_path):
-                raise BadRequestError("Цель должна быть файлом")
+            await _ensure_existing_file_async(abs_path, rel_norm)
             await _write_text_async(abs_path, content)
     except ProjectLockTimeout as exc:
         raise LockedError(
@@ -293,8 +369,12 @@ async def create_file(
     body: FileCreate,
 ):
     project = await require_project_access_async(request, project_id, min_role="member")
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+    root = await _normalize_project_root_async(project.root_path)
+    abs_path, rel_norm = await _resolve_under_root_async(
+        root,
+        path,
+        max_length=settings.max_rel_path_chars,
+    )
 
     content = body.content if isinstance(body.content, str) or body.content is None else None
     if content is None and body.content is not None:
@@ -303,12 +383,16 @@ async def create_file(
 
     try:
         async with project_lock_async(request.state.db_session, project_id):
-            if await _path_exists_async(abs_path):
-                raise BadRequestError("Файл уже существует", context={"path": rel_norm})
             parent = abs_path.parent
-            if await _path_exists_async(parent) and not await _path_is_dir_async(parent):
+            abs_exists, parent_exists, parent_is_dir = await _collect_create_path_state_async(
+                abs_path,
+                parent,
+            )
+            if abs_exists:
+                raise BadRequestError("Файл уже существует", context={"path": rel_norm})
+            if parent_exists and not parent_is_dir:
                 raise BadRequestError("Родительский путь должен быть директорией")
-            if not await _path_exists_async(parent):
+            if not parent_exists:
                 await _mkdir_async(parent)
 
             await _write_text_async(abs_path, content)
@@ -336,10 +420,10 @@ async def rename_file(
     body: FileRename,
 ):
     project = await require_project_access_async(request, project_id, min_role="member")
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-    new_abs, new_rel = resolve_under_root(
+    root = await _normalize_project_root_async(project.root_path)
+    (abs_path, rel_norm), (new_abs, new_rel) = await _resolve_rename_paths_async(
         root,
+        path,
         body.new_path,
         max_length=settings.max_rel_path_chars,
     )
@@ -348,14 +432,25 @@ async def rename_file(
 
     try:
         async with project_lock_async(request.state.db_session, project_id):
-            if not await _path_exists_async(abs_path):
-                raise NotFoundError("Файл не найден", context={"path": rel_norm})
-            if not await _path_is_file_async(abs_path):
-                raise BadRequestError("Цель должна быть файлом")
-            if new_abs.exists():
-                raise BadRequestError("Файл уже существует", context={"path": new_rel})
             new_parent = new_abs.parent
-            if not await _path_exists_async(new_parent):
+            (
+                source_exists,
+                source_is_file,
+                new_abs_exists,
+                parent_exists,
+                parent_is_dir,
+            ) = await _collect_rename_path_state_async(
+                abs_path,
+                new_abs,
+                new_parent,
+            )
+            if not source_exists:
+                raise NotFoundError("Файл не найден", context={"path": rel_norm})
+            if not source_is_file:
+                raise BadRequestError("Цель должна быть файлом")
+            if new_abs_exists:
+                raise BadRequestError("Файл уже существует", context={"path": new_rel})
+            if not parent_exists:
                 if body.create_dirs:
                     await _mkdir_async(new_parent)
                 else:
@@ -363,7 +458,7 @@ async def rename_file(
                         "Родительская директория не существует",
                         context={"path": new_rel},
                     )
-            if not await _path_is_dir_async(new_parent):
+            elif not parent_is_dir:
                 raise BadRequestError("Родительский путь должен быть директорией")
 
             await _rename_async(abs_path, new_abs)
@@ -390,15 +485,16 @@ async def delete_file(
     path: str,
 ):
     project = await require_project_access_async(request, project_id, min_role="member")
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+    root = await _normalize_project_root_async(project.root_path)
+    abs_path, rel_norm = await _resolve_under_root_async(
+        root,
+        path,
+        max_length=settings.max_rel_path_chars,
+    )
 
     try:
         async with project_lock_async(request.state.db_session, project_id):
-            if not await _path_exists_async(abs_path):
-                raise NotFoundError("Файл не найден", context={"path": rel_norm})
-            if not await _path_is_file_async(abs_path):
-                raise BadRequestError("Цель должна быть файлом")
+            await _ensure_existing_file_async(abs_path, rel_norm)
 
             await _unlink_async(abs_path)
     except ProjectLockTimeout as exc:
