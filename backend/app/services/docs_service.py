@@ -1182,13 +1182,20 @@ async def _collect_outline_and_key_files_async(
         _collect_key_files_async(root, paths),
     )
 
+
+async def _normalize_project_root_async(root_path: str, *, max_length: int) -> Path:
+    return await asyncio.to_thread(normalize_project_root, root_path, max_length=max_length)
+
 async def build_project_docs_async(project_id: int, org_id: int) -> dict:
     async with AsyncSessionLocal() as session:
         project = await session.get(Project, project_id)
         if not project or project.org_id != org_id:
             raise NotFoundError("Проект не найден", context={"project_id": project_id})
 
-        root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+        root = await _normalize_project_root_async(
+            project.root_path,
+            max_length=settings.max_root_path_chars,
+        )
 
         nodes = (
             await session.execute(

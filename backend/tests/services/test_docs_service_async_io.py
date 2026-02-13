@@ -258,3 +258,168 @@ async def test_collect_outline_and_key_files_async_runs_helpers(
     assert outline == {"lines": ["- src"], "truncated": False}
     assert key_files_data == ([{"path": "README.md"}], {"makefiles": []})
     assert calls == ["outline", "key_files"]
+
+
+@pytest.mark.anyio
+async def test_normalize_project_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return Path("/repo")
+
+    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
+
+    result = await docs_service._normalize_project_root_async("/repo", max_length=321)
+
+    assert result == Path("/repo")
+    assert calls["func"] is docs_service.normalize_project_root
+    assert calls["args"] == ("/repo",)
+    assert calls["kwargs"] == {"max_length": 321}
+
+
+@pytest.mark.anyio
+async def test_build_project_docs_async_uses_async_root_normalizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ExecResult:
+        def __init__(self, *, rows=None, scalar=None):
+            self._rows = rows or []
+            self._scalar = scalar
+
+        def all(self):
+            return self._rows
+
+        def scalar_one(self):
+            return self._scalar
+
+    class _Session:
+        def __init__(self):
+            self._exec_results = [
+                _ExecResult(rows=[("a.py", "python", 10, 1, 1, 1, "ok")]),
+                _ExecResult(scalar=0),
+            ]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = exc_type, exc, tb
+            return False
+
+        async def get(self, model, project_id):
+            _ = model, project_id
+            return type("Project", (), {"org_id": 5, "root_path": "/repo", "name": "Demo"})()
+
+        async def execute(self, stmt):
+            _ = stmt
+            return self._exec_results.pop(0)
+
+        def add(self, item):
+            item.created_at = type("CreatedAt", (), {"isoformat": lambda self: "2026-01-01T00:00:00"})()
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, item):
+            _ = item
+            return None
+
+    async def _fake_normalize_project_root_async(root_path: str, *, max_length: int):
+        _ = max_length
+        assert root_path == "/repo"
+        return Path("/normalized")
+
+    async def _fake_compute_project_summary_facts_async(nodes):
+        _ = nodes
+        return {
+            "risks": [],
+            "paths": ["a.py"],
+            "languages": {"python": 1},
+            "counts": {"loc": 10},
+            "hotspots": [],
+            "hubs_by_fan_in": [],
+            "module_rows": [],
+            "module_map": [],
+        }
+
+    async def _fake_select_contract_paths_async(**kwargs):
+        _ = kwargs
+        return ["a.py"]
+
+    async def _fake_collect_docs_enrichment_async(session, project_id, root, contract_paths):
+        _ = session, project_id, contract_paths
+        assert root == Path("/normalized")
+        return [], {"counts": {"routes": 0, "calls": 0, "includes": 0}}
+
+    async def _fake_collect_outline_and_key_files_async(root, paths):
+        _ = paths
+        assert root == Path("/normalized")
+        return {"lines": [], "truncated": False}, ([], {"makefiles": []})
+
+    async def _fake_build_run_hints_async(key_files, parsed):
+        _ = key_files, parsed
+        return []
+
+    async def _fake_build_docs_markdown_parts_async(**kwargs):
+        _ = kwargs
+        return {
+            "hotspots_table_md": "",
+            "module_map_table_md": "",
+            "tree_md": "",
+            "api_md": "",
+            "run_md": "",
+            "key_files_md": "",
+        }
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        _ = args, kwargs
+        if func is docs_service.generate_docs:
+            return {"markdown": "ok"}
+        return await __import__("asyncio").to_thread(func, *args, **kwargs)
+
+    session_factory_calls = {"count": 0}
+
+    def _fake_async_session_local():
+        session_factory_calls["count"] += 1
+        return _Session()
+
+    monkeypatch.setattr(docs_service, "AsyncSessionLocal", _fake_async_session_local)
+    monkeypatch.setattr(docs_service, "_normalize_project_root_async", _fake_normalize_project_root_async)
+    monkeypatch.setattr(
+        docs_service,
+        "normalize_project_root",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("sync normalize_project_root must not be used")
+        ),
+    )
+    monkeypatch.setattr(
+        docs_service,
+        "_compute_project_summary_facts_async",
+        _fake_compute_project_summary_facts_async,
+    )
+    monkeypatch.setattr(docs_service, "_select_contract_paths_async", _fake_select_contract_paths_async)
+    monkeypatch.setattr(
+        docs_service,
+        "_collect_docs_enrichment_async",
+        _fake_collect_docs_enrichment_async,
+    )
+    monkeypatch.setattr(
+        docs_service,
+        "_collect_outline_and_key_files_async",
+        _fake_collect_outline_and_key_files_async,
+    )
+    monkeypatch.setattr(docs_service, "_build_run_hints_async", _fake_build_run_hints_async)
+    monkeypatch.setattr(
+        docs_service,
+        "_build_docs_markdown_parts_async",
+        _fake_build_docs_markdown_parts_async,
+    )
+    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
+
+    result = await docs_service.build_project_docs_async(project_id=1, org_id=5)
+
+    assert result["project_id"] == 1
+    assert session_factory_calls["count"] == 2
