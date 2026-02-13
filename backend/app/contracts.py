@@ -1,6 +1,7 @@
 # backend/app/contracts.py
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -18,6 +19,103 @@ from .utils import resolve_under_root, sha256_file
 CONTRACT_VERSION = 2
 MAX_CONTRACT_SYMBOLS = 400
 MAX_CONTRACT_IMPORTS = 2000
+
+
+def _build_contract_payload(project_root: Path, rel_norm: str, p: Path, file_text: str) -> dict:
+    idx = pick_indexer(rel_norm)
+    exports = idx.parse_exports(p, file_text)
+    exports_set = {str(x) for x in exports if isinstance(x, str)}
+
+    imports_raw = idx.parse_imports(p, file_text)
+    imports: list[dict] = []
+    for imp in (imports_raw or [])[:MAX_CONTRACT_IMPORTS]:
+        spec = str(getattr(imp, "spec", "") or "")
+        if not spec:
+            continue
+        kind = str(getattr(imp, "kind", "") or "import")
+        raw = str(getattr(imp, "raw", "") or "")
+        resolved = None
+        if kind != "runtime_dynamic":
+            try:
+                resolved = resolve_spec(project_root, rel_norm, spec)
+            except Exception:
+                resolved = None
+        imports.append({"spec": spec, "kind": kind, "raw": raw, "resolved_path": resolved})
+
+    symbols_raw = []
+    try:
+        symbols_raw = idx.parse_symbols(p, file_text)
+    except Exception:
+        symbols_raw = []
+    symbols: list[dict] = []
+    for sym in (symbols_raw or [])[:MAX_CONTRACT_SYMBOLS]:
+        name = str(getattr(sym, "name", "") or "")
+        if not name:
+            continue
+        symbols.append(
+            {
+                "name": name,
+                "kind": str(getattr(sym, "kind", "") or ""),
+                "signature": str(getattr(sym, "signature", "") or ""),
+                "doc": str(getattr(sym, "doc", "") or ""),
+                "start_line": int(getattr(sym, "start_line", 0) or 0),
+                "end_line": int(getattr(sym, "end_line", 0) or 0),
+                "exported": bool(name in exports_set),
+            }
+        )
+
+    module_doc = ""
+    parse_module_doc = getattr(idx, "parse_module_doc", None)
+    if callable(parse_module_doc):
+        try:
+            module_doc = str(parse_module_doc(p, file_text) or "").strip()
+        except Exception:
+            module_doc = ""
+
+    return {
+        "version": CONTRACT_VERSION,
+        "path": rel_norm,
+        "language": idx.language(),
+        "exports": exports,
+        "imports": imports,
+        "symbols": symbols,
+        "module_doc": module_doc,
+        "notes": "",
+    }
+
+
+def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
+    exists = path.exists()
+    return exists, bool(exists and path.is_file())
+
+
+async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
+    return await asyncio.to_thread(_path_exists_and_is_file, path)
+
+
+async def _resolve_path_async(path: Path) -> Path:
+    return await asyncio.to_thread(path.resolve)
+
+
+async def _resolve_under_root_async(project_root: Path, rel_path: str) -> tuple[Path, str]:
+    return await asyncio.to_thread(resolve_under_root, project_root, rel_path)
+
+
+async def _sha256_file_async(path: Path) -> str:
+    return await asyncio.to_thread(sha256_file, path)
+
+
+async def _read_text_async(path: Path) -> str:
+    return await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+
+
+async def _build_contract_payload_async(
+    project_root: Path,
+    rel_norm: str,
+    p: Path,
+    file_text: str,
+) -> dict:
+    return await asyncio.to_thread(_build_contract_payload, project_root, rel_norm, p, file_text)
 
 
 def get_or_build_contract(project_id: int, project_root: Path, rel_path: str) -> dict:
@@ -166,15 +264,16 @@ async def get_or_build_contract_async(
     project_root: Path,
     rel_path: str,
 ) -> dict:
-    project_root = project_root.resolve()
+    project_root = await _resolve_path_async(project_root)
     try:
-        p, rel_norm = resolve_under_root(project_root, rel_path)
+        p, rel_norm = await _resolve_under_root_async(project_root, rel_path)
     except PathValidationError as e:
         raise FileNotFoundError("Path escapes project root") from e
-    if not p.exists() or not p.is_file():
+    exists, is_file = await _path_exists_and_is_file_async(p)
+    if not exists or not is_file:
         raise FileNotFoundError(f"File not found: {rel_path}")
 
-    file_hash = sha256_file(p)
+    file_hash = await _sha256_file_async(p)
     existing = (
         (
             await session.execute(
@@ -217,68 +316,8 @@ async def get_or_build_contract_async(
                     await session.commit()
                 return data
 
-    file_text = p.read_text(encoding="utf-8", errors="replace")
-    idx = pick_indexer(rel_norm)
-    exports = idx.parse_exports(p, file_text)
-    exports_set = {str(x) for x in exports if isinstance(x, str)}
-
-    imports_raw = idx.parse_imports(p, file_text)
-    imports: list[dict] = []
-    for imp in (imports_raw or [])[:MAX_CONTRACT_IMPORTS]:
-        spec = str(getattr(imp, "spec", "") or "")
-        if not spec:
-            continue
-        kind = str(getattr(imp, "kind", "") or "import")
-        raw = str(getattr(imp, "raw", "") or "")
-        resolved = None
-        if kind != "runtime_dynamic":
-            try:
-                resolved = resolve_spec(project_root, rel_norm, spec)
-            except Exception:
-                resolved = None
-        imports.append({"spec": spec, "kind": kind, "raw": raw, "resolved_path": resolved})
-
-    symbols_raw = []
-    try:
-        symbols_raw = idx.parse_symbols(p, file_text)
-    except Exception:
-        symbols_raw = []
-
-    symbols: list[dict] = []
-    for sym in (symbols_raw or [])[:MAX_CONTRACT_SYMBOLS]:
-        name = str(getattr(sym, "name", "") or "")
-        if not name:
-            continue
-        symbols.append(
-            {
-                "name": name,
-                "kind": str(getattr(sym, "kind", "") or ""),
-                "signature": str(getattr(sym, "signature", "") or ""),
-                "doc": str(getattr(sym, "doc", "") or ""),
-                "start_line": int(getattr(sym, "start_line", 0) or 0),
-                "end_line": int(getattr(sym, "end_line", 0) or 0),
-                "exported": bool(name in exports_set),
-            }
-        )
-
-    module_doc = ""
-    parse_module_doc = getattr(idx, "parse_module_doc", None)
-    if callable(parse_module_doc):
-        try:
-            module_doc = str(parse_module_doc(p, file_text) or "").strip()
-        except Exception:
-            module_doc = ""
-
-    contract = {
-        "version": CONTRACT_VERSION,
-        "path": rel_norm,
-        "language": idx.language(),
-        "exports": exports,
-        "imports": imports,
-        "symbols": symbols,
-        "module_doc": module_doc,
-        "notes": "",
-    }
+    file_text = await _read_text_async(p)
+    contract = await _build_contract_payload_async(project_root, rel_norm, p, file_text)
 
     contract_json = json.dumps(contract, ensure_ascii=False)
     stmt = (

@@ -13,8 +13,8 @@ from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from ..config import settings
 from ..async_db import AsyncSessionLocal
+from ..config import settings
 from ..contracts import get_or_build_contract_async
 from ..errors import BadRequestError, ExternalServiceError, NotFoundError
 from ..llm.orchestrator import generate_docs
@@ -215,6 +215,22 @@ def _compute_project_summary_facts(
     }
 
 
+async def _compute_project_summary_facts_async(
+    nodes: list[tuple],
+    *,
+    hotspots_limit: int = 25,
+    hubs_limit: int = 25,
+    module_map_limit: int = 100,
+) -> dict:
+    return await asyncio.to_thread(
+        _compute_project_summary_facts,
+        nodes,
+        hotspots_limit=hotspots_limit,
+        hubs_limit=hubs_limit,
+        module_map_limit=module_map_limit,
+    )
+
+
 def _tree_outline(paths: list[str], max_lines: int = 1200) -> dict:
     root: dict[str, Any] = {}
     for p in paths:
@@ -245,6 +261,10 @@ def _tree_outline(paths: list[str], max_lines: int = 1200) -> dict:
 
     walk(root, "", 0)
     return {"lines": lines, "truncated": truncated, "max_lines": max_lines}
+
+
+async def _tree_outline_async(paths: list[str], max_lines: int = 1200) -> dict:
+    return await asyncio.to_thread(_tree_outline, paths, max_lines)
 
 
 def _path_depth(p: str) -> int:
@@ -484,6 +504,68 @@ def _route_prefix(path: str) -> str:
     return "/" + parts[0]
 
 
+def _build_api_summary_payload(
+    *,
+    routes_total: int,
+    calls_total: int,
+    includes_total: int,
+    route_methods_rows,
+    call_methods_rows,
+    route_paths_rows,
+    call_paths_rows,
+) -> dict:
+    routes_by_method: list[dict] = []
+    for row in route_methods_rows:
+        if isinstance(row, (tuple, list)) and len(row) >= 2:
+            m, cnt = row[0], row[1]
+        else:
+            continue
+        routes_by_method.append({"method": str(m or ""), "count": int(cnt or 0)})
+
+    calls_by_method: list[dict] = []
+    for row in call_methods_rows:
+        if isinstance(row, (tuple, list)) and len(row) >= 2:
+            m, cnt = row[0], row[1]
+        else:
+            continue
+        calls_by_method.append({"method": str(m or ""), "count": int(cnt or 0)})
+
+    pref_routes: dict[str, int] = {}
+    for row in route_paths_rows:
+        path_value = row[0] if isinstance(row, (tuple, list)) else row
+        if not isinstance(path_value, str) or not path_value:
+            continue
+        pref = _route_prefix(path_value)
+        pref_routes[pref] = pref_routes.get(pref, 0) + 1
+
+    pref_calls: dict[str, int] = {}
+    for row in call_paths_rows:
+        path_value = row[0] if isinstance(row, (tuple, list)) else row
+        if not isinstance(path_value, str) or not path_value:
+            continue
+        pref = _route_prefix(path_value)
+        pref_calls[pref] = pref_calls.get(pref, 0) + 1
+
+    top_route_prefixes = sorted(pref_routes.items(), key=lambda x: (-x[1], x[0]))[:20]
+    top_call_prefixes = sorted(pref_calls.items(), key=lambda x: (-x[1], x[0]))[:20]
+
+    return {
+        "counts": {
+            "routes": int(routes_total),
+            "calls": int(calls_total),
+            "includes": int(includes_total),
+        },
+        "routes_by_method": routes_by_method,
+        "calls_by_method": calls_by_method,
+        "top_route_prefixes": [{"prefix": key, "count": int(count)} for key, count in top_route_prefixes],
+        "top_call_prefixes": [{"prefix": key, "count": int(count)} for key, count in top_call_prefixes],
+        "notes": (
+            "Routes are stored as local decorator paths. include_router prefixes "
+            "are not expanded in this summary."
+        ),
+    }
+
+
 async def _build_api_summary_async(session: AsyncSession, project_id: int) -> dict:
     try:
         routes_total = int((await session.execute(select(func.count()).select_from(ApiRoute).where(ApiRoute.project_id == project_id))).scalar_one() or 0)
@@ -520,56 +602,16 @@ async def _build_api_summary_async(session: AsyncSession, project_id: int) -> di
     except Exception as e:
         return {"error": "api_summary_failed", "message": str(e)}
 
-    routes_by_method: list[dict] = []
-    for row in route_methods_rows:
-        if isinstance(row, (tuple, list)) and len(row) >= 2:
-            m, cnt = row[0], row[1]
-        else:
-            continue
-        routes_by_method.append({"method": str(m or ""), "count": int(cnt or 0)})
-
-    calls_by_method: list[dict] = []
-    for row in call_methods_rows:
-        if isinstance(row, (tuple, list)) and len(row) >= 2:
-            m, cnt = row[0], row[1]
-        else:
-            continue
-        calls_by_method.append({"method": str(m or ""), "count": int(cnt or 0)})
-
-    pref_routes: dict[str, int] = {}
-    for row in route_paths_rows:
-        p = row[0] if isinstance(row, (tuple, list)) else row
-        if not isinstance(p, str) or not p:
-            continue
-        pref = _route_prefix(p)
-        pref_routes[pref] = pref_routes.get(pref, 0) + 1
-
-    pref_calls: dict[str, int] = {}
-    for row in call_paths_rows:
-        p = row[0] if isinstance(row, (tuple, list)) else row
-        if not isinstance(p, str) or not p:
-            continue
-        pref = _route_prefix(p)
-        pref_calls[pref] = pref_calls.get(pref, 0) + 1
-
-    top_route_prefixes = sorted(pref_routes.items(), key=lambda x: (-x[1], x[0]))[:20]
-    top_call_prefixes = sorted(pref_calls.items(), key=lambda x: (-x[1], x[0]))[:20]
-
-    return {
-        "counts": {
-            "routes": int(routes_total),
-            "calls": int(calls_total),
-            "includes": int(includes_total),
-        },
-        "routes_by_method": routes_by_method,
-        "calls_by_method": calls_by_method,
-        "top_route_prefixes": [{"prefix": k, "count": int(v)} for k, v in top_route_prefixes],
-        "top_call_prefixes": [{"prefix": k, "count": int(v)} for k, v in top_call_prefixes],
-        "notes": (
-            "Routes are stored as local decorator paths. include_router prefixes "
-            "are not expanded in this summary."
-        ),
-    }
+    return await asyncio.to_thread(
+        _build_api_summary_payload,
+        routes_total=routes_total,
+        calls_total=calls_total,
+        includes_total=includes_total,
+        route_methods_rows=route_methods_rows,
+        call_methods_rows=call_methods_rows,
+        route_paths_rows=route_paths_rows,
+        call_paths_rows=call_paths_rows,
+    )
 
 
 def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict], dict]:
@@ -752,6 +794,122 @@ def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict]
     return key_files, parsed
 
 
+async def _collect_key_files_async(root: Path, project_paths: list[str]) -> tuple[list[dict], dict]:
+    return await asyncio.to_thread(_collect_key_files, root, project_paths)
+
+
+def _select_contract_paths(
+    *,
+    risks: list[dict],
+    hotspots: list[dict],
+    hubs: list[dict],
+    paths: list[str],
+) -> list[str]:
+    contract_paths: list[str] = []
+
+    def _push_path(path_value: str) -> None:
+        if not isinstance(path_value, str) or not path_value.strip():
+            return
+        normalized = path_value.strip()
+        if normalized not in contract_paths:
+            contract_paths.append(normalized)
+
+    for item in hotspots[:15]:
+        _push_path(str(item.get("path") or ""))
+
+    for item in hubs[:8]:
+        _push_path(str(item.get("path") or ""))
+
+    top_fan_out = heapq.nlargest(
+        8,
+        risks,
+        key=lambda x: (
+            int(x.get("fan_out", 0)),
+            float(x.get("risk", 0.0)),
+            _invert_str(x.get("path", "")),
+        ),
+    )
+    for item in top_fan_out:
+        _push_path(str(item.get("path") or ""))
+
+    entry_names = (
+        "main.py",
+        "__main__.py",
+        "app.py",
+        "wsgi.py",
+        "asgi.py",
+        "manage.py",
+        "index.ts",
+        "index.js",
+        "main.ts",
+        "main.js",
+        "server.ts",
+        "server.js",
+        "app.ts",
+        "app.js",
+        "main.go",
+        "main.rs",
+        "Program.cs",
+        "Main.java",
+        "Application.java",
+        "Main.kt",
+        "Application.kt",
+    )
+    entry_candidates = [
+        path for path in paths if isinstance(path, str) and path.endswith(entry_names)
+    ]
+    for path in sorted(entry_candidates, key=lambda x: (len(x.split("/")), x))[:4]:
+        _push_path(path)
+
+    return contract_paths
+
+
+async def _select_contract_paths_async(
+    *,
+    risks: list[dict],
+    hotspots: list[dict],
+    hubs: list[dict],
+    paths: list[str],
+) -> list[str]:
+    return await asyncio.to_thread(
+        _select_contract_paths,
+        risks=risks,
+        hotspots=hotspots,
+        hubs=hubs,
+        paths=paths,
+    )
+
+
+async def _collect_compact_contracts_async(
+    project_id: int,
+    root: Path,
+    contract_paths: list[str],
+    *,
+    max_parallel: int = 4,
+) -> list[dict]:
+    selected_paths = [
+        p for p in (contract_paths or [])[:_MAX_CONTRACTS] if isinstance(p, str) and p
+    ]
+    if not selected_paths:
+        return []
+
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+
+    async def _load_one(path: str) -> dict | None:
+        async with semaphore:
+            try:
+                async with AsyncSessionLocal() as session:
+                    contract = await get_or_build_contract_async(session, project_id, root, path)
+                if isinstance(contract, dict):
+                    return {"path": path, "contract": _compact_contract(contract)}
+            except Exception:
+                return None
+            return None
+
+    results = await asyncio.gather(*[_load_one(path) for path in selected_paths])
+    return [item for item in results if isinstance(item, dict)]
+
+
 def _build_run_hints(key_files: list[dict], parsed: dict) -> list[str]:
     hints: list[str] = []
     for kf in key_files or []:
@@ -811,6 +969,10 @@ def _build_run_hints(key_files: list[dict], parsed: dict) -> list[str]:
         if len(out) >= _MAX_RUN_HINTS:
             break
     return out
+
+
+async def _build_run_hints_async(key_files: list[dict], parsed: dict) -> list[str]:
+    return await asyncio.to_thread(_build_run_hints, key_files, parsed)
 
 
 def _api_summary_md(api_summary: dict) -> str:
@@ -912,13 +1074,128 @@ def _api_summary_md(api_summary: dict) -> str:
     return "\n".join(out).strip() + "\n"
 
 
+def _build_docs_markdown_parts(
+    *,
+    module_rows: list[dict],
+    hotspots: list[dict],
+    outline: dict,
+    run_hints: list[str],
+    key_files: list[dict],
+    api_summary: dict,
+) -> dict[str, str]:
+    module_table = [
+        "| module | files | loc | risk_max | top hotspots |",
+        "|---|---:|---:|---:|---|",
+    ]
+    for row in module_rows[:30]:
+        hotspots_md = ", ".join([f"`{path}`" for _, path in (row.get("top_hotspots") or [])])
+        module_table.append(
+            f"| `{row['module']}` | {int(row['files'])} | {int(row['loc'])} | "
+            f"{float(row['risk_max']):.2f} | {hotspots_md} |"
+        )
+
+    hotspots_table = [
+        "| # | path | risk | loc | fan_in | fan_out | complexity | status |",
+        "|---:|---|---:|---:|---:|---:|---:|---|",
+    ]
+    for idx, item in enumerate(hotspots, start=1):
+        hotspots_table.append(
+            f"| {idx} | `{item['path']}` | {item['risk']:.2f} | {item['loc']} | {item['fan_in']} | "
+            f"{item['fan_out']} | {item['complexity']} | {item['status']} |"
+        )
+
+    tree_md = "\n".join(outline.get("lines") or [])
+    if outline.get("truncated"):
+        tree_md += "\n\n> (Tree truncated)\n"
+
+    api_md = _api_summary_md(api_summary)
+    run_md = "\n".join([f"- `{hint}`" for hint in run_hints[:25]]) + "\n"
+    if not run_hints:
+        run_md = "> No obvious run commands found in README/Makefile/compose/package manifests.\n"
+
+    if key_files:
+        key_rows = []
+        for item in key_files[:15]:
+            if isinstance(item, dict):
+                path_value = str(item.get("path") or "")
+                role = str(item.get("role") or "")
+                if path_value:
+                    suffix = f" ({role})" if role else ""
+                    key_rows.append(f"- `{path_value}`{suffix}")
+        key_files_md = "\n".join(key_rows).strip() + "\n"
+    else:
+        key_files_md = (
+            "> No key files (README/Makefile/compose/pyproject/package.json) were found "
+            "under the project root.\n"
+        )
+
+    return {
+        "module_map_table_md": "\n".join(module_table),
+        "hotspots_table_md": "\n".join(hotspots_table),
+        "tree_md": tree_md,
+        "api_md": api_md,
+        "run_md": run_md,
+        "key_files_md": key_files_md,
+    }
+
+
+async def _build_docs_markdown_parts_async(
+    *,
+    module_rows: list[dict],
+    hotspots: list[dict],
+    outline: dict,
+    run_hints: list[str],
+    key_files: list[dict],
+    api_summary: dict,
+) -> dict[str, str]:
+    return await asyncio.to_thread(
+        _build_docs_markdown_parts,
+        module_rows=module_rows,
+        hotspots=hotspots,
+        outline=outline,
+        run_hints=run_hints,
+        key_files=key_files,
+        api_summary=api_summary,
+    )
+
+
+
+
+async def _collect_docs_enrichment_async(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    contract_paths: list[str],
+) -> tuple[list[dict], dict]:
+    return await asyncio.gather(
+        _collect_compact_contracts_async(project_id, root, contract_paths),
+        _build_api_summary_async(session, project_id),
+    )
+
+
+async def _collect_outline_and_key_files_async(
+    root: Path,
+    paths: list[str],
+) -> tuple[dict, tuple[list[dict], dict]]:
+    return await asyncio.gather(
+        _tree_outline_async(paths, max_lines=1200),
+        _collect_key_files_async(root, paths),
+    )
+
+
+async def _normalize_project_root_async(root_path: str, *, max_length: int) -> Path:
+    return await asyncio.to_thread(normalize_project_root, root_path, max_length=max_length)
+
 async def build_project_docs_async(project_id: int, org_id: int) -> dict:
     async with AsyncSessionLocal() as session:
         project = await session.get(Project, project_id)
         if not project or project.org_id != org_id:
             raise NotFoundError("Проект не найден", context={"project_id": project_id})
 
-        root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+        root = await _normalize_project_root_async(
+            project.root_path,
+            max_length=settings.max_root_path_chars,
+        )
 
         nodes = (
             await session.execute(
@@ -947,7 +1224,7 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
         if not nodes:
             raise BadRequestError("Проект не проиндексирован. Сначала сделай Scan.")
 
-        summary = _compute_project_summary_facts(nodes)
+        summary = await _compute_project_summary_facts_async(nodes)
         risks = summary["risks"]
         paths = summary["paths"]
         lang_count = summary["languages"]
@@ -956,96 +1233,30 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
         hubs = summary["hubs_by_fan_in"]
         module_rows = summary["module_rows"]
 
-        contracts: list[dict] = []
-        contract_paths: list[str] = []
-
-        def _push_path(path_value: str) -> None:
-            if not isinstance(path_value, str) or not path_value.strip():
-                return
-            normalized = path_value.strip()
-            if normalized not in contract_paths:
-                contract_paths.append(normalized)
-
-        for item in hotspots[:15]:
-            _push_path(str(item.get("path") or ""))
-
-        for item in hubs[:8]:
-            _push_path(str(item.get("path") or ""))
-
-        top_fan_out = heapq.nlargest(
-            8,
-            risks,
-            key=lambda x: (
-                int(x.get("fan_out", 0)),
-                float(x.get("risk", 0.0)),
-                _invert_str(x.get("path", "")),
-            ),
+        contract_paths = await _select_contract_paths_async(
+            risks=risks,
+            hotspots=hotspots,
+            hubs=hubs,
+            paths=paths,
         )
-        for item in top_fan_out:
-            _push_path(str(item.get("path") or ""))
-
-        entry_names = (
-            "main.py",
-            "__main__.py",
-            "app.py",
-            "wsgi.py",
-            "asgi.py",
-            "manage.py",
-            "index.ts",
-            "index.js",
-            "main.ts",
-            "main.js",
-            "server.ts",
-            "server.js",
-            "app.ts",
-            "app.js",
-            "main.go",
-            "main.rs",
-            "Program.cs",
-            "Main.java",
-            "Application.java",
-            "Main.kt",
-            "Application.kt",
-        )
-        entry_candidates = [path for path in paths if isinstance(path, str) and path.endswith(entry_names)]
-        for path in sorted(entry_candidates, key=lambda x: (len(x.split("/")), x))[:4]:
-            _push_path(path)
-
-        for path in contract_paths[:_MAX_CONTRACTS]:
-            try:
-                contract = await get_or_build_contract_async(session, project_id, root, path)
-                if isinstance(contract, dict):
-                    contracts.append({"path": path, "contract": _compact_contract(contract)})
-            except Exception:
-                continue
-
-        api_summary = await _build_api_summary_async(session, project_id)
-
-    module_table = [
-        "| module | files | loc | risk_max | top hotspots |",
-        "|---|---:|---:|---:|---|",
-    ]
-    for row in module_rows[:30]:
-        hotspots_md = ", ".join([f"`{path}`" for _, path in (row.get("top_hotspots") or [])])
-        module_table.append(
-            f"| `{row['module']}` | {int(row['files'])} | {int(row['loc'])} | "
-            f"{float(row['risk_max']):.2f} | {hotspots_md} |"
+        contracts, api_summary = await _collect_docs_enrichment_async(
+            session,
+            project_id,
+            root,
+            contract_paths,
         )
 
-    outline = _tree_outline(paths, max_lines=1200)
-
-    hotspots_table = [
-        "| # | path | risk | loc | fan_in | fan_out | complexity | status |",
-        "|---:|---|---:|---:|---:|---:|---:|---|",
-    ]
-    for idx, item in enumerate(hotspots, start=1):
-        hotspots_table.append(
-            f"| {idx} | `{item['path']}` | {item['risk']:.2f} | {item['loc']} | {item['fan_in']} | "
-            f"{item['fan_out']} | {item['complexity']} | {item['status']} |"
-        )
-
-    key_files, key_files_parsed = _collect_key_files(root, paths)
-    run_hints = _build_run_hints(key_files, key_files_parsed)
+    outline, key_files_data = await _collect_outline_and_key_files_async(root, paths)
+    key_files, key_files_parsed = key_files_data
+    run_hints = await _build_run_hints_async(key_files, key_files_parsed)
+    markdown_parts = await _build_docs_markdown_parts_async(
+        module_rows=module_rows,
+        hotspots=hotspots,
+        outline=outline,
+        run_hints=run_hints,
+        key_files=key_files,
+        api_summary=api_summary,
+    )
 
     facts = {
         "project": {"id": project_id, "name": project.name, "root_path": project.root_path},
@@ -1063,8 +1274,8 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
         "api_summary": api_summary,
         "key_files": key_files,
         "run_hints": run_hints,
-        "hotspots_table_md": "\n".join(hotspots_table),
-        "module_map_table_md": "\n".join(module_table),
+        "hotspots_table_md": markdown_parts["hotspots_table_md"],
+        "module_map_table_md": markdown_parts["module_map_table_md"],
     }
 
     try:
@@ -1079,30 +1290,10 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
     if not md:
         md = "## Overview\n\n> Дополнительные разделы не сформированы.\n"
 
-    tree_md = "\n".join(outline["lines"])
-    if outline["truncated"]:
-        tree_md += "\n\n> (Tree truncated)\n"
-
-    api_md = _api_summary_md(api_summary)
-    run_md = "\n".join([f"- `{hint}`" for hint in run_hints[:25]]) + "\n"
-    if not run_hints:
-        run_md = "> No obvious run commands found in README/Makefile/compose/package manifests.\n"
-
-    if key_files:
-        key_rows = []
-        for item in key_files[:15]:
-            if isinstance(item, dict):
-                path_value = str(item.get("path") or "")
-                role = str(item.get("role") or "")
-                if path_value:
-                    suffix = f" ({role})" if role else ""
-                    key_rows.append(f"- `{path_value}`{suffix}")
-        key_files_md = "\n".join(key_rows).strip() + "\n"
-    else:
-        key_files_md = (
-            "> No key files (README/Makefile/compose/pyproject/package.json) were found "
-            "under the project root.\n"
-        )
+    tree_md = markdown_parts["tree_md"]
+    api_md = markdown_parts["api_md"]
+    run_md = markdown_parts["run_md"]
+    key_files_md = markdown_parts["key_files_md"]
 
     final_md = (
         f"# {project.name}\n\n"

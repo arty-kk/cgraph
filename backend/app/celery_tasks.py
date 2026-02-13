@@ -4,12 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from redis.asyncio import RedisError as AsyncRedisError
-
-from .celery_app import celery_app
 from .async_db import AsyncSessionLocal
+from .celery_app import celery_app
 from .infra.redis_client import async_redis_client
 from .logging import get_logger
 from .models import Project, TaskJob
@@ -166,12 +165,16 @@ def routing_calibration_task() -> dict:
         return {"updated": False, "reason": "error", "error": str(exc)}
 
 
-async def _resolve_project_root_async(project_id: int, org_id: int) -> str:
+async def _resolve_project_root_async(project_id: int, org_id: int) -> Path:
     async with AsyncSessionLocal() as session:
         project = await session.get(Project, project_id)
         if not project or project.org_id != org_id:
             raise RuntimeError("Проект не найден")
-        return normalize_project_root(project.root_path)
+        return await _normalize_project_root_async(project.root_path)
+
+
+async def _normalize_project_root_async(root_path: str) -> Path:
+    return await asyncio.to_thread(normalize_project_root, root_path)
 
 
 async def _touch_inflight_async(job_id: str) -> None:

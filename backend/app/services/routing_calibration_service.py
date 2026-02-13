@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from sqlmodel import select
@@ -164,6 +165,64 @@ def _derive_base_weights(
     return _validate_and_normalize_weights(raw) or default_weights
 
 
+async def _derive_thresholds_async(
+    *, defaults: tuple[float, float, float], rows: list[AnalysisStageTelemetry]
+) -> tuple[float, float, float]:
+    return await asyncio.to_thread(_derive_thresholds, defaults=defaults, rows=rows)
+
+
+async def _derive_base_weights_async(
+    *, defaults: dict[str, float], rows: list[AnalysisStageTelemetry]
+) -> dict[str, float]:
+    return await asyncio.to_thread(_derive_base_weights, defaults=defaults, rows=rows)
+
+
+def _build_profile_weights(base_weights: dict[str, float]) -> dict[str, dict[str, float]]:
+    calibrated_weights_by_profile: dict[str, dict[str, float]] = {}
+    for sla_profile in _SLA_PROFILES:
+        profile_weights = _validate_and_normalize_weights(
+            _profile_transform(base_weights, sla_profile=sla_profile)
+        )
+        if profile_weights is not None:
+            calibrated_weights_by_profile[sla_profile] = profile_weights
+    return calibrated_weights_by_profile
+
+
+async def _build_profile_weights_async(
+    base_weights: dict[str, float],
+) -> dict[str, dict[str, float]]:
+    return await asyncio.to_thread(_build_profile_weights, base_weights)
+
+
+
+
+async def _store_thresholds_async(
+    *,
+    version: str,
+    thresholds_payload: dict[str, object],
+) -> None:
+    await cache_set_json_async(["routing_policy", "thresholds", version], thresholds_payload)
+
+
+async def _store_profile_weight_async(
+    *,
+    version: str,
+    sla_profile: str,
+    weights: dict[str, float],
+    samples: int,
+    updated_at: str,
+) -> None:
+    weight_payload = {
+        "version": version,
+        "policy_version": version,
+        "sla_profile": sla_profile,
+        "weights": weights,
+        "samples": samples,
+        "updated_at": updated_at,
+    }
+    await cache_set_json_async(["routing_policy", "weights", version, sla_profile], weight_payload)
+    logger.info("Routing policy weights calibrated", extra=weight_payload)
+
 async def calibrate_routing_policy_thresholds_async() -> dict[str, object]:
     if not bool(settings.llm_routing_calibration_enabled):
         return {"updated": False, "reason": "disabled"}
@@ -213,7 +272,11 @@ async def calibrate_routing_policy_thresholds_async() -> dict[str, object]:
             "min_samples": int(settings.llm_routing_calibration_min_samples),
         }
 
-    low, mid, high = _derive_thresholds(defaults=defaults, rows=rows)
+    (low, mid, high), base_weights = await asyncio.gather(
+        _derive_thresholds_async(defaults=defaults, rows=rows),
+        _derive_base_weights_async(defaults=default_weights, rows=rows),
+    )
+    calibrated_weights_by_profile = await _build_profile_weights_async(base_weights)
     thresholds_payload = {
         "version": settings.llm_routing_policy_version,
         "low": low,
@@ -222,32 +285,22 @@ async def calibrate_routing_policy_thresholds_async() -> dict[str, object]:
         "samples": len(rows),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    await cache_set_json_async(
-        ["routing_policy", "thresholds", settings.llm_routing_policy_version], thresholds_payload
+    await asyncio.gather(
+        _store_thresholds_async(
+            version=settings.llm_routing_policy_version,
+            thresholds_payload=thresholds_payload,
+        ),
+        *(
+            _store_profile_weight_async(
+                version=settings.llm_routing_policy_version,
+                sla_profile=sla_profile,
+                weights=profile_weights,
+                samples=len(rows),
+                updated_at=thresholds_payload["updated_at"],
+            )
+            for sla_profile, profile_weights in calibrated_weights_by_profile.items()
+        ),
     )
-
-    base_weights = _derive_base_weights(defaults=default_weights, rows=rows)
-    calibrated_weights_by_profile: dict[str, dict[str, float]] = {}
-    for sla_profile in _SLA_PROFILES:
-        profile_weights = _validate_and_normalize_weights(
-            _profile_transform(base_weights, sla_profile=sla_profile)
-        )
-        if profile_weights is None:
-            continue
-        calibrated_weights_by_profile[sla_profile] = profile_weights
-        weight_payload = {
-            "version": settings.llm_routing_policy_version,
-            "policy_version": settings.llm_routing_policy_version,
-            "sla_profile": sla_profile,
-            "weights": profile_weights,
-            "samples": len(rows),
-            "updated_at": thresholds_payload["updated_at"],
-        }
-        await cache_set_json_async(
-            ["routing_policy", "weights", settings.llm_routing_policy_version, sla_profile],
-            weight_payload,
-        )
-        logger.info("Routing policy weights calibrated", extra=weight_payload)
 
     logger.info("Routing policy thresholds calibrated", extra=thresholds_payload)
     return {"updated": True, **thresholds_payload, "weights": calibrated_weights_by_profile}

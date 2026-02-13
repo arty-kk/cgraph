@@ -1,6 +1,7 @@
 # backend/app/services/task_queue.py
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -56,8 +57,12 @@ def _idempotency_key(kind: str, org_id: int, payload: dict) -> str:
     return sha256_text(raw)
 
 
-def get_scan_idempotency_key(org_id: int, project_id: int) -> str:
-    return _idempotency_key("scan", org_id, {"project_id": project_id})
+async def _idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
+    return await asyncio.to_thread(_idempotency_key, kind, org_id, payload)
+
+
+async def get_scan_idempotency_key_async(org_id: int, project_id: int) -> str:
+    return await _idempotency_key_async("scan", org_id, {"project_id": project_id})
 
 
 async def _find_existing_job_id_async(
@@ -216,11 +221,10 @@ async def _release_inflight_async(queue: str, job_id: str) -> None:
 
 
 async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
-    normalized_payload = _normalize_payload(payload)
-    idempotency_key = _idempotency_key(
+    idempotency_key = await _idempotency_key_async(
         "run_task",
         org_id,
-        {"project_id": project_id, "payload": normalized_payload},
+        {"project_id": project_id, "payload": payload},
     )
 
     task_id = uuid4().hex
@@ -279,7 +283,7 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
 
 
 async def submit_scan_async(project_id: int, org_id: int) -> str:
-    idempotency_key = get_scan_idempotency_key(org_id, project_id)
+    idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
     async with AsyncSessionLocal() as session:
         existing = await _find_existing_job_id_async(session, org_id, idempotency_key)
         if existing:
@@ -332,7 +336,7 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
 
 async def submit_docs_async(project_id: int, org_id: int) -> str:
     payload = {"project_id": project_id}
-    idempotency_key = _idempotency_key("docs", org_id, payload)
+    idempotency_key = await _idempotency_key_async("docs", org_id, payload)
     async with AsyncSessionLocal() as session:
         existing = await _find_existing_job_id_async(session, org_id, idempotency_key)
         if existing:
@@ -394,7 +398,7 @@ async def submit_mutation_indexing_async(
         "rel_paths": [str(path) for path in rel_paths],
         "operation": str(operation),
     }
-    idempotency_key = _idempotency_key("mutation_indexing", org_id, payload)
+    idempotency_key = await _idempotency_key_async("mutation_indexing", org_id, payload)
 
     async with AsyncSessionLocal() as session:
         existing = await _find_existing_job_async(session, org_id, idempotency_key)

@@ -13,7 +13,7 @@ from app.db import get_session
 from app.errors import ExternalServiceError
 from app.models import TaskJob
 from app.services.task_queue import (
-    get_scan_idempotency_key,
+    get_scan_idempotency_key_async,
     submit_mutation_indexing_async,
     submit_run_async,
     submit_scan_async,
@@ -35,7 +35,7 @@ async def test_submit_scan_async_reuses_existing_job(ensure_postgres):
     org_id = 7
     job_id = uuid4().hex
     now = datetime.now(timezone.utc)
-    idempotency_key = get_scan_idempotency_key(org_id, project_id)
+    idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
     with get_session() as session:
         job = TaskJob(
             id=job_id,

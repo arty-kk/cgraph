@@ -1,9 +1,9 @@
 # backend/app/services/task_service.py
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-import asyncio
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,14 +13,13 @@ from typing import Any
 from fastapi import BackgroundTasks
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from ..async_db import AsyncSessionLocal
 from sqlmodel import delete, select
 from unidiff import PatchSet
 
+from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..context_pack import pack_context
-from ..contracts import get_or_build_contract
+from ..contracts import get_or_build_contract, get_or_build_contract_async
 from ..db import get_session
 from ..errors import (
     BadRequestError,
@@ -33,7 +32,6 @@ from ..errors import (
 )
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.agentic import AgenticMeta, analyze_agentic, evolve_agentic, fix_agentic
-from ..llm.quality_gates import QualityGateError, validate_llm_result
 from ..llm.orchestrator import (
     analyze_with_usage,
     evolve_with_usage,
@@ -48,6 +46,7 @@ from ..llm.policy import (
     resolve_profile,
     resolve_runtime_policy,
 )
+from ..llm.quality_gates import QualityGateError, validate_llm_result
 from ..llm.routing_selector import select_runtime_route
 from ..logging import get_logger
 from ..models import (
@@ -71,7 +70,7 @@ from ..utils import (
     project_lock_async,
     resolve_under_root,
 )
-from .task_queue import get_scan_idempotency_key, submit_run_async, submit_scan_async
+from .task_queue import get_scan_idempotency_key_async, submit_run_async, submit_scan_async
 
 MAX_PATCH_STORE_CHARS = 50_000
 MAX_GRAPH_DEPS_FOR_LLM = 500
@@ -84,6 +83,90 @@ MIN_GRAPH_EDGES_FOR_READY = 1
 GRAPH_NOT_READY_WARNING = "graph not built"
 
 logger = get_logger("stubgraph.api")
+
+
+def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
+    exists = path.exists()
+    return exists, exists and path.is_file()
+
+
+async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
+    return await asyncio.to_thread(_path_exists_and_is_file, path)
+
+
+async def _resolve_under_root_async(
+    root: Path,
+    rel_path: str,
+    *,
+    max_length: int,
+) -> tuple[Path, str]:
+    return await asyncio.to_thread(
+        resolve_under_root,
+        root,
+        rel_path,
+        max_length=max_length,
+    )
+
+
+async def _parse_diff_paths_async(root: Path, diff_text: str) -> list[str]:
+    return await asyncio.to_thread(_parse_diff_paths, root, diff_text)
+
+
+async def _apply_unified_diff_async(
+    root: Path,
+    patch_text: str,
+    *,
+    allowed_rel_paths: set[str] | None,
+    allow_new_files: bool,
+) -> list[str]:
+    return await asyncio.to_thread(
+        apply_unified_diff,
+        root,
+        patch_text,
+        allowed_rel_paths=allowed_rel_paths,
+        allow_new_files=allow_new_files,
+    )
+
+
+async def _scan_files_async(project_id: int, org_id: int, root: Path, paths: list[str]) -> dict:
+    return await asyncio.to_thread(scan_files, project_id, org_id, root, paths)
+
+
+async def _update_graph_metrics_incremental_async(
+    project_id: int,
+    modified: list[str],
+    *,
+    removed_edge_neighbors,
+) -> None:
+    await asyncio.to_thread(
+        update_graph_metrics_incremental,
+        project_id,
+        modified,
+        removed_edge_neighbors=removed_edge_neighbors,
+    )
+
+
+async def _read_patch_blob_async(meta: dict) -> str:
+    return await asyncio.to_thread(read_patch_blob, meta)
+
+
+async def _delete_patch_blob_for_sha_async(sha: str) -> None:
+    await asyncio.to_thread(delete_patch_blob_for_sha, sha)
+
+
+def _json_loads_or(raw: str | None, fallback):
+    try:
+        return json.loads(raw if isinstance(raw, str) else "")
+    except Exception:
+        return fallback
+
+
+async def _json_loads_or_async(raw: str | None, fallback):
+    return await asyncio.to_thread(_json_loads_or, raw, fallback)
+
+
+async def _normalize_project_root_async(root_path: str, *, max_length: int) -> Path:
+    return await asyncio.to_thread(normalize_project_root, root_path, max_length=max_length)
 
 
 def get_project(project_id: int, org_id: int | None = None) -> Project:
@@ -102,7 +185,7 @@ def get_project(project_id: int, org_id: int | None = None) -> Project:
 
 
 async def _get_active_scan_task_async(project_id: int, org_id: int) -> tuple[str | None, str | None]:
-    idempotency_key = get_scan_idempotency_key(org_id, project_id)
+    idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
     async with AsyncSessionLocal() as session:
         job = (
             (
@@ -558,7 +641,7 @@ async def _apply_patch_and_record_async(
             raise PatchApplyError("Empty or missing patch_unified_diff")
 
         async with project_lock_async(session, project_id):
-            diff_paths = _parse_diff_paths(root, patch_text)
+            diff_paths = await _parse_diff_paths_async(root, patch_text)
             require_in_context = bool(getattr(settings, "patch_require_in_context", True))
             allowed = None
             blocked_paths: list[str] = []
@@ -575,7 +658,7 @@ async def _apply_patch_and_record_async(
                     "blocked_reason": "out_of_context",
                 }
             else:
-                modified = apply_unified_diff(
+                modified = await _apply_unified_diff_async(
                     root,
                     patch_text,
                     allowed_rel_paths=allowed,
@@ -587,7 +670,7 @@ async def _apply_patch_and_record_async(
         if applied and "modified" in applied:
             modified = list(applied.get("modified") or [])
             try:
-                applied["reindexed"] = scan_files(project_id, org_id, root, modified)
+                applied["reindexed"] = await _scan_files_async(project_id, org_id, root, modified)
                 if isinstance(applied.get("reindexed"), dict) and applied["reindexed"].get(
                     "aborted"
                 ):
@@ -596,7 +679,7 @@ async def _apply_patch_and_record_async(
                     removed_edge_neighbors = None
                     if isinstance(applied.get("reindexed"), dict):
                         removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
-                    update_graph_metrics_incremental(
+                    await _update_graph_metrics_incremental_async(
                         project_id,
                         modified,
                         removed_edge_neighbors=removed_edge_neighbors,
@@ -606,15 +689,23 @@ async def _apply_patch_and_record_async(
                 removed_contracts: list[str] = []
                 for rel_path in modified:
                     try:
-                        abs_path, rel_norm = resolve_under_root(
-                            root, rel_path, max_length=settings.max_rel_path_chars
+                        abs_path, rel_norm = await _resolve_under_root_async(
+                            root,
+                            rel_path,
+                            max_length=settings.max_rel_path_chars,
                         )
-                        if not abs_path.exists():
+                        exists, is_file = await _path_exists_and_is_file_async(abs_path)
+                        if not exists:
                             removed_contracts.append(rel_norm)
                             continue
-                        if not abs_path.is_file():
+                        if not is_file:
                             continue
-                        contract = get_or_build_contract(project_id, root, rel_norm)
+                        contract = await get_or_build_contract_async(
+                            session,
+                            project_id,
+                            root,
+                            rel_norm,
+                        )
                         if isinstance(contract, dict) and contract.get("path"):
                             updated_contracts.append(str(contract["path"]))
                     except Exception:  # noqa: BLE001
@@ -2164,20 +2255,11 @@ async def get_run_async(session: AsyncSession, project_id: int, org_id: int, run
             context={"run_id": run_id, "project_id": project_id},
         )
 
-    try:
-        result: Any = json.loads(run.result_json or "{}")
-    except Exception:  # noqa: BLE001
-        result = {}
-
-    try:
-        retrieval_settings: Any = json.loads(run.retrieval_settings_json or "{}")
-    except Exception:  # noqa: BLE001
-        retrieval_settings = {}
-
-    try:
-        applied: Any = json.loads(run.applied_json or "null")
-    except Exception:  # noqa: BLE001
-        applied = None
+    result, retrieval_settings, applied = await asyncio.gather(
+        _json_loads_or_async(run.result_json, {}),
+        _json_loads_or_async(run.retrieval_settings_json, {}),
+        _json_loads_or_async(run.applied_json, None),
+    )
 
     warning = await _graph_warning_async(session, project_id)
 
@@ -2200,15 +2282,8 @@ async def get_run_async(session: AsyncSession, project_id: int, org_id: int, run
     }
 
 
-async def get_run_patch_async(session: AsyncSession, project_id: int, org_id: int, run_id: int) -> dict:
-    run = await session.get(AnalysisRun, run_id)
-    if not run or run.project_id != project_id or run.org_id != org_id:
-        raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
-
-    try:
-        data = json.loads(run.result_json or "{}")
-    except Exception:  # noqa: BLE001
-        data = {}
+async def _build_patch_payload_from_run_async(run: AnalysisRun, *, run_id: int) -> dict:
+    data = await _json_loads_or_async(run.result_json, {})
 
     if isinstance(data, dict):
         patch = data.get("patch_unified_diff")
@@ -2220,7 +2295,7 @@ async def get_run_patch_async(session: AsyncSession, project_id: int, org_id: in
             sha = meta.get("sha256")
             if isinstance(sha, str) and sha:
                 try:
-                    text = read_patch_blob(meta)
+                    text = await _read_patch_blob_async(meta)
                 except StorageError as error:
                     raise NotFoundError(
                         "Сохранённый патч не найден",
@@ -2243,6 +2318,14 @@ async def get_run_patch_async(session: AsyncSession, project_id: int, org_id: in
     raise NotFoundError("Патч не найден", context={"run_id": run_id})
 
 
+async def get_run_patch_async(session: AsyncSession, project_id: int, org_id: int, run_id: int) -> dict:
+    run = await session.get(AnalysisRun, run_id)
+    if not run or run.project_id != project_id or run.org_id != org_id:
+        raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
+
+    return await _build_patch_payload_from_run_async(run, run_id=run_id)
+
+
 async def apply_run_patch_async(
     session: AsyncSession,
     project_id: int,
@@ -2253,22 +2336,22 @@ async def apply_run_patch_async(
     if not project or project.org_id != org_id:
         raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
 
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+    root = await _normalize_project_root_async(
+        project.root_path,
+        max_length=settings.max_root_path_chars,
+    )
 
     run = await session.get(AnalysisRun, run_id)
     if not run or run.project_id != project_id or run.org_id != org_id:
         raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
 
-    patch_payload = await get_run_patch_async(session, project_id, org_id, run_id)
+    patch_payload = await _build_patch_payload_from_run_async(run, run_id=run_id)
     patch_text = patch_payload.get("patch_unified_diff") if isinstance(patch_payload, dict) else ""
 
     allowed_patch_paths: set[str] | None = None
     raw_allowed = run.allowed_patch_paths_json
     if isinstance(raw_allowed, str) and raw_allowed.strip():
-        try:
-            data = json.loads(raw_allowed)
-        except Exception:  # noqa: BLE001
-            data = []
+        data = await _json_loads_or_async(raw_allowed, [])
         if isinstance(data, list):
             allowed_patch_paths = {p for p in data if isinstance(p, str) and p}
 
@@ -2292,16 +2375,13 @@ async def delete_run_async(session: AsyncSession, project_id: int, org_id: int, 
             "Запуск не найден",
             context={"run_id": run_id, "project_id": project_id},
         )
-    try:
-        data = json.loads(run.result_json or "{}")
-    except Exception:  # noqa: BLE001
-        data = {}
+    data = await _json_loads_or_async(run.result_json, {})
     if isinstance(data, dict):
         meta = data.get("patch_unified_diff_meta")
         if isinstance(meta, dict):
             sha = meta.get("sha256")
             if isinstance(sha, str) and sha:
-                delete_patch_blob_for_sha(sha)
+                await _delete_patch_blob_for_sha_async(sha)
     await session.delete(run)
     await session.commit()
     return {"ok": True}
@@ -2313,10 +2393,7 @@ async def describe_task_async(session: AsyncSession, task_id: str, org_id: int) 
         raise NotFoundError("Задача не найдена", context={"task_id": task_id})
     result = None
     if isinstance(job.result_json, str) and job.result_json:
-        try:
-            result = json.loads(job.result_json)
-        except Exception:  # noqa: BLE001
-            result = None
+        result = await _json_loads_or_async(job.result_json, None)
     payload: dict[str, Any] = {"task_id": task_id, "status": job.status}
     if job.error:
         payload["error"] = job.error

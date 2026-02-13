@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import BackgroundTasks
 from sqlalchemy import func
@@ -61,11 +62,176 @@ from ..utils import (
     project_lock_async,
     resolve_under_root,
 )
-from .task_queue import get_scan_idempotency_key, submit_scan_async
+from .task_queue import get_scan_idempotency_key_async, submit_scan_async
 
 logger = get_logger("stubgraph.project_service")
 
 
+async def _prepare_project_snapshot_root_async(meta: SnapshotMeta):
+    return await asyncio.to_thread(prepare_project_snapshot_root, meta)
+
+
+async def _delete_project_snapshot_root_async(project_root_path: str) -> None:
+    await asyncio.to_thread(delete_project_snapshot_root, project_root_path)
+
+
+async def _delete_patch_blob_for_sha_async(sha: str) -> None:
+    await asyncio.to_thread(delete_patch_blob_for_sha, sha)
+
+
+async def _delete_snapshot_async(meta: SnapshotMeta) -> None:
+    await asyncio.to_thread(delete_snapshot, meta)
+
+
+async def _delete_patch_blobs_async(
+    shas: set[str],
+    *,
+    max_parallel: int = 4,
+) -> list[tuple[str, Exception]]:
+    selected = [sha for sha in sorted(shas) if isinstance(sha, str) and sha]
+    if not selected:
+        return []
+
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+
+    async def _delete_one(sha: str) -> tuple[str, Exception] | None:
+        async with semaphore:
+            try:
+                await _delete_patch_blob_for_sha_async(sha)
+            except Exception as exc:  # noqa: BLE001
+                return sha, exc
+            return None
+
+    rows = await asyncio.gather(*[_delete_one(sha) for sha in selected])
+    return [row for row in rows if row is not None]
+
+
+async def _delete_snapshots_async(
+    snapshot_payloads: list[tuple[RepoSnapshot, dict]],
+    *,
+    max_parallel: int = 4,
+) -> list[tuple[RepoSnapshot, dict, Exception]]:
+    if not snapshot_payloads:
+        return []
+
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+
+    async def _delete_one(
+        snap: RepoSnapshot,
+        payload: dict,
+    ) -> tuple[RepoSnapshot, dict, Exception] | None:
+        async with semaphore:
+            try:
+                await _delete_snapshot_async(snapshot_meta_from_dict(payload))
+            except Exception as exc:  # noqa: BLE001
+                return snap, payload, exc
+            return None
+
+    rows = await asyncio.gather(*[_delete_one(snap, payload) for snap, payload in snapshot_payloads])
+    return [row for row in rows if row is not None]
+
+
+def _extract_patch_blob_shas(runs) -> set[str]:
+    shas: set[str] = set()
+    for run in runs:
+        try:
+            data = json.loads(getattr(run, "result_json", None) or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            continue
+        meta = data.get("patch_unified_diff_meta")
+        if isinstance(meta, dict):
+            sha = meta.get("sha256")
+            if isinstance(sha, str) and sha:
+                shas.add(sha)
+    return shas
+
+
+async def _extract_patch_blob_shas_async(runs) -> set[str]:
+    return await asyncio.to_thread(_extract_patch_blob_shas, runs)
+
+
+def _parse_snapshot_storage_payloads(snapshots) -> list[tuple[RepoSnapshot, dict]]:
+    payloads: list[tuple[RepoSnapshot, dict]] = []
+    for snap in snapshots:
+        try:
+            payload = json.loads(getattr(snap, "storage_json", None) or "{}")
+        except Exception:
+            payload = {}
+        if isinstance(payload, dict):
+            payloads.append((snap, payload))
+    return payloads
+
+
+async def _parse_snapshot_storage_payloads_async(
+    snapshots,
+) -> list[tuple[RepoSnapshot, dict]]:
+    return await asyncio.to_thread(_parse_snapshot_storage_payloads, snapshots)
+
+
+async def _collect_delete_artifacts_async(
+    runs,
+    snapshots,
+) -> tuple[set[str], list[tuple[RepoSnapshot, dict]]]:
+    return await asyncio.gather(
+        _extract_patch_blob_shas_async(runs),
+        _parse_snapshot_storage_payloads_async(snapshots),
+    )
+
+
+async def _delete_project_artifacts_async(
+    shas: set[str],
+    snapshot_payloads: list[tuple[RepoSnapshot, dict]],
+) -> tuple[list[tuple[str, Exception]], list[tuple[RepoSnapshot, dict, Exception]]]:
+    return await asyncio.gather(
+        _delete_patch_blobs_async(shas),
+        _delete_snapshots_async(snapshot_payloads),
+    )
+
+
+
+
+async def _cache_project_delete_failures_async(rows: list[tuple[list[str], dict]]) -> None:
+    if not rows:
+        return
+    await asyncio.gather(
+        *(
+            cache_set_json_async(parts, payload)
+            for parts, payload in rows
+            if isinstance(parts, list) and isinstance(payload, dict)
+        )
+    )
+
+async def _load_snapshot_ref_counts_async(
+    session: AsyncSession,
+    project_id: int,
+    content_shas: set[str],
+) -> dict[str, int]:
+    selected = [sha for sha in sorted(content_shas) if isinstance(sha, str) and sha]
+    if not selected:
+        return {}
+
+    rows = (
+        await session.execute(
+            select(RepoSnapshot.content_sha256, func.count())
+            .where(
+                RepoSnapshot.content_sha256.in_(selected),
+                RepoSnapshot.project_id != project_id,
+            )
+            .group_by(RepoSnapshot.content_sha256)
+        )
+    ).all()
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        if isinstance(row, (tuple, list)) and len(row) >= 2:
+            sha, count = row[0], row[1]
+        else:
+            continue
+        if isinstance(sha, str) and sha:
+            counts[sha] = int(count or 0)
+    return counts
 def _as_int(value, default: int = 0) -> int:
     try:
         return int(value)
@@ -101,10 +267,517 @@ def _cosine_similarity_local(vec_a: list[float], vec_b: list[float]) -> float:
     return dot / denom
 
 
+def _read_text_if_file(path, max_chars: int) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            return f.read(max_chars)
+    except Exception:
+        return None
+
+
+async def _read_text_if_file_async(path, max_chars: int) -> str | None:
+    return await asyncio.to_thread(_read_text_if_file, path, max_chars)
+
+
+async def _resolve_under_root_async(root, rel_path: str, *, max_length: int):
+    return await asyncio.to_thread(
+        resolve_under_root,
+        root,
+        rel_path,
+        max_length=max_length,
+    )
+
+
+async def _normalize_project_root_async(root_path: str) -> Path:
+    return await asyncio.to_thread(
+        normalize_project_root,
+        root_path,
+        max_length=settings.max_root_path_chars,
+    )
+
+
+async def _read_project_files_async(
+    root,
+    rel_paths: list[str],
+    *,
+    max_chars: int,
+    max_parallel: int = 8,
+) -> dict[str, str]:
+    selected_paths = [p for p in rel_paths if isinstance(p, str) and p]
+    if not selected_paths:
+        return {}
+
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+
+    async def _load_one(rel_path: str) -> tuple[str, str] | None:
+        try:
+            abs_path, rel_norm = await _resolve_under_root_async(
+                root,
+                rel_path,
+                max_length=settings.max_rel_path_chars,
+            )
+        except Exception:
+            return None
+
+        async with semaphore:
+            payload = await _read_text_if_file_async(abs_path, max_chars)
+        if not isinstance(payload, str):
+            return None
+        return rel_norm, payload
+
+    rows = await asyncio.gather(*[_load_one(path) for path in selected_paths])
+    result: dict[str, str] = {}
+    for row in rows:
+        if not row:
+            continue
+        rel_norm, payload = row
+        if rel_norm not in result:
+            result[rel_norm] = payload
+    return result
+
+
+async def _resolve_project_paths_async(
+    root,
+    rel_paths: list[str],
+    *,
+    max_parallel: int = 16,
+) -> dict[str, tuple[Path, str]]:
+    selected_paths = [p for p in rel_paths if isinstance(p, str) and p]
+    if not selected_paths:
+        return {}
+
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+
+    async def _resolve_one(rel_path: str) -> tuple[str, tuple[Path, str]] | None:
+        async with semaphore:
+            try:
+                abs_path, rel_norm = await _resolve_under_root_async(
+                    root,
+                    rel_path,
+                    max_length=settings.max_rel_path_chars,
+                )
+            except Exception:
+                return None
+        return rel_path, (abs_path, rel_norm)
+
+    rows = await asyncio.gather(*[_resolve_one(path) for path in selected_paths])
+    result: dict[str, tuple[Path, str]] = {}
+    for row in rows:
+        if row is None:
+            continue
+        rel_path, payload = row
+        if rel_path not in result:
+            result[rel_path] = payload
+    return result
+
+
+
+
+def _score_semantic_rows(
+    rows,
+    *,
+    query_embedding: list[float],
+    file_cache: dict[str, str],
+    chunk_size: int,
+    step: int,
+) -> tuple[int, list[dict]]:
+    compared = 0
+    scored: list[dict] = []
+
+    for row in rows:
+        path, chunk_index, embedding_json, symbol_name, symbol_start_line, symbol_end_line = row
+        if not isinstance(path, str) or not path:
+            continue
+        try:
+            embedding = json.loads(embedding_json) if isinstance(embedding_json, str) else None
+        except Exception:
+            continue
+        if not isinstance(embedding, list) or not embedding:
+            continue
+        try:
+            score = _cosine_similarity_local(query_embedding, embedding)
+        except Exception:
+            continue
+        compared += 1
+
+        snippet = ""
+        text = file_cache.get(path, "")
+        if text:
+            symbol_start = _as_int(symbol_start_line, 0)
+            symbol_end = _as_int(symbol_end_line, 0)
+            if symbol_start > 0 and symbol_end >= symbol_start:
+                lines = text.splitlines(keepends=True)
+                snippet = "".join(lines[symbol_start - 1 : symbol_end])
+            else:
+                start_pos = max(0, _as_int(chunk_index, 0) * step)
+                end_pos = start_pos + chunk_size
+                if start_pos < len(text):
+                    snippet = text[start_pos:end_pos]
+
+        scored.append(
+            {
+                "path": path,
+                "score": float(score),
+                "snippet": snippet,
+                "symbol_name": str(symbol_name or ""),
+                "symbol_line": _as_int(symbol_start_line, 0),
+            }
+        )
+
+    return compared, scored
+
+
+async def _score_semantic_rows_async(
+    rows,
+    *,
+    query_embedding: list[float],
+    file_cache: dict[str, str],
+    chunk_size: int,
+    step: int,
+) -> tuple[int, list[dict]]:
+    return await asyncio.to_thread(
+        _score_semantic_rows,
+        rows,
+        query_embedding=query_embedding,
+        file_cache=file_cache,
+        chunk_size=chunk_size,
+        step=step,
+    )
+
+
+
+def _find_text_matches_in_payload(
+    payload: str,
+    *,
+    needle: str,
+    needle_cmp: str,
+    case_sensitive: bool,
+    context_chars: int,
+    limit_matches: int,
+    start_count: int,
+    truncated_flag: bool,
+) -> tuple[list[dict], bool]:
+    haystack = payload if case_sensitive else payload.lower()
+    start_idx = 0
+    found_any = False
+    file_matches: list[dict] = []
+
+    while True:
+        if start_count + len(file_matches) >= limit_matches:
+            break
+        idx = haystack.find(needle_cmp, start_idx)
+        if idx == -1:
+            break
+        found_any = True
+
+        line = payload.count("\n", 0, idx) + 1
+        last_nl = payload.rfind("\n", 0, idx)
+        col = (idx - (last_nl + 1)) + 1 if last_nl != -1 else idx + 1
+
+        half = max(10, context_chars // 2)
+        s0 = max(0, idx - half)
+        e0 = min(len(payload), idx + len(needle) + half)
+        snippet = payload[s0:e0]
+
+        file_matches.append(
+            {
+                "line": int(line),
+                "col": int(col),
+                "snippet": snippet,
+                "truncated_file": bool(truncated_flag),
+            }
+        )
+
+        step = max(1, len(needle_cmp))
+        start_idx = idx + step
+
+    return file_matches, found_any
+
+
+async def _find_text_matches_in_payload_async(
+    payload: str,
+    *,
+    needle: str,
+    needle_cmp: str,
+    case_sensitive: bool,
+    context_chars: int,
+    limit_matches: int,
+    start_count: int,
+    truncated_flag: bool,
+) -> tuple[list[dict], bool]:
+    return await asyncio.to_thread(
+        _find_text_matches_in_payload,
+        payload,
+        needle=needle,
+        needle_cmp=needle_cmp,
+        case_sensitive=case_sensitive,
+        context_chars=context_chars,
+        limit_matches=limit_matches,
+        start_count=start_count,
+        truncated_flag=truncated_flag,
+    )
+
+
+
+def _build_graph_node_payload(nodes) -> tuple[list[dict], list[str]]:
+    def risk_value(node) -> float:
+        complexity = _as_float(getattr(node, "complexity", 0), 0.0)
+        fan_in = _as_float(getattr(node, "fan_in", 0), 0.0)
+        fan_out = _as_float(getattr(node, "fan_out", 0), 0.0)
+        return (0.3 * complexity) + (0.7 * fan_in) + (0.1 * fan_out)
+
+    node_payload: list[dict] = []
+    node_paths: list[str] = []
+    for node in nodes:
+        path = node.path if isinstance(node.path, str) else ""
+        if not path:
+            continue
+        node_paths.append(path)
+        node_payload.append(
+            {
+                "id": path,
+                "label": path.rsplit("/", 1)[-1],
+                "path": path,
+                "language": node.language,
+                "loc": _as_int(getattr(node, "loc", 0), 0),
+                "complexity": _as_float(getattr(node, "complexity", 0), 0.0),
+                "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
+                "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
+                "scc_id": _as_int(getattr(node, "scc_id", -1), -1),
+                "status": node.status,
+                "risk": risk_value(node),
+            }
+        )
+    return node_payload, node_paths
+
+
+async def _build_graph_node_payload_async(nodes) -> tuple[list[dict], list[str]]:
+    return await asyncio.to_thread(_build_graph_node_payload, nodes)
+
+
+def _build_graph_edge_payload(
+    edges,
+    *,
+    effective_limit: int | None,
+    node_set: set[str],
+) -> list[dict]:
+    edge_payload: list[dict] = []
+    for edge in edges:
+        if not (
+            isinstance(edge.src_path, str)
+            and edge.src_path
+            and isinstance(edge.dst_path, str)
+            and edge.dst_path
+        ):
+            continue
+        if effective_limit is not None and (
+            edge.src_path not in node_set or edge.dst_path not in node_set
+        ):
+            continue
+        edge_payload.append(
+            {"source": edge.src_path, "target": edge.dst_path, "kind": edge.kind}
+        )
+
+    edge_payload.sort(key=lambda item: (item["source"], item["target"], item.get("kind") or ""))
+    return edge_payload
+
+
+async def _build_graph_edge_payload_async(
+    edges,
+    *,
+    effective_limit: int | None,
+    node_set: set[str],
+) -> list[dict]:
+    return await asyncio.to_thread(
+        _build_graph_edge_payload,
+        edges,
+        effective_limit=effective_limit,
+        node_set=node_set,
+    )
+
+
+
+def _build_local_graph_payload(
+    node_rows,
+    edge_set: set[tuple[str, str, str]],
+    nodes_set: set[str],
+) -> tuple[list[dict], list[dict]]:
+    def risk_value(node: FileNode) -> float:
+        complexity = _as_float(getattr(node, "complexity", 0), 0.0)
+        fan_in = _as_float(getattr(node, "fan_in", 0), 0.0)
+        fan_out = _as_float(getattr(node, "fan_out", 0), 0.0)
+        return (0.3 * complexity) + (0.7 * fan_in) + (0.1 * fan_out)
+
+    node_payload = [
+        {
+            "id": node.path,
+            "label": node.path.rsplit("/", 1)[-1],
+            "path": node.path,
+            "language": node.language,
+            "loc": _as_int(getattr(node, "loc", 0), 0),
+            "complexity": _as_float(getattr(node, "complexity", 0), 0.0),
+            "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
+            "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
+            "scc_id": _as_int(getattr(node, "scc_id", -1), -1),
+            "status": node.status,
+            "risk": risk_value(node),
+        }
+        for node in node_rows
+    ]
+
+    edge_payload = [
+        {"source": s, "target": d, "kind": k}
+        for s, d, k in edge_set
+        if s in nodes_set and d in nodes_set
+    ]
+    return node_payload, edge_payload
+
+
+async def _build_local_graph_payload_async(
+    node_rows,
+    edge_set: set[tuple[str, str, str]],
+    nodes_set: set[str],
+) -> tuple[list[dict], list[dict]]:
+    return await asyncio.to_thread(_build_local_graph_payload, node_rows, edge_set, nodes_set)
+
+
+def _build_project_files_payload(rows, *, limit: int) -> tuple[list[dict], bool, str | None]:
+    def _risk(node: FileNode) -> float:
+        return (
+            (0.3 * _as_float(getattr(node, "complexity", 0), 0.0))
+            + (0.7 * _as_float(getattr(node, "fan_in", 0), 0.0))
+            + (0.1 * _as_float(getattr(node, "fan_out", 0), 0.0))
+        )
+
+    files = [
+        {
+            "path": node.path,
+            "language": node.language,
+            "loc": _as_int(getattr(node, "loc", 0), 0),
+            "complexity": _as_int(getattr(node, "complexity", 0), 0),
+            "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
+            "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
+            "status": node.status,
+            "risk": _risk(node),
+        }
+        for node in rows
+        if isinstance(node.path, str) and node.path
+    ]
+
+    truncated = len(files) > limit
+    next_cursor = files[limit - 1]["path"] if truncated and limit > 0 else None
+    return files[:limit], truncated, next_cursor
+
+
+async def _build_project_files_payload_async(rows, *, limit: int) -> tuple[list[dict], bool, str | None]:
+    return await asyncio.to_thread(_build_project_files_payload, rows, limit=limit)
+
+
+def _build_project_tree_payload(
+    rows,
+    *,
+    prefix_norm: str | None,
+    limit: int,
+    scan_limit: int,
+    has_more_rows: bool,
+) -> tuple[list[dict], str | None, bool]:
+    entries: list[dict] = []
+    seen: set[str] = set()
+    next_cursor = None
+
+    def add_dir(child_path: str, name: str) -> None:
+        if child_path in seen:
+            return
+        seen.add(child_path)
+        entries.append(
+            {
+                "type": "dir",
+                "path": child_path,
+                "name": name,
+                "has_children": True,
+            }
+        )
+
+    def add_file(node: FileNode) -> None:
+        if node.path in seen:
+            return
+        seen.add(node.path)
+        entries.append(
+            {
+                "type": "file",
+                "path": node.path,
+                "name": node.path.split("/")[-1],
+                "file": {
+                    "path": node.path,
+                    "language": node.language,
+                    "loc": _as_int(getattr(node, "loc", 0), 0),
+                    "complexity": _as_int(getattr(node, "complexity", 0), 0),
+                    "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
+                    "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
+                    "status": node.status,
+                    "risk": (0.3 * _as_float(getattr(node, "complexity", 0), 0.0))
+                    + (0.7 * _as_float(getattr(node, "fan_in", 0), 0.0))
+                    + (0.1 * _as_float(getattr(node, "fan_out", 0), 0.0)),
+                },
+            }
+        )
+
+    stopped_by_limit = False
+    scanned_rows = rows[:scan_limit]
+    for idx, row in enumerate(scanned_rows):
+        path = row.path if isinstance(row.path, str) else ""
+        if not path:
+            continue
+        rel = path
+        if prefix_norm:
+            if path == prefix_norm:
+                rel = path.split("/")[-1]
+            elif path.startswith(f"{prefix_norm}/"):
+                rel = path[len(prefix_norm) + 1 :]
+            else:
+                continue
+        if not rel:
+            continue
+        if "/" in rel:
+            name = rel.split("/", 1)[0]
+            child_path = f"{prefix_norm}/{name}" if prefix_norm else name
+            add_dir(child_path, name)
+        else:
+            add_file(row)
+
+        next_cursor = path
+        if len(entries) >= limit:
+            stopped_by_limit = idx < (len(scanned_rows) - 1)
+            break
+
+    truncated = len(entries) == limit and (has_more_rows or stopped_by_limit)
+    return entries, next_cursor if truncated else None, bool(truncated)
+
+
+async def _build_project_tree_payload_async(
+    rows,
+    *,
+    prefix_norm: str | None,
+    limit: int,
+    scan_limit: int,
+    has_more_rows: bool,
+) -> tuple[list[dict], str | None, bool]:
+    return await asyncio.to_thread(
+        _build_project_tree_payload,
+        rows,
+        prefix_norm=prefix_norm,
+        limit=limit,
+        scan_limit=scan_limit,
+        has_more_rows=has_more_rows,
+    )
+
+
 async def _get_active_scan_task_async(
     session: AsyncSession, project_id: int, org_id: int
 ) -> tuple[str | None, str | None]:
-    idempotency_key = get_scan_idempotency_key(org_id, project_id)
+    idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
     job = (
         (
             await session.execute(
@@ -145,7 +818,7 @@ async def create_project_from_snapshot_async(
     meta: SnapshotMeta,
     org_id: int,
 ) -> Project:
-    root = prepare_project_snapshot_root(meta)
+    root = await _prepare_project_snapshot_root_async(meta)
     root = normalize_project_root(str(root), max_length=settings.max_root_path_chars)
     async with session.begin():
         project = Project(name=name, root_path=str(root), org_id=org_id)
@@ -212,19 +885,6 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                 .scalars()
                 .all()
             )
-            shas: set[str] = set()
-            for run in runs:
-                try:
-                    data = json.loads(run.result_json or "{}")
-                except Exception:  # noqa: BLE001
-                    data = {}
-                if not isinstance(data, dict):
-                    continue
-                meta = data.get("patch_unified_diff_meta")
-                if isinstance(meta, dict):
-                    sha = meta.get("sha256")
-                    if isinstance(sha, str) and sha:
-                        shas.add(sha)
             snapshots = list(
                 (
                     await session.execute(select(RepoSnapshot).where(RepoSnapshot.project_id == project_id))
@@ -233,29 +893,17 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                 .all()
             )
             snapshot_payloads: list[tuple[RepoSnapshot, dict]] = []
-            for snap in snapshots:
-                try:
-                    payload = json.loads(snap.storage_json or "{}")
-                except Exception:  # noqa: BLE001
-                    payload = {}
-                if isinstance(payload, dict):
-                    has_other_refs = (
-                        await session.execute(
-                            select(func.count())
-                            .select_from(RepoSnapshot)
-                            .where(
-                                RepoSnapshot.content_sha256 == snap.content_sha256,
-                                RepoSnapshot.project_id != project_id,
-                            )
-                        )
-                    ).one()
-                    has_other_refs = (
-                        int(has_other_refs[0] if isinstance(has_other_refs, (tuple, list)) else has_other_refs)
-                        > 0
-                    )
-                    if has_other_refs:
-                        continue
-                    snapshot_payloads.append((snap, payload))
+            shas, parsed_snapshot_payloads = await _collect_delete_artifacts_async(runs, snapshots)
+            snapshot_shas = {
+                str(snap.content_sha256)
+                for snap, _ in parsed_snapshot_payloads
+                if isinstance(snap.content_sha256, str) and snap.content_sha256
+            }
+            shared_counts = await _load_snapshot_ref_counts_async(session, project_id, snapshot_shas)
+            for snap, payload in parsed_snapshot_payloads:
+                if int(shared_counts.get(str(snap.content_sha256), 0)) > 0:
+                    continue
+                snapshot_payloads.append((snap, payload))
             await session.execute(delete(FileEdge).where(FileEdge.project_id == project_id))
             await session.execute(delete(FileNode).where(FileNode.project_id == project_id))
             await session.execute(delete(ModuleContract).where(ModuleContract.project_id == project_id))
@@ -275,8 +923,9 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
             await session.execute(delete(RepoSnapshot).where(RepoSnapshot.project_id == project_id))
             await session.execute(delete(Project).where(Project.id == project_id))
             await session.commit()
+        cache_rows: list[tuple[list[str], dict]] = []
         try:
-            delete_project_snapshot_root(project_root_path)
+            await _delete_project_snapshot_root_async(project_root_path)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Project snapshot root delete failed",
@@ -286,36 +935,40 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                     "error": str(exc),
                 },
             )
-            await cache_set_json_async(
-                ["project_delete_failed", "project_root", str(project_id)],
-                {"project_id": project_id, "root_path": project_root_path, "error": str(exc)},
-            )
-        for sha in shas:
-            try:
-                delete_patch_blob_for_sha(sha)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Patch blob delete failed",
-                    extra={"project_id": project_id, "sha": sha, "error": str(exc)},
+            cache_rows.append(
+                (
+                    ["project_delete_failed", "project_root", str(project_id)],
+                    {"project_id": project_id, "root_path": project_root_path, "error": str(exc)},
                 )
-                await cache_set_json_async(
+            )
+        patch_errors, snapshot_errors = await _delete_project_artifacts_async(
+            shas,
+            snapshot_payloads,
+        )
+        for sha, exc in patch_errors:
+            logger.warning(
+                "Patch blob delete failed",
+                extra={"project_id": project_id, "sha": sha, "error": str(exc)},
+            )
+            cache_rows.append(
+                (
                     ["project_delete_failed", "patch", sha],
                     {"project_id": project_id, "sha": sha, "error": str(exc)},
                 )
-        for snap, payload in snapshot_payloads:
-            try:
-                delete_snapshot(snapshot_meta_from_dict(payload))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Snapshot delete failed",
-                    extra={
-                        "project_id": project_id,
-                        "snapshot_sha": snap.content_sha256,
-                        "archive_name": snap.archive_name,
-                        "error": str(exc),
-                    },
-                )
-                await cache_set_json_async(
+            )
+
+        for snap, payload, exc in snapshot_errors:
+            logger.warning(
+                "Snapshot delete failed",
+                extra={
+                    "project_id": project_id,
+                    "snapshot_sha": snap.content_sha256,
+                    "archive_name": snap.archive_name,
+                    "error": str(exc),
+                },
+            )
+            cache_rows.append(
+                (
                     ["project_delete_failed", "snapshot", snap.content_sha256],
                     {
                         "project_id": project_id,
@@ -324,6 +977,8 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                         "error": str(exc),
                     },
                 )
+            )
+        await _cache_project_delete_failures_async(cache_rows)
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
@@ -369,34 +1024,7 @@ async def list_project_files_async(
     total = int(total_row[0] if isinstance(total_row, (tuple, list)) else total_row)
     rows = list((await session.execute(base.order_by(FileNode.path).limit(int(limit) + 1))).scalars().all())
 
-    def risk(n: FileNode) -> float:
-        try:
-            return (
-                (0.3 * float(n.complexity or 0))
-                + (0.7 * float(n.fan_in or 0))
-                + (0.1 * float(n.fan_out or 0))
-            )
-        except Exception:
-            return 0.0
-
-    files = [
-        {
-            "path": n.path,
-            "language": n.language,
-            "loc": int(n.loc or 0),
-            "complexity": int(n.complexity or 0),
-            "fan_in": int(n.fan_in or 0),
-            "fan_out": int(n.fan_out or 0),
-            "status": n.status,
-            "risk": risk(n),
-        }
-        for n in rows
-        if isinstance(n.path, str) and n.path
-    ]
-
-    truncated = len(files) > limit
-    next_cursor = files[limit - 1]["path"] if truncated and limit > 0 else None
-    files = files[:limit]
+    files, truncated, next_cursor = await _build_project_files_payload_async(rows, limit=limit)
     return {
         "files": files,
         "meta": {
@@ -446,76 +1074,13 @@ async def list_project_tree_entries_async(
     rows = list((await session.execute(base.order_by(FileNode.path).limit(scan_limit + 1))).scalars().all())
     has_more_rows = len(rows) > scan_limit
 
-    entries: list[dict] = []
-    seen: set[str] = set()
-    next_cursor = None
-
-    def add_dir(child_path: str, name: str) -> None:
-        if child_path in seen:
-            return
-        seen.add(child_path)
-        entries.append(
-            {
-                "type": "dir",
-                "path": child_path,
-                "name": name,
-                "has_children": True,
-            }
-        )
-
-    def add_file(node: FileNode) -> None:
-        if node.path in seen:
-            return
-        seen.add(node.path)
-        entries.append(
-            {
-                "type": "file",
-                "path": node.path,
-                "name": node.path.split("/")[-1],
-                "file": {
-                    "path": node.path,
-                    "language": node.language,
-                    "loc": int(node.loc or 0),
-                    "complexity": int(node.complexity or 0),
-                    "fan_in": int(node.fan_in or 0),
-                    "fan_out": int(node.fan_out or 0),
-                    "status": node.status,
-                    "risk": (0.3 * float(node.complexity or 0))
-                    + (0.7 * float(node.fan_in or 0))
-                    + (0.1 * float(node.fan_out or 0)),
-                },
-            }
-        )
-
-    stopped_by_limit = False
-    scanned_rows = rows[:scan_limit]
-    for idx, row in enumerate(scanned_rows):
-        path = row.path if isinstance(row.path, str) else ""
-        if not path:
-            continue
-        rel = path
-        if prefix_norm:
-            if path == prefix_norm:
-                rel = path.split("/")[-1]
-            elif path.startswith(f"{prefix_norm}/"):
-                rel = path[len(prefix_norm) + 1 :]
-            else:
-                continue
-        if not rel:
-            continue
-        if "/" in rel:
-            name = rel.split("/", 1)[0]
-            child_path = f"{prefix_norm}/{name}" if prefix_norm else name
-            add_dir(child_path, name)
-        else:
-            add_file(row)
-
-        next_cursor = path
-        if len(entries) >= limit:
-            stopped_by_limit = idx < (len(scanned_rows) - 1)
-            break
-
-    truncated = len(entries) == limit and (has_more_rows or stopped_by_limit)
+    entries, next_cursor, truncated = await _build_project_tree_payload_async(
+        rows,
+        prefix_norm=prefix_norm,
+        limit=limit,
+        scan_limit=scan_limit,
+        has_more_rows=has_more_rows,
+    )
     return {
         "entries": entries,
         "meta": {
@@ -546,8 +1111,12 @@ async def get_file_dependencies_async(
     if limit < 1 or limit > 20_000:
         raise BadRequestError("limit должен быть в диапазоне 1..20000")
 
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    _, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+    root = await _normalize_project_root_async(project.root_path)
+    _, rel_norm = await _resolve_under_root_async(
+        root,
+        path,
+        max_length=settings.max_rel_path_chars,
+    )
 
     cursor_in_norm = (
         cursor_in.strip().replace("\\", "/") if isinstance(cursor_in, str) and cursor_in.strip() else None
@@ -636,7 +1205,7 @@ async def _scan_and_update_graph_async(
         if not project or project.org_id != org_id:
             raise NotFoundError("Проект не найден", context={"project_id": project_id})
 
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+    root = await _normalize_project_root_async(project.root_path)
     stats = await asyncio.to_thread(scan_project, project_id, org_id, root)
 
     try:
@@ -739,34 +1308,7 @@ async def load_graph_async(
             .all()
         )
 
-    def risk_value(node: FileNode) -> float:
-        complexity = _as_float(getattr(node, "complexity", 0), 0.0)
-        fan_in = _as_float(getattr(node, "fan_in", 0), 0.0)
-        fan_out = _as_float(getattr(node, "fan_out", 0), 0.0)
-        return (0.3 * complexity) + (0.7 * fan_in) + (0.1 * fan_out)
-
-    node_payload: list[dict] = []
-    node_paths: list[str] = []
-    for node in nodes:
-        path = node.path if isinstance(node.path, str) else ""
-        if not path:
-            continue
-        node_paths.append(path)
-        node_payload.append(
-            {
-                "id": path,
-                "label": path.rsplit("/", 1)[-1],
-                "path": path,
-                "language": node.language,
-                "loc": _as_int(getattr(node, "loc", 0), 0),
-                "complexity": _as_float(getattr(node, "complexity", 0), 0.0),
-                "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
-                "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
-                "scc_id": _as_int(getattr(node, "scc_id", -1), -1),
-                "status": node.status,
-                "risk": risk_value(node),
-            }
-        )
+    node_payload, node_paths = await _build_graph_node_payload_async(nodes)
 
     node_set = set(node_paths)
     edges: list[FileEdge] = []
@@ -796,24 +1338,11 @@ async def load_graph_async(
                 if dst and dst in node_set:
                     edges.append(edge)
 
-    edge_payload: list[dict] = []
-    for edge in edges:
-        if not (
-            isinstance(edge.src_path, str)
-            and edge.src_path
-            and isinstance(edge.dst_path, str)
-            and edge.dst_path
-        ):
-            continue
-        if effective_limit is not None and (
-            edge.src_path not in node_set or edge.dst_path not in node_set
-        ):
-            continue
-        edge_payload.append(
-            {"source": edge.src_path, "target": edge.dst_path, "kind": edge.kind}
-        )
-
-    edge_payload.sort(key=lambda item: (item["source"], item["target"], item.get("kind") or ""))
+    edge_payload = await _build_graph_edge_payload_async(
+        edges,
+        effective_limit=effective_limit,
+        node_set=node_set,
+    )
 
     if effective_limit is not None and total_nodes > int(effective_limit):
         truncated = True
@@ -848,8 +1377,12 @@ async def load_local_graph_async(
     if max_nodes <= 0 or max_edges <= 0:
         raise BadRequestError("Лимиты графа должны быть положительными")
 
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    _, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+    root = await _normalize_project_root_async(project.root_path)
+    _, rel_norm = await _resolve_under_root_async(
+        root,
+        path,
+        max_length=settings.max_rel_path_chars,
+    )
 
     hops_eff = max(0, min(hops, 6))
     max_nodes_eff = max(1, max_nodes)
@@ -911,34 +1444,11 @@ async def load_local_graph_async(
         .all()
     )
 
-    def risk_value(node: FileNode) -> float:
-        complexity = _as_float(getattr(node, "complexity", 0), 0.0)
-        fan_in = _as_float(getattr(node, "fan_in", 0), 0.0)
-        fan_out = _as_float(getattr(node, "fan_out", 0), 0.0)
-        return (0.3 * complexity) + (0.7 * fan_in) + (0.1 * fan_out)
-
-    node_payload = [
-        {
-            "id": node.path,
-            "label": node.path.rsplit("/", 1)[-1],
-            "path": node.path,
-            "language": node.language,
-            "loc": _as_int(getattr(node, "loc", 0), 0),
-            "complexity": _as_float(getattr(node, "complexity", 0), 0.0),
-            "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
-            "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
-            "scc_id": _as_int(getattr(node, "scc_id", -1), -1),
-            "status": node.status,
-            "risk": risk_value(node),
-        }
-        for node in node_rows
-    ]
-
-    edge_payload = [
-        {"source": s, "target": d, "kind": k}
-        for s, d, k in edge_set
-        if s in nodes_set and d in nodes_set
-    ]
+    node_payload, edge_payload = await _build_local_graph_payload_async(
+        node_rows,
+        edge_set,
+        nodes_set,
+    )
 
     truncated_edges = bool(max_edges_eff > 0 and len(edge_set) >= max_edges_eff)
     meta = {
@@ -1047,7 +1557,7 @@ async def search_project_semantic_async(
     if not settings.openai_api_key:
         raise BadRequestError("OPENAI_API_KEY is not configured.", context={"reason": "missing_api_key"})
 
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+    root = await _normalize_project_root_async(project.root_path)
     q = query.strip()
 
     prefix_norm: str | None = None
@@ -1106,68 +1616,31 @@ async def search_project_semantic_async(
     if not isinstance(query_embedding, list) or not query_embedding:
         raise BadRequestError("Embedding vector is missing.", context={"reason": "embedding_empty"})
 
-    compared = 0
-    scored: list[dict] = []
-    file_cache: dict[str, str] = {}
+    candidate_paths: list[str] = []
+    seen_candidate_paths: set[str] = set()
+    for row in rows:
+        path = row[0] if isinstance(row, (tuple, list)) else None
+        if isinstance(path, str) and path and path not in seen_candidate_paths:
+            seen_candidate_paths.add(path)
+            candidate_paths.append(path)
+
+    file_cache = await _read_project_files_async(
+        root,
+        candidate_paths,
+        max_chars=int(settings.embeddings_max_file_chars),
+    )
+
     chunk_size = int(settings.embeddings_chunk_size)
     overlap = int(settings.embeddings_chunk_overlap)
     step = max(1, chunk_size - overlap)
-    max_file_chars = int(settings.embeddings_max_file_chars)
 
-    for row in rows:
-        path, chunk_index, embedding_json, symbol_name, symbol_start_line, symbol_end_line = row
-        if not isinstance(path, str) or not path:
-            continue
-        try:
-            embedding = json.loads(embedding_json) if isinstance(embedding_json, str) else None
-        except Exception:
-            continue
-        if not isinstance(embedding, list) or not embedding:
-            continue
-        try:
-            score = _cosine_similarity_local(query_embedding, embedding)
-        except Exception:
-            continue
-        compared += 1
-
-        snippet = ""
-        if path not in file_cache:
-            try:
-                abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-            except Exception:
-                file_cache[path] = ""
-            else:
-                if abs_path.exists() and abs_path.is_file():
-                    try:
-                        with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                            file_cache[path] = f.read(max_file_chars)
-                    except Exception:
-                        file_cache[path] = ""
-                else:
-                    file_cache[path] = ""
-
-        text = file_cache.get(path, "")
-        if text:
-            symbol_start = _as_int(symbol_start_line, 0)
-            symbol_end = _as_int(symbol_end_line, 0)
-            if symbol_start > 0 and symbol_end >= symbol_start:
-                lines = text.splitlines(keepends=True)
-                snippet = "".join(lines[symbol_start - 1 : symbol_end])
-            else:
-                start_pos = max(0, _as_int(chunk_index, 0) * step)
-                end_pos = start_pos + chunk_size
-                if start_pos < len(text):
-                    snippet = text[start_pos:end_pos]
-
-        scored.append(
-            {
-                "path": path,
-                "score": float(score),
-                "snippet": snippet,
-                "symbol_name": str(symbol_name or ""),
-                "symbol_line": _as_int(symbol_start_line, 0),
-            }
-        )
+    compared, scored = await _score_semantic_rows_async(
+        rows,
+        query_embedding=query_embedding,
+        file_cache=file_cache,
+        chunk_size=chunk_size,
+        step=step,
+    )
 
     scored.sort(key=lambda item: item["score"], reverse=True)
     results = scored[:max_results_eff]
@@ -1268,7 +1741,7 @@ async def search_project_text_async(
         await cache_set_json_async(cache_key, result)
         return result
 
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
+    root = await _normalize_project_root_async(project.root_path)
 
     scan_max_chars = max(1, min(int(settings.llm_agentic_max_file_chars), 200_000))
     index_scan_max_chars = min(SEARCH_INDEX_MAX_CHARS, scan_max_chars)
@@ -1325,69 +1798,57 @@ async def search_project_text_async(
                 if isinstance(rel_path, str) and rel_path and isinstance(content, str):
                     indexed_text[rel_path] = content
 
+    non_indexed_paths = [path for path in paths if path not in indexed_text]
+    fs_text = await _read_project_files_async(
+        root,
+        non_indexed_paths,
+        max_chars=int(scan_max_chars) + 1,
+    )
+
+    resolved_paths = await _resolve_project_paths_async(root, paths)
+
     for rel_candidate in paths:
         if len(matches) >= limit_matches:
             break
-        try:
-            abs_path, rel_norm = resolve_under_root(
-                root, rel_candidate, max_length=settings.max_rel_path_chars
-            )
-        except Exception:
+        resolved = resolved_paths.get(rel_candidate)
+        if resolved is None:
             continue
+        abs_path, rel_norm = resolved
 
         text_source = indexed_text.get(rel_norm)
         from_index = text_source is not None
         if text_source is None:
-            if not abs_path.exists() or not abs_path.is_file():
-                continue
-            try:
-                with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                    text_source = f.read(int(scan_max_chars) + 1)
-            except Exception:
+            text_source = fs_text.get(rel_norm)
+            if text_source is None:
                 continue
 
         scanned += 1
         truncated_initial = len(text_source) > scan_max_chars
         text_payload = text_source[:scan_max_chars] if truncated_initial else text_source
 
-        def _search_text(payload: str, *, truncated_flag: bool) -> bool:
-            haystack = payload if case_sensitive else payload.lower()
-            start_idx = 0
-            found_any = False
-            while True:
-                if len(matches) >= limit_matches:
-                    break
-                idx = haystack.find(needle_cmp, start_idx)
-                if idx == -1:
-                    break
-                found_any = True
-                matched_files.add(rel_norm)
-
-                line = payload.count("\n", 0, idx) + 1
-                last_nl = payload.rfind("\n", 0, idx)
-                col = (idx - (last_nl + 1)) + 1 if last_nl != -1 else idx + 1
-
-                half = max(10, context_chars // 2)
-                s0 = max(0, idx - half)
-                e0 = min(len(payload), idx + len(needle) + half)
-                snippet = payload[s0:e0]
-
+        truncated = truncated_initial
+        file_matches, matched = await _find_text_matches_in_payload_async(
+            text_payload,
+            needle=needle,
+            needle_cmp=needle_cmp,
+            case_sensitive=case_sensitive,
+            context_chars=context_chars,
+            limit_matches=limit_matches,
+            start_count=len(matches),
+            truncated_flag=truncated,
+        )
+        if file_matches:
+            matched_files.add(rel_norm)
+            for item in file_matches:
                 matches.append(
                     {
                         "path": rel_norm,
-                        "line": int(line),
-                        "col": int(col),
-                        "snippet": snippet,
-                        "truncated_file": bool(truncated_flag),
+                        "line": int(item.get("line") or 0),
+                        "col": int(item.get("col") or 0),
+                        "snippet": str(item.get("snippet") or ""),
+                        "truncated_file": bool(item.get("truncated_file")),
                     }
                 )
-
-                step = max(1, len(needle_cmp))
-                start_idx = idx + step
-            return found_any
-
-        truncated = truncated_initial
-        matched = _search_text(text_payload, truncated_flag=truncated)
 
         if truncated_initial and not matched and scan_max_chars < index_scan_max_chars:
             if from_index:
@@ -1395,17 +1856,57 @@ async def search_project_text_async(
                 truncated = len(text_payload) > index_scan_max_chars
                 if truncated:
                     text_payload = text_payload[:index_scan_max_chars]
-                _search_text(text_payload, truncated_flag=truncated)
+                file_matches, matched = await _find_text_matches_in_payload_async(
+                    text_payload,
+                    needle=needle,
+                    needle_cmp=needle_cmp,
+                    case_sensitive=case_sensitive,
+                    context_chars=context_chars,
+                    limit_matches=limit_matches,
+                    start_count=len(matches),
+                    truncated_flag=truncated,
+                )
+                if file_matches:
+                    matched_files.add(rel_norm)
+                    for item in file_matches:
+                        matches.append(
+                            {
+                                "path": rel_norm,
+                                "line": int(item.get("line") or 0),
+                                "col": int(item.get("col") or 0),
+                                "snippet": str(item.get("snippet") or ""),
+                                "truncated_file": bool(item.get("truncated_file")),
+                            }
+                        )
             else:
-                try:
-                    with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                        text_payload = f.read(int(index_scan_max_chars) + 1)
-                except Exception:
+                text_payload = await _read_text_if_file_async(abs_path, int(index_scan_max_chars) + 1)
+                if text_payload is None:
                     continue
                 truncated = len(text_payload) > index_scan_max_chars
                 if truncated:
                     text_payload = text_payload[:index_scan_max_chars]
-                _search_text(text_payload, truncated_flag=truncated)
+                file_matches, matched = await _find_text_matches_in_payload_async(
+                    text_payload,
+                    needle=needle,
+                    needle_cmp=needle_cmp,
+                    case_sensitive=case_sensitive,
+                    context_chars=context_chars,
+                    limit_matches=limit_matches,
+                    start_count=len(matches),
+                    truncated_flag=truncated,
+                )
+                if file_matches:
+                    matched_files.add(rel_norm)
+                    for item in file_matches:
+                        matches.append(
+                            {
+                                "path": rel_norm,
+                                "line": int(item.get("line") or 0),
+                                "col": int(item.get("col") or 0),
+                                "snippet": str(item.get("snippet") or ""),
+                                "truncated_file": bool(item.get("truncated_file")),
+                            }
+                        )
 
         if truncated:
             truncated_files += 1
@@ -1427,5 +1928,3 @@ async def search_project_text_async(
     }
     await cache_set_json_async(cache_key, result)
     return result
-
-
