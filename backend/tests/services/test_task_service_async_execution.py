@@ -100,17 +100,12 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
             _ = (exc_type, exc, tb)
             return False
 
-    calls = {"exists": 0, "is_file": 0, "contract_async": 0}
+    calls = {"path_state": 0, "contract_async": 0}
 
-    async def _fake_exists(path):
+    async def _fake_path_exists_and_is_file(path):
         _ = path
-        calls["exists"] += 1
-        return True
-
-    async def _fake_is_file(path):
-        _ = path
-        calls["is_file"] += 1
-        return True
+        calls["path_state"] += 1
+        return True, True
 
     async def _fake_contract_async(session, project_id, root, rel_path):
         _ = (session, project_id, root)
@@ -138,8 +133,11 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
             AssertionError("sync resolve path must not be used")
         ),
     )
-    monkeypatch.setattr(task_service, "_path_exists_async", _fake_exists)
-    monkeypatch.setattr(task_service, "_path_is_file_async", _fake_is_file)
+    monkeypatch.setattr(
+        task_service,
+        "_path_exists_and_is_file_async",
+        _fake_path_exists_and_is_file,
+    )
     monkeypatch.setattr(task_service, "get_or_build_contract_async", _fake_contract_async)
     monkeypatch.setattr(
         task_service,
@@ -163,8 +161,28 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
 
     assert result is not None
     assert result["contracts_updated"] == ["a.py"]
-    assert calls == {"exists": 1, "is_file": 1, "contract_async": 1}
+    assert calls == {"path_state": 1, "contract_async": 1}
     assert session.commits == 1
+
+
+@pytest.mark.anyio
+async def test_path_exists_and_is_file_async_uses_to_thread(monkeypatch):
+    calls: dict[str, object] = {}
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return True, True
+
+    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+
+    result = await task_service._path_exists_and_is_file_async(Path("/tmp/a.py"))
+
+    assert result == (True, True)
+    assert calls["func"] is task_service._path_exists_and_is_file
+    assert calls["args"] == (Path("/tmp/a.py"),)
+    assert calls["kwargs"] == {}
 
 
 @pytest.mark.anyio

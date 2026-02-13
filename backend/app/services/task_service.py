@@ -1,9 +1,9 @@
 # backend/app/services/task_service.py
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-import asyncio
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,11 +13,10 @@ from typing import Any
 from fastapi import BackgroundTasks
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from ..async_db import AsyncSessionLocal
 from sqlmodel import delete, select
 from unidiff import PatchSet
 
+from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..context_pack import pack_context
 from ..contracts import get_or_build_contract, get_or_build_contract_async
@@ -33,7 +32,6 @@ from ..errors import (
 )
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
 from ..llm.agentic import AgenticMeta, analyze_agentic, evolve_agentic, fix_agentic
-from ..llm.quality_gates import QualityGateError, validate_llm_result
 from ..llm.orchestrator import (
     analyze_with_usage,
     evolve_with_usage,
@@ -48,6 +46,7 @@ from ..llm.policy import (
     resolve_profile,
     resolve_runtime_policy,
 )
+from ..llm.quality_gates import QualityGateError, validate_llm_result
 from ..llm.routing_selector import select_runtime_route
 from ..logging import get_logger
 from ..models import (
@@ -86,12 +85,13 @@ GRAPH_NOT_READY_WARNING = "graph not built"
 logger = get_logger("stubgraph.api")
 
 
-async def _path_exists_async(path: Path) -> bool:
-    return await asyncio.to_thread(path.exists)
+def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
+    exists = path.exists()
+    return exists, exists and path.is_file()
 
 
-async def _path_is_file_async(path: Path) -> bool:
-    return await asyncio.to_thread(path.is_file)
+async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
+    return await asyncio.to_thread(_path_exists_and_is_file, path)
 
 
 async def _resolve_under_root_async(
@@ -690,10 +690,11 @@ async def _apply_patch_and_record_async(
                             rel_path,
                             max_length=settings.max_rel_path_chars,
                         )
-                        if not await _path_exists_async(abs_path):
+                        exists, is_file = await _path_exists_and_is_file_async(abs_path)
+                        if not exists:
                             removed_contracts.append(rel_norm)
                             continue
-                        if not await _path_is_file_async(abs_path):
+                        if not is_file:
                             continue
                         contract = await get_or_build_contract_async(
                             session,
