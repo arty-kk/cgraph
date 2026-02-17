@@ -123,3 +123,74 @@ class TestAgenticToolPolicyAsync(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAgenticAsyncMapping(unittest.IsolatedAsyncioTestCase):
+    async def test_async_dispatch_mapping_does_not_call_sync_tools(self) -> None:
+        meta = agentic.AgenticMeta()
+        meta.tool_trace.append({"name": "plan_retrieval", "status": "ok"})
+
+        sync_attrs = [
+            "_tool_get_contract",
+            "_tool_get_symbol",
+            "_tool_search_tests",
+            "_tool_get_tree_outline",
+            "_tool_project_summary",
+            "_tool_search_text",
+            "_tool_route_usages",
+            "_tool_suggest_endpoint_location",
+            "_tool_suggest_frontend_client",
+            "_tool_impact_route_change",
+            "_tool_compare_api_contract",
+            "_tool_suggest_contract_fix",
+            "_tool_suggest_api_fix",
+        ]
+        async_mapping = {
+            "get_contract": "_tool_get_contract_async",
+            "get_symbol": "_tool_get_symbol_async",
+            "search_tests": "_tool_search_tests_async",
+            "get_tree_outline": "_tool_get_tree_outline_async",
+            "project_summary": "_tool_project_summary_async",
+            "search_text": "_tool_search_text_async",
+            "route_usages": "_tool_route_usages_async",
+            "suggest_endpoint_location": "_tool_suggest_endpoint_location_async",
+            "suggest_frontend_client": "_tool_suggest_frontend_client_async",
+            "impact_route_change": "_tool_impact_route_change_async",
+            "compare_api_contract": "_tool_compare_api_contract_async",
+            "suggest_contract_fix": "_tool_suggest_contract_fix_async",
+            "suggest_api_fix": "_tool_suggest_api_fix_async",
+        }
+
+        patchers = []
+        for attr in sync_attrs:
+            p_sync = patch.object(
+                agentic,
+                attr,
+                side_effect=AssertionError(f"sync tool called: {attr}"),
+            )
+            p_sync.start()
+            patchers.append(p_sync)
+
+        async def _fake_async_tool(*_args, **_kwargs):
+            return agentic._tool_ok({"tool": "ok"})
+
+        for attr in async_mapping.values():
+            p_async = patch.object(agentic, attr, side_effect=_fake_async_tool)
+            p_async.start()
+            patchers.append(p_async)
+
+        try:
+            for tool_name in async_mapping:
+                with self.subTest(tool_name=tool_name):
+                    result = await agentic._dispatch_tool_async(
+                        1,
+                        Path("."),
+                        meta,
+                        tool_name,
+                        {"path": "/api/test", "query": "q", "name": "n"},
+                        max_file_chars=200,
+                    )
+                    self.assertTrue(result["ok"])
+        finally:
+            for patcher in reversed(patchers):
+                patcher.stop()
