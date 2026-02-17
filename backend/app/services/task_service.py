@@ -30,13 +30,18 @@ from ..errors import (
     ServerError,
 )
 from ..graph import compute_graph_metrics, update_graph_metrics_incremental
-from ..llm.agentic import AgenticMeta, analyze_agentic, evolve_agentic, fix_agentic
+from ..llm.agentic import (
+    AgenticMeta,
+    analyze_agentic_async,
+    evolve_agentic_async,
+    fix_agentic_async,
+)
 from ..llm.orchestrator import (
-    analyze_with_usage,
-    evolve_with_usage,
-    fix_with_usage,
-    plan_task_with_usage,
-    triage_with_usage,
+    analyze_with_usage_async,
+    evolve_with_usage_async,
+    fix_with_usage_async,
+    plan_task_with_usage_async,
+    triage_with_usage_async,
 )
 from ..llm.policy import (
     DEFAULT_POLICY,
@@ -222,13 +227,6 @@ async def _scan_with_background_async(
         background_tasks.add_task(lambda: None)
     return {"task_id": task_id, "status": "pending"}
 
-
-# Backward-compatible callables for tests/monkeypatching inside task_service.
-triage = triage_with_usage
-analyze = analyze_with_usage
-evolve = evolve_with_usage
-fix = fix_with_usage
-plan_task = plan_task_with_usage
 
 PLAN_TZ_EMPTY = {
     "summary": "",
@@ -986,7 +984,7 @@ async def _run_task_impl_async(
         triage_started = perf_counter()
         try:
             triage_result, triage_usage = _extract_payload_and_usage(
-                triage(
+                await triage_with_usage_async(
                     request.prompt,
                     policy=runtime_policy,
                     instructions=profile_instructions,
@@ -1327,7 +1325,7 @@ async def _run_task_impl_async(
             plan_started = perf_counter()
             try:
                 plan_tz, plan_usage = _extract_payload_and_usage(
-                    plan_task(
+                    await plan_task_with_usage_async(
                     knowledge,
                     request.prompt,
                     policy=runtime_policy,
@@ -1429,7 +1427,7 @@ async def _run_task_impl_async(
             plan_started = perf_counter()
             try:
                 plan_tz, plan_usage = _extract_payload_and_usage(
-                    plan_task(
+                    await plan_task_with_usage_async(
                     knowledge,
                     request.prompt,
                     policy=runtime_policy,
@@ -1488,7 +1486,7 @@ async def _run_task_impl_async(
                 stage_started = perf_counter()
                 try:
                     if mode == "analyze":
-                        result, agentic_meta = analyze_agentic(
+                        result, agentic_meta = await analyze_agentic_async(
                             project_id,
                             root,
                             target,
@@ -1507,7 +1505,7 @@ async def _run_task_impl_async(
                         )
                         model_used = active_policy.analysis_model
                     elif mode == "evolve":
-                        result, agentic_meta = evolve_agentic(
+                        result, agentic_meta = await evolve_agentic_async(
                             project_id,
                             root,
                             target,
@@ -1526,7 +1524,7 @@ async def _run_task_impl_async(
                         )
                         model_used = active_policy.analysis_model
                     elif mode == "fix":
-                        result, agentic_meta = fix_agentic(
+                        result, agentic_meta = await fix_agentic_async(
                             project_id,
                             root,
                             target,
@@ -1868,7 +1866,7 @@ async def _run_task_impl_async(
             plan_started = perf_counter()
             try:
                 plan_tz, plan_usage = _extract_payload_and_usage(
-                    plan_task(
+                    await plan_task_with_usage_async(
                     packed_dict,
                     request.prompt,
                     policy=runtime_policy,
@@ -1900,7 +1898,7 @@ async def _run_task_impl_async(
                 stage_started = perf_counter()
                 try:
                     result, analyze_usage = _extract_payload_and_usage(
-                        analyze(
+                        await analyze_with_usage_async(
                         packed_dict,
                         request.prompt,
                         policy=runtime_policy,
@@ -1941,7 +1939,7 @@ async def _run_task_impl_async(
                 stage_started = perf_counter()
                 try:
                     result, evolve_usage = _extract_payload_and_usage(
-                        evolve(
+                        await evolve_with_usage_async(
                         packed_dict,
                         request.prompt,
                         policy=runtime_policy,
@@ -1982,7 +1980,7 @@ async def _run_task_impl_async(
                 stage_started = perf_counter()
                 try:
                     result, fix_usage = _extract_payload_and_usage(
-                        fix(
+                        await fix_with_usage_async(
                         packed_dict,
                         request.prompt,
                         policy=runtime_policy,

@@ -1,10 +1,14 @@
+# ruff: noqa: I001
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.llm.agentic.call import _agentic_json_call
+from app.llm.agentic.call import _agentic_json_call_async
+
 
 
 class _FakeResponses:
@@ -12,7 +16,7 @@ class _FakeResponses:
         self._payloads = list(payloads)
         self.calls = 0
 
-    def create(self, **kwargs):
+    async def create(self, **kwargs):
         assert kwargs.get("model") == "gpt-5-mini"
         self.calls += 1
         return self._payloads.pop(0)
@@ -23,7 +27,8 @@ class _FakeClient:
         self.responses = _FakeResponses(payloads)
 
 
-def test_agentic_retry_aggregates_usage_tokens(monkeypatch):
+@pytest.mark.anyio
+async def test_agentic_retry_aggregates_usage_tokens(monkeypatch):
     first_resp = SimpleNamespace(
         output=[],
         output_text=(
@@ -42,15 +47,15 @@ def test_agentic_retry_aggregates_usage_tokens(monkeypatch):
     )
 
     fake_client = _FakeClient([first_resp, second_resp])
-    monkeypatch.setattr("app.llm.agentic.call.get_openai_client", lambda: fake_client)
+    monkeypatch.setattr("app.llm.agentic.call.get_async_openai_client", lambda: fake_client)
     monkeypatch.setattr("app.llm.agentic.call._tool_definitions", lambda _max_file_chars: [])
 
-    def _fake_self_check(**kwargs):
+    async def _fake_self_check_async(**kwargs):
         return {"ok": True, "issues": [], "missing_context": []}
 
-    monkeypatch.setattr("app.llm.agentic.call._run_self_check", _fake_self_check)
+    monkeypatch.setattr("app.llm.agentic.call._run_self_check_async", _fake_self_check_async)
 
-    result, meta = _agentic_json_call(
+    result, meta = await _agentic_json_call_async(
         model="gpt-5-mini",
         self_check_model=None,
         self_check_reasoning_effort=None,

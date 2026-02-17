@@ -13,6 +13,9 @@ class TestAgenticImports(unittest.TestCase):
         self.assertTrue(callable(agentic.analyze_agentic))
         self.assertTrue(callable(agentic.evolve_agentic))
         self.assertTrue(callable(agentic.fix_agentic))
+        self.assertTrue(callable(agentic.analyze_agentic_async))
+        self.assertTrue(callable(agentic.evolve_agentic_async))
+        self.assertTrue(callable(agentic.fix_agentic_async))
         self.assertTrue(hasattr(agentic, "AgenticMeta"))
 
         self.assertTrue(callable(agentic._dispatch_tool))
@@ -21,6 +24,7 @@ class TestAgenticImports(unittest.TestCase):
         self.assertTrue(callable(agentic._tool_definitions))
         self.assertTrue(callable(agentic._tool_ok))
         self.assertTrue(callable(agentic._clamp_int))
+        self.assertTrue(callable(agentic._agentic_json_call_async))
         self.assertTrue(hasattr(agentic, "_FTS_TOKEN_RE"))
 
 
