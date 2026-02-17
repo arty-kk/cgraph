@@ -2085,8 +2085,6 @@ def _build_route_patterns(
         method = str(r.method or "").upper()
         if not method:
             continue
-        if prefix and not str(prefix).strip():
-            pass
         # Determine instance name from decorator base (e.g. "router.get" -> "router")
         inst = ""
         if isinstance(r.decorator, str) and "." in r.decorator:
