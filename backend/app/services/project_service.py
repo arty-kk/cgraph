@@ -704,7 +704,9 @@ def _build_project_tree_payload(
 ) -> tuple[list[dict], str | None, bool]:
     entries: list[dict] = []
     seen: set[str] = set()
-    next_cursor = None
+    last_consumed_path: str | None = None
+    reached_limit = False
+    has_next_unique_entry = False
 
     def add_dir(child_path: str, name: str) -> None:
         if child_path in seen:
@@ -743,9 +745,8 @@ def _build_project_tree_payload(
             }
         )
 
-    stopped_by_limit = False
     scanned_rows = rows[:scan_limit]
-    for idx, row in enumerate(scanned_rows):
+    for row in scanned_rows:
         path = row.path if isinstance(row.path, str) else ""
         if not path:
             continue
@@ -759,20 +760,33 @@ def _build_project_tree_payload(
                 continue
         if not rel:
             continue
-        if "/" in rel:
+        is_dir_entry = "/" in rel
+        if is_dir_entry:
             name = rel.split("/", 1)[0]
             child_path = f"{prefix_norm}/{name}" if prefix_norm else name
+            entry_key = child_path
+        else:
+            entry_key = path
+
+        if len(entries) >= limit:
+            reached_limit = True
+            if entry_key in seen:
+                last_consumed_path = path
+                continue
+            has_next_unique_entry = True
+            break
+
+        if is_dir_entry:
             add_dir(child_path, name)
         else:
             add_file(row)
+        last_consumed_path = path
 
-        next_cursor = path
-        if len(entries) >= limit:
-            stopped_by_limit = idx < (len(scanned_rows) - 1)
-            break
+    if len(entries) >= limit:
+        reached_limit = True
 
-    truncated = len(entries) == limit and (has_more_rows or stopped_by_limit)
-    return entries, next_cursor if truncated else None, bool(truncated)
+    truncated = reached_limit and (has_next_unique_entry or has_more_rows)
+    return entries, last_consumed_path if truncated else None, bool(truncated)
 
 
 async def _build_project_tree_payload_async(
