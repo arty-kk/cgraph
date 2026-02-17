@@ -727,6 +727,325 @@ async def test_search_project_text_async_uses_pre_resolved_paths(
     assert captured and captured[0] == result
 
 
+
+
+@pytest.mark.anyio
+async def test_search_project_text_async_returns_cached_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    cached_payload = {"matches": [{"path": "a.py"}], "meta": {"query": "needle"}}
+
+    async def _fake_cache_get_json_async(parts):
+        _ = parts
+        return cached_payload
+
+    class _Project:
+        org_id = 1
+
+    class _Session:
+        async def get(self, model, pk):
+            _ = model, pk
+            return _Project()
+
+        async def execute(self, stmt):
+            raise AssertionError("session.execute should not be called when cache hit")
+
+    monkeypatch.setattr(project_service, "cache_get_json_async", _fake_cache_get_json_async)
+
+    result = await project_service.search_project_text_async(
+        _Session(),
+        project_id=1,
+        org_id=1,
+        query="needle",
+    )
+
+    assert result is cached_payload
+
+
+@pytest.mark.anyio
+async def test_search_project_text_async_returns_not_indexed_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Project:
+        org_id = 5
+        root_path = "/repo"
+
+    class _Result:
+        def first(self):
+            return None
+
+    class _Session:
+        async def get(self, model, pk):
+            _ = model, pk
+            return _Project()
+
+        async def execute(self, stmt):
+            _ = stmt
+            return _Result()
+
+    captured: list[dict] = []
+
+    async def _fake_cache_get_json_async(parts):
+        _ = parts
+        return None
+
+    async def _fake_cache_set_json_async(parts, payload):
+        _ = parts
+        captured.append(payload)
+
+    monkeypatch.setattr(project_service, "cache_get_json_async", _fake_cache_get_json_async)
+    monkeypatch.setattr(project_service, "cache_set_json_async", _fake_cache_set_json_async)
+
+    result = await project_service.search_project_text_async(
+        _Session(),
+        project_id=10,
+        org_id=5,
+        query="needle",
+    )
+
+    assert result["matches"] == []
+    assert "Проект не проиндексирован" in result["meta"]["message"]
+    assert captured == [result]
+
+
+@pytest.mark.anyio
+async def test_search_project_text_async_uses_file_node_fallback_when_fts_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Project:
+        org_id = 7
+        root_path = "/repo"
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return list(self._rows)
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    class _Session:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, model, pk):
+            _ = model, pk
+            return _Project()
+
+        async def execute(self, stmt):
+            _ = stmt
+            self.calls += 1
+            if self.calls == 1:
+                return _Result([(1,)])
+            if self.calls == 2:
+                return _Result([("a.py",)])
+            return _Result([])
+
+    async def _fake_cache_get_json_async(parts):
+        _ = parts
+        return None
+
+    captured: list[dict] = []
+
+    async def _fake_cache_set_json_async(parts, payload):
+        _ = parts
+        captured.append(payload)
+
+    async def _fake_search_text_paths_async(*args, **kwargs):
+        _ = args, kwargs
+        raise RuntimeError("fts unavailable")
+
+    async def _fake_read_project_files_async(root, non_indexed_paths, max_chars):
+        _ = root, max_chars
+        assert non_indexed_paths == ["a.py"]
+        return {"a.py": "needle"}
+
+    async def _fake_resolve_project_paths_async(root, rel_paths, *, max_parallel=16):
+        _ = root, max_parallel
+        assert rel_paths == ["a.py"]
+        return {"a.py": (Path("/repo/a.py"), "a.py")}
+
+    async def _fake_find_text_matches_in_payload_async(*args, **kwargs):
+        _ = args, kwargs
+        return ([{"line": 1, "col": 1, "snippet": "needle", "truncated_file": False}], True)
+
+    monkeypatch.setattr(project_service, "cache_get_json_async", _fake_cache_get_json_async)
+    monkeypatch.setattr(project_service, "cache_set_json_async", _fake_cache_set_json_async)
+    monkeypatch.setattr(project_service, "search_text_paths_async", _fake_search_text_paths_async)
+    monkeypatch.setattr(project_service, "_read_project_files_async", _fake_read_project_files_async)
+    monkeypatch.setattr(project_service, "_resolve_project_paths_async", _fake_resolve_project_paths_async)
+    monkeypatch.setattr(project_service, "_find_text_matches_in_payload_async", _fake_find_text_matches_in_payload_async)
+    monkeypatch.setattr(project_service, "normalize_project_root", lambda root_path, max_length: Path("/repo"))
+
+    result = await project_service.search_project_text_async(
+        _Session(),
+        project_id=42,
+        org_id=7,
+        query="needle",
+    )
+
+    assert result["matches"] == [
+        {"path": "a.py", "line": 1, "col": 1, "snippet": "needle", "truncated_file": False}
+    ]
+    assert captured and captured[0] == result
+
+
+@pytest.mark.anyio
+async def test_search_project_text_async_truncated_indexed_fallback_second_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Project:
+        org_id = 7
+        root_path = "/repo"
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return list(self._rows)
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    class _Session:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, model, pk):
+            _ = model, pk
+            return _Project()
+
+        async def execute(self, stmt):
+            _ = stmt
+            self.calls += 1
+            if self.calls == 1:
+                return _Result([(1,)])
+            if self.calls == 2:
+                return _Result([("a.py", "abc")])
+            return _Result([])
+
+    async def _fake_cache_get_json_async(parts):
+        _ = parts
+        return None
+
+    async def _fake_cache_set_json_async(parts, payload):
+        _ = parts, payload
+
+    async def _fake_search_text_paths_async(*args, **kwargs):
+        _ = args, kwargs
+        return ["a.py"]
+
+    async def _fake_read_project_files_async(root, non_indexed_paths, max_chars):
+        _ = root, non_indexed_paths, max_chars
+        return {}
+
+    async def _fake_resolve_project_paths_async(root, rel_paths, *, max_parallel=16):
+        _ = root, max_parallel
+        return {"a.py": (Path("/repo/a.py"), "a.py")}
+
+    calls: list[str] = []
+
+    async def _fake_find_text_matches_in_payload_async(payload, **kwargs):
+        _ = kwargs
+        calls.append(payload)
+        if len(calls) == 1:
+            return ([], False)
+        return ([{"line": 1, "col": 1, "snippet": "x", "truncated_file": True}], True)
+
+    monkeypatch.setattr(project_service, "cache_get_json_async", _fake_cache_get_json_async)
+    monkeypatch.setattr(project_service, "cache_set_json_async", _fake_cache_set_json_async)
+    monkeypatch.setattr(project_service, "search_text_paths_async", _fake_search_text_paths_async)
+    monkeypatch.setattr(project_service, "_read_project_files_async", _fake_read_project_files_async)
+    monkeypatch.setattr(project_service, "_resolve_project_paths_async", _fake_resolve_project_paths_async)
+    monkeypatch.setattr(project_service, "_find_text_matches_in_payload_async", _fake_find_text_matches_in_payload_async)
+    monkeypatch.setattr(project_service, "normalize_project_root", lambda root_path, max_length: Path("/repo"))
+    monkeypatch.setattr(project_service.settings, "llm_agentic_max_file_chars", 1)
+
+    result = await project_service.search_project_text_async(
+        _Session(),
+        project_id=42,
+        org_id=7,
+        query="needle",
+    )
+
+    assert len(calls) == 2
+    assert result["matches"][0]["truncated_file"] is True
+
+
+@pytest.mark.anyio
+async def test_search_project_text_async_limit_matches_stops_after_first_batch_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Project:
+        org_id = 7
+        root_path = "/repo"
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return list(self._rows)
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    class _Session:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, model, pk):
+            _ = model, pk
+            return _Project()
+
+        async def execute(self, stmt):
+            _ = stmt
+            self.calls += 1
+            if self.calls == 1:
+                return _Result([(1,)])
+            return _Result([])
+
+    async def _fake_cache_get_json_async(parts):
+        _ = parts
+        return None
+
+    async def _fake_cache_set_json_async(parts, payload):
+        _ = parts, payload
+
+    async def _fake_search_text_paths_async(*args, **kwargs):
+        _ = args, kwargs
+        return ["a.py", "b.py"]
+
+    async def _fake_read_project_files_async(root, non_indexed_paths, max_chars):
+        _ = root, max_chars
+        return {"a.py": "needle", "b.py": "needle"}
+
+    async def _fake_resolve_project_paths_async(root, rel_paths, *, max_parallel=16):
+        _ = root, max_parallel
+        return {rel: (Path(f"/repo/{rel}"), rel) for rel in rel_paths}
+
+    async def _fake_find_text_matches_in_payload_async(payload, **kwargs):
+        _ = payload, kwargs
+        return ([{"line": 1, "col": 1, "snippet": "needle", "truncated_file": False}], True)
+
+    monkeypatch.setattr(project_service, "cache_get_json_async", _fake_cache_get_json_async)
+    monkeypatch.setattr(project_service, "cache_set_json_async", _fake_cache_set_json_async)
+    monkeypatch.setattr(project_service, "search_text_paths_async", _fake_search_text_paths_async)
+    monkeypatch.setattr(project_service, "_read_project_files_async", _fake_read_project_files_async)
+    monkeypatch.setattr(project_service, "_resolve_project_paths_async", _fake_resolve_project_paths_async)
+    monkeypatch.setattr(project_service, "_find_text_matches_in_payload_async", _fake_find_text_matches_in_payload_async)
+    monkeypatch.setattr(project_service, "normalize_project_root", lambda root_path, max_length: Path("/repo"))
+
+    result = await project_service.search_project_text_async(
+        _Session(),
+        project_id=42,
+        org_id=7,
+        query="needle",
+        limit_matches=1,
+    )
+
+    assert len(result["matches"]) == 1
+    assert result["meta"]["matched_files"] == 1
+
 @pytest.mark.anyio
 async def test_get_file_dependencies_async_uses_async_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Project:
