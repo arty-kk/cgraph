@@ -1763,7 +1763,7 @@ async def search_project_text_async(
     root = await _normalize_project_root_async(project.root_path)
 
     scan_max_chars = max(1, min(int(settings.llm_agentic_max_file_chars), 200_000))
-    index_scan_max_chars = min(SEARCH_INDEX_MAX_CHARS, scan_max_chars)
+    index_scan_max_chars = max(1, int(SEARCH_INDEX_MAX_CHARS))
 
     paths: list[str] = []
     try:
@@ -1826,12 +1826,13 @@ async def search_project_text_async(
 
     resolved_paths = await _resolve_project_paths_async(root, paths)
 
-    for rel_candidate in paths:
-        if len(matches) >= limit_matches:
-            break
+    async def _search_in_file(
+        rel_candidate: str,
+        remaining_limit: int,
+    ) -> tuple[str, list[dict], bool] | None:
         resolved = resolved_paths.get(rel_candidate)
         if resolved is None:
-            continue
+            return None
         abs_path, rel_norm = resolved
 
         text_source = indexed_text.get(rel_norm)
@@ -1839,12 +1840,11 @@ async def search_project_text_async(
         if text_source is None:
             text_source = fs_text.get(rel_norm)
             if text_source is None:
-                continue
+                return None
 
-        scanned += 1
+        effective_limit = max(1, min(int(remaining_limit), int(limit_matches)))
         truncated_initial = len(text_source) > scan_max_chars
         text_payload = text_source[:scan_max_chars] if truncated_initial else text_source
-
         truncated = truncated_initial
         file_matches, matched = await _find_text_matches_in_payload_async(
             text_payload,
@@ -1852,22 +1852,10 @@ async def search_project_text_async(
             needle_cmp=needle_cmp,
             case_sensitive=case_sensitive,
             context_chars=context_chars,
-            limit_matches=limit_matches,
-            start_count=len(matches),
+            limit_matches=effective_limit,
+            start_count=0,
             truncated_flag=truncated,
         )
-        if file_matches:
-            matched_files.add(rel_norm)
-            for item in file_matches:
-                matches.append(
-                    {
-                        "path": rel_norm,
-                        "line": int(item.get("line") or 0),
-                        "col": int(item.get("col") or 0),
-                        "snippet": str(item.get("snippet") or ""),
-                        "truncated_file": bool(item.get("truncated_file")),
-                    }
-                )
 
         if truncated_initial and not matched and scan_max_chars < index_scan_max_chars:
             if from_index:
@@ -1875,60 +1863,59 @@ async def search_project_text_async(
                 truncated = len(text_payload) > index_scan_max_chars
                 if truncated:
                     text_payload = text_payload[:index_scan_max_chars]
-                file_matches, matched = await _find_text_matches_in_payload_async(
-                    text_payload,
-                    needle=needle,
-                    needle_cmp=needle_cmp,
-                    case_sensitive=case_sensitive,
-                    context_chars=context_chars,
-                    limit_matches=limit_matches,
-                    start_count=len(matches),
-                    truncated_flag=truncated,
-                )
-                if file_matches:
-                    matched_files.add(rel_norm)
-                    for item in file_matches:
-                        matches.append(
-                            {
-                                "path": rel_norm,
-                                "line": int(item.get("line") or 0),
-                                "col": int(item.get("col") or 0),
-                                "snippet": str(item.get("snippet") or ""),
-                                "truncated_file": bool(item.get("truncated_file")),
-                            }
-                        )
             else:
                 text_payload = await _read_text_if_file_async(abs_path, int(index_scan_max_chars) + 1)
                 if text_payload is None:
-                    continue
+                    return None
                 truncated = len(text_payload) > index_scan_max_chars
                 if truncated:
                     text_payload = text_payload[:index_scan_max_chars]
-                file_matches, matched = await _find_text_matches_in_payload_async(
-                    text_payload,
-                    needle=needle,
-                    needle_cmp=needle_cmp,
-                    case_sensitive=case_sensitive,
-                    context_chars=context_chars,
-                    limit_matches=limit_matches,
-                    start_count=len(matches),
-                    truncated_flag=truncated,
-                )
-                if file_matches:
-                    matched_files.add(rel_norm)
-                    for item in file_matches:
-                        matches.append(
-                            {
-                                "path": rel_norm,
-                                "line": int(item.get("line") or 0),
-                                "col": int(item.get("col") or 0),
-                                "snippet": str(item.get("snippet") or ""),
-                                "truncated_file": bool(item.get("truncated_file")),
-                            }
-                        )
 
-        if truncated:
-            truncated_files += 1
+            file_matches, _ = await _find_text_matches_in_payload_async(
+                text_payload,
+                needle=needle,
+                needle_cmp=needle_cmp,
+                case_sensitive=case_sensitive,
+                context_chars=context_chars,
+                limit_matches=effective_limit,
+                start_count=0,
+                truncated_flag=truncated,
+            )
+
+        return rel_norm, file_matches, truncated
+
+    max_parallel = max(1, min(int(getattr(settings, "search_text_max_parallel", 16)), 128))
+    for i in range(0, len(paths), max_parallel):
+        if len(matches) >= limit_matches:
+            break
+        batch = paths[i : i + max_parallel]
+        remaining_limit = limit_matches - len(matches)
+        searched_rows = await asyncio.gather(
+            *[_search_in_file(path, remaining_limit) for path in batch]
+        )
+        for row in searched_rows:
+            if row is None:
+                continue
+            rel_norm, file_matches, truncated = row
+            scanned += 1
+            if truncated:
+                truncated_files += 1
+            if file_matches:
+                matched_files.add(rel_norm)
+                for item in file_matches:
+                    matches.append(
+                        {
+                            "path": rel_norm,
+                            "line": int(item.get("line") or 0),
+                            "col": int(item.get("col") or 0),
+                            "snippet": str(item.get("snippet") or ""),
+                            "truncated_file": bool(item.get("truncated_file")),
+                        }
+                    )
+                    if len(matches) >= limit_matches:
+                        break
+            if len(matches) >= limit_matches:
+                break
 
     result = {
         "matches": matches,
