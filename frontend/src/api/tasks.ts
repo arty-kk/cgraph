@@ -61,7 +61,7 @@ export async function waitForTaskResult<T>(
 
     const elapsedMs = Date.now() - startedAt
     const attemptsExhausted = maxAttempts !== undefined && attempt >= maxAttempts
-    const timeoutExceeded = maxAttempts === undefined && elapsedMs >= timeoutMs
+    const timeoutExceeded = elapsedMs >= timeoutMs
     if (attemptsExhausted || timeoutExceeded) {
       throw new Error(
         `Client-side timeout while waiting for task result (elapsedMs=${elapsedMs}, pollIntervalMs=${pollInterval}, maxAttempts=${maxAttempts ?? 'none'}, timeoutMs=${timeoutMs})`

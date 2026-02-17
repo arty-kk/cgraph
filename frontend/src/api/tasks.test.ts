@@ -90,26 +90,28 @@ describe('tasks api polling', () => {
     expect(get).toHaveBeenCalledTimes(3)
   })
 
-  it('uses maxAttempts as explicit backward-compatible override when provided', async () => {
+  it('when both maxAttempts and timeoutMs are provided, fails by earlier timeoutMs limit', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2025-01-01T00:00:00Z'))
 
-    const taskId = 'task-max-attempts'
+    const taskId = 'task-timeout-wins'
     const initial: TaskStatus = { task_id: taskId, status: 'pending' }
 
     get.mockResolvedValue({ data: { task_id: taskId, status: 'running' } satisfies TaskStatus })
 
     const promise = waitForTaskResult<RunTaskResult>(initial, {
       pollIntervalMs: 200,
-      timeoutMs: 60_000,
-      maxAttempts: 2,
+      timeoutMs: 600,
+      maxAttempts: 10,
     })
-    const assertion = expect(promise).rejects.toThrow(/maxAttempts=2/)
+    const assertion = expect(promise).rejects.toThrow(
+      /Client-side timeout while waiting for task result \(elapsedMs=600, pollIntervalMs=200, maxAttempts=10, timeoutMs=600\)/
+    )
 
-    await vi.advanceTimersByTimeAsync(400)
+    await vi.advanceTimersByTimeAsync(600)
 
     await assertion
-    expect(get).toHaveBeenCalledTimes(2)
+    expect(get).toHaveBeenCalledTimes(3)
   })
 
 
