@@ -1,3 +1,4 @@
+import asyncio
 import io
 import sys
 import zipfile
@@ -15,7 +16,8 @@ def _get_client_and_headers():
     try:
         from app.db import get_session  # noqa: E402
         from app.models import OrgMembership, User  # noqa: E402
-        from app.services.auth_service import bootstrap_user, create_session  # noqa: E402
+        from app.async_db import AsyncSessionLocal  # noqa: E402
+        from app.services.auth_service import bootstrap_user_async, create_session_async  # noqa: E402
     except ModuleNotFoundError:
         pytest.skip("Postgres dependencies are not available for mutation response tests")
 
@@ -31,8 +33,18 @@ def _get_client_and_headers():
     with get_session() as session:
         user = session.exec(select(User).limit(1)).first()
     if not user:
-        user = bootstrap_user("mutation-tests@example.com", "password123")
-    token, _ = create_session(user.id)
+        async def _bootstrap_async():
+            async with AsyncSessionLocal() as session:
+                created = await bootstrap_user_async(session, "mutation-tests@example.com", "password123")
+                token, _ = await create_session_async(session, created.id)
+                return created, token
+        user, token = asyncio.run(_bootstrap_async())
+    else:
+        async def _create_session_async_for_user(user_id: int):
+            async with AsyncSessionLocal() as session:
+                token, _ = await create_session_async(session, user_id)
+                return token
+        token = asyncio.run(_create_session_async_for_user(user.id))
     with get_session() as session:
         membership = session.exec(
             select(OrgMembership).where(OrgMembership.user_id == user.id).limit(1)

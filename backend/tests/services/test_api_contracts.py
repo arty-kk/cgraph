@@ -1,3 +1,4 @@
+import asyncio
 import io
 import sys
 import unittest
@@ -22,9 +23,10 @@ class TestApiContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         try:
+            from app.async_db import AsyncSessionLocal  # noqa: E402
             from app.db import get_session  # noqa: E402
             from app.models import OrgMembership, User  # noqa: E402
-            from app.services.auth_service import bootstrap_user, create_session  # noqa: E402
+            from app.services.auth_service import bootstrap_user_async, create_session_async  # noqa: E402
         except ModuleNotFoundError:
             raise unittest.SkipTest(
                 "Postgres dependencies are not available for API contract tests"
@@ -40,9 +42,23 @@ class TestApiContracts(unittest.TestCase):
         cls.client = TestClient(app)
         with get_session() as session:
             user = session.exec(select(User).limit(1)).first()
+
+        async def _create_token_async(user_id: int) -> str:
+            async with AsyncSessionLocal() as session:
+                token, _ = await create_session_async(session, user_id)
+                return token
+
+        async def _bootstrap_and_token_async(email: str, password: str) -> tuple[User, str]:
+            async with AsyncSessionLocal() as session:
+                created = await bootstrap_user_async(session, email, password)
+                token, _ = await create_session_async(session, created.id)
+                return created, token
+
         if not user:
-            user = bootstrap_user("test@example.com", "password123")
-        token, _ = create_session(user.id)
+            user, token = asyncio.run(_bootstrap_and_token_async("test@example.com", "password123"))
+        else:
+            token = asyncio.run(_create_token_async(user.id))
+
         with get_session() as session:
             membership = session.exec(
                 select(OrgMembership).where(OrgMembership.user_id == user.id).limit(1)
