@@ -51,9 +51,9 @@ from ..services.usage_service import (
 )
 from ..snapshots import (
     SnapshotMeta,
-    delete_project_snapshot_root,
-    delete_snapshot,
-    prepare_project_snapshot_root,
+    delete_project_snapshot_root_async,
+    delete_snapshot_async,
+    prepare_project_snapshot_root_async,
     snapshot_meta_from_dict,
 )
 from ..utils import (
@@ -67,20 +67,8 @@ from .task_queue import get_scan_idempotency_key_async, submit_scan_async
 logger = get_logger("stubgraph.project_service")
 
 
-async def _prepare_project_snapshot_root_async(meta: SnapshotMeta):
-    return await asyncio.to_thread(prepare_project_snapshot_root, meta)
-
-
-async def _delete_project_snapshot_root_async(project_root_path: str) -> None:
-    await asyncio.to_thread(delete_project_snapshot_root, project_root_path)
-
-
 async def _delete_patch_blob_for_sha_async(sha: str) -> None:
     await asyncio.to_thread(delete_patch_blob_for_sha, sha)
-
-
-async def _delete_snapshot_async(meta: SnapshotMeta) -> None:
-    await asyncio.to_thread(delete_snapshot, meta)
 
 
 async def _delete_patch_blobs_async(
@@ -122,7 +110,7 @@ async def _delete_snapshots_async(
     ) -> tuple[RepoSnapshot, dict, Exception] | None:
         async with semaphore:
             try:
-                await _delete_snapshot_async(snapshot_meta_from_dict(payload))
+                await delete_snapshot_async(snapshot_meta_from_dict(payload))
             except Exception as exc:  # noqa: BLE001
                 return snap, payload, exc
             return None
@@ -298,6 +286,44 @@ async def _normalize_project_root_async(root_path: str) -> Path:
     )
 
 
+def _resolve_and_read_text_under_root(
+    root,
+    rel_path: str,
+    *,
+    max_rel_path_length: int,
+    max_chars: int,
+) -> tuple[str, str] | None:
+    try:
+        abs_path, rel_norm = resolve_under_root(
+            root,
+            rel_path,
+            max_length=max_rel_path_length,
+        )
+    except Exception:
+        return None
+
+    payload = _read_text_if_file(abs_path, max_chars)
+    if not isinstance(payload, str):
+        return None
+    return rel_norm, payload
+
+
+async def _resolve_and_read_text_under_root_async(
+    root,
+    rel_path: str,
+    *,
+    max_rel_path_length: int,
+    max_chars: int,
+) -> tuple[str, str] | None:
+    return await asyncio.to_thread(
+        _resolve_and_read_text_under_root,
+        root,
+        rel_path,
+        max_rel_path_length=max_rel_path_length,
+        max_chars=max_chars,
+    )
+
+
 async def _read_project_files_async(
     root,
     rel_paths: list[str],
@@ -312,20 +338,13 @@ async def _read_project_files_async(
     semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
 
     async def _load_one(rel_path: str) -> tuple[str, str] | None:
-        try:
-            abs_path, rel_norm = await _resolve_under_root_async(
+        async with semaphore:
+            return await _resolve_and_read_text_under_root_async(
                 root,
                 rel_path,
-                max_length=settings.max_rel_path_chars,
+                max_rel_path_length=settings.max_rel_path_chars,
+                max_chars=max_chars,
             )
-        except Exception:
-            return None
-
-        async with semaphore:
-            payload = await _read_text_if_file_async(abs_path, max_chars)
-        if not isinstance(payload, str):
-            return None
-        return rel_norm, payload
 
     rows = await asyncio.gather(*[_load_one(path) for path in selected_paths])
     result: dict[str, str] = {}
@@ -804,7 +823,7 @@ async def create_project_async(
 ) -> Project:
     if not settings.allow_local_root_path:
         raise BadRequestError("Локальные root_path отключены. Используй загрузку snapshot.")
-    root = normalize_project_root(root_path, max_length=settings.max_root_path_chars)
+    root = await _normalize_project_root_async(root_path)
     project = Project(name=name, root_path=str(root), org_id=org_id)
     session.add(project)
     await session.commit()
@@ -818,8 +837,8 @@ async def create_project_from_snapshot_async(
     meta: SnapshotMeta,
     org_id: int,
 ) -> Project:
-    root = await _prepare_project_snapshot_root_async(meta)
-    root = normalize_project_root(str(root), max_length=settings.max_root_path_chars)
+    root = await prepare_project_snapshot_root_async(meta)
+    root = await _normalize_project_root_async(str(root))
     async with session.begin():
         project = Project(name=name, root_path=str(root), org_id=org_id)
         session.add(project)
@@ -925,7 +944,7 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
             await session.commit()
         cache_rows: list[tuple[list[str], dict]] = []
         try:
-            await _delete_project_snapshot_root_async(project_root_path)
+            await delete_project_snapshot_root_async(project_root_path)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Project snapshot root delete failed",

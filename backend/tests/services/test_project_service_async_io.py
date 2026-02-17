@@ -54,21 +54,27 @@ async def test_resolve_under_root_async_uses_to_thread(monkeypatch: pytest.Monke
 
 @pytest.mark.anyio
 async def test_read_project_files_async_collects_and_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[Path, int]] = []
+    calls: list[tuple[str, int, int]] = []
 
-    async def _fake_resolve_under_root_async(root, rel_path, *, max_length):
+    async def _fake_resolve_and_read_text_under_root_async(
+        root,
+        rel_path,
+        *,
+        max_rel_path_length,
+        max_chars,
+    ):
+        calls.append((rel_path, max_rel_path_length, max_chars))
         if rel_path == "bad":
-            raise ValueError("bad path")
-        return Path(f"/repo/{rel_path}"), rel_path
-
-    async def _fake_read_text_if_file_async(path, max_chars):
-        calls.append((path, max_chars))
-        if str(path).endswith("missing.py"):
             return None
-        return f"txt:{path.name}"
+        if rel_path == "missing.py":
+            return None
+        return rel_path, f"txt:{Path(rel_path).name}"
 
-    monkeypatch.setattr(project_service, "_resolve_under_root_async", _fake_resolve_under_root_async)
-    monkeypatch.setattr(project_service, "_read_text_if_file_async", _fake_read_text_if_file_async)
+    monkeypatch.setattr(
+        project_service,
+        "_resolve_and_read_text_under_root_async",
+        _fake_resolve_and_read_text_under_root_async,
+    )
 
     result = await project_service._read_project_files_async(
         Path("/repo"),
@@ -78,11 +84,40 @@ async def test_read_project_files_async_collects_and_normalizes(monkeypatch: pyt
     )
 
     assert result == {"a.py": "txt:a.py"}
-    assert sorted(calls, key=lambda x: str(x[0])) == [
-        (Path("/repo/a.py"), 77),
-        (Path("/repo/a.py"), 77),
-        (Path("/repo/missing.py"), 77),
+    assert sorted(calls, key=lambda x: x[0]) == [
+        ("a.py", project_service.settings.max_rel_path_chars, 77),
+        ("a.py", project_service.settings.max_rel_path_chars, 77),
+        ("bad", project_service.settings.max_rel_path_chars, 77),
+        ("missing.py", project_service.settings.max_rel_path_chars, 77),
     ]
+
+
+@pytest.mark.anyio
+async def test_resolve_and_read_text_under_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return ("a.py", "payload")
+
+    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+
+    result = await project_service._resolve_and_read_text_under_root_async(
+        Path("/repo"),
+        "a.py",
+        max_rel_path_length=111,
+        max_chars=222,
+    )
+
+    assert result == ("a.py", "payload")
+    assert calls["func"] is project_service._resolve_and_read_text_under_root
+    assert calls["args"] == (Path("/repo"), "a.py")
+    assert calls["kwargs"] == {
+        "max_rel_path_length": 111,
+        "max_chars": 222,
+    }
 
 
 @pytest.mark.anyio
@@ -223,49 +258,52 @@ async def test_build_local_graph_payload_async_uses_to_thread(monkeypatch: pytes
 
 
 @pytest.mark.anyio
-async def test_prepare_project_snapshot_root_async_uses_to_thread(
+async def test_prepare_project_from_snapshot_uses_async_snapshot_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: dict[str, object] = {}
+    calls: list[object] = []
 
-    async def _fake_to_thread(func, *args, **kwargs):
-        calls["func"] = func
-        calls["args"] = args
-        calls["kwargs"] = kwargs
+    async def _fake_prepare_project_snapshot_root_async(meta):
+        calls.append(meta)
         return Path("/tmp/repo")
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(
+        project_service,
+        "prepare_project_snapshot_root_async",
+        _fake_prepare_project_snapshot_root_async,
+    )
 
     meta = object()
-    result = await project_service._prepare_project_snapshot_root_async(meta)
+    result = await project_service.prepare_project_snapshot_root_async(meta)
 
     assert result == Path("/tmp/repo")
-    assert calls["func"] is project_service.prepare_project_snapshot_root
-    assert calls["args"] == (meta,)
-    assert calls["kwargs"] == {}
+    assert calls == [meta]
 
 
 @pytest.mark.anyio
-async def test_delete_snapshot_related_async_helpers_use_to_thread(
+async def test_delete_snapshot_related_async_helpers_use_async_snapshot_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[object, tuple, dict]] = []
+    calls: list[str] = []
 
-    async def _fake_to_thread(func, *args, **kwargs):
-        calls.append((func, args, kwargs))
-        return None
+    async def _fake_delete_project_snapshot_root_async(path):
+        calls.append(f"project:{path}")
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    async def _fake_delete_snapshot_async(meta):
+        calls.append(f"snapshot:{meta}")
 
-    await project_service._delete_project_snapshot_root_async("/tmp/repo")
+    monkeypatch.setattr(
+        project_service,
+        "delete_project_snapshot_root_async",
+        _fake_delete_project_snapshot_root_async,
+    )
+    monkeypatch.setattr(project_service, "delete_snapshot_async", _fake_delete_snapshot_async)
+
+    await project_service.delete_project_snapshot_root_async("/tmp/repo")
     await project_service._delete_patch_blob_for_sha_async("sha")
-    await project_service._delete_snapshot_async(object())
+    await project_service.delete_snapshot_async("meta")
 
-    assert calls[0][0] is project_service.delete_project_snapshot_root
-    assert calls[0][1] == ("/tmp/repo",)
-    assert calls[1][0] is project_service.delete_patch_blob_for_sha
-    assert calls[1][1] == ("sha",)
-    assert calls[2][0] is project_service.delete_snapshot
+    assert calls == ["project:/tmp/repo", "snapshot:meta"]
 
 
 @pytest.mark.anyio
@@ -298,7 +336,7 @@ async def test_delete_snapshots_async_collects_failures(monkeypatch: pytest.Monk
         if getattr(meta, "sha256", "") == "bad":
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(project_service, "_delete_snapshot_async", _fake_delete_snapshot_async)
+    monkeypatch.setattr(project_service, "delete_snapshot_async", _fake_delete_snapshot_async)
 
     payload_ok = {
         "storage": "local",
@@ -818,3 +856,124 @@ async def test_normalize_project_root_async_uses_to_thread(monkeypatch: pytest.M
     assert calls["func"] is project_service.normalize_project_root
     assert calls["args"] == ("/repo",)
     assert calls["kwargs"] == {"max_length": project_service.settings.max_root_path_chars}
+
+
+@pytest.mark.anyio
+async def test_create_project_async_uses_async_root_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    original_allow = project_service.settings.allow_local_root_path
+    project_service.settings.allow_local_root_path = True
+
+    class _Project:
+        id = 1
+
+    class _Session:
+        def add(self, project):
+            assert project.name == "demo"
+            calls.append("add")
+
+        async def commit(self):
+            calls.append("commit")
+
+        async def refresh(self, project):
+            assert project is not None
+            calls.append("refresh")
+
+    async def _fake_normalize_project_root_async(root_path: str):
+        calls.append(f"normalize:{root_path}")
+        return Path("/repo")
+
+    monkeypatch.setattr(
+        project_service,
+        "_normalize_project_root_async",
+        _fake_normalize_project_root_async,
+    )
+
+    try:
+        project = await project_service.create_project_async(
+            _Session(),
+            name="demo",
+            root_path="/repo",
+            org_id=7,
+        )
+    finally:
+        project_service.settings.allow_local_root_path = original_allow
+
+    assert getattr(project, "root_path", "") == "/repo"
+    assert calls == ["normalize:/repo", "add", "commit", "refresh"]
+
+
+@pytest.mark.anyio
+async def test_create_project_from_snapshot_async_uses_async_root_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _Session:
+        def __init__(self):
+            self.added = []
+
+        def add(self, value):
+            self.added.append(value)
+            calls.append(type(value).__name__)
+
+        async def flush(self):
+            for value in self.added:
+                if getattr(value, "id", None) is None and type(value).__name__ == "Project":
+                    value.id = 42
+            calls.append("flush")
+
+        async def refresh(self, project):
+            assert getattr(project, "id", None) == 42
+            calls.append("refresh")
+
+        class _Tx:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        def begin(self):
+            calls.append("begin")
+            return self._Tx()
+
+    async def _fake_prepare_project_snapshot_root_async(meta):
+        _ = meta
+        calls.append("prepare")
+        return Path("/tmp/snap")
+
+    async def _fake_normalize_project_root_async(root_path: str):
+        calls.append(f"normalize:{root_path}")
+        return Path("/repo")
+
+    monkeypatch.setattr(
+        project_service,
+        "prepare_project_snapshot_root_async",
+        _fake_prepare_project_snapshot_root_async,
+    )
+    monkeypatch.setattr(
+        project_service,
+        "_normalize_project_root_async",
+        _fake_normalize_project_root_async,
+    )
+
+    meta = project_service.SnapshotMeta(
+        storage="local",
+        sha256="sha",
+        archive_name="repo.zip",
+        archive_ext=".zip",
+        size=1,
+        file="snapshots/sha/archive.zip",
+        root_dir="snapshots/sha/repo",
+    )
+
+    project = await project_service.create_project_from_snapshot_async(
+        _Session(),
+        name="demo",
+        meta=meta,
+        org_id=7,
+    )
+
+    assert project.id == 42
+    assert calls[:3] == ["prepare", "normalize:/tmp/snap", "begin"]

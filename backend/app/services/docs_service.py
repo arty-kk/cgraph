@@ -297,6 +297,15 @@ def _best_paths(paths: list[str], *, limit: int) -> list[str]:
     return uniq[: max(0, int(limit))]
 
 
+def _read_text_with_limit(path: Path, *, max_chars: int) -> tuple[str, bool]:
+    limit = max(0, int(max_chars))
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        payload = f.read(limit + 1)
+    if len(payload) <= limit:
+        return payload, False
+    return payload[:limit], True
+
+
 def _read_text_under_root(root: Path, rel_path: str, *, max_chars: int) -> dict | None:
     if not isinstance(rel_path, str) or not rel_path.strip():
         return None
@@ -309,12 +318,9 @@ def _read_text_under_root(root: Path, rel_path: str, *, max_chars: int) -> dict 
     if not abs_path.exists() or not abs_path.is_file():
         return None
     try:
-        text = abs_path.read_text(encoding="utf-8", errors="replace")
+        text, truncated = _read_text_with_limit(abs_path, max_chars=max_chars)
     except Exception:
         return None
-    truncated = len(text) > int(max_chars)
-    if truncated:
-        text = text[: int(max_chars)]
     return {
         "path": rel_norm,
         "content": text,
@@ -1233,22 +1239,28 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
         hubs = summary["hubs_by_fan_in"]
         module_rows = summary["module_rows"]
 
+        outline_key_files_task = asyncio.create_task(_collect_outline_and_key_files_async(root, paths))
         contract_paths = await _select_contract_paths_async(
             risks=risks,
             hotspots=hotspots,
             hubs=hubs,
             paths=paths,
         )
-        contracts, api_summary = await _collect_docs_enrichment_async(
-            session,
-            project_id,
-            root,
-            contract_paths,
+        enrichment_task = asyncio.create_task(
+            _collect_docs_enrichment_async(
+                session,
+                project_id,
+                root,
+                contract_paths,
+            )
         )
 
-    outline, key_files_data = await _collect_outline_and_key_files_async(root, paths)
+        outline, key_files_data = await outline_key_files_task
+
     key_files, key_files_parsed = key_files_data
-    run_hints = await _build_run_hints_async(key_files, key_files_parsed)
+    run_hints_task = asyncio.create_task(_build_run_hints_async(key_files, key_files_parsed))
+    contracts, api_summary = await enrichment_task
+    run_hints = await run_hints_task
     markdown_parts = await _build_docs_markdown_parts_async(
         module_rows=module_rows,
         hotspots=hotspots,
