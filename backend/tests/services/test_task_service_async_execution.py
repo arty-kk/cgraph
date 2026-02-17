@@ -323,3 +323,187 @@ async def test_get_active_scan_task_async_uses_async_idempotency_key(monkeypatch
     assert task_id is None
     assert status is None
     assert calls == [(20, 10)]
+
+
+@pytest.mark.anyio
+async def test_run_task_impl_async_uses_async_orchestrator_calls(monkeypatch, tmp_path):
+    file_path = tmp_path / "target.py"
+    file_path.write_text("print('x')\n", encoding="utf-8")
+
+    request = task_service.TaskRequest(
+        target_path="target.py",
+        prompt="analyze",
+        mode="analyze",
+        profile=None,
+        depth=1,
+        dep_mode="contracts",
+        impact_max_nodes=None,
+        impact_max_depth=None,
+        apply_patch=False,
+        allow_out_of_context_patch=False,
+        agentic=False,
+        provided_fields={"mode"},
+    )
+
+    class _Session:
+        async def execute(self, stmt):
+            _ = stmt
+            class _Result:
+                def scalars(self):
+                    return self
+                def all(self):
+                    return []
+                def one(self):
+                    return 0
+                def first(self):
+                    return None
+            return _Result()
+
+        def add(self, item):
+            _ = item
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, item):
+            _ = item
+            return None
+
+    async def _fake_get_project(session, project_id, org_id):
+        _ = (session, project_id, org_id)
+        return type("P", (), {"root_path": str(tmp_path)})()
+
+    async def _noop(*args, **kwargs):
+        _ = (args, kwargs)
+        return None
+
+    called = {"plan": 0, "analyze": 0}
+
+    async def _plan_async(*args, **kwargs):
+        called["plan"] += 1
+        return {"summary": "ok"}, {"prompt_tokens": 1, "completion_tokens": 1}
+
+    async def _analyze_async(*args, **kwargs):
+        called["analyze"] += 1
+        return {
+            "summary": "ok",
+            "sources": [{"path": "target.py", "start_line": 1, "end_line": 1}],
+        }, {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
+    monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
+    monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
+    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
+    monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(task_service.settings, "cache_enabled", False)
+    monkeypatch.setattr(
+        task_service,
+        "resolve_runtime_policy",
+        lambda **kwargs: task_service.DEFAULT_POLICY,
+    )
+    monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
+    monkeypatch.setattr(task_service, "analyze_with_usage_async", _analyze_async)
+    monkeypatch.setattr(
+        task_service,
+        "pack_context",
+        lambda *args, **kwargs: type(
+            "Pack", (), {"target_path": "target.py", "files": [], "graph": {"deps": []}}
+        )(),
+    )
+
+    await task_service._run_task_impl_async(_Session(), 1, 1, request)
+
+    assert called == {"plan": 1, "analyze": 1}
+
+
+@pytest.mark.anyio
+async def test_run_task_impl_async_uses_async_agentic_calls(monkeypatch, tmp_path):
+    file_path = tmp_path / "target.py"
+    file_path.write_text("print('x')\n", encoding="utf-8")
+
+    request = task_service.TaskRequest(
+        target_path="target.py",
+        prompt="analyze",
+        mode="analyze",
+        profile=None,
+        depth=1,
+        dep_mode="contracts",
+        impact_max_nodes=None,
+        impact_max_depth=None,
+        apply_patch=False,
+        allow_out_of_context_patch=False,
+        agentic=True,
+        provided_fields={"mode"},
+        agentic_evidence_mode=False,
+    )
+
+    class _Session:
+        async def execute(self, stmt):
+            _ = stmt
+            class _Result:
+                def scalars(self):
+                    return self
+                def all(self):
+                    return []
+                def one(self):
+                    return 0
+                def first(self):
+                    return None
+            return _Result()
+
+        def add(self, item):
+            _ = item
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, item):
+            _ = item
+            return None
+
+    async def _fake_get_project(session, project_id, org_id):
+        _ = (session, project_id, org_id)
+        return type("P", (), {"root_path": str(tmp_path)})()
+
+    async def _noop(*args, **kwargs):
+        _ = (args, kwargs)
+        return None
+
+    called = {"plan": 0, "agentic": 0}
+
+    async def _plan_async(*args, **kwargs):
+        called["plan"] += 1
+        return {"summary": "ok"}, {}
+
+    async def _agentic_async(*args, **kwargs):
+        called["agentic"] += 1
+        return {
+            "summary": "ok",
+            "sources": [{"path": "target.py", "start_line": 1, "end_line": 1}],
+        }, task_service.AgenticMeta(self_check_missing_context=[])
+
+    monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
+    monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
+    monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
+    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
+    monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(task_service.settings, "cache_enabled", False)
+    monkeypatch.setattr(
+        task_service,
+        "resolve_runtime_policy",
+        lambda **kwargs: task_service.DEFAULT_POLICY,
+    )
+    monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
+    monkeypatch.setattr(task_service, "analyze_agentic_async", _agentic_async)
+
+    await task_service._run_task_impl_async(_Session(), 1, 1, request)
+
+    assert called == {"plan": 1, "agentic": 1}

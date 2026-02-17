@@ -83,7 +83,12 @@ def _patch_common(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service, "resolve_runtime_policy", lambda **kwargs: ModelPolicy())
-    monkeypatch.setattr(task_service, "plan_task", lambda *args, **kwargs: {"summary": "ok"})
+    
+    async def _plan_task_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return {"summary": "ok"}, {}
+
+    monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_task_async)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "llm_evidence_min_sources", 2)
 
@@ -103,15 +108,11 @@ async def test_pack_mode_returns_quality_gate_failed(
             graph={"deps": [], "inbound": [], "outbound": []},
         ),
     )
-    monkeypatch.setattr(
-        task_service,
-        "fix",
-        lambda *args, **kwargs: {
-            "sources": [],
-            "patch_unified_diff": "",
-            "tests": ["   "],
-        },
-    )
+    async def _fix_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return {"sources": [], "patch_unified_diff": "", "tests": ["   "]}, {}
+
+    monkeypatch.setattr(task_service, "fix_with_usage_async", _fix_async)
 
     with pytest.raises(BadRequestError) as exc:
         await task_service._run_task_impl_async(
@@ -132,7 +133,7 @@ async def test_agentic_retry_path_runs_quality_gate(
 
     calls = {"count": 0}
 
-    def _analyze_agentic(*args, **kwargs):
+    async def _analyze_agentic_async(*args, **kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             return (
@@ -147,7 +148,7 @@ async def test_agentic_retry_path_runs_quality_gate(
             AgenticMeta(self_check_missing_context=[]),
         )
 
-    monkeypatch.setattr(task_service, "analyze_agentic", _analyze_agentic)
+    monkeypatch.setattr(task_service, "analyze_agentic_async", _analyze_agentic_async)
 
     with pytest.raises(BadRequestError) as exc:
         await task_service._run_task_impl_async(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .call import _agentic_json_call
+from .call import _agentic_json_call, _agentic_json_call_async
 from .context import _FTS_TOKEN_RE, _fts_query_from_substring, _neighbors_limited, _seed_context
 from .dispatch import (
     _clamp_float,
@@ -10,7 +10,14 @@ from .dispatch import (
     _tool_ok,
     _validate_tool_result,
 )
-from .public import analyze_agentic, evolve_agentic, fix_agentic
+from .public import (
+    analyze_agentic,
+    analyze_agentic_async,
+    evolve_agentic,
+    evolve_agentic_async,
+    fix_agentic,
+    fix_agentic_async,
+)
 from .schema import _extract_refusal, _normalize_responses_json_schema, _parse_model_json
 from .self_check import _run_self_check
 from .tools import (
@@ -63,10 +70,14 @@ from .types import AgenticMeta
 __all__ = [
     "AgenticMeta",
     "analyze_agentic",
+    "analyze_agentic_async",
     "evolve_agentic",
+    "evolve_agentic_async",
     "fix_agentic",
+    "fix_agentic_async",
     "_FTS_TOKEN_RE",
     "_agentic_json_call",
+    "_agentic_json_call_async",
     "_build_call_index",
     "_build_route_patterns",
     "_call_matches_any_pattern",
