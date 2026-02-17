@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ..config import settings
-from ..db import get_session
 from ..errors import BadRequestError, NotFoundError, UnauthorizedError
 from ..models import ApiKey, BootstrapSentinel, Organization, OrgMembership, User, UserSession
 
@@ -81,27 +80,6 @@ def _generate_token(prefix: str) -> tuple[str, str]:
     return token, _hash_token(token)
 
 
-def _create_default_org(session, user: User) -> Organization:
-    name = "Personal"
-    if isinstance(user.email, str) and "@" in user.email:
-        prefix = user.email.split("@", 1)[0].strip()
-        if prefix:
-            name = prefix[:200]
-    org = Organization(name=name, created_at=datetime.now(timezone.utc))
-    session.add(org)
-    session.flush()
-    session.add(
-        OrgMembership(
-            org_id=org.id,
-            user_id=user.id,
-            role="owner",
-            is_active=True,
-            created_at=datetime.now(timezone.utc),
-        )
-    )
-    return org
-
-
 async def _create_default_org_async(session: AsyncSession, user: User) -> Organization:
     name = "Personal"
     if isinstance(user.email, str) and "@" in user.email:
@@ -121,43 +99,6 @@ async def _create_default_org_async(session: AsyncSession, user: User) -> Organi
         )
     )
     return org
-
-
-def bootstrap_user(email: str, password: str) -> User:
-    if not isinstance(email, str) or not email.strip():
-        raise BadRequestError("Email обязателен")
-    if not isinstance(password, str) or len(password) < 8:
-        raise BadRequestError("Пароль должен быть не короче 8 символов")
-    with get_session() as session:
-        with session.begin():
-            dialect = session.get_bind().dialect.name
-            if dialect == "postgresql":
-                session.exec(
-                    text("SELECT pg_advisory_xact_lock(:key)"),
-                    {"key": _BOOTSTRAP_LOCK_KEY},
-                )
-
-            existing_sentinel = session.exec(
-                select(BootstrapSentinel)
-                .where(BootstrapSentinel.key == _BOOTSTRAP_SENTINEL_KEY)
-                .limit(1)
-            ).first()
-            existing_user = session.exec(select(User).limit(1)).first()
-            if existing_sentinel or existing_user:
-                raise BadRequestError("Bootstrap уже выполнен")
-
-            try:
-                session.add(BootstrapSentinel(key=_BOOTSTRAP_SENTINEL_KEY))
-                session.flush()
-            except IntegrityError as exc:
-                raise BadRequestError("Bootstrap уже выполнен") from exc
-
-            user = User(email=email.strip().lower(), password_hash=_hash_password(password))
-            session.add(user)
-            session.flush()
-            _create_default_org(session, user)
-        session.refresh(user)
-        return user
 
 
 async def bootstrap_user_async(session: AsyncSession, email: str, password: str) -> User:
@@ -207,50 +148,6 @@ async def bootstrap_user_async(session: AsyncSession, email: str, password: str)
         return user
 
 
-def register_user(email: str, password: str) -> User:
-    if not settings.auth_allow_public_signup:
-        raise BadRequestError("Регистрация отключена")
-    if not isinstance(email, str) or not email.strip():
-        raise BadRequestError("Email обязателен")
-    if not isinstance(password, str) or len(password) < 8:
-        raise BadRequestError("Пароль должен быть не короче 8 символов")
-
-    with get_session() as session:
-        user = User(email=email.strip().lower(), password_hash=_hash_password(password))
-        session.add(user)
-        try:
-            session.flush()
-            _create_default_org(session, user)
-            session.commit()
-        except IntegrityError as exc:
-            session.rollback()
-            raise BadRequestError("Пользователь уже существует") from exc
-        session.refresh(user)
-        return user
-
-
-def register_user(email: str, password: str) -> User:
-    if not settings.auth_allow_public_signup:
-        raise BadRequestError("Регистрация отключена")
-    if not isinstance(email, str) or not email.strip():
-        raise BadRequestError("Email обязателен")
-    if not isinstance(password, str) or len(password) < 8:
-        raise BadRequestError("Пароль должен быть не короче 8 символов")
-
-    with get_session() as session:
-        user = User(email=email.strip().lower(), password_hash=_hash_password(password))
-        session.add(user)
-        try:
-            session.flush()
-            _create_default_org(session, user)
-            session.commit()
-        except IntegrityError as exc:
-            session.rollback()
-            raise BadRequestError("Пользователь уже существует") from exc
-        session.refresh(user)
-        return user
-
-
 async def register_user_async(session: AsyncSession, email: str, password: str) -> User:
     if not settings.auth_allow_public_signup:
         raise BadRequestError("Регистрация отключена")
@@ -273,20 +170,6 @@ async def register_user_async(session: AsyncSession, email: str, password: str) 
     return user
 
 
-def authenticate_user(email: str, password: str) -> User:
-    if not isinstance(email, str) or not email.strip():
-        raise BadRequestError("Email обязателен")
-    if not isinstance(password, str):
-        raise BadRequestError("Пароль обязателен")
-    with get_session() as session:
-        user = session.exec(select(User).where(User.email == email.strip().lower())).first()
-    if not user or not user.is_active:
-        raise UnauthorizedError("Неверные учетные данные")
-    if not _verify_password(password, user.password_hash):
-        raise UnauthorizedError("Неверные учетные данные")
-    return user
-
-
 async def authenticate_user_async(session: AsyncSession, email: str, password: str) -> User:
     if not isinstance(email, str) or not email.strip():
         raise BadRequestError("Email обязателен")
@@ -302,23 +185,6 @@ async def authenticate_user_async(session: AsyncSession, email: str, password: s
     if not await _verify_password_async(password, user.password_hash):
         raise UnauthorizedError("Неверные учетные данные")
     return user
-
-
-def create_session(user_id: int) -> tuple[str, datetime]:
-    token, token_hash = _generate_token("sess")
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.auth_session_ttl_hours)
-    with get_session() as session:
-        session.add(
-            UserSession(
-                user_id=user_id,
-                token_hash=token_hash,
-                created_at=datetime.now(timezone.utc),
-                expires_at=expires_at,
-                revoked_at=None,
-            )
-        )
-        session.commit()
-    return token, expires_at
 
 
 async def create_session_async(session: AsyncSession, user_id: int) -> tuple[str, datetime]:
@@ -349,52 +215,6 @@ async def revoke_session_async(session: AsyncSession, token: str) -> None:
     row.revoked_at = datetime.now(timezone.utc)
     session.add(row)
     await session.commit()
-
-
-def _get_valid_session(token: str) -> UserSession | None:
-    token_hash = _hash_token(token)
-    now = datetime.now(timezone.utc)
-    with get_session() as session:
-        row = session.exec(
-            select(UserSession).where(
-                UserSession.token_hash == token_hash,
-                UserSession.revoked_at.is_(None),
-                UserSession.expires_at > now,
-            )
-        ).first()
-    return row
-
-
-def _get_valid_api_key(token: str) -> ApiKey | None:
-    token_hash = _hash_token(token)
-    now = datetime.now(timezone.utc)
-    with get_session() as session:
-        row = session.exec(
-            select(ApiKey).where(
-                ApiKey.token_hash == token_hash,
-                ApiKey.revoked_at.is_(None),
-                (ApiKey.expires_at.is_(None) | (ApiKey.expires_at > now)),
-            )
-        ).first()
-    return row
-
-
-def get_user_by_id(user_id: int) -> User:
-    with get_session() as session:
-        user = session.get(User, user_id)
-    if not user:
-        raise NotFoundError("Пользователь не найден")
-    return user
-
-
-def get_user_from_token(token: str) -> User:
-    session = _get_valid_session(token)
-    if session:
-        return get_user_by_id(session.user_id)
-    key = _get_valid_api_key(token)
-    if key:
-        return get_user_by_id(key.user_id)
-    raise UnauthorizedError("Неверный токен")
 
 
 async def _get_valid_session_async(session: AsyncSession, token: str) -> UserSession | None:
