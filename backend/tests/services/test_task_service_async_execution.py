@@ -407,13 +407,11 @@ async def test_run_task_impl_async_uses_async_orchestrator_calls(monkeypatch, tm
     )
     monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
     monkeypatch.setattr(task_service, "analyze_with_usage_async", _analyze_async)
-    monkeypatch.setattr(
-        task_service,
-        "pack_context",
-        lambda *args, **kwargs: type(
-            "Pack", (), {"target_path": "target.py", "files": [], "graph": {"deps": []}}
-        )(),
-    )
+    async def _pack_context_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return type("Pack", (), {"target_path": "target.py", "files": [], "graph": {"deps": []}})()
+
+    monkeypatch.setattr(task_service, "pack_context_async", _pack_context_async)
 
     await task_service._run_task_impl_async(_Session(), 1, 1, request)
 
@@ -550,3 +548,104 @@ async def test_run_task_async_does_not_touch_sync_get_session(monkeypatch):
     result = await task_service.run_task_async(1, 2, request)
 
     assert result == {"ok": True}
+
+
+@pytest.mark.anyio
+async def test_run_task_impl_async_non_agentic_does_not_touch_sync_get_session(
+    monkeypatch, tmp_path
+):
+    file_path = tmp_path / "target.py"
+    file_path.write_text("print('x')\n", encoding="utf-8")
+
+    request = task_service.TaskRequest(
+        target_path="target.py",
+        prompt="analyze",
+        mode="analyze",
+        profile=None,
+        depth=1,
+        dep_mode="contracts",
+        impact_max_nodes=None,
+        impact_max_depth=None,
+        apply_patch=False,
+        allow_out_of_context_patch=False,
+        agentic=False,
+        provided_fields={"mode"},
+    )
+
+    class _Session:
+        async def execute(self, stmt):
+            _ = stmt
+
+            class _Result:
+                def all(self):
+                    return []
+
+                def first(self):
+                    return None
+
+                def scalars(self):
+                    return self
+
+                def one(self):
+                    return 0
+
+            return _Result()
+
+        def add(self, item):
+            _ = item
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, item):
+            _ = item
+            return None
+
+    async def _fake_get_project(session, project_id, org_id):
+        _ = (session, project_id, org_id)
+        return type("P", (), {"root_path": str(tmp_path)})()
+
+    async def _noop(*args, **kwargs):
+        _ = (args, kwargs)
+        return None
+
+    async def _plan_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return {"summary": "ok"}, {}
+
+    async def _analyze_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return {
+            "summary": "ok",
+            "sources": [{"path": "target.py", "start_line": 1, "end_line": 1}],
+        }, {}
+
+    async def _contract_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return {"exports": []}
+
+    import app.context_pack as context_pack
+    import app.db as db
+
+    def _fail_get_session(*_args, **_kwargs):
+        raise AssertionError("sync get_session must not be used in async runtime path")
+
+    monkeypatch.setattr(db, "get_session", _fail_get_session)
+    monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
+    monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
+    monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
+    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
+    monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(task_service.settings, "cache_enabled", False)
+    monkeypatch.setattr(task_service, "resolve_runtime_policy", lambda **kwargs: task_service.DEFAULT_POLICY)
+    monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
+    monkeypatch.setattr(task_service, "analyze_with_usage_async", _analyze_async)
+    monkeypatch.setattr(context_pack, "get_or_build_contract_async", _contract_async)
+
+    result = await task_service._run_task_impl_async(_Session(), 1, 1, request)
+
+    assert result.get("result", {}).get("summary") == "ok"

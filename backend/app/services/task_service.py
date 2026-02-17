@@ -18,7 +18,7 @@ from unidiff import PatchSet
 
 from ..async_db import AsyncSessionLocal
 from ..config import settings
-from ..context_pack import pack_context
+from ..context_pack import pack_context_async
 from ..contracts import get_or_build_contract_async
 from ..errors import (
     BadRequestError,
@@ -1733,7 +1733,7 @@ async def _run_task_impl_async(
                 except Exception:
                     pass
         else:
-            packed = pack_context(
+            packed = await pack_context_async(
                 project_id,
                 root,
                 target,
@@ -1743,6 +1743,7 @@ async def _run_task_impl_async(
                 max_files=pack_max_files,
                 max_chars_per_file=pack_max_chars_per_file,
                 max_total_chars=pack_max_total_chars,
+                session=session,
             )
 
             graph_raw = packed.graph if isinstance(packed.graph, dict) else {}
