@@ -19,7 +19,6 @@ from ...api_scaffold import build_frontend_snippet, suggest_frontend_module_file
 from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ...contracts import get_or_build_contract
-from ...db import get_session
 from ...graph import search_nodes, search_semantic
 from ...models import (
     ApiCall,
@@ -40,7 +39,12 @@ from ...ts_edits import unified_diff as _unified_diff
 from ...utils import resolve_under_root
 from .context import _neighbors_limited
 from .dispatch import _clamp_int, _tool_error, _tool_ok
+from ... import db as _db
 from .types import AgenticMeta
+
+
+def _offline_get_session():
+    return _db.get_session()
 
 
 def _tool_definitions(max_file_chars: int) -> list[dict]:
@@ -790,7 +794,7 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
 
 
 def _check_indexed(project_id: int) -> dict | None:
-    with get_session() as s:
+    with _offline_get_session() as s:
         row = s.exec(select(FileNode.id).where(FileNode.project_id == project_id).limit(1)).first()
     if not row:
         return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
@@ -1073,7 +1077,7 @@ def _tool_get_node(project_id: int, root: Path, args: dict) -> dict:
         _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
         return _tool_error("invalid_path", str(e))
-    with get_session() as s:
+    with _offline_get_session() as s:
         n = s.exec(
             select(FileNode).where(FileNode.project_id == project_id, FileNode.path == rel_norm)
         ).first()
@@ -1159,7 +1163,7 @@ def _tool_search_tests(project_id: int, args: dict) -> dict:
         like = f"%{query_norm}%"
         cond = cond & FileNode.path.like(like)
 
-    with get_session() as s:
+    with _offline_get_session() as s:
         rows = s.exec(
             select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
             .where(FileNode.project_id == project_id, cond)
@@ -1247,7 +1251,7 @@ def _tool_search_symbols(project_id: int, args: dict) -> dict:
         return False
 
     rows: list[ModuleContract] = []
-    with get_session() as s:
+    with _offline_get_session() as s:
         rows = s.exec(
             select(ModuleContract)
             .where(ModuleContract.project_id == project_id)
@@ -1370,7 +1374,7 @@ def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
     if max_depth_raw is not None:
         max_depth = _clamp_int(max_depth_raw, 10, 1, 20)
 
-    with get_session() as s:
+    with _offline_get_session() as s:
         q = select(FileNode.path).where(FileNode.project_id == project_id)
         if prefix_norm:
             like = f"{prefix_norm}/%"
@@ -1398,7 +1402,7 @@ def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
 
 
 def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
-    with get_session() as s:
+    with _offline_get_session() as s:
         nodes = s.exec(
             select(
                 FileNode.path,
@@ -1471,7 +1475,7 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
         paths = []
 
     if not paths:
-        with get_session() as s:
+        with _offline_get_session() as s:
             q = select(FileNode.path).where(FileNode.project_id == project_id)
             if prefix_norm:
                 like = f"{prefix_norm}/%"
@@ -1659,7 +1663,7 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
     limit = _clamp_int(args.get("limit"), 50, 1, 500)
 
     try:
-        with get_session() as s:
+        with _offline_get_session() as s:
             q = select(ApiRoute).where(ApiRoute.project_id == project_id)
             if method_norm:
                 q = q.where(ApiRoute.method == method_norm)
@@ -1707,7 +1711,7 @@ def _tool_search_api_calls(project_id: int, args: dict) -> dict:
     limit = _clamp_int(args.get("limit"), 50, 1, 500)
 
     try:
-        with get_session() as s:
+        with _offline_get_session() as s:
             q = select(ApiCall).where(ApiCall.project_id == project_id)
             if method_norm:
                 q = q.where(ApiCall.method == method_norm)
@@ -1752,7 +1756,7 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
 
     # 1) candidate routes
     try:
-        with get_session() as s:
+        with _offline_get_session() as s:
             q = select(ApiRoute).where(ApiRoute.project_id == project_id)
             if method_norm:
                 q = q.where(ApiRoute.method == method_norm)
@@ -1821,7 +1825,7 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
 
         candidate_limit = min(2000, max(200, call_limit * 80))
         try:
-            with get_session() as s:
+            with _offline_get_session() as s:
                 qc = select(ApiCall).where(ApiCall.project_id == project_id)
                 # Prefer method match for HTTP; do not force it for WEBSOCKET routes.
                 r_method = str(r.method or "").upper()
@@ -2002,7 +2006,7 @@ def _build_call_index(
     # returns (calls, index[method][key] = list of {id, tokens, path_norm,
     # source_path, lineno, path})
     MAX_CALLS = 50_000
-    with get_session() as s:
+    with _offline_get_session() as s:
         q = select(ApiCall).where(ApiCall.project_id == project_id)
         if method_filter:
             q = q.where(ApiCall.method == method_filter)
@@ -2054,7 +2058,7 @@ def _build_route_patterns(
     prefix_map = _compute_prefix_map(project_id)
 
     # included set: (child_source_path, child_instance)
-    with get_session() as s:
+    with _offline_get_session() as s:
         inc_rows = s.exec(
             select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
                 ApiInclude.project_id == project_id
@@ -2069,7 +2073,7 @@ def _build_route_patterns(
         if isinstance(cs, str) and cs and isinstance(ci, str) and ci:
             included.add((cs, ci))
 
-    with get_session() as s:
+    with _offline_get_session() as s:
         q = select(ApiRoute).where(ApiRoute.project_id == project_id)
         if method_filter:
             q = q.where(ApiRoute.method == method_filter)
@@ -2689,7 +2693,7 @@ def _compute_prefix_map(project_id: int) -> dict[tuple[str, str], list[str]]:
     nodes: set[tuple[str, str]] = set()
     child_set: set[tuple[str, str]] = set()
 
-    with get_session() as s:
+    with _offline_get_session() as s:
         rows = s.exec(select(ApiInclude).where(ApiInclude.project_id == project_id)).all()
     for inc in rows:
         ps = str(inc.parent_source_path or "")
@@ -3659,7 +3663,7 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
         else "%"
     )
 
-    with get_session() as s:
+    with _offline_get_session() as s:
         q = select(ApiRoute.source_path, ApiRoute.decorator, ApiRoute.path).where(
             ApiRoute.project_id == project_id
         )
@@ -3702,7 +3706,7 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
     candidates: list[dict] = []
 
     # include coverage hint: is this router included anywhere?
-    with get_session() as s:
+    with _offline_get_session() as s:
         inc_rows = s.exec(
             select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
                 ApiInclude.project_id == project_id
@@ -3753,7 +3757,7 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
     needle = tokens[-1] if tokens else path_q
     like = f"%{needle}%"
 
-    with get_session() as s:
+    with _offline_get_session() as s:
         q = select(ApiRoute).where(ApiRoute.project_id == project_id)
         if method_norm:
             q = q.where(ApiRoute.method == method_norm)
@@ -3885,7 +3889,7 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
 
     candidate_limit = 5000
     try:
-        with get_session() as s:
+        with _offline_get_session() as s:
             q = select(ApiCall).where(ApiCall.project_id == project_id)
             if old_m:
                 q = q.where(ApiCall.method == old_m)
@@ -4193,7 +4197,7 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                     else []
                 )
                 if missing_body:
-                    with get_session() as s:
+                    with _offline_get_session() as s:
                         td = s.exec(
                             select(TsTypeDef).where(
                                 TsTypeDef.project_id == project_id,
@@ -4230,7 +4234,7 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                     else []
                 )
                 if missing_resp:
-                    with get_session() as s:
+                    with _offline_get_session() as s:
                         td = s.exec(
                             select(TsTypeDef).where(
                                 TsTypeDef.project_id == project_id,
@@ -4270,7 +4274,7 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                     # get field types from TS response typedef if possible
                     field_types: dict[str, str] = {}
                     if wrapper_resp_type:
-                        with get_session() as s:
+                        with _offline_get_session() as s:
                             td = s.exec(
                                 select(TsTypeDef).where(
                                     TsTypeDef.project_id == project_id,
@@ -4520,7 +4524,7 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
                 )
                 if missing_body and backend_fields:
                     # locate typedef
-                    with get_session() as s:
+                    with _offline_get_session() as s:
                         td = s.exec(
                             select(TsTypeDef).where(
                                 TsTypeDef.project_id == project_id,
@@ -4563,7 +4567,7 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
                     else []
                 )
                 if missing_resp:
-                    with get_session() as s:
+                    with _offline_get_session() as s:
                         td = s.exec(
                             select(TsTypeDef).where(
                                 TsTypeDef.project_id == project_id,
@@ -4629,7 +4633,7 @@ def _load_ts_typedefs_by_name(project_id: int, names: list[str]) -> dict[str, di
         return {}
     wanted = list(dict.fromkeys(wanted))[:200]
     out: dict[str, dict] = {}
-    with get_session() as s:
+    with _offline_get_session() as s:
         rows = s.exec(
             select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name.in_(wanted))
         ).all()
@@ -4700,7 +4704,7 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
 
         # Load backend contract from DB; fallback to on-the-fly parse
         backend_contract: dict | None = None
-        with get_session() as s:
+        with _offline_get_session() as s:
             row = s.exec(
                 select(ApiRouteContract).where(
                     ApiRouteContract.project_id == project_id,
@@ -4770,7 +4774,7 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
             c_src = str(m.get("source_path") or "")
             c_line = int(m.get("lineno") or 0)
 
-            with get_session() as s:
+            with _offline_get_session() as s:
                 cm = s.exec(
                     select(ApiCallMeta).where(
                         ApiCallMeta.project_id == project_id,

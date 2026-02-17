@@ -65,14 +65,11 @@ from ..models import (
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
 from ..scan import scan_files
 from ..services.entitlements_service import (
-    get_entitlement_bool,
     get_entitlement_bool_async,
-    get_entitlement_int,
     get_entitlement_int_async,
 )
 from ..services.usage_service import (
     LLM_REQUESTS_KIND,
-    check_and_increment,
     check_and_increment_async,
 )
 from ..storage import StorageError, get_patch_download_url, read_patch_blob, store_patch_blob
@@ -882,19 +879,6 @@ def _raise_quality_gate_error(error: QualityGateError) -> None:
             "min_sources": error.min_sources,
             "reasons": error.reasons_payload(),
         },
-    )
-
-
-def _enforce_llm_entitlements(org_id: int) -> None:
-    ent_llm_enabled = get_entitlement_bool(org_id, "llm_enabled")
-    if ent_llm_enabled is False:
-        raise ForbiddenError("LLM недоступен по плану")
-    limit = get_entitlement_int(org_id, "llm_daily_request_limit")
-    check_and_increment(
-        org_id,
-        LLM_REQUESTS_KIND,
-        1,
-        limit if limit is not None else settings.llm_daily_request_limit,
     )
 
 
