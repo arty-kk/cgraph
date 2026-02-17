@@ -74,5 +74,52 @@ class TestAgenticToolPolicy(unittest.TestCase):
                 mocked.assert_called_once()
 
 
+class TestAgenticToolPolicyAsync(unittest.IsolatedAsyncioTestCase):
+    async def test_async_dispatch_blocks_without_plan(self) -> None:
+        meta = agentic.AgenticMeta()
+        result = await agentic._dispatch_tool_async(
+            1,
+            Path("."),
+            meta,
+            "get_contract",
+            {},
+            max_file_chars=200,
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "policy_violation")
+
+    async def test_async_get_file_permission_gate(self) -> None:
+        meta = agentic.AgenticMeta()
+        meta.tool_trace.append({"name": "plan_retrieval", "status": "ok"})
+        denied = await agentic._dispatch_tool_async(
+            1,
+            Path("."),
+            meta,
+            "get_file",
+            {},
+            max_file_chars=200,
+        )
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["error"]["code"], "policy_violation")
+
+        meta_allowed = agentic.AgenticMeta()
+        meta_allowed.tool_trace.append({"name": "plan_retrieval", "status": "ok"})
+        meta_allowed.tool_trace.append({"name": "search_text", "status": "ok"})
+
+        async def _fake_get_file(*_a, **_kw):
+            return agentic._tool_ok({"note": "ok"})
+
+        with patch.object(agentic, "_tool_get_file_async", side_effect=_fake_get_file):
+            allowed = await agentic._dispatch_tool_async(
+                1,
+                Path("."),
+                meta_allowed,
+                "get_file",
+                {},
+                max_file_chars=200,
+            )
+        self.assertTrue(allowed["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

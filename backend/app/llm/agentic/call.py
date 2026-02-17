@@ -12,7 +12,7 @@ from ..client import get_async_openai_client, get_openai_client
 from ..model_caps import supports_reasoning, supports_temperature
 from ..orchestrator import SYSTEM_INSTRUCTIONS
 from ..usage import extract_usage, merge_usage
-from .dispatch import _clamp_float, _clamp_int, _dispatch_tool
+from .dispatch import _clamp_float, _clamp_int, _dispatch_tool, _dispatch_tool_async
 from .schema import _normalize_responses_json_schema, _parse_model_json
 from .self_check import _run_self_check, _run_self_check_async
 from .tools import _tool_definitions
@@ -1000,7 +1000,7 @@ async def _agentic_json_call_async(
                     meta.cache_hits += 1
                     out = tool_cache[cache_key]
                 else:
-                    out = _dispatch_tool(
+                    out = await _dispatch_tool_async(
                         project_id, root, meta, name, args, max_file_chars=eff_file
                     )
                     if isinstance(out, dict):
