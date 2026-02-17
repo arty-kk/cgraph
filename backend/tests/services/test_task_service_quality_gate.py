@@ -99,15 +99,15 @@ async def test_pack_mode_returns_quality_gate_failed(
 ) -> None:
     _patch_common(monkeypatch, tmp_path)
 
-    monkeypatch.setattr(
-        task_service,
-        "pack_context",
-        lambda *args, **kwargs: SimpleNamespace(
+    async def _pack_context_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return SimpleNamespace(
             target_path="target.py",
             files=[{"path": "target.py", "kind": "target", "content": "x"}],
             graph={"deps": [], "inbound": [], "outbound": []},
-        ),
-    )
+        )
+
+    monkeypatch.setattr(task_service, "pack_context_async", _pack_context_async)
     async def _fix_async(*args, **kwargs):
         _ = (args, kwargs)
         return {"sources": [], "patch_unified_diff": "", "tests": ["   "]}, {}
