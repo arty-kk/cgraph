@@ -19,8 +19,7 @@ from unidiff import PatchSet
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..context_pack import pack_context
-from ..contracts import get_or_build_contract, get_or_build_contract_async
-from ..db import get_session
+from ..contracts import get_or_build_contract_async
 from ..errors import (
     BadRequestError,
     ExternalServiceError,
@@ -75,7 +74,6 @@ from ..storage import StorageError, get_patch_download_url, read_patch_blob, sto
 from ..utils import (
     ProjectLockTimeout,
     normalize_project_root,
-    project_lock,
     project_lock_async,
     resolve_under_root,
 )
@@ -178,22 +176,16 @@ async def _normalize_project_root_async(root_path: str, *, max_length: int) -> P
     return await asyncio.to_thread(normalize_project_root, root_path, max_length=max_length)
 
 
-def get_project(project_id: int, org_id: int | None = None) -> Project:
-    with get_session() as session:
-        if org_id is None:
-            project = session.get(Project, project_id)
-        else:
-            project = session.exec(
-                select(Project).where(Project.id == project_id, Project.org_id == org_id)
-            ).first()
-    if not project:
+async def _get_project_async(session: AsyncSession, project_id: int, org_id: int) -> Project:
+    project = await session.get(Project, project_id)
+    if not project or project.org_id != org_id:
         raise NotFoundError("Проект не найден", context={"project_id": project_id})
     return project
 
 
-
-
-async def _get_active_scan_task_async(project_id: int, org_id: int) -> tuple[str | None, str | None]:
+async def _get_active_scan_task_async(
+    project_id: int, org_id: int
+) -> tuple[str | None, str | None]:
     idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
     async with AsyncSessionLocal() as session:
         job = (
@@ -214,21 +206,22 @@ async def _get_active_scan_task_async(project_id: int, org_id: int) -> tuple[str
     return job.id, job.status
 
 
-def scan_with_background(
+async def _scan_with_background_async(
     project_id: int,
     org_id: int,
     background: bool = False,
     background_tasks: BackgroundTasks | None = None,
 ) -> dict:
     _ = background
-    task_id, status = asyncio.run(_get_active_scan_task_async(project_id, org_id))
+    task_id, status = await _get_active_scan_task_async(project_id, org_id)
     if task_id and status in ("pending", "running"):
         return {"task_id": task_id, "status": status}
 
-    task_id = asyncio.run(submit_scan_async(project_id, org_id))
+    task_id = await submit_scan_async(project_id, org_id)
     if background_tasks is not None:
         background_tasks.add_task(lambda: None)
     return {"task_id": task_id, "status": "pending"}
+
 
 # Backward-compatible callables for tests/monkeypatching inside task_service.
 triage = triage_with_usage
@@ -511,129 +504,6 @@ def _parse_diff_paths(root: Path, diff_text: str) -> list[str]:
     return rel_paths
 
 
-def _apply_patch_and_record(
-    project_id: int,
-    org_id: int,
-    run_id: int,
-    root: Path,
-    patch_text: str,
-    allowed_patch_paths: set[str] | None,
-    allow_out_of_context_patch: bool,
-) -> dict | None:
-    applied: dict | None = None
-    try:
-        if not isinstance(patch_text, str) or not patch_text.strip():
-            raise PatchApplyError("Empty or missing patch_unified_diff")
-
-        with project_lock(project_id):
-            diff_paths = _parse_diff_paths(root, patch_text)
-            require_in_context = bool(getattr(settings, "patch_require_in_context", True))
-            allowed = None
-            blocked_paths: list[str] = []
-            if require_in_context:
-                allowed = set(allowed_patch_paths or [])
-                if allow_out_of_context_patch:
-                    allowed |= set(diff_paths)
-                blocked_paths = sorted({p for p in diff_paths if p not in allowed})
-
-            if blocked_paths:
-                applied = {
-                    "error": ("Patch затрагивает файлы вне контекста: " + ", ".join(blocked_paths)),
-                    "blocked_paths": blocked_paths,
-                    "blocked_reason": "out_of_context",
-                }
-            else:
-                modified = apply_unified_diff(
-                    root,
-                    patch_text,
-                    allowed_rel_paths=allowed,
-                    allow_new_files=bool(getattr(settings, "patch_allow_new_files", False)),
-                )
-                modified = sorted(set(modified))
-                applied = {"modified": modified}
-
-        if applied and "modified" in applied:
-            try:
-                applied["reindexed"] = scan_files(project_id, org_id, root, modified)
-                if isinstance(applied.get("reindexed"), dict) and applied["reindexed"].get(
-                    "aborted"
-                ):
-                    applied["reindex_aborted"] = True
-                else:
-                    removed_edge_neighbors = None
-                    if isinstance(applied.get("reindexed"), dict):
-                        removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
-                    update_graph_metrics_incremental(
-                        project_id,
-                        modified,
-                        removed_edge_neighbors=removed_edge_neighbors,
-                    )
-
-                updated_contracts: list[str] = []
-                removed_contracts: list[str] = []
-                for rel_path in modified:
-                    try:
-                        abs_path, rel_norm = resolve_under_root(
-                            root, rel_path, max_length=settings.max_rel_path_chars
-                        )
-                        if not abs_path.exists():
-                            removed_contracts.append(rel_norm)
-                            continue
-                        if not abs_path.is_file():
-                            continue
-                        contract = get_or_build_contract(project_id, root, rel_norm)
-                        if isinstance(contract, dict) and contract.get("path"):
-                            updated_contracts.append(str(contract["path"]))
-                    except Exception:  # noqa: BLE001
-                        continue
-                applied["contracts_updated"] = sorted(set(updated_contracts))
-
-                removed_contracts = sorted(set(removed_contracts))
-                if removed_contracts:
-                    with get_session() as session:
-                        session.exec(
-                            delete(ModuleContract).where(
-                                ModuleContract.project_id == project_id,
-                                ModuleContract.path.in_(removed_contracts),
-                            )
-                        )
-                        session.commit()
-                    applied["contracts_removed"] = removed_contracts
-            except Exception as error:  # noqa: BLE001
-                applied["reindex_error"] = str(error)
-
-                with get_session() as session:
-                    patched_nodes = session.exec(
-                        select(FileNode).where(
-                            FileNode.project_id == project_id,
-                            FileNode.path.in_(modified),
-                        )
-                    ).all()
-                    for node in patched_nodes:
-                        node.status = "patched"
-                        session.add(node)
-                    session.commit()
-    except ProjectLockTimeout as exc:
-        raise LockedError(
-            "Проект сейчас занят, повторите позже",
-            context={"project_id": project_id},
-        ) from exc
-    except PatchApplyError as error:
-        applied = {"error": str(error)}
-
-    if applied is not None:
-        with get_session() as session:
-            run_update = session.get(AnalysisRun, run_id)
-            if run_update:
-                run_update.applied_json = json.dumps(applied, ensure_ascii=False)
-                session.add(run_update)
-                session.commit()
-
-    return applied
-
-
-
-
 async def _apply_patch_and_record_async(
     session: AsyncSession,
     project_id: int,
@@ -791,7 +661,8 @@ def _validate_depth_for_profile(depth: int, profile: ProfileParams) -> int:
     return depth
 
 
-def _impact(
+async def _impact_async(
+    session: AsyncSession,
     project_id: int,
     target: str,
     max_nodes: int | None,
@@ -810,75 +681,80 @@ def _impact(
     def _chunks(seq: list[str], size: int) -> list[list[str]]:
         return [seq[i : i + size] for i in range(0, len(seq), size)]
 
-    with get_session() as session:
-        while queue:
-            current_depth = queue[0][1]
-            current_paths: list[str] = []
-            while queue and queue[0][1] == current_depth:
-                path, depth = queue.popleft()
-                if isinstance(path, str) and path:
-                    current_paths.append(path)
-            current_paths = [p for p in list(dict.fromkeys(current_paths)) if p]
-            if not current_paths:
-                continue
+    while queue:
+        current_depth = queue[0][1]
+        current_paths: list[str] = []
+        while queue and queue[0][1] == current_depth:
+            path, depth = queue.popleft()
+            if isinstance(path, str) and path:
+                current_paths.append(path)
+        current_paths = [p for p in list(dict.fromkeys(current_paths)) if p]
+        if not current_paths:
+            continue
 
-            for chunk in _chunks(current_paths, SQLITE_IN_CHUNK):
-                hit_max_nodes = False
-                rows = session.exec(
+        for chunk in _chunks(current_paths, SQLITE_IN_CHUNK):
+            hit_max_nodes = False
+            rows = (
+                await session.execute(
                     select(FileEdge.src_path).where(
                         FileEdge.project_id == project_id,
                         FileEdge.dst_path.in_(chunk),
                     )
-                ).all()
-                for row in rows:
-                    src = row[0] if isinstance(row, (tuple, list)) else row
-                    if not isinstance(src, str) or not src:
-                        continue
-                    if src in visited:
-                        continue
-                    if max_depth is not None and current_depth >= max_depth:
-                        truncated = True
-                        continue
-                    if max_nodes is not None and len(visited) >= max_nodes:
-                        truncated = True
-                        hit_max_nodes = True
-                        break
-                    visited.add(src)
-                    queue.append((src, current_depth + 1))
-                if hit_max_nodes:
+                )
+            ).all()
+            for row in rows:
+                src = row[0] if isinstance(row, (tuple, list)) else row
+                if not isinstance(src, str) or not src:
+                    continue
+                if src in visited:
+                    continue
+                if max_depth is not None and current_depth >= max_depth:
+                    truncated = True
+                    continue
+                if max_nodes is not None and len(visited) >= max_nodes:
+                    truncated = True
+                    hit_max_nodes = True
                     break
+                visited.add(src)
+                queue.append((src, current_depth + 1))
             if hit_max_nodes:
                 break
+        if hit_max_nodes:
+            break
     return sorted(visited), truncated
 
 
-def _ensure_node_exists(project_id: int, org_id: int, target: str, root: Path) -> None:
-    def _has_node() -> bool:
-        with get_session() as session:
-            return (
-                session.exec(
+async def _ensure_node_exists_async(
+    session: AsyncSession, project_id: int, org_id: int, target: str, root: Path
+) -> None:
+    async def _has_node() -> bool:
+        return (
+            (
+                await session.execute(
                     select(FileNode.id).where(
                         FileNode.project_id == project_id,
                         FileNode.path == target,
                     )
-                ).first()
-                is not None
-            )
+                )
+            ).first()
+            is not None
+        )
 
-    if _has_node():
+    if await _has_node():
         return
 
     try:
-        abs_target, rel_norm = resolve_under_root(
+        abs_target, rel_norm = await _resolve_under_root_async(
             root, target, max_length=settings.max_rel_path_chars
         )
-        if not abs_target.exists():
+        exists, is_file = await _path_exists_and_is_file_async(abs_target)
+        if not exists:
             raise FileNotFoundError(rel_norm)
-        if not abs_target.is_file():
+        if not is_file:
             raise ValueError("Цель должна быть файлом")
-        scan_files(project_id, org_id, root, [target])
-        with project_lock(project_id):
-            compute_graph_metrics(project_id)
+        await _scan_files_async(project_id, org_id, root, [target])
+        async with project_lock_async(session, project_id):
+            await asyncio.to_thread(compute_graph_metrics, project_id)
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
@@ -888,28 +764,11 @@ def _ensure_node_exists(project_id: int, org_id: int, target: str, root: Path) -
         raise ServerError(
             "Не удалось проиндексировать целевой файл", context={"reason": str(error)}
         ) from error
-    if not _has_node():
+    if not await _has_node():
         raise ServerError(
             "Не удалось проиндексировать целевой файл (узел отсутствует после сканирования)",
             context={"target": target},
         )
-
-
-def _graph_warning(project_id: int) -> str | None:
-    with get_session() as session:
-        nodes_row = session.exec(
-            select(func.count()).select_from(FileNode).where(FileNode.project_id == project_id)
-        ).one()
-        edges_row = session.exec(
-            select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
-        ).one()
-
-    node_count = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
-    edge_count = int(edges_row[0] if isinstance(edges_row, (tuple, list)) else edges_row or 0)
-
-    if node_count < MIN_GRAPH_NODES_FOR_READY or edge_count < MIN_GRAPH_EDGES_FOR_READY:
-        return GRAPH_NOT_READY_WARNING
-    return None
 
 
 async def _graph_warning_async(session: AsyncSession, project_id: int) -> str | None:
@@ -945,17 +804,24 @@ def _node_metrics_from_row(node: FileNode) -> dict[str, object]:
     }
 
 
-def _load_node_metrics(project_id: int, paths: list[str]) -> dict[str, dict[str, object]]:
+async def _load_node_metrics_async(
+    session: AsyncSession, project_id: int, paths: list[str]
+) -> dict[str, dict[str, object]]:
     node_metrics: dict[str, dict[str, object]] = {}
     if not paths:
         return node_metrics
-    with get_session() as session:
-        rows = session.exec(
-            select(FileNode).where(
-                FileNode.project_id == project_id,
-                FileNode.path.in_(paths),
+    rows = (
+        (
+            await session.execute(
+                select(FileNode).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path.in_(paths),
+                )
             )
-        ).all()
+        )
+        .scalars()
+        .all()
+    )
     for n in rows:
         if not isinstance(n.path, str) or not n.path:
             continue
@@ -963,14 +829,21 @@ def _load_node_metrics(project_id: int, paths: list[str]) -> dict[str, dict[str,
     return node_metrics
 
 
-def _load_contract_summary(project_id: int, target: str) -> dict[str, object] | None:
-    with get_session() as session:
-        contract = session.exec(
-            select(ModuleContract).where(
-                ModuleContract.project_id == project_id,
-                ModuleContract.path == target,
+async def _load_contract_summary_async(
+    session: AsyncSession, project_id: int, target: str
+) -> dict[str, object] | None:
+    contract = (
+        (
+            await session.execute(
+                select(ModuleContract).where(
+                    ModuleContract.project_id == project_id,
+                    ModuleContract.path == target,
+                )
             )
-        ).first()
+        )
+        .scalars()
+        .first()
+    )
     if contract is None or not isinstance(contract.contract_json, str):
         return None
     try:
@@ -1041,14 +914,15 @@ async def _enforce_llm_entitlements_async(session: AsyncSession, org_id: int) ->
     )
 
 
-def run_task(
+async def _run_task_impl_async(
+    session: AsyncSession,
     project_id: int,
     org_id: int,
     request: TaskRequest,
     *,
     enforce_llm_entitlements: bool = True,
 ) -> dict:
-    project = get_project(project_id, org_id=org_id)
+    project = await _get_project_async(session, project_id, org_id=org_id)
 
     if len(request.prompt) > settings.max_prompt_chars:
         raise LimitExceededError(
@@ -1056,20 +930,24 @@ def run_task(
             context={"max_chars": settings.max_prompt_chars},
         )
 
-    root = normalize_project_root(project.root_path, max_length=settings.max_root_path_chars)
-    abs_target, target = resolve_under_root(
+    root = await _normalize_project_root_async(
+        project.root_path,
+        max_length=settings.max_root_path_chars,
+    )
+    abs_target, target = await _resolve_under_root_async(
         root, request.target_path, max_length=settings.max_rel_path_chars
     )
-    if not abs_target.exists():
+    exists_target, is_file_target = await _path_exists_and_is_file_async(abs_target)
+    if not exists_target:
         raise NotFoundError("Целевой файл не найден", context={"path": target})
-    if not abs_target.is_file():
+    if not is_file_target:
         raise BadRequestError("Цель должна быть файлом")
 
-    _ensure_node_exists(project_id, org_id, target, root)
-    warning = _graph_warning(project_id)
+    await _ensure_node_exists_async(session, project_id, org_id, target, root)
+    warning = await _graph_warning_async(session, project_id)
     graph_scan_task: dict | None = None
     if warning == GRAPH_NOT_READY_WARNING:
-        graph_scan_task = scan_with_background(project_id, org_id, background=True)
+        graph_scan_task = await _scan_with_background_async(project_id, org_id, background=True)
     graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
     graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 
@@ -1094,7 +972,7 @@ def run_task(
         )
 
     if enforce_llm_entitlements and (mode in ("analyze", "evolve", "fix") or mode is None):
-        _enforce_llm_entitlements(org_id)
+        await _enforce_llm_entitlements_async(session, org_id)
 
     stage_telemetry: list[dict[str, Any]] = []
 
@@ -1233,10 +1111,11 @@ def run_task(
         1.0,
         prompt_len / max(1, int(settings.max_prompt_chars)),
     )
-    with get_session() as session:
-        nodes_row = session.exec(
+    nodes_row = (
+        await session.execute(
             select(func.count()).select_from(FileNode).where(FileNode.project_id == project_id)
-        ).one()
+        )
+    ).one()
     project_nodes = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
     project_norm = min(1.0, project_nodes / 1_000.0)
     mode_weight = float(mode_weights.get(mode, 0.0))
@@ -1364,7 +1243,13 @@ def run_task(
     )
 
     if mode == "impact":
-        impacted, truncated = _impact(project_id, target, max_nodes, max_depth)
+        impacted, truncated = await _impact_async(
+            session,
+            project_id,
+            target,
+            max_nodes,
+            max_depth,
+        )
         result = {
             "impacted": impacted,
             "count": len(impacted),
@@ -1394,10 +1279,26 @@ def run_task(
                 },
                 "model_routing_reason": {
                     "policy_version": settings.llm_routing_policy_version,
-                    "source": "telemetry_score" if routing_selection is not None else "fallback_policy",
-                    "confidence": routing_selection.confidence if routing_selection is not None else None,
-                    "reason": routing_selection.reason if routing_selection is not None else "insufficient_telemetry_or_low_confidence",
-                    "score_breakdown": routing_selection.score_breakdown if routing_selection is not None else None,
+                    "source": (
+                        "telemetry_score"
+                        if routing_selection is not None
+                        else "fallback_policy"
+                    ),
+                    "confidence": (
+                        routing_selection.confidence
+                        if routing_selection is not None
+                        else None
+                    ),
+                    "reason": (
+                        routing_selection.reason
+                        if routing_selection is not None
+                        else "insufficient_telemetry_or_low_confidence"
+                    ),
+                    "score_breakdown": (
+                        routing_selection.score_breakdown
+                        if routing_selection is not None
+                        else None
+                    ),
                 },
                 "self_check_retry": False,
                 "self_check_retry_reason": None,
@@ -1421,7 +1322,7 @@ def run_task(
             knowledge = {
                 "target_path": target,
                 "impacted": impacted,
-                "nodes": _load_node_metrics(project_id, paths_for_metrics),
+                "nodes": await _load_node_metrics_async(session, project_id, paths_for_metrics),
             }
             plan_started = perf_counter()
             try:
@@ -1479,10 +1380,26 @@ def run_task(
                 },
                 "model_routing_reason": {
                     "policy_version": settings.llm_routing_policy_version,
-                    "source": "telemetry_score" if routing_selection is not None else "fallback_policy",
-                    "confidence": routing_selection.confidence if routing_selection is not None else None,
-                    "reason": routing_selection.reason if routing_selection is not None else "insufficient_telemetry_or_low_confidence",
-                    "score_breakdown": routing_selection.score_breakdown if routing_selection is not None else None,
+                    "source": (
+                        "telemetry_score"
+                        if routing_selection is not None
+                        else "fallback_policy"
+                    ),
+                    "confidence": (
+                        routing_selection.confidence
+                        if routing_selection is not None
+                        else None
+                    ),
+                    "reason": (
+                        routing_selection.reason
+                        if routing_selection is not None
+                        else "insufficient_telemetry_or_low_confidence"
+                    ),
+                    "score_breakdown": (
+                        routing_selection.score_breakdown
+                        if routing_selection is not None
+                        else None
+                    ),
                 },
                 "self_check_retry": False,
                 "self_check_retry_reason": None,
@@ -1503,10 +1420,10 @@ def run_task(
 
         if use_agentic:
             knowledge: dict[str, object] = {"target_path": target}
-            node_metrics = _load_node_metrics(project_id, [target])
+            node_metrics = await _load_node_metrics_async(session, project_id, [target])
             if target in node_metrics:
                 knowledge["node"] = node_metrics[target]
-            contract_summary = _load_contract_summary(project_id, target)
+            contract_summary = await _load_contract_summary_async(session, project_id, target)
             if contract_summary is not None:
                 knowledge["contract"] = contract_summary
             plan_started = perf_counter()
@@ -1913,13 +1830,18 @@ def run_task(
             metrics_sample = omitted_sample[:MAX_OMITTED_METRICS_FOR_LLM]
             paths_for_metrics = sorted(set(included_paths).union(set(metrics_sample)))
             if paths_for_metrics:
-                with get_session() as session:
-                    rows = session.exec(
-                        select(FileNode).where(
-                            FileNode.project_id == project_id,
-                            FileNode.path.in_(paths_for_metrics),
+                rows = (
+                    (
+                        await session.execute(
+                            select(FileNode).where(
+                                FileNode.project_id == project_id,
+                                FileNode.path.in_(paths_for_metrics),
+                            )
                         )
-                    ).all()
+                    )
+                    .scalars()
+                    .all()
+                )
                 for n in rows:
                     if not isinstance(n.path, str) or not n.path:
                         continue
@@ -2130,77 +2052,83 @@ def run_task(
         telemetry_payload["stages"] = list(stage_telemetry)
         retrieval_settings["telemetry"] = telemetry_payload
 
-    with get_session() as session:
-        run = AnalysisRun(
-            org_id=org_id,
-            project_id=project_id,
-            target_path=target,
-            mode=mode,
-            prompt=request.prompt,
-            model_used=model_used,
-            depth=depth,
-            dep_mode=dep_mode,
-            retrieval=retrieval_used,
-            retrieval_settings_json=json.dumps(retrieval_settings, ensure_ascii=False),
-            apply_patch=bool(request.apply_patch),
-            allowed_patch_paths_json=allowed_patch_paths_json,
-            result_json=json.dumps(result_for_db, ensure_ascii=False),
-        )
-        session.add(run)
-        session.flush()
-        for stage in stage_telemetry:
-            session.add(
-                AnalysisStageTelemetry(
-                    run_id=int(run.id or 0),
-                    org_id=org_id,
-                    project_id=project_id,
-                    stage_name=str(stage.get("stage_name") or ""),
-                    model=str(stage.get("model") or ""),
-                    prompt_tokens=stage.get("prompt_tokens"),
-                    completion_tokens=stage.get("completion_tokens"),
-                    latency_ms=stage.get("latency_ms"),
-                    retry_index=int(stage.get("retry_index") or 0),
-                    self_check_result=(
-                        str(stage.get("self_check_result"))
-                        if stage.get("self_check_result") is not None
-                        else None
-                    ),
-                    failure_class=(
-                        str(stage.get("failure_class"))
-                        if stage.get("failure_class") is not None
-                        else None
-                    ),
-                    stop_reason=(
-                        str(stage.get("stop_reason"))
-                        if stage.get("stop_reason") is not None
-                        else None
-                    ),
-                    tool_calls=stage.get("tool_calls"),
-                    tool_output_chars=stage.get("tool_output_chars"),
-                )
+    run = AnalysisRun(
+        org_id=org_id,
+        project_id=project_id,
+        target_path=target,
+        mode=mode,
+        prompt=request.prompt,
+        model_used=model_used,
+        depth=depth,
+        dep_mode=dep_mode,
+        retrieval=retrieval_used,
+        retrieval_settings_json=json.dumps(retrieval_settings, ensure_ascii=False),
+        apply_patch=bool(request.apply_patch),
+        allowed_patch_paths_json=allowed_patch_paths_json,
+        result_json=json.dumps(result_for_db, ensure_ascii=False),
+    )
+    session.add(run)
+    await session.flush()
+    for stage in stage_telemetry:
+        session.add(
+            AnalysisStageTelemetry(
+                run_id=int(run.id or 0),
+                org_id=org_id,
+                project_id=project_id,
+                stage_name=str(stage.get("stage_name") or ""),
+                model=str(stage.get("model") or ""),
+                prompt_tokens=stage.get("prompt_tokens"),
+                completion_tokens=stage.get("completion_tokens"),
+                latency_ms=stage.get("latency_ms"),
+                retry_index=int(stage.get("retry_index") or 0),
+                self_check_result=(
+                    str(stage.get("self_check_result"))
+                    if stage.get("self_check_result") is not None
+                    else None
+                ),
+                failure_class=(
+                    str(stage.get("failure_class"))
+                    if stage.get("failure_class") is not None
+                    else None
+                ),
+                stop_reason=(
+                    str(stage.get("stop_reason"))
+                    if stage.get("stop_reason") is not None
+                    else None
+                ),
+                tool_calls=stage.get("tool_calls"),
+                tool_output_chars=stage.get("tool_output_chars"),
             )
+        )
 
-        node = session.exec(
-            select(FileNode).where(FileNode.project_id == project_id, FileNode.path == target)
-        ).first()
-        if node and mode in ("analyze", "evolve"):
-            node.status = "ok"
-            session.add(node)
-        session.commit()
-        session.refresh(run)
+    node = (
+        (
+            await session.execute(
+                select(FileNode).where(FileNode.project_id == project_id, FileNode.path == target)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if node and mode in ("analyze", "evolve"):
+        node.status = "ok"
+        session.add(node)
+    await session.commit()
+    await session.refresh(run)
 
     applied = None
     if mode == "fix" and request.apply_patch:
         patch_text = patch_text_full
         if patch_text is None and isinstance(result_full, dict):
             patch_text = result_full.get("patch_unified_diff")
-        applied = _apply_patch_and_record(
-            project_id,
-            org_id,
-            run.id,
-            root,
-            patch_text if isinstance(patch_text, str) else "",
-            allowed_patch_paths,
+        applied = await _apply_patch_and_record_async(
+            session,
+            project_id=project_id,
+            org_id=org_id,
+            run_id=run.id,
+            root=root,
+            patch_text=patch_text if isinstance(patch_text, str) else "",
+            allowed_patch_paths=allowed_patch_paths,
             allow_out_of_context_patch=bool(request.allow_out_of_context_patch),
         )
 
@@ -2223,17 +2151,8 @@ def run_task(
 
 
 async def run_task_async(project_id: int, org_id: int, request: TaskRequest) -> dict:
-    if request.mode in ("analyze", "evolve", "fix") or request.mode is None:
-        async with AsyncSessionLocal() as session:
-            await _enforce_llm_entitlements_async(session, org_id)
-            await session.commit()
-    return await asyncio.to_thread(
-        run_task,
-        project_id,
-        org_id,
-        request,
-        enforce_llm_entitlements=False,
-    )
+    async with AsyncSessionLocal() as session:
+        return await _run_task_impl_async(session, project_id, org_id, request)
 
 
 async def run_task_with_background_async(
@@ -2357,7 +2276,9 @@ async def _build_patch_payload_from_run_async(run: AnalysisRun, *, run_id: int) 
     raise NotFoundError("Патч не найден", context={"run_id": run_id})
 
 
-async def get_run_patch_async(session: AsyncSession, project_id: int, org_id: int, run_id: int) -> dict:
+async def get_run_patch_async(
+    session: AsyncSession, project_id: int, org_id: int, run_id: int
+) -> dict:
     run = await session.get(AnalysisRun, run_id)
     if not run or run.project_id != project_id or run.org_id != org_id:
         raise NotFoundError("Патч не найден", context={"run_id": run_id, "project_id": project_id})
@@ -2407,7 +2328,9 @@ async def apply_run_patch_async(
     return {"applied": applied}
 
 
-async def delete_run_async(session: AsyncSession, project_id: int, org_id: int, run_id: int) -> dict:
+async def delete_run_async(
+    session: AsyncSession, project_id: int, org_id: int, run_id: int
+) -> dict:
     run = await session.get(AnalysisRun, run_id)
     if not run or run.project_id != project_id or run.org_id != org_id:
         raise NotFoundError(

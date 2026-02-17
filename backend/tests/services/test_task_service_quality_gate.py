@@ -14,6 +14,9 @@ from app.services.task_service import TaskRequest
 
 
 class _FakeResult:
+    def scalars(self):
+        return self
+
     def one(self):
         return 0
 
@@ -25,14 +28,22 @@ class _FakeResult:
 
 
 class _FakeSession:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def exec(self, query):
+    async def execute(self, query):
+        _ = query
         return _FakeResult()
+
+    def add(self, item):
+        _ = item
+
+    async def flush(self):
+        return None
+
+    async def commit(self):
+        return None
+
+    async def refresh(self, item):
+        _ = item
+        return None
 
 
 
@@ -58,23 +69,27 @@ def _patch_common(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     file_path = tmp_path / "target.py"
     file_path.write_text("print('x')\n", encoding="utf-8")
 
-    monkeypatch.setattr(
-        task_service,
-        "get_project",
-        lambda project_id, org_id: SimpleNamespace(root_path=str(tmp_path)),
-    )
-    monkeypatch.setattr(task_service, "_ensure_node_exists", lambda *args, **kwargs: None)
-    monkeypatch.setattr(task_service, "_graph_warning", lambda project_id: None)
-    monkeypatch.setattr(task_service, "scan_with_background", lambda *args, **kwargs: None)
-    monkeypatch.setattr(task_service, "_enforce_llm_entitlements", lambda org_id: None)
+    async def _fake_get_project(session, project_id, org_id):
+        _ = (session, project_id, org_id)
+        return SimpleNamespace(root_path=str(tmp_path))
+
+    async def _noop(*args, **kwargs):
+        _ = (args, kwargs)
+        return None
+
+    monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
+    monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
+    monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
+    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service, "resolve_runtime_policy", lambda **kwargs: ModelPolicy())
     monkeypatch.setattr(task_service, "plan_task", lambda *args, **kwargs: {"summary": "ok"})
-    monkeypatch.setattr(task_service, "get_session", lambda: _FakeSession())
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "llm_evidence_min_sources", 2)
 
 
-def test_pack_mode_returns_quality_gate_failed(
+@pytest.mark.anyio
+async def test_pack_mode_returns_quality_gate_failed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_common(monkeypatch, tmp_path)
@@ -99,14 +114,17 @@ def test_pack_mode_returns_quality_gate_failed(
     )
 
     with pytest.raises(BadRequestError) as exc:
-        task_service.run_task(1, 1, _request(mode="fix", agentic=False))
+        await task_service._run_task_impl_async(
+            _FakeSession(), 1, 1, _request(mode="fix", agentic=False)
+        )
 
     assert exc.value.code == "quality_gate_failed"
     assert exc.value.context["mode"] == "fix"
     assert any(reason["field"] == "sources" for reason in exc.value.context["reasons"])
 
 
-def test_agentic_retry_path_runs_quality_gate(
+@pytest.mark.anyio
+async def test_agentic_retry_path_runs_quality_gate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_common(monkeypatch, tmp_path)
@@ -132,7 +150,9 @@ def test_agentic_retry_path_runs_quality_gate(
     monkeypatch.setattr(task_service, "analyze_agentic", _analyze_agentic)
 
     with pytest.raises(BadRequestError) as exc:
-        task_service.run_task(1, 1, _request(mode="analyze", agentic=True, evidence_mode=True))
+        await task_service._run_task_impl_async(
+            _FakeSession(), 1, 1, _request(mode="analyze", agentic=True, evidence_mode=True)
+        )
 
     assert calls["count"] == 2
     assert exc.value.code == "quality_gate_failed"

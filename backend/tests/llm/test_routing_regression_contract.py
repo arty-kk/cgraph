@@ -12,7 +12,6 @@ from app.llm.policy import ModelPolicy
 from app.llm.routing_selector import RoutingSelection, select_runtime_route
 from app.services import task_service
 from app.services.task_service import TaskRequest
-
 from tests.llm._routing_fixtures import (
     DEFAULT_ROUTING_SETTINGS,
     MODEL_STATS_CANONICAL,
@@ -21,6 +20,9 @@ from tests.llm._routing_fixtures import (
 
 
 class _FakeResult:
+    def scalars(self):
+        return self
+
     def one(self):
         return 0
 
@@ -32,25 +34,20 @@ class _FakeResult:
 
 
 class _FakeSession:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def exec(self, query):
+    async def execute(self, query):
+        _ = query
         return _FakeResult()
 
     def add(self, obj):
         return None
 
-    def commit(self):
+    async def commit(self):
         return None
 
-    def flush(self):
+    async def flush(self):
         return None
 
-    def refresh(self, obj):
+    async def refresh(self, obj):
         return None
 
 
@@ -233,7 +230,8 @@ def test_select_runtime_route_returns_none_on_low_confidence_threshold(
         ),
     ],
 )
-def test_task_service_sets_model_routing_reason_source(
+@pytest.mark.anyio
+async def test_task_service_sets_model_routing_reason_source(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     routing_selection: RoutingSelection | None,
@@ -242,22 +240,30 @@ def test_task_service_sets_model_routing_reason_source(
     target = tmp_path / "target.py"
     target.write_text("print('x')\n", encoding="utf-8")
 
-    monkeypatch.setattr(
-        task_service,
-        "get_project",
-        lambda project_id, org_id: SimpleNamespace(root_path=str(tmp_path)),
-    )
-    monkeypatch.setattr(task_service, "_ensure_node_exists", lambda *args, **kwargs: None)
-    monkeypatch.setattr(task_service, "_graph_warning", lambda project_id: None)
-    monkeypatch.setattr(task_service, "scan_with_background", lambda *args, **kwargs: None)
-    monkeypatch.setattr(task_service, "_enforce_llm_entitlements", lambda org_id: None)
-    monkeypatch.setattr(task_service, "get_session", lambda: _FakeSession())
-    monkeypatch.setattr(task_service, "_impact", lambda *args, **kwargs: ([], False))
+    async def _fake_get_project(session, project_id, org_id):
+        _ = (session, project_id, org_id)
+        return SimpleNamespace(root_path=str(tmp_path))
+
+    async def _noop(*args, **kwargs):
+        _ = (args, kwargs)
+        return None
+
+    async def _fake_impact(session, project_id, target, max_nodes, max_depth):
+        _ = (session, project_id, target, max_nodes, max_depth)
+        return [], False
+
+    monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
+    monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
+    monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
+    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
+    monkeypatch.setattr(task_service, "_impact_async", _fake_impact)
     monkeypatch.setattr(task_service, "resolve_runtime_policy", lambda **kwargs: ModelPolicy())
     monkeypatch.setattr(task_service, "select_runtime_route", lambda **kwargs: routing_selection)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "")
 
-    response = task_service.run_task(
+    response = await task_service._run_task_impl_async(
+        _FakeSession(),
         1,
         1,
         TaskRequest(
