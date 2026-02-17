@@ -76,3 +76,50 @@ async def test_agentic_retry_aggregates_usage_tokens(monkeypatch):
     assert meta.prompt_tokens == 17
     assert meta.completion_tokens == 5
     assert meta.total_tokens == 22
+
+
+@pytest.mark.anyio
+async def test_agentic_usage_retry_uses_async_tool_dispatch(monkeypatch):
+    first_resp = SimpleNamespace(
+        output=[],
+        output_text='{"summary":"ok","sources":[]}',
+        usage=None,
+    )
+    fake_client = _FakeClient([first_resp])
+    monkeypatch.setattr("app.llm.agentic.call.get_async_openai_client", lambda: fake_client)
+
+    tool_defs = [
+        {
+            "type": "function",
+            "name": "search_tests",
+            "description": "x",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+            "strict": True,
+        }
+    ]
+    monkeypatch.setattr(
+        "app.llm.agentic.call._tool_definitions",
+        lambda _max_file_chars: tool_defs,
+    )
+
+    async def _fake_dispatch(*_args, **_kwargs):
+        return {"ok": True, "data": {"results": []}, "error": None}
+
+    monkeypatch.setattr("app.llm.agentic.call._dispatch_tool_async", _fake_dispatch)
+
+    result, _meta = await _agentic_json_call_async(
+        model="gpt-5-mini",
+        self_check_model=None,
+        self_check_reasoning_effort=None,
+        schema={"name": "result", "schema": {"type": "object"}, "strict": True},
+        project_id=1,
+        root=Path("."),
+        seed={"target_path": "a.py"},
+        user_prompt="do work",
+        reasoning_effort=None,
+        evidence_mode=False,
+        allow_self_check_retry=False,
+        allow_evidence_retry=False,
+    )
+
+    assert result["summary"] == "ok"

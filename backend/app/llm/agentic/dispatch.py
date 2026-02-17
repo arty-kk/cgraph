@@ -364,17 +364,17 @@ async def _dispatch_tool_async(
         )
 
     mapping = {
-        "get_contract": ("_tool_get_contract", (project_id, root, meta, args), {}),
-        "get_symbol": ("_tool_get_symbol", (project_id, root, meta, args), {}),
+        "get_contract": ("_tool_get_contract_async", (project_id, root, meta, args), {}),
+        "get_symbol": ("_tool_get_symbol_async", (project_id, root, meta, args), {}),
         "get_node": ("_tool_get_node_async", (project_id, root, args), {}),
         "get_neighbors": ("_tool_get_neighbors_async", (project_id, root, args), {}),
         "search_paths": ("_tool_search_paths_async", (project_id, args), {}),
-        "search_tests": ("_tool_search_tests", (project_id, args), {}),
+        "search_tests": ("_tool_search_tests_async", (project_id, args), {}),
         "search_symbols": ("_tool_search_symbols_async", (project_id, args), {}),
-        "get_tree_outline": ("_tool_get_tree_outline", (project_id, args), {}),
-        "project_summary": ("_tool_project_summary", (project_id, root, args), {}),
+        "get_tree_outline": ("_tool_get_tree_outline_async", (project_id, args), {}),
+        "project_summary": ("_tool_project_summary_async", (project_id, root, args), {}),
         "search_text": (
-            "_tool_search_text",
+            "_tool_search_text_async",
             (project_id, root, args),
             {"max_file_chars": max_file_chars},
         ),
@@ -385,24 +385,28 @@ async def _dispatch_tool_async(
         ),
         "search_routes": ("_tool_search_routes_async", (project_id, args), {}),
         "search_api_calls": ("_tool_search_api_calls_async", (project_id, args), {}),
-        "route_usages": ("_tool_route_usages", (project_id, args), {}),
-        "suggest_endpoint_location": ("_tool_suggest_endpoint_location", (project_id, args), {}),
+        "route_usages": ("_tool_route_usages_async", (project_id, args), {}),
+        "suggest_endpoint_location": (
+            "_tool_suggest_endpoint_location_async",
+            (project_id, args),
+            {},
+        ),
         "suggest_frontend_client": (
-            "_tool_suggest_frontend_client",
+            "_tool_suggest_frontend_client_async",
             (project_id, root, args),
             {},
         ),
-        "impact_route_change": ("_tool_impact_route_change", (project_id, args), {}),
+        "impact_route_change": ("_tool_impact_route_change_async", (project_id, args), {}),
         "api_coverage_summary": ("_tool_api_coverage_summary_async", (project_id, args), {}),
         "unmatched_routes": ("_tool_unmatched_routes_async", (project_id, args), {}),
         "unmatched_calls": ("_tool_unmatched_calls_async", (project_id, args), {}),
-        "compare_api_contract": ("_tool_compare_api_contract", (project_id, root, args), {}),
+        "compare_api_contract": ("_tool_compare_api_contract_async", (project_id, root, args), {}),
         "suggest_contract_fix": (
-            "_tool_suggest_contract_fix",
+            "_tool_suggest_contract_fix_async",
             (project_id, root, meta, args),
             {},
         ),
-        "suggest_api_fix": ("_tool_suggest_api_fix", (project_id, root, meta, args), {}),
+        "suggest_api_fix": ("_tool_suggest_api_fix_async", (project_id, root, meta, args), {}),
     }
     spec = mapping.get(name)
     if spec is None:
