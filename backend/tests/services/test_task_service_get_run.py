@@ -49,14 +49,7 @@ async def test_get_run_does_not_start_scan_from_read_path(monkeypatch):
     async def _graph_warning_async(session, project_id: int):
         return task_service.GRAPH_NOT_READY_WARNING
 
-    scan_calls: list[tuple[int, int, bool]] = []
-
-    def _scan_with_background(project_id: int, org_id: int, background: bool = False):
-        scan_calls.append((project_id, org_id, background))
-        return {'task_id': 'scan-1', 'status': 'pending'}
-
     monkeypatch.setattr(task_service, '_graph_warning_async', _graph_warning_async)
-    monkeypatch.setattr(task_service, 'scan_with_background', _scan_with_background)
 
     payload = await task_service.get_run_async(
         _FakeAsyncSession(run), project_id=77, org_id=55, run_id=101
@@ -65,7 +58,6 @@ async def test_get_run_does_not_start_scan_from_read_path(monkeypatch):
     assert payload['warning'] == task_service.GRAPH_NOT_READY_WARNING
     assert 'graph_scan_task_id' not in payload
     assert 'graph_scan_status' not in payload
-    assert scan_calls == []
 
 
 @pytest.mark.anyio

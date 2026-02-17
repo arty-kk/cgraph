@@ -9,7 +9,7 @@ from app.services import task_service
 
 
 @pytest.mark.anyio
-async def test_run_task_async_offloads_sync_execution(monkeypatch):
+async def test_run_task_async_uses_direct_async_impl(monkeypatch):
     request = task_service.TaskRequest(
         target_path="backend/app/main.py",
         prompt="check",
@@ -26,11 +26,9 @@ async def test_run_task_async_offloads_sync_execution(monkeypatch):
     )
 
     captured: dict[str, object] = {}
-    entitlement_calls: list[int] = []
 
     class _Session:
-        async def commit(self):
-            return None
+        pass
 
     class _SessionCtx:
         async def __aenter__(self):
@@ -40,31 +38,22 @@ async def test_run_task_async_offloads_sync_execution(monkeypatch):
             _ = (exc_type, exc, tb)
             return False
 
-    async def _fake_enforce(session, org_id):
-        _ = session
-        entitlement_calls.append(org_id)
-
-    async def _fake_to_thread(func, *args, **kwargs):
-        captured["func"] = func
-        captured["args"] = args
-        captured["kwargs"] = kwargs
+    async def _fake_impl(session, project_id, org_id, req):
+        captured["session"] = session
+        captured["args"] = (project_id, org_id, req)
         return {"ok": True}
 
-    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
     monkeypatch.setattr(task_service, "AsyncSessionLocal", lambda: _SessionCtx())
-    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _fake_enforce)
+    monkeypatch.setattr(task_service, "_run_task_impl_async", _fake_impl)
 
     result = await task_service.run_task_async(11, 22, request)
 
     assert result == {"ok": True}
-    assert captured["func"] is task_service.run_task
     assert captured["args"] == (11, 22, request)
-    assert captured["kwargs"] == {"enforce_llm_entitlements": False}
-    assert entitlement_calls == [22]
 
 
 @pytest.mark.anyio
-async def test_run_task_async_skips_async_entitlements_for_impact_mode(monkeypatch):
+async def test_run_task_async_passes_through_impact_mode(monkeypatch):
     request = task_service.TaskRequest(
         target_path="backend/app/main.py",
         prompt="check",
@@ -80,23 +69,28 @@ async def test_run_task_async_skips_async_entitlements_for_impact_mode(monkeypat
         provided_fields=set(),
     )
 
-    async def _fake_to_thread(func, *args, **kwargs):
-        _ = (func, args, kwargs)
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    async def _fake_impl(session, project_id, org_id, req):
+        _ = (session, project_id, org_id, req)
         return {"ok": True}
 
-    async def _fail_enforce(session, org_id):
-        _ = (session, org_id)
-        raise AssertionError("entitlements check should be skipped")
-
-    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
-    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _fail_enforce)
+    monkeypatch.setattr(task_service, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(task_service, "_run_task_impl_async", _fake_impl)
 
     result = await task_service.run_task_async(11, 22, request)
 
     assert result == {"ok": True}
 
 
-def test_scan_with_background_uses_async_submit(monkeypatch):
+@pytest.mark.anyio
+async def test_scan_with_background_async_uses_async_submit(monkeypatch):
     async def _fake_get_active(project_id: int, org_id: int):
         return None, None
 
@@ -104,21 +98,12 @@ def test_scan_with_background_uses_async_submit(monkeypatch):
         _ = (project_id, org_id)
         return "scan-123"
 
-    run_calls = {"count": 0}
-    original_run = task_service.asyncio.run
-
-    def _fake_run(coro):
-        run_calls["count"] += 1
-        return original_run(coro)
-
     monkeypatch.setattr(task_service, "_get_active_scan_task_async", _fake_get_active)
     monkeypatch.setattr(task_service, "submit_scan_async", _fake_submit_scan)
-    monkeypatch.setattr(task_service.asyncio, "run", _fake_run)
 
-    result = task_service.scan_with_background(5, 9)
+    result = await task_service._scan_with_background_async(5, 9)
 
     assert result == {"task_id": "scan-123", "status": "pending"}
-    assert run_calls["count"] == 2
 
 
 @pytest.mark.anyio
@@ -181,25 +166,10 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
     monkeypatch.setattr(task_service, "_resolve_under_root_async", _fake_resolve_under_root_async)
     monkeypatch.setattr(
         task_service,
-        "resolve_under_root",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("sync resolve path must not be used")
-        ),
-    )
-    monkeypatch.setattr(
-        task_service,
         "_path_exists_and_is_file_async",
         _fake_path_exists_and_is_file,
     )
     monkeypatch.setattr(task_service, "get_or_build_contract_async", _fake_contract_async)
-    monkeypatch.setattr(
-        task_service,
-        "get_or_build_contract",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("sync contract path must not be used")
-        ),
-    )
-
     session = _Session()
     result = await task_service._apply_patch_and_record_async(
         session,
