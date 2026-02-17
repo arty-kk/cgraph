@@ -26,6 +26,23 @@ async def test_run_task_async_offloads_sync_execution(monkeypatch):
     )
 
     captured: dict[str, object] = {}
+    entitlement_calls: list[int] = []
+
+    class _Session:
+        async def commit(self):
+            return None
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return _Session()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    async def _fake_enforce(session, org_id):
+        _ = session
+        entitlement_calls.append(org_id)
 
     async def _fake_to_thread(func, *args, **kwargs):
         captured["func"] = func
@@ -34,13 +51,49 @@ async def test_run_task_async_offloads_sync_execution(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _fake_enforce)
 
     result = await task_service.run_task_async(11, 22, request)
 
     assert result == {"ok": True}
     assert captured["func"] is task_service.run_task
     assert captured["args"] == (11, 22, request)
-    assert captured["kwargs"] == {}
+    assert captured["kwargs"] == {"enforce_llm_entitlements": False}
+    assert entitlement_calls == [22]
+
+
+@pytest.mark.anyio
+async def test_run_task_async_skips_async_entitlements_for_impact_mode(monkeypatch):
+    request = task_service.TaskRequest(
+        target_path="backend/app/main.py",
+        prompt="check",
+        mode="impact",
+        profile=None,
+        depth=1,
+        dep_mode="contracts",
+        impact_max_nodes=None,
+        impact_max_depth=None,
+        apply_patch=False,
+        allow_out_of_context_patch=False,
+        agentic=False,
+        provided_fields=set(),
+    )
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        _ = (func, args, kwargs)
+        return {"ok": True}
+
+    async def _fail_enforce(session, org_id):
+        _ = (session, org_id)
+        raise AssertionError("entitlements check should be skipped")
+
+    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _fail_enforce)
+
+    result = await task_service.run_task_async(11, 22, request)
+
+    assert result == {"ok": True}
 
 
 def test_scan_with_background_uses_async_submit(monkeypatch):

@@ -60,8 +60,17 @@ from ..models import (
 )
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
 from ..scan import scan_files
-from ..services.entitlements_service import get_entitlement_bool, get_entitlement_int
-from ..services.usage_service import LLM_REQUESTS_KIND, check_and_increment
+from ..services.entitlements_service import (
+    get_entitlement_bool,
+    get_entitlement_bool_async,
+    get_entitlement_int,
+    get_entitlement_int_async,
+)
+from ..services.usage_service import (
+    LLM_REQUESTS_KIND,
+    check_and_increment,
+    check_and_increment_async,
+)
 from ..storage import StorageError, get_patch_download_url, read_patch_blob, store_patch_blob
 from ..utils import (
     ProjectLockTimeout,
@@ -1018,7 +1027,27 @@ def _enforce_llm_entitlements(org_id: int) -> None:
     )
 
 
-def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
+async def _enforce_llm_entitlements_async(session: AsyncSession, org_id: int) -> None:
+    ent_llm_enabled = await get_entitlement_bool_async(session, org_id, "llm_enabled")
+    if ent_llm_enabled is False:
+        raise ForbiddenError("LLM недоступен по плану")
+    limit = await get_entitlement_int_async(session, org_id, "llm_daily_request_limit")
+    await check_and_increment_async(
+        session,
+        org_id,
+        LLM_REQUESTS_KIND,
+        1,
+        limit if limit is not None else settings.llm_daily_request_limit,
+    )
+
+
+def run_task(
+    project_id: int,
+    org_id: int,
+    request: TaskRequest,
+    *,
+    enforce_llm_entitlements: bool = True,
+) -> dict:
     project = get_project(project_id, org_id=org_id)
 
     if len(request.prompt) > settings.max_prompt_chars:
@@ -1064,7 +1093,7 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
             context={"mode": mode or "auto"},
         )
 
-    if mode in ("analyze", "evolve", "fix") or mode is None:
+    if enforce_llm_entitlements and (mode in ("analyze", "evolve", "fix") or mode is None):
         _enforce_llm_entitlements(org_id)
 
     stage_telemetry: list[dict[str, Any]] = []
@@ -2194,7 +2223,17 @@ def run_task(project_id: int, org_id: int, request: TaskRequest) -> dict:
 
 
 async def run_task_async(project_id: int, org_id: int, request: TaskRequest) -> dict:
-    return await asyncio.to_thread(run_task, project_id, org_id, request)
+    if request.mode in ("analyze", "evolve", "fix") or request.mode is None:
+        async with AsyncSessionLocal() as session:
+            await _enforce_llm_entitlements_async(session, org_id)
+            await session.commit()
+    return await asyncio.to_thread(
+        run_task,
+        project_id,
+        org_id,
+        request,
+        enforce_llm_entitlements=False,
+    )
 
 
 async def run_task_with_background_async(
