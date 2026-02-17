@@ -48,10 +48,11 @@ from ..llm.policy import (
     ProfileName,
     ProfileParams,
     resolve_profile,
-    resolve_runtime_policy,
+    resolve_runtime_policy,  # noqa: F401 - compatibility for monkeypatch-based tests
+    resolve_runtime_policy_async,
 )
 from ..llm.quality_gates import QualityGateError, validate_llm_result
-from ..llm.routing_selector import select_runtime_route
+from ..llm.routing_selector import select_runtime_route_async
 from ..logging import get_logger
 from ..models import (
     AnalysisRun,
@@ -958,7 +959,7 @@ async def _run_task_impl_async(
 
     stage_telemetry: list[dict[str, Any]] = []
 
-    runtime_policy = resolve_runtime_policy(
+    runtime_policy = await resolve_runtime_policy_async(
         task_kind=mode,
         complexity_coeff=1.0,
         prompt_len=len(request.prompt),
@@ -1107,12 +1108,12 @@ async def _run_task_impl_async(
         1.0,
         2.0,
     )
-    fallback_policy = resolve_runtime_policy(
+    fallback_policy = await resolve_runtime_policy_async(
         task_kind=mode,
         complexity_coeff=complexity_coeff,
         prompt_len=prompt_len,
     )
-    routing_selection = select_runtime_route(
+    routing_selection = await select_runtime_route_async(
         task_kind=mode,
         complexity_coeff=complexity_coeff,
         prompt_len=prompt_len,
@@ -1471,6 +1472,7 @@ async def _run_task_impl_async(
                 try:
                     if mode == "analyze":
                         result, agentic_meta = await analyze_agentic_async(
+                            session,
                             project_id,
                             root,
                             target,
@@ -1490,6 +1492,7 @@ async def _run_task_impl_async(
                         model_used = active_policy.analysis_model
                     elif mode == "evolve":
                         result, agentic_meta = await evolve_agentic_async(
+                            session,
                             project_id,
                             root,
                             target,
@@ -1509,6 +1512,7 @@ async def _run_task_impl_async(
                         model_used = active_policy.analysis_model
                     elif mode == "fix":
                         result, agentic_meta = await fix_agentic_async(
+                            session,
                             project_id,
                             root,
                             target,
@@ -1587,7 +1591,7 @@ async def _run_task_impl_async(
                         for item in self_check_retry_missing_context
                         if isinstance(item, str)
                     )
-                    active_policy = resolve_runtime_policy(
+                    active_policy = await resolve_runtime_policy_async(
                         task_kind=mode,
                         complexity_coeff=retry_complexity_coeff,
                         prompt_len=retry_prompt_len,

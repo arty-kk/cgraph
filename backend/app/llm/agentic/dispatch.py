@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ...async_db import AsyncSessionLocal
 from .types import AgenticMeta
 
 
@@ -71,6 +75,31 @@ def _validate_tool_result(name: str, result: Any) -> dict:
 def _dispatch_tool(
     project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int
 ) -> dict:
+    async def _run() -> dict:
+        async with AsyncSessionLocal() as session:
+            return await _dispatch_tool_async(
+                session,
+                project_id,
+                root,
+                meta,
+                name,
+                args,
+                max_file_chars=max_file_chars,
+            )
+
+    return asyncio.run(_run())
+
+
+async def _dispatch_tool_async(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    meta: AgenticMeta,
+    name: str,
+    args: dict,
+    *,
+    max_file_chars: int,
+) -> dict:
     from . import tools
 
     package_module = sys.modules.get(__package__)
@@ -88,6 +117,17 @@ def _dispatch_tool(
             if callable(fn):
                 return fn
         return getattr(tools, attr)
+
+    async def _call_tool(
+        name_local: str,
+        fn: Callable[..., Any],
+        *fn_args: Any,
+        **fn_kwargs: Any,
+    ) -> dict:
+        out = fn(*fn_args, **fn_kwargs)
+        if hasattr(out, "__await__"):
+            out = await out
+        return _validate_tool_result(name_local, out)
 
     if name == "plan_retrieval":
         required_fields = (
@@ -127,171 +167,6 @@ def _dispatch_tool(
             )
         meta.retrieval_plan = dict(args)
         return _validate_tool_result(name, _tool_ok({"stored": True}))
-    plan_ready = bool(meta.retrieval_plan) or any(
-        entry.get("name") == "plan_retrieval" and entry.get("status") == "ok"
-        for entry in meta.tool_trace
-        if isinstance(entry, dict)
-    )
-    if not plan_ready:
-        return _validate_tool_result(
-            name,
-            _tool_error(
-                "policy_violation",
-                "Перед использованием инструментов нужно вызвать plan_retrieval.",
-            ),
-        )
-    if name == "get_file":
-        allowed = any(
-            entry.get("name")
-            in ("search_paths", "search_symbols", "search_text", "search_semantic")
-            and entry.get("status") == "ok"
-            for entry in meta.tool_trace
-            if isinstance(entry, dict)
-        )
-        if not allowed:
-            return _validate_tool_result(
-                name,
-                _tool_error(
-                    "policy_violation",
-                    "Перед get_file нужно выполнить search_paths, search_symbols, search_text "
-                    "или search_semantic.",
-                ),
-            )
-        tool_fn = _resolve_tool_func("_tool_get_file")
-        return _validate_tool_result(
-            name, tool_fn(project_id, root, meta, args, max_file_chars=max_file_chars)
-        )
-    if name == "get_file_lines":
-        allowed = any(
-            entry.get("name")
-            in ("search_paths", "search_symbols", "search_text", "search_semantic")
-            and entry.get("status") == "ok"
-            for entry in meta.tool_trace
-            if isinstance(entry, dict)
-        )
-        if not allowed:
-            return _validate_tool_result(
-                name,
-                _tool_error(
-                    "policy_violation",
-                    "Перед get_file_lines нужно выполнить search_paths, search_symbols, "
-                    "search_text или search_semantic.",
-                ),
-            )
-        tool_fn = _resolve_tool_func("_tool_get_file_lines")
-        return _validate_tool_result(
-            name, tool_fn(project_id, root, meta, args, max_file_chars=max_file_chars)
-        )
-    if name == "get_contract":
-        tool_fn = _resolve_tool_func("_tool_get_contract")
-        return _validate_tool_result(name, tool_fn(project_id, root, meta, args))
-    if name == "get_symbol":
-        tool_fn = _resolve_tool_func("_tool_get_symbol")
-        return _validate_tool_result(name, tool_fn(project_id, root, meta, args))
-    if name == "get_node":
-        tool_fn = _resolve_tool_func("_tool_get_node")
-        return _validate_tool_result(name, tool_fn(project_id, root, args))
-    if name == "get_neighbors":
-        tool_fn = _resolve_tool_func("_tool_get_neighbors")
-        return _validate_tool_result(name, tool_fn(project_id, root, args))
-    if name == "search_paths":
-        tool_fn = _resolve_tool_func("_tool_search_paths")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "search_tests":
-        tool_fn = _resolve_tool_func("_tool_search_tests")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "search_symbols":
-        tool_fn = _resolve_tool_func("_tool_search_symbols")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "get_tree_outline":
-        tool_fn = _resolve_tool_func("_tool_get_tree_outline")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "project_summary":
-        tool_fn = _resolve_tool_func("_tool_project_summary")
-        return _validate_tool_result(name, tool_fn(project_id, root, args))
-    if name == "search_text":
-        tool_fn = _resolve_tool_func("_tool_search_text")
-        return _validate_tool_result(
-            name, tool_fn(project_id, root, args, max_file_chars=max_file_chars)
-        )
-    if name == "search_semantic":
-        tool_fn = _resolve_tool_func("_tool_search_semantic")
-        return _validate_tool_result(
-            name, tool_fn(project_id, root, args, max_file_chars=max_file_chars)
-        )
-    if name == "search_routes":
-        tool_fn = _resolve_tool_func("_tool_search_routes")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "search_api_calls":
-        tool_fn = _resolve_tool_func("_tool_search_api_calls")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "route_usages":
-        tool_fn = _resolve_tool_func("_tool_route_usages")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "suggest_endpoint_location":
-        tool_fn = _resolve_tool_func("_tool_suggest_endpoint_location")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "suggest_frontend_client":
-        tool_fn = _resolve_tool_func("_tool_suggest_frontend_client")
-        return _validate_tool_result(name, tool_fn(project_id, root, args))
-    if name == "impact_route_change":
-        tool_fn = _resolve_tool_func("_tool_impact_route_change")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "api_coverage_summary":
-        tool_fn = _resolve_tool_func("_tool_api_coverage_summary")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "unmatched_routes":
-        tool_fn = _resolve_tool_func("_tool_unmatched_routes")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "unmatched_calls":
-        tool_fn = _resolve_tool_func("_tool_unmatched_calls")
-        return _validate_tool_result(name, tool_fn(project_id, args))
-    if name == "compare_api_contract":
-        tool_fn = _resolve_tool_func("_tool_compare_api_contract")
-        return _validate_tool_result(name, tool_fn(project_id, root, args))
-    if name == "suggest_contract_fix":
-        tool_fn = _resolve_tool_func("_tool_suggest_contract_fix")
-        return _validate_tool_result(name, tool_fn(project_id, root, meta, args))
-    if name == "suggest_api_fix":
-        tool_fn = _resolve_tool_func("_tool_suggest_api_fix")
-        return _validate_tool_result(name, tool_fn(project_id, root, meta, args))
-    return _validate_tool_result(name, _tool_error("unknown_tool", f"Unknown tool: {name}"))
-
-
-async def _dispatch_tool_async(
-    project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int
-) -> dict:
-    from . import tools
-
-    package_module = sys.modules.get(__package__)
-
-    def _resolve_tool_func(attr: str) -> Callable[..., dict]:
-        if package_module is None:
-            try:
-                pkg = importlib.import_module(__package__)
-            except Exception:
-                pkg = None
-        else:
-            pkg = package_module
-        if pkg is not None:
-            fn = getattr(pkg, attr, None)
-            if callable(fn):
-                return fn
-        return getattr(tools, attr)
-
-    async def _call_tool(
-        name_local: str,
-        fn: Callable[..., Any],
-        *fn_args: Any,
-        **fn_kwargs: Any,
-    ) -> dict:
-        out = fn(*fn_args, **fn_kwargs)
-        if hasattr(out, "__await__"):
-            out = await out
-        return _validate_tool_result(name_local, out)
-
-    if name == "plan_retrieval":
-        return _dispatch_tool(project_id, root, meta, name, args, max_file_chars=max_file_chars)
 
     plan_ready = bool(meta.retrieval_plan) or any(
         entry.get("name") == "plan_retrieval" and entry.get("status") == "ok"
@@ -364,8 +239,8 @@ async def _dispatch_tool_async(
         )
 
     mapping = {
-        "get_contract": ("_tool_get_contract_async", (project_id, root, meta, args), {}),
-        "get_symbol": ("_tool_get_symbol_async", (project_id, root, meta, args), {}),
+        "get_contract": ("_tool_get_contract_async", (session, project_id, root, meta, args), {}),
+        "get_symbol": ("_tool_get_symbol_async", (session, project_id, root, meta, args), {}),
         "get_node": ("_tool_get_node_async", (project_id, root, args), {}),
         "get_neighbors": ("_tool_get_neighbors_async", (project_id, root, args), {}),
         "search_paths": ("_tool_search_paths_async", (project_id, args), {}),

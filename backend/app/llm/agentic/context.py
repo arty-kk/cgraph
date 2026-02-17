@@ -4,11 +4,12 @@ import asyncio
 import re
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ...async_db import AsyncSessionLocal
 from ...config import settings
-from ...contracts import get_or_build_contract
+from ...contracts import get_or_build_contract_async
 from ...models import ApiCall, ApiRoute, FileEdge, FileNode
 from ...utils import resolve_under_root
 
@@ -123,19 +124,28 @@ def _seed_context(
     project_id: int, root: Path, target_rel: str, depth: int, *, max_file_chars: int
 ) -> dict:
     """Offline/sync compatibility wrapper. Runtime code must use async variant."""
-    return asyncio.run(
-        _seed_context_async(
-            project_id,
-            root,
-            target_rel,
-            depth,
-            max_file_chars=max_file_chars,
-        )
-    )
+    async def _run() -> dict:
+        async with AsyncSessionLocal() as s:
+            return await _seed_context_async(
+                s,
+                project_id,
+                root,
+                target_rel,
+                depth,
+                max_file_chars=max_file_chars,
+            )
+
+    return asyncio.run(_run())
 
 
 async def _seed_context_async(
-    project_id: int, root: Path, target_rel: str, depth: int, *, max_file_chars: int
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    target_rel: str,
+    depth: int,
+    *,
+    max_file_chars: int,
 ) -> dict:
     abs_target, target_norm = resolve_under_root(
         root, target_rel, max_length=settings.max_rel_path_chars
@@ -151,24 +161,22 @@ async def _seed_context_async(
         target_text = target_text[:max_file_chars]
 
     try:
-        contract = await asyncio.to_thread(get_or_build_contract, project_id, root, target_norm)
+        contract = await get_or_build_contract_async(session, project_id, root, target_norm)
     except Exception:
         contract = {}
 
-    node = None
-    async with AsyncSessionLocal() as s:
-        node = (
-            (
-                await s.execute(
-                    select(FileNode).where(
-                        FileNode.project_id == project_id,
-                        FileNode.path == target_norm,
-                    )
+    node = (
+        (
+            await session.execute(
+                select(FileNode).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path == target_norm,
                 )
             )
-            .scalars()
-            .first()
         )
+        .scalars()
+        .first()
+    )
     node_metrics = (
         {
             "path": node.path,
@@ -187,58 +195,57 @@ async def _seed_context_async(
     routes_in_file: list[dict] = []
     calls_in_file: list[dict] = []
     try:
-        async with AsyncSessionLocal() as s:
-            rr = (
-                (
-                    await s.execute(
-                        select(
-                            ApiRoute.method,
-                            ApiRoute.path,
-                            ApiRoute.handler_name,
-                            ApiRoute.lineno,
-                        )
-                        .where(
-                            ApiRoute.project_id == project_id,
-                            ApiRoute.source_path == target_norm,
-                        )
-                        .order_by(ApiRoute.path.asc())
-                        .limit(20)
+        rr = (
+            (
+                await session.execute(
+                    select(
+                        ApiRoute.method,
+                        ApiRoute.path,
+                        ApiRoute.handler_name,
+                        ApiRoute.lineno,
                     )
+                    .where(
+                        ApiRoute.project_id == project_id,
+                        ApiRoute.source_path == target_norm,
+                    )
+                    .order_by(ApiRoute.path.asc())
+                    .limit(20)
                 )
-                .all()
             )
-            for row in rr:
-                if isinstance(row, (tuple, list)) and len(row) >= 4:
-                    routes_in_file.append(
-                        {
-                            "method": row[0],
-                            "path": row[1],
-                            "handler_name": row[2],
-                            "lineno": int(row[3] or 0),
-                        }
-                    )
+            .all()
+        )
+        for row in rr:
+            if isinstance(row, (tuple, list)) and len(row) >= 4:
+                routes_in_file.append(
+                    {
+                        "method": row[0],
+                        "path": row[1],
+                        "handler_name": row[2],
+                        "lineno": int(row[3] or 0),
+                    }
+                )
 
-            cc = (
-                (
-                    await s.execute(
-                        select(ApiCall.method, ApiCall.path, ApiCall.client, ApiCall.lineno)
-                        .where(ApiCall.project_id == project_id, ApiCall.source_path == target_norm)
-                        .order_by(ApiCall.path.asc())
-                        .limit(20)
-                    )
+        cc = (
+            (
+                await session.execute(
+                    select(ApiCall.method, ApiCall.path, ApiCall.client, ApiCall.lineno)
+                    .where(ApiCall.project_id == project_id, ApiCall.source_path == target_norm)
+                    .order_by(ApiCall.path.asc())
+                    .limit(20)
                 )
-                .all()
             )
-            for row in cc:
-                if isinstance(row, (tuple, list)) and len(row) >= 4:
-                    calls_in_file.append(
-                        {
-                            "method": row[0],
-                            "path": row[1],
-                            "client": row[2],
-                            "lineno": int(row[3] or 0),
-                        }
-                    )
+            .all()
+        )
+        for row in cc:
+            if isinstance(row, (tuple, list)) and len(row) >= 4:
+                calls_in_file.append(
+                    {
+                        "method": row[0],
+                        "path": row[1],
+                        "client": row[2],
+                        "lineno": int(row[3] or 0),
+                    }
+                )
     except Exception:
         routes_in_file = []
         calls_in_file = []
@@ -270,3 +277,4 @@ async def _seed_context_async(
             "note": "Lists are truncated hints. Use get_neighbors() to expand.",
         },
     }
+

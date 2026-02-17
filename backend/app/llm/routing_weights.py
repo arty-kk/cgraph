@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from ..config import settings
-from ..infra.cache import cache_get_json
+from ..errors import ExternalServiceError
+from ..infra.cache import cache_get_json, cache_get_json_async
 
 _ALLOWED_SLA_PROFILES = {"balanced", "fast", "cheap", "quality"}
 
@@ -38,9 +39,47 @@ def resolve_routing_weights(
         fallback = {"quality": 0.4, "latency": 0.25, "token_cost": 0.2, "fail_rate": 0.15}
 
     normalized_sla_profile = _normalize_sla_profile(sla_profile)
-    cached = cache_get_json(
-        ["routing_policy", "weights", settings.llm_routing_policy_version, normalized_sla_profile]
-    )
+    try:
+        cached = cache_get_json(
+            [
+                "routing_policy",
+                "weights",
+                settings.llm_routing_policy_version,
+                normalized_sla_profile,
+            ]
+        )
+    except ExternalServiceError:
+        return fallback
+    if not isinstance(cached, dict):
+        return fallback
+
+    payload = cached.get("weights") if isinstance(cached.get("weights"), dict) else cached
+    if not isinstance(payload, dict):
+        return fallback
+
+    resolved = _validate_and_normalize_weights(payload)
+    return resolved if resolved is not None else fallback
+
+
+async def resolve_routing_weights_async(
+    sla_profile: str | None, defaults: dict[str, float]
+) -> dict[str, float]:
+    fallback = _validate_and_normalize_weights(defaults)
+    if fallback is None:
+        fallback = {"quality": 0.4, "latency": 0.25, "token_cost": 0.2, "fail_rate": 0.15}
+
+    normalized_sla_profile = _normalize_sla_profile(sla_profile)
+    try:
+        cached = await cache_get_json_async(
+            [
+                "routing_policy",
+                "weights",
+                settings.llm_routing_policy_version,
+                normalized_sla_profile,
+            ]
+        )
+    except ExternalServiceError:
+        return fallback
     if not isinstance(cached, dict):
         return fallback
 

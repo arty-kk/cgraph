@@ -89,3 +89,28 @@ async def test_submit_docs_async_uses_async_idempotency_key(monkeypatch):
         "org_id": 5,
         "payload": {"project_id": 99},
     }
+
+
+@pytest.mark.anyio
+async def test_enqueue_celery_task_async_uses_to_thread(monkeypatch):
+    calls: dict[str, object] = {}
+
+    class _Task:
+        def apply_async(self, *, args, queue):
+            _ = (args, queue)
+            return None
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return None
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+
+    task = _Task()
+    await task_queue._enqueue_celery_task_async(task, args=["a", "b"], queue="heavy")
+
+    assert calls["func"] == task.apply_async
+    assert calls["args"] == ()
+    assert calls["kwargs"] == {"args": ["a", "b"], "queue": "heavy"}
