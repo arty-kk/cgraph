@@ -6,7 +6,7 @@ from ...config import settings
 from ..policy import DEFAULT_POLICY, ModelPolicy
 from ..schemas import ANALYZE_SCHEMA, FIX_SCHEMA
 from .call import _agentic_json_call, _agentic_json_call_async
-from .context import _seed_context
+from .context import _seed_context, _seed_context_async
 from .types import AgenticMeta
 
 
@@ -179,7 +179,7 @@ async def analyze_agentic_async(
     allow_self_check_retry: bool = True,
     allow_evidence_retry: bool = True,
 ) -> tuple[dict, AgenticMeta]:
-    seed = _seed_context(
+    seed = await _seed_context_async(
         project_id,
         root,
         target_rel,
@@ -228,7 +228,7 @@ async def evolve_agentic_async(
     allow_self_check_retry: bool = True,
     allow_evidence_retry: bool = True,
 ) -> tuple[dict, AgenticMeta]:
-    seed = _seed_context(
+    seed = await _seed_context_async(
         project_id,
         root,
         target_rel,
@@ -281,7 +281,7 @@ async def fix_agentic_async(
     allow_self_check_retry: bool = True,
     allow_evidence_retry: bool = True,
 ) -> tuple[dict, AgenticMeta]:
-    seed = _seed_context(
+    seed = await _seed_context_async(
         project_id,
         root,
         target_rel,

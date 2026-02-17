@@ -256,3 +256,160 @@ def _dispatch_tool(
         tool_fn = _resolve_tool_func("_tool_suggest_api_fix")
         return _validate_tool_result(name, tool_fn(project_id, root, meta, args))
     return _validate_tool_result(name, _tool_error("unknown_tool", f"Unknown tool: {name}"))
+
+
+async def _dispatch_tool_async(
+    project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int
+) -> dict:
+    from . import tools
+
+    package_module = sys.modules.get(__package__)
+
+    def _resolve_tool_func(attr: str) -> Callable[..., dict]:
+        if package_module is None:
+            try:
+                pkg = importlib.import_module(__package__)
+            except Exception:
+                pkg = None
+        else:
+            pkg = package_module
+        if pkg is not None:
+            fn = getattr(pkg, attr, None)
+            if callable(fn):
+                return fn
+        return getattr(tools, attr)
+
+    async def _call_tool(
+        name_local: str,
+        fn: Callable[..., Any],
+        *fn_args: Any,
+        **fn_kwargs: Any,
+    ) -> dict:
+        out = fn(*fn_args, **fn_kwargs)
+        if hasattr(out, "__await__"):
+            out = await out
+        return _validate_tool_result(name_local, out)
+
+    if name == "plan_retrieval":
+        return _dispatch_tool(project_id, root, meta, name, args, max_file_chars=max_file_chars)
+
+    plan_ready = bool(meta.retrieval_plan) or any(
+        entry.get("name") == "plan_retrieval" and entry.get("status") == "ok"
+        for entry in meta.tool_trace
+        if isinstance(entry, dict)
+    )
+    if not plan_ready:
+        return _validate_tool_result(
+            name,
+            _tool_error(
+                "policy_violation",
+                "Перед использованием инструментов нужно вызвать plan_retrieval.",
+            ),
+        )
+
+    if name == "get_file":
+        allowed = any(
+            entry.get("name")
+            in ("search_paths", "search_symbols", "search_text", "search_semantic")
+            and entry.get("status") == "ok"
+            for entry in meta.tool_trace
+            if isinstance(entry, dict)
+        )
+        if not allowed:
+            return _validate_tool_result(
+                name,
+                _tool_error(
+                    "policy_violation",
+                    "Перед get_file нужно выполнить search_paths, search_symbols, search_text "
+                    "или search_semantic.",
+                ),
+            )
+        fn = _resolve_tool_func("_tool_get_file_async")
+        return await _call_tool(
+            name,
+            fn,
+            project_id,
+            root,
+            meta,
+            args,
+            max_file_chars=max_file_chars,
+        )
+
+    if name == "get_file_lines":
+        allowed = any(
+            entry.get("name")
+            in ("search_paths", "search_symbols", "search_text", "search_semantic")
+            and entry.get("status") == "ok"
+            for entry in meta.tool_trace
+            if isinstance(entry, dict)
+        )
+        if not allowed:
+            return _validate_tool_result(
+                name,
+                _tool_error(
+                    "policy_violation",
+                    "Перед get_file_lines нужно выполнить search_paths, search_symbols, "
+                    "search_text или search_semantic.",
+                ),
+            )
+        fn = _resolve_tool_func("_tool_get_file_lines_async")
+        return await _call_tool(
+            name,
+            fn,
+            project_id,
+            root,
+            meta,
+            args,
+            max_file_chars=max_file_chars,
+        )
+
+    mapping = {
+        "get_contract": ("_tool_get_contract", (project_id, root, meta, args), {}),
+        "get_symbol": ("_tool_get_symbol", (project_id, root, meta, args), {}),
+        "get_node": ("_tool_get_node_async", (project_id, root, args), {}),
+        "get_neighbors": ("_tool_get_neighbors_async", (project_id, root, args), {}),
+        "search_paths": ("_tool_search_paths_async", (project_id, args), {}),
+        "search_tests": ("_tool_search_tests", (project_id, args), {}),
+        "search_symbols": ("_tool_search_symbols_async", (project_id, args), {}),
+        "get_tree_outline": ("_tool_get_tree_outline", (project_id, args), {}),
+        "project_summary": ("_tool_project_summary", (project_id, root, args), {}),
+        "search_text": (
+            "_tool_search_text",
+            (project_id, root, args),
+            {"max_file_chars": max_file_chars},
+        ),
+        "search_semantic": (
+            "_tool_search_semantic_async",
+            (project_id, root, args),
+            {"max_file_chars": max_file_chars},
+        ),
+        "search_routes": ("_tool_search_routes_async", (project_id, args), {}),
+        "search_api_calls": ("_tool_search_api_calls_async", (project_id, args), {}),
+        "route_usages": ("_tool_route_usages", (project_id, args), {}),
+        "suggest_endpoint_location": ("_tool_suggest_endpoint_location", (project_id, args), {}),
+        "suggest_frontend_client": (
+            "_tool_suggest_frontend_client",
+            (project_id, root, args),
+            {},
+        ),
+        "impact_route_change": ("_tool_impact_route_change", (project_id, args), {}),
+        "api_coverage_summary": ("_tool_api_coverage_summary_async", (project_id, args), {}),
+        "unmatched_routes": ("_tool_unmatched_routes_async", (project_id, args), {}),
+        "unmatched_calls": ("_tool_unmatched_calls_async", (project_id, args), {}),
+        "compare_api_contract": ("_tool_compare_api_contract", (project_id, root, args), {}),
+        "suggest_contract_fix": (
+            "_tool_suggest_contract_fix",
+            (project_id, root, meta, args),
+            {},
+        ),
+        "suggest_api_fix": ("_tool_suggest_api_fix", (project_id, root, meta, args), {}),
+    }
+    spec = mapping.get(name)
+    if spec is None:
+        return _validate_tool_result(
+            name,
+            _tool_error("unknown_tool", f"Unknown tool: {name}"),
+        )
+    attr, fn_args, fn_kwargs = spec
+    fn = _resolve_tool_func(attr)
+    return await _call_tool(name, fn, *fn_args, **fn_kwargs)

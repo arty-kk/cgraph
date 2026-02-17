@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -15,6 +16,7 @@ from ...api_map import (
     static_match_score,
 )
 from ...api_scaffold import build_frontend_snippet, suggest_frontend_module_file
+from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ...contracts import get_or_build_contract
 from ...db import get_session
@@ -795,6 +797,18 @@ def _check_indexed(project_id: int) -> dict | None:
     return None
 
 
+async def _check_indexed_async(project_id: int) -> dict | None:
+    async with AsyncSessionLocal() as s:
+        row = (
+            await s.execute(
+                select(FileNode.id).where(FileNode.project_id == project_id).limit(1)
+            )
+        ).first()
+    if not row:
+        return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
+    return None
+
+
 def _tool_get_file(
     project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int
 ) -> dict:
@@ -805,7 +819,11 @@ def _tool_get_file(
     max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
     max_chars = min(max_chars, max_file_chars)
     try:
-        abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+        abs_path, rel_norm = resolve_under_root(
+            root,
+            path,
+            max_length=settings.max_rel_path_chars,
+        )
     except Exception as e:
         return _tool_error("invalid_path", str(e))
     if not abs_path.exists():
@@ -865,6 +883,118 @@ def _tool_get_file_lines(
     except Exception as e:
         return _tool_error(
             "read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)}
+        )
+    snippet = "".join(buffer)
+    truncated = len(snippet) > max_chars
+    if truncated:
+        snippet = snippet[:max_chars]
+    meta.full_file_paths.add(rel_norm)
+    return _tool_ok(
+        {
+            "path": rel_norm,
+            "start_line": s_ln,
+            "end_line": e_ln,
+            "content": snippet,
+            "truncated": truncated,
+            "max_chars": max_chars,
+        }
+    )
+
+
+
+
+async def _tool_get_file_async(
+    project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int
+) -> dict:
+    path = args.get("path")
+    if not isinstance(path, str) or not path.strip():
+        return _tool_error("bad_args", "path is required")
+    max_file_chars = max(1, min(int(max_file_chars), 200_000))
+    max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
+    max_chars = min(max_chars, max_file_chars)
+    try:
+        abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+    except Exception as e:
+        return _tool_error("invalid_path", str(e))
+    if not abs_path.exists():
+        return _tool_error("not_found", "path not found", {"path": rel_norm})
+    if not abs_path.is_file():
+        return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
+
+    def _read_local() -> str:
+        with abs_path.open(encoding="utf-8", errors="replace") as f:
+            return f.read(max_chars + 1)
+
+    try:
+        text = await asyncio.to_thread(_read_local)
+    except Exception as e:
+        return _tool_error(
+            "read_failed",
+            "failed to read file",
+            {"path": rel_norm, "reason": str(e)},
+        )
+    truncated = len(text) > max_chars
+    text = text[:max_chars]
+    meta.full_file_paths.add(rel_norm)
+    return _tool_ok(
+        {
+            "path": rel_norm,
+            "content": text,
+            "truncated": truncated,
+            "max_chars": max_chars,
+        }
+    )
+
+
+async def _tool_get_file_lines_async(
+    project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int
+) -> dict:
+    path = args.get("path")
+    start_line = args.get("start_line")
+    end_line = args.get("end_line")
+    if not isinstance(path, str) or not path.strip():
+        return _tool_error("bad_args", "path is required")
+    try:
+        s_ln = int(start_line)
+        e_ln = int(end_line)
+    except Exception:
+        return _tool_error("bad_args", "start_line/end_line must be integers")
+    if s_ln < 1 or e_ln < 1 or e_ln < s_ln:
+        return _tool_error("bad_args", "invalid line range")
+    max_file_chars = max(1, min(int(max_file_chars), 200_000))
+    max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
+    max_chars = min(max_chars, max_file_chars)
+    try:
+        abs_path, rel_norm = resolve_under_root(
+            root,
+            path,
+            max_length=settings.max_rel_path_chars,
+        )
+    except Exception as e:
+        return _tool_error("invalid_path", str(e))
+    if not abs_path.exists():
+        return _tool_error("not_found", "path not found", {"path": rel_norm})
+    if not abs_path.is_file():
+        return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
+
+    def _read_lines() -> list[str]:
+        with abs_path.open(encoding="utf-8", errors="replace") as f:
+            buffer: list[str] = []
+            for line_num, line in enumerate(f, start=1):
+                if line_num < s_ln:
+                    continue
+                buffer.append(line)
+                if line_num >= e_ln:
+                    break
+            return buffer
+
+    try:
+        buffer = await asyncio.to_thread(_read_lines)
+    except Exception as e:
+        return _tool_error(
+            "read_failed",
+            "failed to read file",
+            {"path": rel_norm, "reason": str(e)},
         )
     snippet = "".join(buffer)
     truncated = len(snippet) > max_chars
@@ -2084,6 +2214,263 @@ def _compute_api_coverage(project_id: int, *, prefix: str, method_filter: str = 
     }
 
 
+async def _compute_prefix_map_async(project_id: int) -> dict[tuple[str, str], list[str]]:
+    edges: dict[tuple[str, str], list[tuple[tuple[str, str], str]]] = {}
+    nodes: set[tuple[str, str]] = set()
+    child_set: set[tuple[str, str]] = set()
+
+    async with AsyncSessionLocal() as s:
+        rows = (
+            await s.execute(select(ApiInclude).where(ApiInclude.project_id == project_id))
+        ).scalars().all()
+    for inc in rows:
+        ps = str(inc.parent_source_path or "")
+        pi = str(inc.parent_instance or "")
+        cs = str(inc.child_source_path or "")
+        ci = str(inc.child_instance or "")
+        if not ps or not pi or not cs or not ci:
+            continue
+        parent = (ps, pi)
+        child = (cs, ci)
+        pref = str(inc.prefix or "")
+        nodes.add(parent)
+        nodes.add(child)
+        child_set.add(child)
+        edges.setdefault(parent, []).append((child, pref))
+
+    roots = [n for n in nodes if n not in child_set]
+    if not roots:
+        roots = list(nodes)
+
+    prefixes: dict[tuple[str, str], list[str]] = {r: [""] for r in roots}
+    max_depth = 8
+    queue: list[tuple[tuple[str, str], str, int]] = [(r, "", 0) for r in roots]
+    seen_states: set[tuple[tuple[str, str], str, int]] = set()
+
+    while queue:
+        node, cur_pref, depth = queue.pop(0)
+        if depth > max_depth:
+            continue
+        for child, add_pref in edges.get(node) or []:
+            new_pref = _join(cur_pref, add_pref)
+            lst = prefixes.setdefault(child, [])
+            if new_pref not in lst:
+                lst.append(new_pref)
+                if len(lst) > 12:
+                    lst[:] = lst[:12]
+            st = (child, new_pref, depth + 1)
+            if st in seen_states:
+                continue
+            seen_states.add(st)
+            queue.append((child, new_pref, depth + 1))
+    return prefixes
+
+
+async def _build_call_index_async(
+    project_id: int,
+    *,
+    prefix: str,
+    method_filter: str = "",
+) -> tuple[list[ApiCall], dict[str, dict[str, list[dict]]]]:
+    max_calls = 50_000
+    async with AsyncSessionLocal() as s:
+        q = select(ApiCall).where(ApiCall.project_id == project_id)
+        if method_filter:
+            q = q.where(ApiCall.method == method_filter)
+        rows = (
+            await s.execute(
+                q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(max_calls))
+            )
+        ).scalars().all()
+
+    idx: dict[str, dict[str, list[dict]]] = {}
+    filtered: list[ApiCall] = []
+    for c in rows:
+        pnorm = _normalize_http_path(str(c.path or ""))
+        if not pnorm:
+            continue
+        if prefix and not pnorm.startswith(prefix):
+            continue
+        tokens = split_skeleton(str(c.path_skeleton or ""))
+        if not tokens:
+            continue
+        m = str(c.method or "").upper()
+        if not m:
+            continue
+        filtered.append(c)
+        keys = _candidate_keys_from_path(pnorm) or [""]
+        for k in keys:
+            idx.setdefault(m, {}).setdefault(k, []).append(
+                {
+                    "id": int(getattr(c, "id", 0) or 0),
+                    "tokens": tokens,
+                    "path_norm": pnorm,
+                    "path": str(c.path or ""),
+                    "source_path": str(c.source_path or ""),
+                    "lineno": int(c.lineno or 0),
+                    "client": str(c.client or ""),
+                }
+            )
+    return filtered, idx
+
+
+async def _build_route_patterns_async(
+    project_id: int,
+    *,
+    prefix: str,
+    method_filter: str = "",
+) -> tuple[list[ApiRoute], dict[int, list[dict]], dict[str, dict[str, list[dict]]]]:
+    max_routes = 50_000
+    prefix_map = await _compute_prefix_map_async(project_id)
+
+    async with AsyncSessionLocal() as s:
+        inc_rows = (
+            await s.execute(
+                select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
+                    ApiInclude.project_id == project_id
+                )
+            )
+        ).all()
+    included: set[tuple[str, str]] = set()
+    for row in inc_rows:
+        if isinstance(row, (tuple, list)) and len(row) >= 2:
+            cs, ci = row[0], row[1]
+        else:
+            continue
+        if isinstance(cs, str) and cs and isinstance(ci, str) and ci:
+            included.add((cs, ci))
+
+    async with AsyncSessionLocal() as s:
+        q = select(ApiRoute).where(ApiRoute.project_id == project_id)
+        if method_filter:
+            q = q.where(ApiRoute.method == method_filter)
+        routes = (
+            await s.execute(
+                q.order_by(ApiRoute.source_path.asc(), ApiRoute.lineno.asc()).limit(int(max_routes))
+            )
+        ).scalars().all()
+
+    patterns_by_route: dict[int, list[dict]] = {}
+    pindex: dict[str, dict[str, list[dict]]] = {}
+
+    for r in routes:
+        rid = int(getattr(r, "id", 0) or 0)
+        method = str(r.method or "").upper()
+        if not method:
+            continue
+        inst = ""
+        if isinstance(r.decorator, str) and "." in r.decorator:
+            inst = r.decorator.split(".", 1)[0]
+        source_path = str(r.source_path or "")
+        reachable = bool((source_path, inst) in included) or (inst == "app")
+        prefs = prefix_map.get((source_path, inst)) if reachable else None
+        if not prefs:
+            prefs = [""]
+
+        local_path = str(r.path or "")
+        if not local_path.startswith("/"):
+            local_path = "/" + local_path if local_path else "/"
+
+        variants: list[dict] = []
+        for pfx in prefs:
+            full_path = _join(pfx, local_path)
+            if prefix and not full_path.startswith(prefix):
+                continue
+            skel = backend_path_skeleton(full_path)
+            tokens = split_skeleton(skel)
+            if not tokens:
+                continue
+            static_keys = _candidate_keys_from_static_prefix(tokens) or [""]
+            variant = {
+                "route_id": rid,
+                "method": method,
+                "source_path": source_path,
+                "handler_name": str(r.handler_name or ""),
+                "lineno": int(r.lineno or 0),
+                "decorator": str(r.decorator or ""),
+                "local_path": str(r.path or ""),
+                "full_path": full_path,
+                "skeleton": skel,
+                "tokens": tokens,
+                "reachable": bool(reachable),
+                "static_keys": static_keys,
+            }
+            variants.append(variant)
+            for k in static_keys:
+                pindex.setdefault(method, {}).setdefault(k, []).append(variant)
+
+        if variants:
+            patterns_by_route[rid] = variants
+
+    return routes, patterns_by_route, pindex
+
+
+async def _compute_api_coverage_async(
+    project_id: int,
+    *,
+    prefix: str,
+    method_filter: str = "",
+) -> dict:
+    calls, call_index = await _build_call_index_async(
+        project_id,
+        prefix=prefix,
+        method_filter=method_filter,
+    )
+    routes, patterns_by_route, pattern_index = await _build_route_patterns_async(
+        project_id,
+        prefix=prefix,
+        method_filter=method_filter,
+    )
+
+    matched_call_ids: set[int] = set()
+    for c in calls:
+        cid = int(getattr(c, "id", 0) or 0)
+        m = str(c.method or "").upper()
+        pnorm = _normalize_http_path(str(c.path or ""))
+        ctoks = split_skeleton(str(c.path_skeleton or ""))
+        if not ctoks or not m or not pnorm:
+            continue
+        keys = _candidate_keys_from_path(pnorm) or [""]
+        candidates: list[dict] = []
+        for k in keys:
+            candidates.extend(pattern_index.get(m, {}).get(k, []))
+        if candidates and _call_matches_any_pattern(ctoks, candidates):
+            matched_call_ids.add(cid)
+
+    matched_route_ids: set[int] = set()
+    for r in routes:
+        rid = int(getattr(r, "id", 0) or 0)
+        variants = patterns_by_route.get(rid) or []
+        if not variants:
+            continue
+        ok = False
+        for v in variants:
+            method = str(v.get("method") or "")
+            vtoks = v.get("tokens") or []
+            if not method or not isinstance(vtoks, list) or not vtoks:
+                continue
+            candidates_calls: list[dict] = []
+            for k in v.get("static_keys") or [""]:
+                candidates_calls.extend(call_index.get(method, {}).get(k, []))
+            if not candidates_calls:
+                candidates_calls = call_index.get(method, {}).get("", [])
+            if candidates_calls and _pattern_matches_any_call(vtoks, candidates_calls):
+                ok = True
+                break
+        if ok:
+            matched_route_ids.add(rid)
+
+    return {
+        "prefix": prefix,
+        "method_filter": method_filter,
+        "routes": routes,
+        "calls": calls,
+        "matched_route_ids": matched_route_ids,
+        "matched_call_ids": matched_call_ids,
+        "patterns_by_route": patterns_by_route,
+    }
+
+
 def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
     prefix = _prefix_norm(args.get("prefix"), default="/api")
     method_filter = _method_norm(args.get("method"))
@@ -2349,6 +2736,571 @@ def _compute_prefix_map(project_id: int) -> dict[tuple[str, str], list[str]]:
             queue.append((child, new_pref, depth + 1))
 
     return prefixes
+
+
+
+
+async def _tool_get_node_async(project_id: int, root: Path, args: dict) -> dict:
+    path = args.get("path")
+    if not isinstance(path, str) or not path.strip():
+        return _tool_error("bad_args", "path is required")
+    try:
+        _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+    except Exception as e:
+        return _tool_error("invalid_path", str(e))
+    async with AsyncSessionLocal() as s:
+        n = (
+            (
+                await s.execute(
+                    select(FileNode).where(
+                        FileNode.project_id == project_id,
+                        FileNode.path == rel_norm,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+    if not n:
+        return _tool_error("not_found", "node not found", {"path": rel_norm})
+    return _tool_ok(
+        {
+            "path": n.path,
+            "language": n.language,
+            "loc": n.loc,
+            "complexity": n.complexity,
+            "fan_in": n.fan_in,
+            "fan_out": n.fan_out,
+            "scc_id": n.scc_id,
+            "status": n.status,
+        }
+    )
+
+
+async def _tool_get_neighbors_async(project_id: int, root: Path, args: dict) -> dict:
+    path = args.get("path")
+    direction = args.get("direction")
+    depth = _clamp_int(args.get("depth"), 1, 0, 6)
+    limit = _clamp_int(args.get("limit"), 200, 1, 2000)
+    if not isinstance(path, str) or not path.strip():
+        return _tool_error("bad_args", "path is required")
+    if direction not in ("in", "out"):
+        return _tool_error("bad_args", "direction must be 'in' or 'out'")
+    try:
+        _abs, rel_norm = resolve_under_root(
+            root,
+            path,
+            max_length=settings.max_rel_path_chars,
+        )
+    except Exception as e:
+        return _tool_error("invalid_path", str(e))
+    from .context import _neighbors_limited_async
+
+    neigh = await _neighbors_limited_async(
+        project_id,
+        rel_norm,
+        direction=direction,
+        depth=depth,
+        limit=limit,
+    )
+    return _tool_ok(
+        {
+            "path": rel_norm,
+            "direction": direction,
+            "depth": depth,
+            "neighbors": neigh,
+            "count": len(neigh),
+        }
+    )
+
+
+async def _tool_search_paths_async(project_id: int, args: dict) -> dict:
+    indexed_error = await _check_indexed_async(project_id)
+    if indexed_error:
+        return indexed_error
+    query = args.get("query")
+    limit = _clamp_int(args.get("limit"), 20, 1, 100)
+    if not isinstance(query, str) or not query.strip():
+        return _tool_error("bad_args", "query is required")
+    like = f"%{query.strip()}%"
+    async with AsyncSessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
+                .where(FileNode.project_id == project_id, FileNode.path.like(like))
+                .order_by(FileNode.path)
+                .limit(int(limit))
+            )
+        ).all()
+    out: list[dict] = []
+    for row in rows:
+        if isinstance(row, (tuple, list)):
+            path, lang, fi, fo = row[0], row[1], row[2], row[3]
+        else:
+            path = getattr(row, "path", "")
+            lang = getattr(row, "language", "")
+            fi = getattr(row, "fan_in", 0)
+            fo = getattr(row, "fan_out", 0)
+        if not isinstance(path, str) or not path:
+            continue
+        out.append(
+            {
+                "path": path,
+                "language": lang,
+                "fan_in": int(fi or 0),
+                "fan_out": int(fo or 0),
+            }
+        )
+    return _tool_ok({"query": query.strip(), "limit": limit, "results": out})
+
+
+async def _tool_search_symbols_async(project_id: int, args: dict) -> dict:
+    indexed_error = await _check_indexed_async(project_id)
+    if indexed_error:
+        return indexed_error
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return _tool_error("bad_args", "query is required")
+    needle = query.strip()
+    match = args.get("match")
+    match_mode = (
+        match if isinstance(match, str) and match in ("exact", "prefix", "contains") else None
+    )
+    if match_mode is None:
+        match_mode = "contains"
+
+    case_sensitive_raw = args.get("case_sensitive")
+    case_sensitive = bool(case_sensitive_raw) if case_sensitive_raw is not None else False
+
+    exported_only = args.get("exported_only") is True
+    limit = _clamp_int(args.get("limit"), 100, 1, 500)
+
+    def _cmp_val(val: str) -> str:
+        return val if case_sensitive else val.lower()
+
+    needle_cmp = _cmp_val(needle)
+
+    def _match_type(name: str) -> str | None:
+        if not name:
+            return None
+        name_cmp = _cmp_val(name)
+        if name_cmp == needle_cmp:
+            return "exact"
+        if name_cmp.startswith(needle_cmp):
+            return "prefix"
+        if needle_cmp in name_cmp:
+            return "contains"
+        return None
+
+    def _allow_match(match_type: str) -> bool:
+        if match_mode == "exact":
+            return match_type == "exact"
+        if match_mode == "prefix":
+            return match_type in ("exact", "prefix")
+        if match_mode == "contains":
+            return match_type in ("exact", "prefix", "contains")
+        return False
+
+    async with AsyncSessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(ModuleContract)
+                .where(ModuleContract.project_id == project_id)
+                .order_by(ModuleContract.path.asc())
+            )
+        ).scalars().all()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            contract = json.loads(row.contract_json)
+        except Exception:
+            continue
+        if not isinstance(contract, dict):
+            continue
+        path = str(row.path or contract.get("path") or "")
+        if not path:
+            continue
+
+        symbol_names: set[str] = set()
+        symbols = contract.get("symbols")
+        if isinstance(symbols, list):
+            for item in symbols:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                if not name:
+                    continue
+                symbol_names.add(name)
+                match_type = _match_type(name)
+                if not match_type or not _allow_match(match_type):
+                    continue
+                exported = bool(item.get("exported"))
+                if exported_only and not exported:
+                    continue
+                results.append(
+                    {
+                        "path": path,
+                        "name": name,
+                        "kind": item.get("kind") if item.get("kind") is not None else None,
+                        "signature": (
+                            item.get("signature") if item.get("signature") is not None else None
+                        ),
+                        "exported": exported,
+                        "match": match_type,
+                        "source": "contract.symbol",
+                    }
+                )
+
+        exports = contract.get("exports")
+        if isinstance(exports, list):
+            for name_any in exports:
+                name = str(name_any or "")
+                if not name:
+                    continue
+                if name in symbol_names:
+                    continue
+                match_type = _match_type(name)
+                if not match_type or not _allow_match(match_type):
+                    continue
+                results.append(
+                    {
+                        "path": path,
+                        "name": name,
+                        "kind": None,
+                        "signature": None,
+                        "exported": True,
+                        "match": match_type,
+                        "source": "contract.export",
+                    }
+                )
+
+        if len(results) >= limit:
+            break
+
+    rank = {"exact": 0, "prefix": 1, "contains": 2}
+    results.sort(
+        key=lambda item: (
+            rank.get(str(item.get("match") or "contains"), 3),
+            str(item.get("name") or "").lower(),
+            str(item.get("path") or ""),
+        )
+    )
+    results = results[: int(limit)]
+
+    return _tool_ok(
+        {
+            "query": needle,
+            "match": match_mode,
+            "case_sensitive": case_sensitive,
+            "exported_only": exported_only,
+            "limit": int(limit),
+            "count": len(results),
+            "results": results,
+        }
+    )
+
+
+async def _tool_search_routes_async(project_id: int, args: dict) -> dict:
+    query = args.get("query")
+    if not isinstance(query, str):
+        query = ""
+    query = query.strip()
+    method = args.get("method")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
+    limit = _clamp_int(args.get("limit"), 50, 1, 500)
+    try:
+        async with AsyncSessionLocal() as s:
+            q = select(ApiRoute).where(ApiRoute.project_id == project_id)
+            if method_norm:
+                q = q.where(ApiRoute.method == method_norm)
+            if query:
+                like = f"%{query}%"
+                q = q.where(
+                    (ApiRoute.path.like(like))
+                    | (ApiRoute.handler_name.like(like))
+                    | (ApiRoute.source_path.like(like))
+                )
+            q = q.order_by(ApiRoute.path.asc(), ApiRoute.method.asc()).limit(int(limit))
+            rows = (await s.execute(q)).scalars().all()
+    except Exception as e:
+        return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
+    out = [
+        {
+            "method": r.method,
+            "path": r.path,
+            "source_path": r.source_path,
+            "handler_name": r.handler_name,
+            "lineno": int(r.lineno or 0),
+            "decorator": r.decorator,
+        }
+        for r in rows
+    ]
+    return _tool_ok(
+        {
+            "query": query,
+            "method": method_norm,
+            "limit": int(limit),
+            "count": len(out),
+            "routes": out,
+        }
+    )
+
+
+async def _tool_search_api_calls_async(project_id: int, args: dict) -> dict:
+    query = args.get("query")
+    if not isinstance(query, str):
+        query = ""
+    query = query.strip()
+    method = args.get("method")
+    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
+    limit = _clamp_int(args.get("limit"), 50, 1, 500)
+    try:
+        async with AsyncSessionLocal() as s:
+            q = select(ApiCall).where(ApiCall.project_id == project_id)
+            if method_norm:
+                q = q.where(ApiCall.method == method_norm)
+            if query:
+                like = f"%{query}%"
+                q = q.where((ApiCall.path.like(like)) | (ApiCall.source_path.like(like)))
+            q = q.order_by(ApiCall.path.asc(), ApiCall.method.asc()).limit(int(limit))
+            rows = (await s.execute(q)).scalars().all()
+    except Exception as e:
+        return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
+    out = [
+        {
+            "method": c.method,
+            "path": c.path,
+            "source_path": c.source_path,
+            "lineno": int(c.lineno or 0),
+            "client": c.client,
+        }
+        for c in rows
+    ]
+    return _tool_ok(
+        {
+            "query": query,
+            "method": method_norm,
+            "limit": int(limit),
+            "count": len(out),
+            "calls": out,
+        }
+    )
+
+
+async def _tool_api_coverage_summary_async(project_id: int, args: dict) -> dict:
+    prefix = _prefix_norm(args.get("prefix"), default="/api")
+    method_filter = _method_norm(args.get("method"))
+    limit_examples = _clamp_int(args.get("limit_examples"), 10, 0, 50)
+
+    cov = await _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
+    routes: list[ApiRoute] = cov["routes"]
+    calls: list[ApiCall] = cov["calls"]
+    matched_routes: set[int] = cov["matched_route_ids"]
+    matched_calls: set[int] = cov["matched_call_ids"]
+    patterns_by_route: dict[int, list[dict]] = cov["patterns_by_route"]
+
+    total_routes = len(routes)
+    total_calls = len(calls)
+    unmatched_routes_ids = {
+        int(getattr(r, "id", 0) or 0)
+        for r in routes
+        if int(getattr(r, "id", 0) or 0) not in matched_routes
+    }
+    unmatched_calls_ids = {
+        int(getattr(c, "id", 0) or 0)
+        for c in calls
+        if int(getattr(c, "id", 0) or 0) not in matched_calls
+    }
+
+    examples_routes: list[dict] = []
+    examples_calls: list[dict] = []
+
+    if limit_examples > 0:
+        for r in routes:
+            rid = int(getattr(r, "id", 0) or 0)
+            if rid not in unmatched_routes_ids:
+                continue
+            vars = patterns_by_route.get(rid) or []
+            resolved = [
+                v.get("full_path")
+                for v in vars
+                if isinstance(v, dict) and isinstance(v.get("full_path"), str)
+            ]
+            resolved = list(dict.fromkeys([x for x in resolved if x]))
+            examples_routes.append(
+                {
+                    "method": str(r.method or ""),
+                    "local_path": str(r.path or ""),
+                    "resolved_full_paths": resolved[:3],
+                    "source_path": str(r.source_path or ""),
+                    "handler_name": str(r.handler_name or ""),
+                    "lineno": int(r.lineno or 0),
+                }
+            )
+            if len(examples_routes) >= limit_examples:
+                break
+
+        for c in calls:
+            cid = int(getattr(c, "id", 0) or 0)
+            if cid not in unmatched_calls_ids:
+                continue
+            examples_calls.append(
+                {
+                    "method": str(c.method or ""),
+                    "path": str(c.path or ""),
+                    "source_path": str(c.source_path or ""),
+                    "lineno": int(c.lineno or 0),
+                    "client": str(c.client or ""),
+                }
+            )
+            if len(examples_calls) >= limit_examples:
+                break
+
+    return _tool_ok(
+        {
+            "prefix": prefix,
+            "method_filter": method_filter,
+            "counts": {
+                "routes_total": total_routes,
+                "calls_total": total_calls,
+                "routes_matched": int(len(matched_routes)),
+                "routes_unmatched": int(len(unmatched_routes_ids)),
+                "calls_matched": int(len(matched_calls)),
+                "calls_unmatched": int(len(unmatched_calls_ids)),
+            },
+            "examples": {
+                "unmatched_routes": examples_routes,
+                "unmatched_calls": examples_calls,
+                "examples_limit": int(limit_examples),
+            },
+            "notes": (
+                "Matching is template-based. For backend routes, include_router resolution is "
+                "best-effort. Routes may be legitimately server-only; unmatched does not always "
+                "mean a bug."
+            ),
+        }
+    )
+
+
+async def _tool_unmatched_routes_async(project_id: int, args: dict) -> dict:
+    prefix = _prefix_norm(args.get("prefix"), default="/api")
+    method_filter = _method_norm(args.get("method"))
+    limit = _clamp_int(args.get("limit"), 100, 1, 500)
+
+    cov = await _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
+    routes: list[ApiRoute] = cov["routes"]
+    matched_routes: set[int] = cov["matched_route_ids"]
+    patterns_by_route: dict[int, list[dict]] = cov["patterns_by_route"]
+
+    out: list[dict] = []
+    for r in routes:
+        rid = int(getattr(r, "id", 0) or 0)
+        if rid in matched_routes:
+            continue
+        vars = patterns_by_route.get(rid) or []
+        resolved = [
+            v.get("full_path")
+            for v in vars
+            if isinstance(v, dict) and isinstance(v.get("full_path"), str)
+        ]
+        resolved = list(dict.fromkeys([x for x in resolved if x]))
+        reachable_hint = any(bool(v.get("reachable")) for v in vars if isinstance(v, dict))
+        full_for_hint = resolved[0] if resolved else str(r.path or "")
+        try:
+            tpl = build_frontend_snippet(
+                str(r.method or "GET"),
+                str(full_for_hint),
+                handler_name=str(r.handler_name or ""),
+            )
+            scaffold = {
+                "path_template": tpl.get("path_template"),
+                "function_name": tpl.get("function_name"),
+                "uses_encodePath": bool(tpl.get("uses_encodePath")),
+                "suggested_file": suggest_frontend_module_file(str(full_for_hint)),
+            }
+        except Exception:
+            scaffold = {}
+
+        out.append(
+            {
+                "method": str(r.method or ""),
+                "local_path": str(r.path or ""),
+                "resolved_full_paths": resolved[:5],
+                "source_path": str(r.source_path or ""),
+                "handler_name": str(r.handler_name or ""),
+                "lineno": int(r.lineno or 0),
+                "decorator": str(r.decorator or ""),
+                "reachable_hint": bool(reachable_hint),
+                "frontend_scaffold_hint": scaffold,
+            }
+        )
+        if len(out) >= limit:
+            break
+
+    return _tool_ok(
+        {
+            "prefix": prefix,
+            "method_filter": method_filter,
+            "count": len(out),
+            "limit": int(limit),
+            "routes": out,
+        }
+    )
+
+
+async def _tool_unmatched_calls_async(project_id: int, args: dict) -> dict:
+    prefix = _prefix_norm(args.get("prefix"), default="/api")
+    method_filter = _method_norm(args.get("method"))
+    limit = _clamp_int(args.get("limit"), 100, 1, 500)
+
+    cov = await _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
+    calls: list[ApiCall] = cov["calls"]
+    matched_calls: set[int] = cov["matched_call_ids"]
+
+    out: list[dict] = []
+    for c in calls:
+        cid = int(getattr(c, "id", 0) or 0)
+        if cid in matched_calls:
+            continue
+        out.append(
+            {
+                "method": str(c.method or ""),
+                "path": str(c.path or ""),
+                "path_skeleton": str(c.path_skeleton or ""),
+                "source_path": str(c.source_path or ""),
+                "lineno": int(c.lineno or 0),
+                "client": str(c.client or ""),
+            }
+        )
+        if len(out) >= limit:
+            break
+
+    return _tool_ok(
+        {
+            "prefix": prefix,
+            "method_filter": method_filter,
+            "count": len(out),
+            "limit": int(limit),
+            "calls": out,
+        }
+    )
+
+
+async def _tool_search_semantic_async(
+    project_id: int,
+    root: Path,
+    args: dict,
+    *,
+    max_file_chars: int,
+) -> dict:
+    return await asyncio.to_thread(
+        _tool_search_semantic,
+        project_id,
+        root,
+        args,
+        max_file_chars=max_file_chars,
+    )
 
 
 def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
