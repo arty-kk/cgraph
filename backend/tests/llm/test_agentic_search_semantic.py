@@ -32,6 +32,7 @@ class TestAgenticSearchSemantic(unittest.IsolatedAsyncioTestCase):
 
             with patch.object(agentic, "_tool_search_semantic_async", side_effect=_fake):
                 result = await agentic._dispatch_tool_async(
+                    object(),
                     1,
                     root,
                     meta,

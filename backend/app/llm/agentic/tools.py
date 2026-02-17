@@ -6,8 +6,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from ... import db as _db
 from ...api_contracts import build_backend_contract_for_route
 from ...api_map import (
     backend_path_skeleton,
@@ -18,7 +20,7 @@ from ...api_map import (
 from ...api_scaffold import build_frontend_snippet, suggest_frontend_module_file
 from ...async_db import AsyncSessionLocal
 from ...config import settings
-from ...contracts import get_or_build_contract
+from ...contracts import get_or_build_contract_async
 from ...graph import search_nodes, search_semantic
 from ...models import (
     ApiCall,
@@ -39,7 +41,6 @@ from ...ts_edits import unified_diff as _unified_diff
 from ...utils import resolve_under_root
 from .context import _neighbors_limited
 from .dispatch import _clamp_int, _tool_error, _tool_ok
-from ... import db as _db
 from .types import AgenticMeta
 
 
@@ -1017,7 +1018,13 @@ async def _tool_get_file_lines_async(
     )
 
 
-def _tool_get_contract(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
+async def _tool_get_contract(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    meta: AgenticMeta,
+    args: dict,
+) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return _tool_error("bad_args", "path is required")
@@ -1026,7 +1033,7 @@ def _tool_get_contract(project_id: int, root: Path, meta: AgenticMeta, args: dic
     except Exception as e:
         return _tool_error("invalid_path", str(e))
     try:
-        contract = get_or_build_contract(project_id, root, rel_norm)
+        contract = await get_or_build_contract_async(session, project_id, root, rel_norm)
     except Exception as e:
         return _tool_error(
             "contract_failed", "failed to build contract", {"path": rel_norm, "reason": str(e)}
@@ -1037,7 +1044,13 @@ def _tool_get_contract(project_id: int, root: Path, meta: AgenticMeta, args: dic
     return _tool_ok(contract)
 
 
-def _tool_get_symbol(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
+async def _tool_get_symbol(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    meta: AgenticMeta,
+    args: dict,
+) -> dict:
     path = args.get("path")
     name = args.get("name")
     if not isinstance(path, str) or not path.strip():
@@ -1049,7 +1062,7 @@ def _tool_get_symbol(project_id: int, root: Path, meta: AgenticMeta, args: dict)
     except Exception as e:
         return _tool_error("invalid_path", str(e))
     try:
-        c = get_or_build_contract(project_id, root, rel_norm)
+        c = await get_or_build_contract_async(session, project_id, root, rel_norm)
     except Exception as e:
         return _tool_error(
             "contract_failed", "failed to build contract", {"path": rel_norm, "reason": str(e)}
@@ -3589,21 +3602,23 @@ async def _tool_search_text_async(
 
 
 async def _tool_get_contract_async(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     meta: AgenticMeta,
     args: dict,
 ) -> dict:
-    return await asyncio.to_thread(_tool_get_contract, project_id, root, meta, args)
+    return await _tool_get_contract(session, project_id, root, meta, args)
 
 
 async def _tool_get_symbol_async(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     meta: AgenticMeta,
     args: dict,
 ) -> dict:
-    return await asyncio.to_thread(_tool_get_symbol, project_id, root, meta, args)
+    return await _tool_get_symbol(session, project_id, root, meta, args)
 
 
 async def _tool_route_usages_async(project_id: int, args: dict) -> dict:

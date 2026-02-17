@@ -33,6 +33,10 @@ class TaskState:
 logger = get_logger("stubgraph.task_queue")
 
 
+async def _enqueue_celery_task_async(task: Any, *, args: list[Any], queue: str) -> None:
+    await asyncio.to_thread(task.apply_async, args=args, queue=queue)
+
+
 def _normalize_payload(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _normalize_payload(value[k]) for k in sorted(value)}
@@ -254,7 +258,8 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
         from ..celery_tasks import run_task_job
 
         try:
-            run_task_job.apply_async(
+            await _enqueue_celery_task_async(
+                run_task_job,
                 args=[task_id, project_id, org_id, payload],
                 queue="heavy",
             )
@@ -300,7 +305,11 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
             from ..celery_tasks import scan_task
 
             try:
-                scan_task.apply_async(args=[task_id, project_id, org_id], queue="medium")
+                await _enqueue_celery_task_async(
+                    scan_task,
+                    args=[task_id, project_id, org_id],
+                    queue="medium",
+                )
             except Exception as exc:
                 logger.warning(
                     "Failed to enqueue task",
@@ -353,7 +362,11 @@ async def submit_docs_async(project_id: int, org_id: int) -> str:
             from ..celery_tasks import docs_task
 
             try:
-                docs_task.apply_async(args=[task_id, project_id, org_id], queue="light")
+                await _enqueue_celery_task_async(
+                    docs_task,
+                    args=[task_id, project_id, org_id],
+                    queue="light",
+                )
             except Exception as exc:
                 logger.warning(
                     "Failed to enqueue task",
@@ -416,7 +429,8 @@ async def submit_mutation_indexing_async(
             from ..celery_tasks import mutation_indexing_task
 
             try:
-                mutation_indexing_task.apply_async(
+                await _enqueue_celery_task_async(
+                    mutation_indexing_task,
                     args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
                     queue="medium",
                 )

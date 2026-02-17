@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 from ..config import settings
 from .policy import ModelPolicy
-from .routing_thresholds import resolve_routing_thresholds
-from .routing_weights import resolve_routing_weights
+from .routing_thresholds import resolve_routing_thresholds, resolve_routing_thresholds_async
+from .routing_weights import resolve_routing_weights, resolve_routing_weights_async
 
 
 @dataclass(frozen=True)
@@ -203,6 +203,138 @@ def select_runtime_route(
     )
 
     threshold_low, threshold_mid, threshold_high = resolve_routing_thresholds()
+
+    eff_complexity = max(1.0, min(2.0, float(complexity_coeff) + min(0.2, project_nodes / 10000.0)))
+    if task_kind == "fix":
+        eff_complexity = max(1.0, min(2.0, eff_complexity + 0.1))
+
+    triage_pick = _pick_stage_model(
+        stage_name="triage",
+        pool_value=settings.triage_model,
+        stats=model_stats,
+        complexity_coeff=eff_complexity,
+        prompt_len=prompt_len,
+        quality_weight=weights["quality"],
+        latency_weight=weights["latency"],
+        token_cost_weight=weights["token_cost"],
+        fail_rate_weight=weights["fail_rate"],
+    )
+    analysis_pick = _pick_stage_model(
+        stage_name="analysis",
+        pool_value=settings.analysis_model,
+        stats=model_stats,
+        complexity_coeff=eff_complexity,
+        prompt_len=prompt_len,
+        quality_weight=weights["quality"],
+        latency_weight=weights["latency"],
+        token_cost_weight=weights["token_cost"],
+        fail_rate_weight=weights["fail_rate"],
+    )
+    patch_pick = _pick_stage_model(
+        stage_name="patch",
+        pool_value=settings.patch_model,
+        stats=model_stats,
+        complexity_coeff=eff_complexity,
+        prompt_len=prompt_len,
+        quality_weight=weights["quality"],
+        latency_weight=weights["latency"],
+        token_cost_weight=weights["token_cost"],
+        fail_rate_weight=weights["fail_rate"],
+    )
+
+    verifier_edge_case = bool(
+        task_kind == "fix" and (eff_complexity >= threshold_high or prompt_len >= 6000)
+    )
+    verifier_complexity = max(
+        1.0,
+        min(2.0, eff_complexity if verifier_edge_case else min(threshold_mid, eff_complexity)),
+    )
+    verifier_weights = dict(weights)
+    if not verifier_edge_case:
+        verifier_weights["latency"] *= 1.15
+        verifier_weights["token_cost"] *= 1.1
+        total = sum(verifier_weights.values())
+        verifier_weights = {k: (v / total if total > 0 else v) for k, v in verifier_weights.items()}
+    verifier_pick = _pick_stage_model(
+        stage_name="verifier",
+        pool_value=settings.analysis_model,
+        stats=model_stats,
+        complexity_coeff=verifier_complexity,
+        prompt_len=prompt_len,
+        quality_weight=verifier_weights["quality"],
+        latency_weight=verifier_weights["latency"],
+        token_cost_weight=verifier_weights["token_cost"],
+        fail_rate_weight=verifier_weights["fail_rate"],
+    )
+
+    if triage_pick is None or analysis_pick is None or patch_pick is None or verifier_pick is None:
+        return None
+
+    confidence = min(triage_pick[1], analysis_pick[1], patch_pick[1], verifier_pick[1])
+    if confidence < max(0.0, min(1.0, float(low_confidence_threshold))):
+        return None
+
+    policy = ModelPolicy(
+        triage_model=triage_pick[0],
+        analysis_model=analysis_pick[0],
+        patch_model=patch_pick[0],
+        verifier_model=verifier_pick[0],
+        triage_effort=settings.reasoning_effort_triage,
+        analysis_effort=settings.reasoning_effort_analysis,
+        patch_effort=settings.reasoning_effort_patch,
+        verifier_effort="high" if verifier_edge_case else "medium",
+    )
+
+    return RoutingSelection(
+        policy=policy,
+        confidence=confidence,
+        reason="telemetry_score",
+        score_breakdown={
+            "policy_version": settings.llm_routing_policy_version,
+            "sla_profile": (sla_profile or "balanced").strip().lower(),
+            "effective_weights": weights,
+            "effective_complexity": eff_complexity,
+            "stages": [triage_pick[2], analysis_pick[2], patch_pick[2], verifier_pick[2]],
+            "verifier_edge_case": verifier_edge_case,
+        },
+    )
+
+
+async def select_runtime_route_async(
+    *,
+    task_kind: str | None,
+    complexity_coeff: float,
+    prompt_len: int,
+    project_nodes: int,
+    sla_profile: str,
+    model_stats: dict[str, dict[str, float]] | None,
+    quality_weight: float,
+    latency_weight: float,
+    token_cost_weight: float,
+    fail_rate_weight: float,
+    low_confidence_threshold: float,
+) -> RoutingSelection | None:
+    if not isinstance(model_stats, dict) or not model_stats:
+        return None
+
+    resolved_weights = await resolve_routing_weights_async(
+        sla_profile,
+        {
+            "quality": quality_weight,
+            "latency": latency_weight,
+            "token_cost": token_cost_weight,
+            "fail_rate": fail_rate_weight,
+        },
+    )
+    weights = _effective_weights(
+        sla_profile=sla_profile,
+        quality_weight=resolved_weights["quality"],
+        latency_weight=resolved_weights["latency"],
+        token_cost_weight=resolved_weights["token_cost"],
+        fail_rate_weight=resolved_weights["fail_rate"],
+    )
+
+    threshold_low, threshold_mid, threshold_high = await resolve_routing_thresholds_async()
 
     eff_complexity = max(1.0, min(2.0, float(complexity_coeff) + min(0.2, project_nodes / 10000.0)))
     if task_kind == "fix":

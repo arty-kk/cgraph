@@ -1,16 +1,26 @@
 # backend/app/infra/redis_client.py
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, contextmanager
+
 import redis
 import redis.asyncio as redis_async
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 
 from ..config import settings
 
 
 def get_redis_client() -> redis.Redis:
     return redis.Redis.from_url(settings.redis_url, decode_responses=True)
+
+
+@contextmanager
+def sync_redis_client() -> redis.Redis:
+    client = get_redis_client()
+    try:
+        yield client
+    finally:
+        client.close()
 
 
 @asynccontextmanager

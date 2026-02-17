@@ -10,7 +10,7 @@ from redis.asyncio import RedisError as AsyncRedisError
 from ..config import settings
 from ..errors import ExternalServiceError
 from ..logging import get_logger
-from .redis_client import async_redis_client, get_redis_client
+from .redis_client import async_redis_client, sync_redis_client
 
 logger = get_logger("stubgraph.cache")
 
@@ -24,10 +24,10 @@ def cache_get_json(parts: list[str]) -> dict | list | None:
         return None
     key = _cache_key(parts)
     try:
-        client = get_redis_client()
-        data = client.get(key)
-        if not data:
-            return None
+        with sync_redis_client() as client:
+            data = client.get(key)
+            if not data:
+                return None
     except RedisError as exc:
         logger.warning("Cache read failed", extra={"reason": str(exc)})
         raise ExternalServiceError("Не удалось прочитать кэш", context={"key": key}) from exc
@@ -43,8 +43,8 @@ def cache_set_json(parts: list[str], payload: Any, *, ttl_seconds: int | None = 
     key = _cache_key(parts)
     ttl = int(ttl_seconds or settings.cache_default_ttl_seconds)
     try:
-        client = get_redis_client()
-        client.setex(key, ttl, json.dumps(payload, ensure_ascii=False))
+        with sync_redis_client() as client:
+            client.setex(key, ttl, json.dumps(payload, ensure_ascii=False))
     except RedisError as exc:
         logger.warning("Cache write failed", extra={"reason": str(exc)})
         raise ExternalServiceError("Не удалось записать кэш", context={"key": key}) from exc
@@ -55,9 +55,9 @@ def cache_invalidate_prefix(parts: list[str]) -> None:
         return
     key = _cache_key(parts)
     try:
-        client = get_redis_client()
-        for match in client.scan_iter(match=f"{key}*"):
-            client.delete(match)
+        with sync_redis_client() as client:
+            for match in client.scan_iter(match=f"{key}*"):
+                client.delete(match)
     except RedisError as exc:
         logger.warning("Cache invalidate failed", extra={"reason": str(exc)})
         raise ExternalServiceError("Не удалось инвалидировать кэш", context={"key": key}) from exc

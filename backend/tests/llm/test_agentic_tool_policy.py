@@ -58,7 +58,7 @@ class TestAgenticToolPolicy(unittest.TestCase):
                 meta.tool_trace.append({"name": tool_name, "status": "ok"})
                 with patch.object(
                     agentic,
-                    "_tool_get_file",
+                    "_tool_get_file_async",
                     return_value=agentic._tool_ok({"note": "ok"}),
                 ) as mocked:
                     result = agentic._dispatch_tool(
@@ -78,6 +78,7 @@ class TestAgenticToolPolicyAsync(unittest.IsolatedAsyncioTestCase):
     async def test_async_dispatch_blocks_without_plan(self) -> None:
         meta = agentic.AgenticMeta()
         result = await agentic._dispatch_tool_async(
+            object(),
             1,
             Path("."),
             meta,
@@ -92,6 +93,7 @@ class TestAgenticToolPolicyAsync(unittest.IsolatedAsyncioTestCase):
         meta = agentic.AgenticMeta()
         meta.tool_trace.append({"name": "plan_retrieval", "status": "ok"})
         denied = await agentic._dispatch_tool_async(
+            object(),
             1,
             Path("."),
             meta,
@@ -111,6 +113,7 @@ class TestAgenticToolPolicyAsync(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(agentic, "_tool_get_file_async", side_effect=_fake_get_file):
             allowed = await agentic._dispatch_tool_async(
+                object(),
                 1,
                 Path("."),
                 meta_allowed,
@@ -119,6 +122,31 @@ class TestAgenticToolPolicyAsync(unittest.IsolatedAsyncioTestCase):
                 max_file_chars=200,
             )
         self.assertTrue(allowed["ok"])
+
+
+class TestAgenticToolPolicySyncContract(unittest.TestCase):
+    def test_sync_dispatch_get_contract_uses_async_dispatch(self) -> None:
+        meta = agentic.AgenticMeta()
+        meta.tool_trace.append({"name": "plan_retrieval", "status": "ok"})
+
+        async def _fake_dispatch_tool_async(*_args, **_kwargs):
+            return agentic._tool_ok({"path": "backend/app/contracts.py"})
+
+        with patch(
+            "app.llm.agentic.dispatch._dispatch_tool_async",
+            side_effect=_fake_dispatch_tool_async,
+        ) as wrapped:
+            result = agentic._dispatch_tool(
+                1,
+                Path("."),
+                meta,
+                "get_contract",
+                {"path": "backend/app/contracts.py"},
+                max_file_chars=200,
+            )
+
+        self.assertTrue(result["ok"])
+        wrapped.assert_called_once()
 
 
 if __name__ == "__main__":
@@ -183,6 +211,7 @@ class TestAgenticAsyncMapping(unittest.IsolatedAsyncioTestCase):
             for tool_name in async_mapping:
                 with self.subTest(tool_name=tool_name):
                     result = await agentic._dispatch_tool_async(
+                        object(),
                         1,
                         Path("."),
                         meta,
@@ -194,3 +223,51 @@ class TestAgenticAsyncMapping(unittest.IsolatedAsyncioTestCase):
         finally:
             for patcher in reversed(patchers):
                 patcher.stop()
+
+
+class TestAgenticContractToolsAsync(unittest.IsolatedAsyncioTestCase):
+    async def test_get_contract_tool_uses_async_contract_builder(self) -> None:
+        meta = agentic.AgenticMeta()
+        calls = {}
+
+        async def _fake_contract(session, project_id, root, rel_norm):
+            calls["session"] = session
+            calls["project_id"] = project_id
+            calls["root"] = root
+            calls["rel_norm"] = rel_norm
+            return {"version": 2, "path": rel_norm, "exports": [], "imports": [], "symbols": []}
+
+        with patch("app.llm.agentic.tools.get_or_build_contract_async", side_effect=_fake_contract):
+            result = await agentic._tool_get_contract_async(
+                object(),
+                42,
+                Path("."),
+                meta,
+                {"path": "backend/app/contracts.py"},
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["project_id"], 42)
+        self.assertEqual(calls["rel_norm"], "backend/app/contracts.py")
+
+    async def test_get_symbol_tool_uses_async_contract_builder(self) -> None:
+        meta = agentic.AgenticMeta()
+
+        async def _fake_contract(*_args, **_kwargs):
+            return {
+                "version": 2,
+                "path": "backend/app/contracts.py",
+                "symbols": [{"name": "get_or_build_contract_async", "kind": "function"}],
+            }
+
+        with patch("app.llm.agentic.tools.get_or_build_contract_async", side_effect=_fake_contract):
+            result = await agentic._tool_get_symbol_async(
+                object(),
+                42,
+                Path("."),
+                meta,
+                {"path": "backend/app/contracts.py", "name": "get_or_build_contract_async"},
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["symbol"]["name"], "get_or_build_contract_async")
