@@ -18,7 +18,8 @@ class TestUsageService(unittest.TestCase):
             from app.db import get_session  # noqa: E402
             from app.errors import LimitExceededError  # noqa: E402
             from app.models import OrgUsage  # noqa: E402
-            from app.services.usage_service import check_and_increment  # noqa: E402
+            from app.async_db import AsyncSessionLocal  # noqa: E402
+            from app.services.usage_service import check_and_increment_async  # noqa: E402
         except ModuleNotFoundError:
             raise unittest.SkipTest("Postgres dependencies are not available for usage tests")
         try:
@@ -27,17 +28,26 @@ class TestUsageService(unittest.TestCase):
         except SQLAlchemyError:
             raise unittest.SkipTest("Postgres is not available for usage tests")
         cls.get_session = get_session
-        cls.check_and_increment = check_and_increment
+        cls.AsyncSessionLocal = AsyncSessionLocal
+        cls.check_and_increment_async = check_and_increment_async
         cls.LimitExceededError = LimitExceededError
         cls.OrgUsage = OrgUsage
 
     def test_daily_limit_enforced(self) -> None:
         org_id = 9999
         kind = "embedding_queries"
-        self.check_and_increment(org_id, kind, 1, 2)
-        self.check_and_increment(org_id, kind, 1, 2)
-        with self.assertRaises(self.LimitExceededError):
-            self.check_and_increment(org_id, kind, 1, 2)
+        import asyncio
+
+        async def _run() -> None:
+            async with self.AsyncSessionLocal() as session:
+                await self.check_and_increment_async(session, org_id, kind, 1, 2)
+            async with self.AsyncSessionLocal() as session:
+                await self.check_and_increment_async(session, org_id, kind, 1, 2)
+            async with self.AsyncSessionLocal() as session:
+                with self.assertRaises(self.LimitExceededError):
+                    await self.check_and_increment_async(session, org_id, kind, 1, 2)
+
+        asyncio.run(_run())
 
     def test_concurrent_increment_respects_limit(self) -> None:
         org_id = int(time() * 1000000) % 2000000000
@@ -50,7 +60,13 @@ class TestUsageService(unittest.TestCase):
         def worker() -> None:
             try:
                 barrier.wait()
-                self.check_and_increment(org_id, kind, 1, limit)
+                import asyncio
+
+                async def _run() -> None:
+                    async with self.AsyncSessionLocal() as session:
+                        await self.check_and_increment_async(session, org_id, kind, 1, limit)
+
+                asyncio.run(_run())
                 outcome = "ok"
             except self.LimitExceededError:
                 outcome = "limit"

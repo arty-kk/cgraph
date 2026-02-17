@@ -41,17 +41,74 @@ from .models import (
     FileEdge,
     FileNode,
     FileText,
+    OrgEntitlement,
+    OrgUsage,
     TsTypeDef,
 )
 from .resolve import resolve_spec
-from .services.entitlements_service import get_entitlement_bool, get_entitlement_int
-from .services.usage_service import EMBEDDING_CHUNKS_KIND, check_and_increment
 from .utils import ProjectLockTimeout, _chunk_text, project_lock, resolve_under_root, sha256_text
 
 PARSE_CACHE_LIMIT = 256
 _parse_cache: OrderedDict[Tuple[str, str, str], tuple[int, list[dict]]] = OrderedDict()
 _parse_cache_lock = Lock()
 logger = get_logger("stubgraph.scan")
+
+EMBEDDING_CHUNKS_KIND = "embedding_chunks"
+
+
+def get_entitlement_bool(org_id: int, key: str) -> bool | None:
+    with get_session() as session:
+        row = session.exec(
+            select(OrgEntitlement.value_bool).where(
+                OrgEntitlement.org_id == org_id,
+                OrgEntitlement.key == key,
+            )
+        ).first()
+    return row[0] if isinstance(row, (tuple, list)) else row
+
+
+def get_entitlement_int(org_id: int, key: str) -> int | None:
+    with get_session() as session:
+        row = session.exec(
+            select(OrgEntitlement.value_int).where(
+                OrgEntitlement.org_id == org_id,
+                OrgEntitlement.key == key,
+            )
+        ).first()
+    val = row[0] if isinstance(row, (tuple, list)) else row
+    return int(val) if val is not None else None
+
+
+def check_and_increment(org_id: int, kind: str, amount: int, limit: int | None) -> None:
+    if amount <= 0:
+        return
+    if limit is not None and limit <= 0:
+        raise LimitExceededError("Лимит использования исчерпан")
+    day = _today_utc()
+    with get_session() as session:
+        with session.begin():
+            insert_stmt = pg_insert(OrgUsage).values(org_id=org_id, day=day, kind=kind, count=0)
+            insert_stmt = insert_stmt.on_conflict_do_nothing(index_elements=["org_id", "day", "kind"])
+            session.exec(insert_stmt)
+            row = session.exec(
+                select(OrgUsage)
+                .where(OrgUsage.org_id == org_id, OrgUsage.day == day, OrgUsage.kind == kind)
+                .with_for_update()
+            ).one()
+            current = int(row.count)
+            if limit is not None and current + amount > limit:
+                raise LimitExceededError(
+                    "Превышен дневной лимит использования",
+                    context={"kind": kind, "limit": limit},
+                )
+            row.count = current + amount
+            session.add(row)
+
+
+def _today_utc():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).date()
 
 
 @dataclass(frozen=True)

@@ -507,3 +507,46 @@ async def test_run_task_impl_async_uses_async_agentic_calls(monkeypatch, tmp_pat
     await task_service._run_task_impl_async(_Session(), 1, 1, request)
 
     assert called == {"plan": 1, "agentic": 1}
+
+
+@pytest.mark.anyio
+async def test_run_task_async_does_not_touch_sync_get_session(monkeypatch):
+    request = task_service.TaskRequest(
+        target_path="backend/app/main.py",
+        prompt="check",
+        mode="analyze",
+        profile=None,
+        depth=1,
+        dep_mode="contracts",
+        impact_max_nodes=None,
+        impact_max_depth=None,
+        apply_patch=False,
+        allow_out_of_context_patch=False,
+        agentic=False,
+        provided_fields=set(),
+    )
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    async def _fake_impl(session, project_id, org_id, req):
+        _ = (session, project_id, org_id, req)
+        return {"ok": True}
+
+    def _fail_get_session(*_args, **_kwargs):
+        raise AssertionError("sync get_session must not be used in async runtime path")
+
+    import app.db as db
+
+    monkeypatch.setattr(db, "get_session", _fail_get_session)
+    monkeypatch.setattr(task_service, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(task_service, "_run_task_impl_async", _fake_impl)
+
+    result = await task_service.run_task_async(1, 2, request)
+
+    assert result == {"ok": True}
