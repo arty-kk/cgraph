@@ -8,6 +8,26 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from app.services import docs_service
 
 
+def test_read_text_with_limit_truncates(tmp_path: Path) -> None:
+    path = tmp_path / "big.txt"
+    path.write_text("abcdef", encoding="utf-8")
+
+    content, truncated = docs_service._read_text_with_limit(path, max_chars=3)
+
+    assert content == "abc"
+    assert truncated is True
+
+
+def test_read_text_with_limit_returns_full_when_short(tmp_path: Path) -> None:
+    path = tmp_path / "small.txt"
+    path.write_text("abc", encoding="utf-8")
+
+    content, truncated = docs_service._read_text_with_limit(path, max_chars=10)
+
+    assert content == "abc"
+    assert truncated is False
+
+
 @pytest.mark.anyio
 async def test_collect_key_files_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
