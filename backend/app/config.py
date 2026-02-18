@@ -91,6 +91,16 @@ class Settings(BaseSettings):
         default="postgresql+psycopg://stubgraph:stubgraph@localhost:5432/stubgraph",
         alias="STUBGRAPH_DATABASE_URL",
     )
+    db_pool_size: int = Field(default=5, alias="STUBGRAPH_DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=0, alias="STUBGRAPH_DB_MAX_OVERFLOW")
+    db_pool_timeout_seconds: float = Field(
+        default=30.0,
+        alias="STUBGRAPH_DB_POOL_TIMEOUT_SECONDS",
+    )
+    db_pool_recycle_seconds: float = Field(
+        default=1800.0,
+        alias="STUBGRAPH_DB_POOL_RECYCLE_SECONDS",
+    )
     db_dir: Path = Field(default=Path.home() / ".StubGraph", alias="STUBGRAPH_DB_DIR")
     default_depth: int = Field(default=1, alias="STUBGRAPH_DEFAULT_DEPTH")
     max_root_path_chars: int = Field(default=500, alias="STUBGRAPH_MAX_ROOT_PATH_CHARS")
@@ -301,6 +311,14 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_CELERY_BROKER_URL должен быть непустым")
         if not isinstance(self.redis_url, str) or not self.redis_url.strip():
             raise ValueError("STUBGRAPH_REDIS_URL должен быть непустым")
+        if self.db_pool_size <= 0:
+            raise ValueError("STUBGRAPH_DB_POOL_SIZE должен быть положительным")
+        if self.db_max_overflow < 0:
+            raise ValueError("STUBGRAPH_DB_MAX_OVERFLOW должен быть неотрицательным")
+        if self.db_pool_timeout_seconds <= 0:
+            raise ValueError("STUBGRAPH_DB_POOL_TIMEOUT_SECONDS должен быть положительным")
+        if self.db_pool_recycle_seconds <= 0:
+            raise ValueError("STUBGRAPH_DB_POOL_RECYCLE_SECONDS должен быть положительным")
         if self.auth_session_ttl_hours <= 0:
             raise ValueError("STUBGRAPH_AUTH_SESSION_TTL_HOURS должен быть положительным")
         if self.auth_api_key_ttl_days is not None and self.auth_api_key_ttl_days <= 0:
