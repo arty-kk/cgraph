@@ -30,7 +30,7 @@ from .config import settings
 from .errors import LimitExceededError, LockedError
 from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
-from .llm.client import get_openai_client
+from .llm.client import get_async_openai_client
 from .logging import get_logger
 from .models import (
     ApiCall,
@@ -802,7 +802,7 @@ async def _prepare_scan_files_async(
                     )
                     if chunks:
                         symbol_meta = _symbol_chunks(text, idx.parse_symbols(p, text) or [])
-                        client = get_openai_client()
+                        client = get_async_openai_client()
                         try:
                             chunk_limit = await get_entitlement_int_async(
                                 session,
@@ -825,7 +825,7 @@ async def _prepare_scan_files_async(
                                 embedding_warned_limit = True
                             continue
                         try:
-                            response = client.embeddings.create(
+                            response = await client.embeddings.create(
                                 model=settings.embeddings_model,
                                 input=chunks,
                             )
