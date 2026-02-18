@@ -250,7 +250,7 @@ async def _dispatch_tool_async(
         "project_summary": ("_tool_project_summary_async", (project_id, root, args), {}),
         "search_text": (
             "_tool_search_text_async",
-            (project_id, root, args),
+            (session, project_id, root, args),
             {"max_file_chars": max_file_chars},
         ),
         "search_semantic": (

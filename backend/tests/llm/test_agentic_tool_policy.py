@@ -149,6 +149,25 @@ class TestAgenticToolPolicySyncContract(unittest.TestCase):
         wrapped.assert_called_once()
 
 
+class TestAgenticRuntimeSourceGuards(unittest.TestCase):
+    def test_runtime_async_wrappers_do_not_use_to_thread_for_db_tools(self) -> None:
+        tools_src = Path("backend/app/llm/agentic/tools.py").read_text(encoding="utf-8")
+        guarded = [
+            "_tool_route_usages_async",
+            "_tool_suggest_endpoint_location_async",
+            "_tool_suggest_frontend_client_async",
+            "_tool_impact_route_change_async",
+            "_tool_compare_api_contract_async",
+            "_tool_suggest_contract_fix_async",
+            "_tool_suggest_api_fix_async",
+        ]
+        for fn_name in guarded:
+            marker = f"async def {fn_name}"
+            self.assertIn(marker, tools_src)
+            chunk = tools_src.split(marker, 1)[1].split("\n\n", 1)[0]
+            self.assertNotIn("asyncio.to_thread", chunk, msg=f"{fn_name} still uses to_thread")
+
+
 if __name__ == "__main__":
     unittest.main()
 
