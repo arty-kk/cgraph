@@ -17,7 +17,7 @@ from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..contracts import get_or_build_contract_async
 from ..errors import BadRequestError, ExternalServiceError, NotFoundError
-from ..llm.orchestrator import generate_docs
+from ..llm.orchestrator import generate_docs_async
 from ..models import (
     ApiCall,
     ApiInclude,
@@ -1287,12 +1287,12 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
     }
 
     try:
-        llm = await asyncio.to_thread(generate_docs, facts)
+        llm = await generate_docs_async(facts)
         md = str(llm.get("markdown") or "").strip()
     except Exception as e:
         raise ExternalServiceError(
             "Таймаут генерации документации через LLM",
-            context={"reason": "timeout", "detail": str(e)},
+            context={"reason": "async_timeout", "detail": str(e)},
         ) from e
 
     if not md:

@@ -435,11 +435,12 @@ async def test_build_project_docs_async_uses_async_root_normalizer(
             "key_files_md": "",
         }
 
-    async def _fake_to_thread(func, *args, **kwargs):
-        _ = args, kwargs
-        if func is docs_service.generate_docs:
-            return {"markdown": "ok"}
-        return await __import__("asyncio").to_thread(func, *args, **kwargs)
+    generate_docs_async_call: dict[str, object] = {"called": False, "facts": None}
+
+    async def _fake_generate_docs_async(facts):
+        generate_docs_async_call["called"] = True
+        generate_docs_async_call["facts"] = facts
+        return {"markdown": "ok"}
 
     session_factory_calls = {"count": 0}
 
@@ -478,9 +479,20 @@ async def test_build_project_docs_async_uses_async_root_normalizer(
         "_build_docs_markdown_parts_async",
         _fake_build_docs_markdown_parts_async,
     )
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(docs_service, "generate_docs_async", _fake_generate_docs_async)
+    monkeypatch.setattr(
+        docs_service,
+        "generate_docs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("sync generate_docs must not be used in async runtime")
+        ),
+        raising=False,
+    )
 
     result = await docs_service.build_project_docs_async(project_id=1, org_id=5)
 
     assert result["project_id"] == 1
     assert session_factory_calls["count"] == 2
+    assert generate_docs_async_call["called"] is True
+    assert isinstance(generate_docs_async_call["facts"], dict)
+    assert generate_docs_async_call["facts"]["project"]["id"] == 1
