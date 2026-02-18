@@ -17,7 +17,10 @@ async def test_run_mutation_indexing_async_uses_async_scan(monkeypatch: pytest.M
         assert rel_paths == ["a.py"]
         return {"aborted": False, "removed_edge_neighbors": ["x.py"]}
 
-    def _fake_update_graph_metrics_incremental(project_id, rel_paths, removed_edge_neighbors=None):
+    async def _fake_update_graph_metrics_incremental_async(
+        session, project_id, rel_paths, removed_edge_neighbors=None
+    ):
+        assert session == "session"
         assert project_id == 1
         assert rel_paths == ["a.py"]
         assert removed_edge_neighbors == ["x.py"]
@@ -26,11 +29,12 @@ async def test_run_mutation_indexing_async_uses_async_scan(monkeypatch: pytest.M
     monkeypatch.setattr(file_mutation_service, "scan_files_async", _fake_scan_files_async)
     monkeypatch.setattr(
         file_mutation_service,
-        "update_graph_metrics_incremental",
-        _fake_update_graph_metrics_incremental,
+        "update_graph_metrics_incremental_async",
+        _fake_update_graph_metrics_incremental_async,
     )
 
     result = await file_mutation_service.run_mutation_indexing_async(
+        "session",
         project_id=1,
         org_id=2,
         root=Path("/repo"),

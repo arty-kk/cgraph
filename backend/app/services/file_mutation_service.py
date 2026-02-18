@@ -7,7 +7,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ..graph import update_graph_metrics_incremental
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..graph import update_graph_metrics_incremental_async
 from ..scan import scan_files_async
 
 IndexStatus = Literal["ok", "rescan_scheduled", "failed"]
@@ -74,6 +76,7 @@ def build_mutation_queued_response(
 
 
 async def run_mutation_indexing_async(
+    session: AsyncSession,
     *,
     project_id: int,
     org_id: int,
@@ -92,7 +95,8 @@ async def run_mutation_indexing_async(
         }
 
     removed = removed_neighbors(reindexed)
-    metrics_pending = update_graph_metrics_incremental(
+    metrics_pending = await update_graph_metrics_incremental_async(
+        session,
         project_id,
         rel_paths,
         removed_edge_neighbors=removed,

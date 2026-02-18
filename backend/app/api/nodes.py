@@ -11,7 +11,9 @@ from sqlmodel import select
 from ..config import settings
 from ..contracts import get_or_build_contract_async
 from ..errors import BadRequestError, LockedError, NotFoundError
-from ..graph import update_graph_metrics_incremental
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..graph import update_graph_metrics_incremental_async
 from ..infra.cache import cache_invalidate_prefix_async
 from ..logging import get_logger
 from ..models import FileNode
@@ -90,13 +92,14 @@ async def _scan_files_async(project_id: int, org_id: int, root: Path, rel_paths:
 
 
 async def _update_graph_metrics_incremental_async(
+    session: AsyncSession,
     project_id: int,
     rel_paths: list[str],
     *,
     removed_edge_neighbors: list[str] | None = None,
 ) -> None:
-    await asyncio.to_thread(
-        update_graph_metrics_incremental,
+    await update_graph_metrics_incremental_async(
+        session,
         project_id,
         rel_paths,
         removed_edge_neighbors=removed_edge_neighbors,
@@ -261,6 +264,7 @@ async def node(request: Request, project_id: int, path: str):
             else:
                 removed_neighbors_list = removed_neighbors(reindexed)
                 await _update_graph_metrics_incremental_async(
+                    request.state.db_session,
                     project_id,
                     [rel_norm],
                     removed_edge_neighbors=removed_neighbors_list,

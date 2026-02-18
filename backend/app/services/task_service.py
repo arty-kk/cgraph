@@ -29,7 +29,7 @@ from ..errors import (
     NotFoundError,
     ServerError,
 )
-from ..graph import compute_graph_metrics, update_graph_metrics_incremental
+from ..graph import compute_graph_metrics, update_graph_metrics_incremental_async
 from ..llm.agentic import (
     AgenticMeta,
     analyze_agentic_async,
@@ -143,13 +143,14 @@ async def _scan_files_async(project_id: int, org_id: int, root: Path, paths: lis
 
 
 async def _update_graph_metrics_incremental_async(
+    session: AsyncSession,
     project_id: int,
     modified: list[str],
     *,
     removed_edge_neighbors,
 ) -> None:
-    await asyncio.to_thread(
-        update_graph_metrics_incremental,
+    await update_graph_metrics_incremental_async(
+        session,
         project_id,
         modified,
         removed_edge_neighbors=removed_edge_neighbors,
@@ -555,6 +556,7 @@ async def _apply_patch_and_record_async(
                     if isinstance(applied.get("reindexed"), dict):
                         removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
                     await _update_graph_metrics_incremental_async(
+                        session,
                         project_id,
                         modified,
                         removed_edge_neighbors=removed_edge_neighbors,
