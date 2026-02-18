@@ -60,6 +60,33 @@ class TestAgenticSearchSemantic(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(set(result.keys()), {"ok", "data", "error"})
 
+    async def test_search_semantic_fallback_uses_passed_async_session(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            args = {"query": "find auth flow"}
+            session = object()
+            semantic_mock = AsyncMock(return_value={"results": [], "meta": {"reason": "no_hits"}})
+            text_async_mock = AsyncMock(return_value=agentic._tool_ok({"matches": [], "meta": {}}))
+            text_sync_mock = AsyncMock(side_effect=AssertionError("sync fallback path must not be used"))
+
+            with (
+                patch("app.llm.agentic.tools.search_semantic_async", semantic_mock),
+                patch("app.llm.agentic.tools._tool_search_text_async", text_async_mock),
+                patch("app.llm.agentic.tools._tool_search_text", text_sync_mock),
+            ):
+                result = await agentic._tool_search_semantic_async(
+                    session,
+                    1,
+                    root,
+                    args,
+                    max_file_chars=1000,
+                )
+
+        text_async_mock.assert_awaited_once()
+        call_args = text_async_mock.await_args.args
+        self.assertIs(call_args[0], session)
+        self.assertTrue(result["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()
