@@ -1,4 +1,5 @@
 import sys
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from app.config import settings  # noqa: E402
 from app.db import get_session  # noqa: E402
 from app.models import FileChunkEmbedding, FileNode, FileText, OrgEntitlement  # noqa: E402
-from app.scan import scan_project  # noqa: E402
+from app.scan import scan_project_async  # noqa: E402
 from app.utils import sha256_text  # noqa: E402
 
 
@@ -61,7 +62,7 @@ class TestScanEmbeddings(unittest.TestCase):
 
                 file_path.write_text("print('new')\n", encoding="utf-8")
 
-                scan_project(project_id, org_id, root)
+                asyncio.run(scan_project_async(project_id, org_id, root))
 
                 with get_session() as session:
                     rows = session.exec(
