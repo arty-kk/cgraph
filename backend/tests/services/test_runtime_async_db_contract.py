@@ -23,6 +23,7 @@ MIXED_RUNTIME_FILES = {
 }
 FORBIDDEN_SYNC_DB_CALLS = {
     "get_session",
+    "compute_graph_metrics",
 }
 
 
