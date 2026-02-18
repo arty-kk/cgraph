@@ -77,7 +77,16 @@ async def test_mutation_indexing_task_async_uses_async_indexer(monkeypatch: pyte
     async def _fake_resolve_project_root_async(*_args, **_kwargs):
         return Path("/repo")
 
-    async def _fake_run_mutation_indexing_async(**kwargs):
+    class _Session:
+        async def __aenter__(self):
+            return "session"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return None
+
+    async def _fake_run_mutation_indexing_async(session, **kwargs):
+        assert session == "session"
         assert kwargs["project_id"] == 1
         assert kwargs["org_id"] == 7
         assert kwargs["root"] == Path("/repo")
@@ -91,6 +100,7 @@ async def test_mutation_indexing_task_async_uses_async_indexer(monkeypatch: pyte
     monkeypatch.setattr(celery_tasks, "_set_job_status_async", _fake_set_job_status_async)
     monkeypatch.setattr(celery_tasks, "_resolve_project_root_async", _fake_resolve_project_root_async)
     monkeypatch.setattr(celery_tasks, "run_mutation_indexing_async", _fake_run_mutation_indexing_async)
+    monkeypatch.setattr(celery_tasks, "AsyncSessionLocal", lambda: _Session())
     monkeypatch.setattr(celery_tasks.asyncio, "to_thread", _fail_to_thread)
 
     await celery_tasks._mutation_indexing_task_async("job-1", 1, 7, ["a.py"], "update")

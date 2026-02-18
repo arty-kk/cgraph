@@ -158,10 +158,14 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
         return {"aborted": False}
 
     monkeypatch.setattr(task_service, "scan_files_async", _fake_scan_files_async)
+    async def _fake_update_graph_metrics_incremental_async(*args, **kwargs):
+        _ = args, kwargs
+        return None
+
     monkeypatch.setattr(
         task_service,
-        "update_graph_metrics_incremental",
-        lambda *args, **kwargs: None,
+        "update_graph_metrics_incremental_async",
+        _fake_update_graph_metrics_incremental_async,
     )
     async def _fake_resolve_under_root_async(root, rel_path, *, max_length):
         _ = (root, max_length)
@@ -223,8 +227,18 @@ async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
     async def _fake_scan_files_async(*_args, **_kwargs):
         return "scan-ok"
 
+    async def _fake_update_graph_metrics_incremental_async(*args, **kwargs):
+        assert args == ("session", 1, ["a.py"])
+        assert kwargs == {"removed_edge_neighbors": None}
+        return None
+
     monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
     monkeypatch.setattr(task_service, "scan_files_async", _fake_scan_files_async)
+    monkeypatch.setattr(
+        task_service,
+        "update_graph_metrics_incremental_async",
+        _fake_update_graph_metrics_incremental_async,
+    )
 
     result_patch = await task_service._apply_unified_diff_async(
         Path("/tmp"),
@@ -234,6 +248,7 @@ async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
     )
     result_scan = await task_service._scan_files_async(1, 2, Path("/tmp"), ["a.py"])
     result_metrics = await task_service._update_graph_metrics_incremental_async(
+        "session",
         1,
         ["a.py"],
         removed_edge_neighbors=None,
@@ -242,8 +257,8 @@ async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
     assert result_patch == "ok"
     assert result_scan == "scan-ok"
     assert result_metrics is None
+    assert len(calls) == 1
     assert calls[0][0] is task_service.apply_unified_diff
-    assert calls[1][0] is task_service.update_graph_metrics_incremental
 
 
 @pytest.mark.anyio

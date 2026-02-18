@@ -120,12 +120,14 @@ async def _mutation_indexing_task_async(
     root = await _resolve_project_root_async(project_id, org_id)
     try:
         str_paths = [str(path) for path in rel_paths]
-        result = await run_mutation_indexing_async(
-            project_id=project_id,
-            org_id=org_id,
-            root=root,
-            rel_paths=str_paths,
-        )
+        async with AsyncSessionLocal() as session:
+            result = await run_mutation_indexing_async(
+                session,
+                project_id=project_id,
+                org_id=org_id,
+                root=root,
+                rel_paths=str_paths,
+            )
         result["operation"] = str(operation)
         result["rel_paths"] = str_paths
         if result.get("aborted"):
