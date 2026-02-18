@@ -24,6 +24,7 @@ MIXED_RUNTIME_FILES = {
 FORBIDDEN_SYNC_DB_CALLS = {
     "get_session",
     "compute_graph_metrics",
+    "search_semantic",
 }
 
 
@@ -130,6 +131,25 @@ def test_mixed_runtime_async_functions_do_not_call_local_sync_db_helpers() -> No
         + ", ".join(violations)
     )
 
+
+
+
+def test_runtime_async_functions_do_not_call_sync_search_semantic() -> None:
+    violations: list[str] = []
+    for path in _iter_runtime_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            for call in (n for n in ast.walk(node) if isinstance(n, ast.Call)):
+                if isinstance(call.func, ast.Name) and call.func.id == "search_semantic":
+                    if not _allowlisted(path, "search_semantic"):
+                        violations.append(f"{path}:{call.lineno}:{node.name}")
+
+    assert not violations, (
+        "Async runtime paths must not call sync search_semantic(); use search_semantic_async with AsyncSession: "
+        + ", ".join(violations)
+    )
 
 def test_runtime_async_functions_do_not_call_sync_cache_or_celery_directly() -> None:
     forbidden_cache_calls = {
