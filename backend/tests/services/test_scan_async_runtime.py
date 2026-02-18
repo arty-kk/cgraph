@@ -65,7 +65,7 @@ async def test_scan_files_async_runtime_does_not_use_sync_get_session(monkeypatc
     monkeypatch.setattr(scan, "project_lock_async", lambda *_args, **_kwargs: _NoopLock())
     monkeypatch.setattr(scan, "_prepare_scan_files_async", _fake_prepare)
     monkeypatch.setattr(scan, "_write_scan_files_async", _fake_write)
-    monkeypatch.setattr(scan, "get_session", _fail_get_session)
+    monkeypatch.setattr(scan, "get_session", _fail_get_session, raising=False)
 
     result = await scan.scan_files_async(1, 2, Path("/repo"), ["a.py"])
 
