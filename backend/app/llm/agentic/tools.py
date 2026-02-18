@@ -1665,8 +1665,12 @@ async def _tool_search_semantic_impl(
             fallback_args["max_matches"] = args.get("max_matches")
         if args.get("context_chars") is not None:
             fallback_args["context_chars"] = args.get("context_chars")
-        text_result = await _tool_search_text(
-            project_id, root, fallback_args, max_file_chars=max_file_chars
+        text_result = await _tool_search_text_async(
+            session,
+            project_id,
+            root,
+            fallback_args,
+            max_file_chars=max_file_chars,
         )
         if not text_result.get("ok"):
             return text_result

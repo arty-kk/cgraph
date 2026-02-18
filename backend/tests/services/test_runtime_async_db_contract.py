@@ -151,6 +151,24 @@ def test_runtime_async_functions_do_not_call_sync_search_semantic() -> None:
         + ", ".join(violations)
     )
 
+
+def test_agentic_async_tools_do_not_call_sync_search_semantic_or_get_session() -> None:
+    path = BACKEND_ROOT / "app" / "llm" / "agentic" / "tools.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef) or not node.name.startswith("_tool_"):
+            continue
+        for call in (n for n in ast.walk(node) if isinstance(n, ast.Call)):
+            if isinstance(call.func, ast.Name) and call.func.id in {"search_semantic", "get_session"}:
+                violations.append(f"{path}:{call.lineno}:{node.name} -> {call.func.id}")
+
+    assert not violations, (
+        "Async agentic tools must not call sync search_semantic()/get_session(): "
+        + ", ".join(violations)
+    )
+
 def test_runtime_async_functions_do_not_call_sync_cache_or_celery_directly() -> None:
     forbidden_cache_calls = {
         "cache_get_json",
