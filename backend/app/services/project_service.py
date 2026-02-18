@@ -14,7 +14,7 @@ from sqlmodel import delete, select
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..errors import BadRequestError, ForbiddenError, LockedError, NotFoundError
-from ..graph import compute_graph_metrics_with_threshold
+from ..graph import compute_graph_metrics_async
 from ..infra.cache import cache_get_json_async, cache_invalidate_prefix_async, cache_set_json_async
 from ..llm.client import get_async_openai_client
 from ..logging import get_logger
@@ -1244,8 +1244,8 @@ async def _scan_and_update_graph_async(
     try:
         async with AsyncSessionLocal() as session:
             async with project_lock_async(session, project_id):
-                metrics_pending = await asyncio.to_thread(
-                    compute_graph_metrics_with_threshold,
+                metrics_pending = await compute_graph_metrics_async(
+                    session,
                     project_id,
                     background_tasks=background_tasks,
                 )

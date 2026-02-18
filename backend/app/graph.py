@@ -1,6 +1,7 @@
 # backend/app/graph.py
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -10,9 +11,11 @@ from typing import Any
 from fastapi import BackgroundTasks
 import networkx as nx
 from sqlalchemy import func, or_, text
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from .config import settings
+from .async_db import AsyncSessionLocal
 from .db import get_session
 from .llm.client import get_openai_client
 from .models import FileChunkEmbedding, FileEdge, FileNode
@@ -173,6 +176,165 @@ def compute_graph_metrics_with_threshold(
     background_tasks: BackgroundTasks | None = None,
 ) -> bool:
     return _maybe_compute_graph_metrics(project_id, background_tasks)
+
+
+async def _graph_counts_async(session: AsyncSession, project_id: int) -> tuple[int, int]:
+    node_count = _as_int(
+        (
+            await session.execute(
+                select(func.count()).select_from(FileNode).where(FileNode.project_id == project_id)
+            )
+        ).scalar_one(),
+        0,
+    )
+    edge_count = _as_int(
+        (
+            await session.execute(
+                select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
+            )
+        ).scalar_one(),
+        0,
+    )
+    return node_count, edge_count
+
+
+async def _read_graph_metrics_input_async(
+    session: AsyncSession,
+    project_id: int,
+    *,
+    node_count: int,
+    edge_count: int,
+) -> dict[str, Any]:
+    node_rows = (
+        await session.execute(
+            select(FileNode.id, FileNode.path).where(FileNode.project_id == project_id)
+        )
+    ).all()
+    indeg_rows = (
+        await session.execute(
+            select(FileEdge.dst_path, func.count())
+            .where(FileEdge.project_id == project_id)
+            .group_by(FileEdge.dst_path)
+        )
+    ).all()
+    outdeg_rows = (
+        await session.execute(
+            select(FileEdge.src_path, func.count())
+            .where(FileEdge.project_id == project_id)
+            .group_by(FileEdge.src_path)
+        )
+    ).all()
+
+    compute_scc = bool(getattr(settings, "compute_scc", True))
+    scc_max_nodes = _as_int(getattr(settings, "scc_max_nodes", 4000), 4000)
+    scc_max_edges = _as_int(getattr(settings, "scc_max_edges", 20000), 20000)
+
+    edge_rows: list[tuple[Any, Any]] = []
+    if compute_scc and node_count <= scc_max_nodes and edge_count <= scc_max_edges:
+        edge_rows = (
+            await session.execute(
+                select(FileEdge.src_path, FileEdge.dst_path).where(FileEdge.project_id == project_id)
+            )
+        ).all()
+
+    return {
+        "node_rows": [(nid, path) for nid, path in node_rows],
+        "indeg_rows": [(p, c) for p, c in indeg_rows],
+        "outdeg_rows": [(p, c) for p, c in outdeg_rows],
+        "edge_rows": [(src, dst) for src, dst in edge_rows],
+        "compute_scc": compute_scc,
+        "scc_max_nodes": scc_max_nodes,
+        "scc_max_edges": scc_max_edges,
+    }
+
+
+def _compute_graph_metrics_cpu(graph_input: dict[str, Any]) -> list[dict[str, int]]:
+    node_rows = graph_input["node_rows"]
+    indeg_rows = graph_input["indeg_rows"]
+    outdeg_rows = graph_input["outdeg_rows"]
+    edge_rows = graph_input["edge_rows"]
+
+    indeg: dict[str, int] = {}
+    for p, c in indeg_rows:
+        if isinstance(p, str) and p:
+            indeg[p] = _as_int(c, 0)
+
+    outdeg: dict[str, int] = {}
+    for p, c in outdeg_rows:
+        if isinstance(p, str) and p:
+            outdeg[p] = _as_int(c, 0)
+
+    scc_map: dict[str, int] = {}
+    if graph_input["compute_scc"]:
+        node_count = len(node_rows)
+        edge_count = len(edge_rows)
+        if (
+            node_count <= graph_input["scc_max_nodes"]
+            and edge_count <= graph_input["scc_max_edges"]
+        ):
+            g = nx.DiGraph()
+            for _nid, path in node_rows:
+                if isinstance(path, str) and path:
+                    g.add_node(path)
+            for src, dst in edge_rows:
+                if isinstance(src, str) and src and isinstance(dst, str) and dst:
+                    g.add_edge(src, dst)
+            for i, comp in enumerate(nx.strongly_connected_components(g)):
+                for path in comp:
+                    scc_map[path] = i
+
+    params: list[dict[str, int]] = []
+    for nid, path in node_rows:
+        if nid is None or not isinstance(path, str) or not path:
+            continue
+        params.append(
+            {
+                "id": int(nid),
+                "fan_in": _as_int(indeg.get(path, 0), 0),
+                "fan_out": _as_int(outdeg.get(path, 0), 0),
+                "scc_id": _as_int(scc_map.get(path, -1), -1),
+            }
+        )
+    return params
+
+
+async def _write_graph_metrics_async(session: AsyncSession, params: list[dict[str, int]]) -> None:
+    if not params:
+        return
+    await session.execute(
+        text("UPDATE filenode SET fan_in=:fan_in, fan_out=:fan_out, scc_id=:scc_id WHERE id=:id"),
+        params,
+    )
+    await session.commit()
+
+
+async def _compute_graph_metrics_background_async(project_id: int) -> None:
+    async with AsyncSessionLocal() as session:
+        await compute_graph_metrics_async(session, project_id)
+
+
+async def compute_graph_metrics_async(
+    session: AsyncSession,
+    project_id: int,
+    background_tasks: BackgroundTasks | None = None,
+) -> bool:
+    node_count, edge_count = await _graph_counts_async(session, project_id)
+    if background_tasks and _should_defer_graph_metrics(node_count, edge_count):
+        background_tasks.add_task(_compute_graph_metrics_background_async, project_id)
+        return True
+
+    graph_input = await _read_graph_metrics_input_async(
+        session,
+        project_id,
+        node_count=node_count,
+        edge_count=edge_count,
+    )
+    if not graph_input["node_rows"]:
+        return False
+
+    params = await asyncio.to_thread(_compute_graph_metrics_cpu, graph_input)
+    await _write_graph_metrics_async(session, params)
+    return False
 
 
 def update_graph_metrics_incremental(
