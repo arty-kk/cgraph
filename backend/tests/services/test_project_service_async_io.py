@@ -1296,3 +1296,204 @@ async def test_create_project_from_snapshot_async_uses_async_root_normalization(
 
     assert project.id == 42
     assert calls[:3] == ["prepare", "normalize:/tmp/snap", "begin"]
+
+
+from app import graph
+
+
+@pytest.mark.anyio
+async def test_scan_and_update_graph_async_does_not_call_sync_graph_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class _Project:
+        org_id = 7
+        root_path = "/repo"
+
+    class _SessionGet:
+        async def get(self, model, project_id):
+            _ = model, project_id
+            return _Project()
+
+    class _SessionMetrics:
+        pass
+
+    class _SessionCtx:
+        def __init__(self, session):
+            self._session = session
+
+        async def __aenter__(self):
+            return self._session
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    sessions = [_SessionGet(), _SessionMetrics()]
+
+    def _fake_async_session_local():
+        return _SessionCtx(sessions.pop(0))
+
+    class _Lock:
+        async def __aenter__(self):
+            calls.append("lock-enter")
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append("lock-exit")
+            return False
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        if func is project_service.scan_project:
+            calls.append("scan")
+            return {"files": 1}
+        if getattr(func, "__name__", "") == "compute_graph_metrics_with_threshold":
+            raise AssertionError("sync graph metrics path must not be used")
+        return func(*args, **kwargs)
+
+    async def _fake_compute_graph_metrics_async(session, project_id, background_tasks=None):
+        _ = background_tasks
+        assert isinstance(session, _SessionMetrics)
+        assert project_id == 1
+        calls.append("metrics-async")
+        return False
+
+    async def _fake_cache_invalidate_prefix_async(parts):
+        calls.append(f"cache:{parts[0]}")
+
+    monkeypatch.setattr(project_service, "AsyncSessionLocal", _fake_async_session_local)
+    monkeypatch.setattr(project_service, "project_lock_async", lambda *_args, **_kwargs: _Lock())
+    async def _fake_normalize_project_root_async(_path: str):
+        return Path("/repo")
+
+    monkeypatch.setattr(project_service, "_normalize_project_root_async", _fake_normalize_project_root_async)
+    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "compute_graph_metrics_async", _fake_compute_graph_metrics_async)
+    monkeypatch.setattr(project_service, "cache_invalidate_prefix_async", _fake_cache_invalidate_prefix_async)
+
+    result = await project_service._scan_and_update_graph_async(1, 7)
+
+    assert result == {"ok": True, "stats": {"files": 1}, "metrics_pending": False}
+    assert calls == ["scan", "lock-enter", "metrics-async", "lock-exit", "cache:project:1"]
+
+
+@pytest.mark.anyio
+async def test_scan_and_update_graph_async_does_not_touch_sync_get_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Project:
+        org_id = 7
+        root_path = "/repo"
+
+    class _SessionGet:
+        async def get(self, model, project_id):
+            _ = model, project_id
+            return _Project()
+
+    class _SessionMetrics:
+        pass
+
+    class _SessionCtx:
+        def __init__(self, session):
+            self._session = session
+
+        async def __aenter__(self):
+            return self._session
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    sessions = [_SessionGet(), _SessionMetrics()]
+
+    def _fake_async_session_local():
+        return _SessionCtx(sessions.pop(0))
+
+    class _Lock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_to_thread(func, *_args, **_kwargs):
+        if func is project_service.scan_project:
+            return {"files": 1}
+        raise AssertionError("unexpected to_thread call")
+
+    async def _fake_compute_graph_metrics_async(_session, _project_id, background_tasks=None):
+        _ = background_tasks
+        return False
+
+    def _fail_get_session(*_args, **_kwargs):
+        raise AssertionError("sync get_session must not be called in async runtime path")
+
+    monkeypatch.setattr(project_service, "AsyncSessionLocal", _fake_async_session_local)
+    monkeypatch.setattr(project_service, "project_lock_async", lambda *_args, **_kwargs: _Lock())
+    async def _fake_normalize_project_root_async(_path: str):
+        return Path("/repo")
+
+    async def _fake_cache_invalidate_prefix_async(_parts):
+        return None
+
+    monkeypatch.setattr(project_service, "_normalize_project_root_async", _fake_normalize_project_root_async)
+    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "compute_graph_metrics_async", _fake_compute_graph_metrics_async)
+    monkeypatch.setattr(project_service, "cache_invalidate_prefix_async", _fake_cache_invalidate_prefix_async)
+    monkeypatch.setattr(graph, "get_session", _fail_get_session)
+
+    result = await project_service._scan_and_update_graph_async(1, 7)
+
+    assert result["ok"] is True
+
+
+@pytest.mark.anyio
+async def test_compute_graph_metrics_async_runs_cpu_in_executor_and_keeps_db_async(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class _ScalarResult:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one(self):
+            return self._value
+
+    class _RowsResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Session:
+        def __init__(self):
+            self._execute_idx = 0
+
+        async def execute(self, stmt, params=None):
+            _ = stmt
+            if params is not None:
+                calls.append("write")
+                return _RowsResult([])
+            self._execute_idx += 1
+            if self._execute_idx == 1:
+                return _ScalarResult(2)
+            if self._execute_idx == 2:
+                return _ScalarResult(1)
+            if self._execute_idx == 3:
+                return _RowsResult([(1, "a.py"), (2, "b.py")])
+            if self._execute_idx == 4:
+                return _RowsResult([("a.py", 1)])
+            if self._execute_idx == 5:
+                return _RowsResult([("a.py", 1)])
+            if self._execute_idx == 6:
+                return _RowsResult([("a.py", "b.py")])
+            raise AssertionError("unexpected execute call")
+
+        async def commit(self):
+            calls.append("commit")
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        calls.append(f"to_thread:{func.__name__}")
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(graph.asyncio, "to_thread", _fake_to_thread)
+
+    pending = await graph.compute_graph_metrics_async(_Session(), project_id=1)
+
+    assert pending is False
+    assert calls == ["to_thread:_compute_graph_metrics_cpu", "write", "commit"]
