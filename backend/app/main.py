@@ -13,13 +13,14 @@ from .api.nodes import router as nodes_router
 from .api.orgs import router as orgs_router
 from .api.projects import router as projects_router
 from .api.tasks import router as tasks_router
+from .async_db import AsyncSessionLocal, init_async_db
 from .auth import extract_token
 from .config import settings
-from .async_db import AsyncSessionLocal, init_async_db
 from .errors import install_exception_handlers
 from .infra.rate_limit import allow_request_async, rate_limit_response
 from .logging import log_requests, setup_logging
 from .services.auth_service import get_user_from_token_async
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -72,6 +73,10 @@ async def auth_guard(request: Request, call_next):
         request.state.user = user
     return await call_next(request)
 
+
+# NOTE: function-based middlewares execute in reverse declaration order.
+# Keep DB session middleware declared after all others so request.state.db_session
+# is available in every middleware/endpoint and remains exactly one per request.
 @app.middleware("http")
 async def db_session_middleware(request: Request, call_next):
     async with AsyncSessionLocal() as session:
