@@ -20,7 +20,7 @@ from ...api_scaffold import build_frontend_snippet, suggest_frontend_module_file
 from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ...contracts import get_or_build_contract_async
-from ...graph import search_nodes, search_semantic
+from ...graph import search_nodes, search_semantic_async
 from ...models import (
     ApiCall,
     ApiCallMeta,
@@ -1600,12 +1600,21 @@ async def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file
 
 
 def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
-    return asyncio.run(
-        _tool_search_semantic_impl(project_id, root, args, max_file_chars=max_file_chars)
-    )
+    async def _run() -> dict:
+        async with AsyncSessionLocal() as session:
+            return await _tool_search_semantic_impl(
+                session,
+                project_id,
+                root,
+                args,
+                max_file_chars=max_file_chars,
+            )
+
+    return asyncio.run(_run())
 
 
 async def _tool_search_semantic_impl(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     args: dict,
@@ -1632,7 +1641,8 @@ async def _tool_search_semantic_impl(
             int(settings.embeddings_search_max_results),
         )
 
-    semantic = search_semantic(
+    semantic = await search_semantic_async(
+        session,
         project_id,
         root,
         query,
@@ -2784,7 +2794,7 @@ async def _compute_prefix_map(project_id: int) -> dict[tuple[str, str], list[str
 
 
 
-async def _tool_get_node_async(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_get_node_async(session: AsyncSession, project_id: int, root: Path, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return _tool_error("bad_args", "path is required")
@@ -2792,19 +2802,18 @@ async def _tool_get_node_async(project_id: int, root: Path, args: dict) -> dict:
         _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
         return _tool_error("invalid_path", str(e))
-    async with AsyncSessionLocal() as s:
-        n = (
-            (
-                await s.execute(
-                    select(FileNode).where(
-                        FileNode.project_id == project_id,
-                        FileNode.path == rel_norm,
-                    )
+    n = (
+        (
+            await session.execute(
+                select(FileNode).where(
+                    FileNode.project_id == project_id,
+                    FileNode.path == rel_norm,
                 )
             )
-            .scalars()
-            .first()
         )
+        .scalars()
+        .first()
+    )
     if not n:
         return _tool_error("not_found", "node not found", {"path": rel_norm})
     return _tool_ok(
@@ -2821,7 +2830,13 @@ async def _tool_get_node_async(project_id: int, root: Path, args: dict) -> dict:
     )
 
 
-async def _tool_get_neighbors_async(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_get_neighbors_async(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    args: dict,
+) -> dict:
+    del session
     path = args.get("path")
     direction = args.get("direction")
     depth = _clamp_int(args.get("depth"), 1, 0, 6)
@@ -2858,7 +2873,7 @@ async def _tool_get_neighbors_async(project_id: int, root: Path, args: dict) -> 
     )
 
 
-async def _tool_search_paths_async(project_id: int, args: dict) -> dict:
+async def _tool_search_paths_async(session: AsyncSession, project_id: int, args: dict) -> dict:
     indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
@@ -2867,15 +2882,14 @@ async def _tool_search_paths_async(project_id: int, args: dict) -> dict:
     if not isinstance(query, str) or not query.strip():
         return _tool_error("bad_args", "query is required")
     like = f"%{query.strip()}%"
-    async with AsyncSessionLocal() as s:
-        rows = (
-            await s.execute(
-                select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
-                .where(FileNode.project_id == project_id, FileNode.path.like(like))
-                .order_by(FileNode.path)
-                .limit(int(limit))
-            )
-        ).all()
+    rows = (
+        await session.execute(
+            select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
+            .where(FileNode.project_id == project_id, FileNode.path.like(like))
+            .order_by(FileNode.path)
+            .limit(int(limit))
+        )
+    ).all()
     out: list[dict] = []
     for row in rows:
         if isinstance(row, (tuple, list)):
@@ -2898,7 +2912,7 @@ async def _tool_search_paths_async(project_id: int, args: dict) -> dict:
     return _tool_ok({"query": query.strip(), "limit": limit, "results": out})
 
 
-async def _tool_search_symbols_async(project_id: int, args: dict) -> dict:
+async def _tool_search_symbols_async(session: AsyncSession, project_id: int, args: dict) -> dict:
     indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
@@ -2945,14 +2959,13 @@ async def _tool_search_symbols_async(project_id: int, args: dict) -> dict:
             return match_type in ("exact", "prefix", "contains")
         return False
 
-    async with AsyncSessionLocal() as s:
-        rows = (
-            await s.execute(
-                select(ModuleContract)
-                .where(ModuleContract.project_id == project_id)
-                .order_by(ModuleContract.path.asc())
-            )
-        ).scalars().all()
+    rows = (
+        await session.execute(
+            select(ModuleContract)
+            .where(ModuleContract.project_id == project_id)
+            .order_by(ModuleContract.path.asc())
+        )
+    ).scalars().all()
 
     results: list[dict[str, Any]] = []
     for row in rows:
@@ -3045,7 +3058,7 @@ async def _tool_search_symbols_async(project_id: int, args: dict) -> dict:
     )
 
 
-async def _tool_search_routes_async(project_id: int, args: dict) -> dict:
+async def _tool_search_routes_async(session: AsyncSession, project_id: int, args: dict) -> dict:
     query = args.get("query")
     if not isinstance(query, str):
         query = ""
@@ -3054,19 +3067,18 @@ async def _tool_search_routes_async(project_id: int, args: dict) -> dict:
     method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     limit = _clamp_int(args.get("limit"), 50, 1, 500)
     try:
-        async with AsyncSessionLocal() as s:
-            q = select(ApiRoute).where(ApiRoute.project_id == project_id)
-            if method_norm:
-                q = q.where(ApiRoute.method == method_norm)
-            if query:
-                like = f"%{query}%"
-                q = q.where(
-                    (ApiRoute.path.like(like))
-                    | (ApiRoute.handler_name.like(like))
-                    | (ApiRoute.source_path.like(like))
-                )
-            q = q.order_by(ApiRoute.path.asc(), ApiRoute.method.asc()).limit(int(limit))
-            rows = (await s.execute(q)).scalars().all()
+        q = select(ApiRoute).where(ApiRoute.project_id == project_id)
+        if method_norm:
+            q = q.where(ApiRoute.method == method_norm)
+        if query:
+            like = f"%{query}%"
+            q = q.where(
+                (ApiRoute.path.like(like))
+                | (ApiRoute.handler_name.like(like))
+                | (ApiRoute.source_path.like(like))
+            )
+        q = q.order_by(ApiRoute.path.asc(), ApiRoute.method.asc()).limit(int(limit))
+        rows = (await session.execute(q)).scalars().all()
     except Exception as e:
         return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
     out = [
@@ -3091,7 +3103,7 @@ async def _tool_search_routes_async(project_id: int, args: dict) -> dict:
     )
 
 
-async def _tool_search_api_calls_async(project_id: int, args: dict) -> dict:
+async def _tool_search_api_calls_async(session: AsyncSession, project_id: int, args: dict) -> dict:
     query = args.get("query")
     if not isinstance(query, str):
         query = ""
@@ -3100,15 +3112,14 @@ async def _tool_search_api_calls_async(project_id: int, args: dict) -> dict:
     method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
     limit = _clamp_int(args.get("limit"), 50, 1, 500)
     try:
-        async with AsyncSessionLocal() as s:
-            q = select(ApiCall).where(ApiCall.project_id == project_id)
-            if method_norm:
-                q = q.where(ApiCall.method == method_norm)
-            if query:
-                like = f"%{query}%"
-                q = q.where((ApiCall.path.like(like)) | (ApiCall.source_path.like(like)))
-            q = q.order_by(ApiCall.path.asc(), ApiCall.method.asc()).limit(int(limit))
-            rows = (await s.execute(q)).scalars().all()
+        q = select(ApiCall).where(ApiCall.project_id == project_id)
+        if method_norm:
+            q = q.where(ApiCall.method == method_norm)
+        if query:
+            like = f"%{query}%"
+            q = q.where((ApiCall.path.like(like)) | (ApiCall.source_path.like(like)))
+        q = q.order_by(ApiCall.path.asc(), ApiCall.method.asc()).limit(int(limit))
+        rows = (await session.execute(q)).scalars().all()
     except Exception as e:
         return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
     out = [
@@ -3132,7 +3143,8 @@ async def _tool_search_api_calls_async(project_id: int, args: dict) -> dict:
     )
 
 
-async def _tool_api_coverage_summary_async(project_id: int, args: dict) -> dict:
+async def _tool_api_coverage_summary_async(session: AsyncSession, project_id: int, args: dict) -> dict:
+    del session
     prefix = _prefix_norm(args.get("prefix"), default="/api")
     method_filter = _method_norm(args.get("method"))
     limit_examples = _clamp_int(args.get("limit_examples"), 10, 0, 50)
@@ -3227,7 +3239,8 @@ async def _tool_api_coverage_summary_async(project_id: int, args: dict) -> dict:
     )
 
 
-async def _tool_unmatched_routes_async(project_id: int, args: dict) -> dict:
+async def _tool_unmatched_routes_async(session: AsyncSession, project_id: int, args: dict) -> dict:
+    del session
     prefix = _prefix_norm(args.get("prefix"), default="/api")
     method_filter = _method_norm(args.get("method"))
     limit = _clamp_int(args.get("limit"), 100, 1, 500)
@@ -3293,7 +3306,8 @@ async def _tool_unmatched_routes_async(project_id: int, args: dict) -> dict:
     )
 
 
-async def _tool_unmatched_calls_async(project_id: int, args: dict) -> dict:
+async def _tool_unmatched_calls_async(session: AsyncSession, project_id: int, args: dict) -> dict:
+    del session
     prefix = _prefix_norm(args.get("prefix"), default="/api")
     method_filter = _method_norm(args.get("method"))
     limit = _clamp_int(args.get("limit"), 100, 1, 500)
@@ -3332,16 +3346,23 @@ async def _tool_unmatched_calls_async(project_id: int, args: dict) -> dict:
 
 
 async def _tool_search_semantic_async(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     args: dict,
     *,
     max_file_chars: int,
 ) -> dict:
-    return await _tool_search_semantic_impl(project_id, root, args, max_file_chars=max_file_chars)
+    return await _tool_search_semantic_impl(
+        session,
+        project_id,
+        root,
+        args,
+        max_file_chars=max_file_chars,
+    )
 
 
-async def _tool_search_tests_async(project_id: int, args: dict) -> dict:
+async def _tool_search_tests_async(session: AsyncSession, project_id: int, args: dict) -> dict:
     indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
@@ -3370,15 +3391,14 @@ async def _tool_search_tests_async(project_id: int, args: dict) -> dict:
         like = f"%{query_norm}%"
         cond = cond & FileNode.path.like(like)
 
-    async with AsyncSessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
-                .where(FileNode.project_id == project_id, cond)
-                .order_by(FileNode.path.asc())
-                .limit(int(limit))
-            )
-        ).all()
+    rows = (
+        await session.execute(
+            select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
+            .where(FileNode.project_id == project_id, cond)
+            .order_by(FileNode.path.asc())
+            .limit(int(limit))
+        )
+    ).all()
 
     results: list[dict[str, Any]] = []
     for row in rows:
@@ -3405,7 +3425,7 @@ async def _tool_search_tests_async(project_id: int, args: dict) -> dict:
     return _tool_ok({"query": query_norm, "limit": int(limit), "results": results})
 
 
-async def _tool_get_tree_outline_async(project_id: int, args: dict) -> dict:
+async def _tool_get_tree_outline_async(session: AsyncSession, project_id: int, args: dict) -> dict:
     indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
@@ -3420,13 +3440,12 @@ async def _tool_get_tree_outline_async(project_id: int, args: dict) -> dict:
     if max_depth_raw is not None:
         max_depth = _clamp_int(max_depth_raw, 10, 1, 20)
 
-    async with AsyncSessionLocal() as session:
-        q = select(FileNode.path).where(FileNode.project_id == project_id)
-        if prefix_norm:
-            like = f"{prefix_norm}/%"
-            q = q.where((FileNode.path == prefix_norm) | (FileNode.path.like(like)))
-        q = q.order_by(FileNode.path.asc())
-        rows = (await session.execute(q)).all()
+    q = select(FileNode.path).where(FileNode.project_id == project_id)
+    if prefix_norm:
+        like = f"{prefix_norm}/%"
+        q = q.where((FileNode.path == prefix_norm) | (FileNode.path.like(like)))
+    q = q.order_by(FileNode.path.asc())
+    rows = (await session.execute(q)).all()
 
     paths: list[str] = []
     for row in rows:
@@ -3447,24 +3466,28 @@ async def _tool_get_tree_outline_async(project_id: int, args: dict) -> dict:
     )
 
 
-async def _tool_project_summary_async(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_project_summary_async(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    args: dict,
+) -> dict:
     del root, args
-    async with AsyncSessionLocal() as session:
-        nodes = (
-            await session.execute(
-                select(
-                    FileNode.path,
-                    FileNode.language,
-                    FileNode.loc,
-                    FileNode.complexity,
-                    FileNode.fan_in,
-                    FileNode.fan_out,
-                    FileNode.status,
-                )
-                .where(FileNode.project_id == project_id)
-                .order_by(FileNode.path)
+    nodes = (
+        await session.execute(
+            select(
+                FileNode.path,
+                FileNode.language,
+                FileNode.loc,
+                FileNode.complexity,
+                FileNode.fan_in,
+                FileNode.fan_out,
+                FileNode.status,
             )
-        ).all()
+            .where(FileNode.project_id == project_id)
+            .order_by(FileNode.path)
+        )
+    ).all()
     if not nodes:
         return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
     summary = await asyncio.to_thread(_compute_project_summary_facts, nodes)
@@ -3644,41 +3667,64 @@ async def _tool_get_symbol_async(
     return await _tool_get_symbol(session, project_id, root, meta, args)
 
 
-async def _tool_route_usages_async(project_id: int, args: dict) -> dict:
+async def _tool_route_usages_async(session: AsyncSession, project_id: int, args: dict) -> dict:
+    del session
     return await _tool_route_usages(project_id, args)
 
 
-async def _tool_suggest_endpoint_location_async(project_id: int, args: dict) -> dict:
+async def _tool_suggest_endpoint_location_async(
+    session: AsyncSession,
+    project_id: int,
+    args: dict,
+) -> dict:
+    del session
     return await _tool_suggest_endpoint_location(project_id, args)
 
 
-async def _tool_suggest_frontend_client_async(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_suggest_frontend_client_async(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    args: dict,
+) -> dict:
+    del session
     return await _tool_suggest_frontend_client(project_id, root, args)
 
 
-async def _tool_impact_route_change_async(project_id: int, args: dict) -> dict:
+async def _tool_impact_route_change_async(session: AsyncSession, project_id: int, args: dict) -> dict:
+    del session
     return await _tool_impact_route_change(project_id, args)
 
 
-async def _tool_compare_api_contract_async(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_compare_api_contract_async(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    args: dict,
+) -> dict:
+    del session
     return await _tool_compare_api_contract(project_id, root, args)
 
 
 async def _tool_suggest_contract_fix_async(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     meta: AgenticMeta,
     args: dict,
 ) -> dict:
+    del session
     return await _tool_suggest_contract_fix(project_id, root, meta, args)
 
 
 async def _tool_suggest_api_fix_async(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     meta: AgenticMeta,
     args: dict,
 ) -> dict:
+    del session
     return await _tool_suggest_api_fix(project_id, root, meta, args)
 
 
