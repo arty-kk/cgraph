@@ -9,7 +9,6 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from ... import db as _db
 from ...api_contracts import build_backend_contract_for_route
 from ...api_map import (
     backend_path_skeleton,
@@ -34,7 +33,7 @@ from ...models import (
 )
 from ...py_edits import py_add_keys_to_function_return_dicts
 from ...scan import SEARCH_INDEX_MAX_CHARS
-from ...search import search_text_paths
+from ...search import search_text_paths_async
 from ...services.docs_service import _compute_project_summary_facts, _tree_outline
 from ...ts_edits import ts_add_fields_to_typedef, ts_patch_wrapper_function
 from ...ts_edits import unified_diff as _unified_diff
@@ -42,10 +41,6 @@ from ...utils import resolve_under_root
 from .context import _neighbors_limited
 from .dispatch import _clamp_int, _tool_error, _tool_ok
 from .types import AgenticMeta
-
-
-def _offline_get_session():
-    return _db.get_session()
 
 
 def _tool_definitions(max_file_chars: int) -> list[dict]:
@@ -795,11 +790,7 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
 
 
 def _check_indexed(project_id: int) -> dict | None:
-    with _offline_get_session() as s:
-        row = s.exec(select(FileNode.id).where(FileNode.project_id == project_id).limit(1)).first()
-    if not row:
-        return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
-    return None
+    return asyncio.run(_check_indexed_async(project_id))
 
 
 async def _check_indexed_async(project_id: int) -> dict | None:
@@ -1082,7 +1073,7 @@ async def _tool_get_symbol(
     return _tool_error("not_found", "symbol not found", {"path": rel_norm, "name": needle})
 
 
-def _tool_get_node(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_get_node(project_id: int, root: Path, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return _tool_error("bad_args", "path is required")
@@ -1090,10 +1081,12 @@ def _tool_get_node(project_id: int, root: Path, args: dict) -> dict:
         _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
     except Exception as e:
         return _tool_error("invalid_path", str(e))
-    with _offline_get_session() as s:
-        n = s.exec(
-            select(FileNode).where(FileNode.project_id == project_id, FileNode.path == rel_norm)
-        ).first()
+    async with AsyncSessionLocal() as s:
+        n = (
+            await s.execute(
+                select(FileNode).where(FileNode.project_id == project_id, FileNode.path == rel_norm)
+            )
+        ).scalar_one_or_none()
     if not n:
         return _tool_error("not_found", "node not found", {"path": rel_norm})
     return _tool_ok(
@@ -1147,8 +1140,8 @@ def _tool_search_paths(project_id: int, args: dict) -> dict:
     return _tool_ok({"query": query.strip(), "limit": limit, "results": rows})
 
 
-def _tool_search_tests(project_id: int, args: dict) -> dict:
-    indexed_error = _check_indexed(project_id)
+async def _tool_search_tests(project_id: int, args: dict) -> dict:
+    indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -1176,12 +1169,14 @@ def _tool_search_tests(project_id: int, args: dict) -> dict:
         like = f"%{query_norm}%"
         cond = cond & FileNode.path.like(like)
 
-    with _offline_get_session() as s:
-        rows = s.exec(
-            select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
-            .where(FileNode.project_id == project_id, cond)
-            .order_by(FileNode.path.asc())
-            .limit(int(limit))
+    async with AsyncSessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
+                .where(FileNode.project_id == project_id, cond)
+                .order_by(FileNode.path.asc())
+                .limit(int(limit))
+            )
         ).all()
 
     results: list[dict[str, Any]] = []
@@ -1215,8 +1210,8 @@ def _tool_search_tests(project_id: int, args: dict) -> dict:
     return _tool_ok({"query": query_norm, "limit": int(limit), "results": results})
 
 
-def _tool_search_symbols(project_id: int, args: dict) -> dict:
-    indexed_error = _check_indexed(project_id)
+async def _tool_search_symbols(project_id: int, args: dict) -> dict:
+    indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -1264,12 +1259,14 @@ def _tool_search_symbols(project_id: int, args: dict) -> dict:
         return False
 
     rows: list[ModuleContract] = []
-    with _offline_get_session() as s:
-        rows = s.exec(
-            select(ModuleContract)
-            .where(ModuleContract.project_id == project_id)
-            .order_by(ModuleContract.path.asc())
-        ).all()
+    async with AsyncSessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(ModuleContract)
+                .where(ModuleContract.project_id == project_id)
+                .order_by(ModuleContract.path.asc())
+            )
+        ).scalars().all()
 
     results: list[dict[str, Any]] = []
     for row in rows:
@@ -1372,8 +1369,8 @@ def _tool_search_symbols(project_id: int, args: dict) -> dict:
     )
 
 
-def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
-    indexed_error = _check_indexed(project_id)
+async def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
+    indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
     prefix = args.get("prefix")
@@ -1387,13 +1384,13 @@ def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
     if max_depth_raw is not None:
         max_depth = _clamp_int(max_depth_raw, 10, 1, 20)
 
-    with _offline_get_session() as s:
+    async with AsyncSessionLocal() as s:
         q = select(FileNode.path).where(FileNode.project_id == project_id)
         if prefix_norm:
             like = f"{prefix_norm}/%"
             q = q.where((FileNode.path == prefix_norm) | (FileNode.path.like(like)))
         q = q.order_by(FileNode.path.asc())
-        rows = s.exec(q).all()
+        rows = (await s.execute(q)).all()
 
     paths: list[str] = []
     for row in rows:
@@ -1414,20 +1411,22 @@ def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
     )
 
 
-def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
-    with _offline_get_session() as s:
-        nodes = s.exec(
-            select(
-                FileNode.path,
-                FileNode.language,
-                FileNode.loc,
-                FileNode.complexity,
-                FileNode.fan_in,
-                FileNode.fan_out,
-                FileNode.status,
+async def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
+    async with AsyncSessionLocal() as s:
+        nodes = (
+            await s.execute(
+                select(
+                    FileNode.path,
+                    FileNode.language,
+                    FileNode.loc,
+                    FileNode.complexity,
+                    FileNode.fan_in,
+                    FileNode.fan_out,
+                    FileNode.status,
+                )
+                .where(FileNode.project_id == project_id)
+                .order_by(FileNode.path)
             )
-            .where(FileNode.project_id == project_id)
-            .order_by(FileNode.path)
         ).all()
     if not nodes:
         return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
@@ -1447,8 +1446,8 @@ def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
     )
 
 
-def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
-    indexed_error = _check_indexed(project_id)
+async def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
+    indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -1476,29 +1475,29 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
     index_scan_max_chars = min(SEARCH_INDEX_MAX_CHARS, scan_max_chars)
 
     paths: list[str] = []
+    async with AsyncSessionLocal() as s:
+        try:
+            paths = await search_text_paths_async(
+                s,
+                project_id,
+                needle,
+                limit=max_files,
+                prefix=prefix_norm,
+            )
+        except Exception:
+            paths = []
 
-    try:
-        paths = search_text_paths(
-            project_id,
-            needle,
-            limit=max_files,
-            prefix=prefix_norm,
-        )
-    except Exception:
-        paths = []
-
-    if not paths:
-        with _offline_get_session() as s:
+        if not paths:
             q = select(FileNode.path).where(FileNode.project_id == project_id)
             if prefix_norm:
                 like = f"{prefix_norm}/%"
                 q = q.where((FileNode.path.like(like)) | (FileNode.path == prefix_norm))
             q = q.order_by(FileNode.fan_in.desc(), FileNode.path.asc()).limit(int(max_files))
-            rows = s.exec(q).all()
-        for row in rows:
-            p = row[0] if isinstance(row, (tuple, list)) else row
-            if isinstance(p, str) and p:
-                paths.append(p)
+            rows = (await s.execute(q)).all()
+            for row in rows:
+                p = row[0] if isinstance(row, (tuple, list)) else row
+                if isinstance(p, str) and p:
+                    paths.append(p)
 
     if not case_sensitive:
         needle_cmp = needle.lower()
@@ -1601,6 +1600,18 @@ def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars
 
 
 def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
+    return asyncio.run(
+        _tool_search_semantic_impl(project_id, root, args, max_file_chars=max_file_chars)
+    )
+
+
+async def _tool_search_semantic_impl(
+    project_id: int,
+    root: Path,
+    args: dict,
+    *,
+    max_file_chars: int,
+) -> dict:
     query = args.get("query")
     if not isinstance(query, str) or not query.strip():
         return _tool_error("bad_args", "query is required")
@@ -1644,7 +1655,7 @@ def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_c
             fallback_args["max_matches"] = args.get("max_matches")
         if args.get("context_chars") is not None:
             fallback_args["context_chars"] = args.get("context_chars")
-        text_result = _tool_search_text(
+        text_result = await _tool_search_text(
             project_id, root, fallback_args, max_file_chars=max_file_chars
         )
         if not text_result.get("ok"):
@@ -1666,7 +1677,7 @@ def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_c
     return _tool_ok(semantic)
 
 
-def _tool_search_routes(project_id: int, args: dict) -> dict:
+async def _tool_search_routes(project_id: int, args: dict) -> dict:
     query = args.get("query")
     if not isinstance(query, str):
         query = ""
@@ -1676,7 +1687,7 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
     limit = _clamp_int(args.get("limit"), 50, 1, 500)
 
     try:
-        with _offline_get_session() as s:
+        async with AsyncSessionLocal() as s:
             q = select(ApiRoute).where(ApiRoute.project_id == project_id)
             if method_norm:
                 q = q.where(ApiRoute.method == method_norm)
@@ -1688,7 +1699,7 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
                     | (ApiRoute.source_path.like(like))
                 )
             q = q.order_by(ApiRoute.path.asc(), ApiRoute.method.asc()).limit(int(limit))
-            rows = s.exec(q).all()
+            rows = (await s.execute(q)).all()
     except Exception as e:
         return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
 
@@ -1714,7 +1725,7 @@ def _tool_search_routes(project_id: int, args: dict) -> dict:
     )
 
 
-def _tool_search_api_calls(project_id: int, args: dict) -> dict:
+async def _tool_search_api_calls(project_id: int, args: dict) -> dict:
     query = args.get("query")
     if not isinstance(query, str):
         query = ""
@@ -1724,7 +1735,7 @@ def _tool_search_api_calls(project_id: int, args: dict) -> dict:
     limit = _clamp_int(args.get("limit"), 50, 1, 500)
 
     try:
-        with _offline_get_session() as s:
+        async with AsyncSessionLocal() as s:
             q = select(ApiCall).where(ApiCall.project_id == project_id)
             if method_norm:
                 q = q.where(ApiCall.method == method_norm)
@@ -1732,7 +1743,7 @@ def _tool_search_api_calls(project_id: int, args: dict) -> dict:
                 like = f"%{query}%"
                 q = q.where((ApiCall.path.like(like)) | (ApiCall.source_path.like(like)))
             q = q.order_by(ApiCall.path.asc(), ApiCall.method.asc()).limit(int(limit))
-            rows = s.exec(q).all()
+            rows = (await s.execute(q)).all()
     except Exception as e:
         return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
 
@@ -1757,7 +1768,7 @@ def _tool_search_api_calls(project_id: int, args: dict) -> dict:
     )
 
 
-def _tool_route_usages(project_id: int, args: dict) -> dict:
+async def _tool_route_usages(project_id: int, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -1769,27 +1780,29 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
 
     # 1) candidate routes
     try:
-        with _offline_get_session() as s:
+        async with AsyncSessionLocal() as s:
             q = select(ApiRoute).where(ApiRoute.project_id == project_id)
             if method_norm:
                 q = q.where(ApiRoute.method == method_norm)
             # exact first, then like
-            exact = s.exec(q.where(ApiRoute.path == path_q).limit(int(route_limit))).all()
+            exact = (await s.execute(q.where(ApiRoute.path == path_q).limit(int(route_limit)))).scalars().all()
             routes = list(exact)
             if not routes:
                 like = f"%{path_q}%"
-                routes = s.exec(
-                    q.where(ApiRoute.path.like(like))
-                    .order_by(ApiRoute.path.asc())
-                    .limit(int(route_limit))
-                ).all()
+                routes = (
+                    await s.execute(
+                        q.where(ApiRoute.path.like(like))
+                        .order_by(ApiRoute.path.asc())
+                        .limit(int(route_limit))
+                    )
+                ).scalars().all()
     except Exception as e:
         return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
 
     if not routes:
         return _tool_ok({"path": path_q, "method": method_norm, "routes_found": 0, "routes": []})
 
-    prefix_map = _compute_prefix_map(project_id)
+    prefix_map = await _compute_prefix_map(project_id)
     results: list[dict] = []
 
     # 2) for each route, find compatible frontend calls
@@ -1838,7 +1851,7 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
 
         candidate_limit = min(2000, max(200, call_limit * 80))
         try:
-            with _offline_get_session() as s:
+            async with AsyncSessionLocal() as s:
                 qc = select(ApiCall).where(ApiCall.project_id == project_id)
                 # Prefer method match for HTTP; do not force it for WEBSOCKET routes.
                 r_method = str(r.method or "").upper()
@@ -1846,11 +1859,13 @@ def _tool_route_usages(project_id: int, args: dict) -> dict:
                     qc = qc.where(ApiCall.method == r_method)
                 if prefix_str:
                     qc = qc.where(ApiCall.path.like(prefix_str + "%"))
-                call_rows = s.exec(
-                    qc.order_by(
-                        ApiCall.path.asc(), ApiCall.source_path.asc(), ApiCall.lineno.asc()
-                    ).limit(int(candidate_limit))
-                ).all()
+                call_rows = (
+                    await s.execute(
+                        qc.order_by(
+                            ApiCall.path.asc(), ApiCall.source_path.asc(), ApiCall.lineno.asc()
+                        ).limit(int(candidate_limit))
+                    )
+                ).scalars().all()
         except Exception as e:
             results.append(
                 {
@@ -2013,18 +2028,20 @@ def _candidate_keys_from_static_prefix(tokens: list[str]) -> list[str]:
     return keys
 
 
-def _build_call_index(
+async def _build_call_index(
     project_id: int, *, prefix: str, method_filter: str = ""
 ) -> tuple[list[ApiCall], dict[str, dict[str, list[dict]]]]:
     # returns (calls, index[method][key] = list of {id, tokens, path_norm,
     # source_path, lineno, path})
     MAX_CALLS = 50_000
-    with _offline_get_session() as s:
+    async with AsyncSessionLocal() as s:
         q = select(ApiCall).where(ApiCall.project_id == project_id)
         if method_filter:
             q = q.where(ApiCall.method == method_filter)
-        rows = s.exec(
-            q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(MAX_CALLS))
+        rows = (
+            await s.execute(
+                q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(MAX_CALLS))
+            )
         ).all()
 
     idx: dict[str, dict[str, list[dict]]] = {}
@@ -2060,7 +2077,7 @@ def _build_call_index(
     return filtered, idx
 
 
-def _build_route_patterns(
+async def _build_route_patterns(
     project_id: int,
     *,
     prefix: str,
@@ -2068,13 +2085,15 @@ def _build_route_patterns(
 ) -> tuple[list[ApiRoute], dict[int, list[dict]], dict[str, dict[str, list[dict]]]]:
     # returns (routes, patterns_by_route_id, pattern_index[method][key] = list of patterns)
     MAX_ROUTES = 50_000
-    prefix_map = _compute_prefix_map(project_id)
+    prefix_map = await _compute_prefix_map(project_id)
 
     # included set: (child_source_path, child_instance)
-    with _offline_get_session() as s:
-        inc_rows = s.exec(
-            select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
-                ApiInclude.project_id == project_id
+    async with AsyncSessionLocal() as s:
+        inc_rows = (
+            await s.execute(
+                select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
+                    ApiInclude.project_id == project_id
+                )
             )
         ).all()
     included: set[tuple[str, str]] = set()
@@ -2086,13 +2105,15 @@ def _build_route_patterns(
         if isinstance(cs, str) and cs and isinstance(ci, str) and ci:
             included.add((cs, ci))
 
-    with _offline_get_session() as s:
+    async with AsyncSessionLocal() as s:
         q = select(ApiRoute).where(ApiRoute.project_id == project_id)
         if method_filter:
             q = q.where(ApiRoute.method == method_filter)
-        routes = s.exec(
-            q.order_by(ApiRoute.source_path.asc(), ApiRoute.lineno.asc()).limit(int(MAX_ROUTES))
-        ).all()
+        routes = (
+            await s.execute(
+                q.order_by(ApiRoute.source_path.asc(), ApiRoute.lineno.asc()).limit(int(MAX_ROUTES))
+            )
+        ).scalars().all()
 
     patterns_by_route: dict[int, list[dict]] = {}
     pindex: dict[str, dict[str, list[dict]]] = {}
@@ -2170,9 +2191,9 @@ def _pattern_matches_any_call(pattern_tokens: list[str], candidates: list[dict])
     return False
 
 
-def _compute_api_coverage(project_id: int, *, prefix: str, method_filter: str = "") -> dict:
-    calls, call_index = _build_call_index(project_id, prefix=prefix, method_filter=method_filter)
-    routes, patterns_by_route, pattern_index = _build_route_patterns(
+async def _compute_api_coverage(project_id: int, *, prefix: str, method_filter: str = "") -> dict:
+    calls, call_index = await _build_call_index(project_id, prefix=prefix, method_filter=method_filter)
+    routes, patterns_by_route, pattern_index = await _build_route_patterns(
         project_id, prefix=prefix, method_filter=method_filter
     )
 
@@ -2491,7 +2512,9 @@ def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
     method_filter = _method_norm(args.get("method"))
     limit_examples = _clamp_int(args.get("limit_examples"), 10, 0, 50)
 
-    cov = _compute_api_coverage(project_id, prefix=prefix, method_filter=method_filter)
+    cov = asyncio.run(
+        _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
+    )
     routes: list[ApiRoute] = cov["routes"]
     calls: list[ApiCall] = cov["calls"]
     matched_routes: set[int] = cov["matched_route_ids"]
@@ -2585,7 +2608,9 @@ def _tool_unmatched_routes(project_id: int, args: dict) -> dict:
     method_filter = _method_norm(args.get("method"))
     limit = _clamp_int(args.get("limit"), 100, 1, 500)
 
-    cov = _compute_api_coverage(project_id, prefix=prefix, method_filter=method_filter)
+    cov = asyncio.run(
+        _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
+    )
     routes: list[ApiRoute] = cov["routes"]
     matched_routes: set[int] = cov["matched_route_ids"]
     patterns_by_route: dict[int, list[dict]] = cov["patterns_by_route"]
@@ -2650,7 +2675,9 @@ def _tool_unmatched_calls(project_id: int, args: dict) -> dict:
     method_filter = _method_norm(args.get("method"))
     limit = _clamp_int(args.get("limit"), 100, 1, 500)
 
-    cov = _compute_api_coverage(project_id, prefix=prefix, method_filter=method_filter)
+    cov = asyncio.run(
+        _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
+    )
     calls: list[ApiCall] = cov["calls"]
     matched_calls: set[int] = cov["matched_call_ids"]
 
@@ -2701,13 +2728,15 @@ def _join(prefix: str, path: str) -> str:
     return pfx + pth
 
 
-def _compute_prefix_map(project_id: int) -> dict[tuple[str, str], list[str]]:
+async def _compute_prefix_map(project_id: int) -> dict[tuple[str, str], list[str]]:
     edges: dict[tuple[str, str], list[tuple[tuple[str, str], str]]] = {}
     nodes: set[tuple[str, str]] = set()
     child_set: set[tuple[str, str]] = set()
 
-    with _offline_get_session() as s:
-        rows = s.exec(select(ApiInclude).where(ApiInclude.project_id == project_id)).all()
+    async with AsyncSessionLocal() as s:
+        rows = (
+            await s.execute(select(ApiInclude).where(ApiInclude.project_id == project_id))
+        ).all()
     for inc in rows:
         ps = str(inc.parent_source_path or "")
         pi = str(inc.parent_instance or "")
@@ -3309,17 +3338,11 @@ async def _tool_search_semantic_async(
     *,
     max_file_chars: int,
 ) -> dict:
-    return await asyncio.to_thread(
-        _tool_search_semantic,
-        project_id,
-        root,
-        args,
-        max_file_chars=max_file_chars,
-    )
+    return await _tool_search_semantic_impl(project_id, root, args, max_file_chars=max_file_chars)
 
 
 async def _tool_search_tests_async(project_id: int, args: dict) -> dict:
-    indexed_error = _check_indexed(project_id)
+    indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -3383,7 +3406,7 @@ async def _tool_search_tests_async(project_id: int, args: dict) -> dict:
 
 
 async def _tool_get_tree_outline_async(project_id: int, args: dict) -> dict:
-    indexed_error = _check_indexed(project_id)
+    indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
     prefix = args.get("prefix")
@@ -3461,13 +3484,14 @@ async def _tool_project_summary_async(project_id: int, root: Path, args: dict) -
 
 
 async def _tool_search_text_async(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     args: dict,
     *,
     max_file_chars: int,
 ) -> dict:
-    indexed_error = _check_indexed(project_id)
+    indexed_error = await _check_indexed_async(project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -3492,8 +3516,8 @@ async def _tool_search_text_async(
 
     paths: list[str]
     try:
-        paths = await asyncio.to_thread(
-            search_text_paths,
+        paths = await search_text_paths_async(
+            session,
             project_id,
             needle,
             limit=max_files,
@@ -3503,13 +3527,12 @@ async def _tool_search_text_async(
         paths = []
 
     if not paths:
-        async with AsyncSessionLocal() as session:
-            q = select(FileNode.path).where(FileNode.project_id == project_id)
-            if prefix_norm:
-                like = f"{prefix_norm}/%"
-                q = q.where((FileNode.path.like(like)) | (FileNode.path == prefix_norm))
-            q = q.order_by(FileNode.fan_in.desc(), FileNode.path.asc()).limit(int(max_files))
-            rows = (await session.execute(q)).all()
+        q = select(FileNode.path).where(FileNode.project_id == project_id)
+        if prefix_norm:
+            like = f"{prefix_norm}/%"
+            q = q.where((FileNode.path.like(like)) | (FileNode.path == prefix_norm))
+        q = q.order_by(FileNode.fan_in.desc(), FileNode.path.asc()).limit(int(max_files))
+        rows = (await session.execute(q)).all()
         paths = [row[0] for row in rows if isinstance(row[0], str) and row[0]]
 
     needle_cmp = needle if case_sensitive else needle.lower()
@@ -3622,23 +3645,23 @@ async def _tool_get_symbol_async(
 
 
 async def _tool_route_usages_async(project_id: int, args: dict) -> dict:
-    return await asyncio.to_thread(_tool_route_usages, project_id, args)
+    return await _tool_route_usages(project_id, args)
 
 
 async def _tool_suggest_endpoint_location_async(project_id: int, args: dict) -> dict:
-    return await asyncio.to_thread(_tool_suggest_endpoint_location, project_id, args)
+    return await _tool_suggest_endpoint_location(project_id, args)
 
 
 async def _tool_suggest_frontend_client_async(project_id: int, root: Path, args: dict) -> dict:
-    return await asyncio.to_thread(_tool_suggest_frontend_client, project_id, root, args)
+    return await _tool_suggest_frontend_client(project_id, root, args)
 
 
 async def _tool_impact_route_change_async(project_id: int, args: dict) -> dict:
-    return await asyncio.to_thread(_tool_impact_route_change, project_id, args)
+    return await _tool_impact_route_change(project_id, args)
 
 
 async def _tool_compare_api_contract_async(project_id: int, root: Path, args: dict) -> dict:
-    return await asyncio.to_thread(_tool_compare_api_contract, project_id, root, args)
+    return await _tool_compare_api_contract(project_id, root, args)
 
 
 async def _tool_suggest_contract_fix_async(
@@ -3647,7 +3670,7 @@ async def _tool_suggest_contract_fix_async(
     meta: AgenticMeta,
     args: dict,
 ) -> dict:
-    return await asyncio.to_thread(_tool_suggest_contract_fix, project_id, root, meta, args)
+    return await _tool_suggest_contract_fix(project_id, root, meta, args)
 
 
 async def _tool_suggest_api_fix_async(
@@ -3656,10 +3679,10 @@ async def _tool_suggest_api_fix_async(
     meta: AgenticMeta,
     args: dict,
 ) -> dict:
-    return await asyncio.to_thread(_tool_suggest_api_fix, project_id, root, meta, args)
+    return await _tool_suggest_api_fix(project_id, root, meta, args)
 
 
-def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
+async def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return _tool_error("bad_args", "path is required")
@@ -3678,7 +3701,7 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
         else "%"
     )
 
-    with _offline_get_session() as s:
+    async with AsyncSessionLocal() as s:
         q = select(ApiRoute.source_path, ApiRoute.decorator, ApiRoute.path).where(
             ApiRoute.project_id == project_id
         )
@@ -3693,7 +3716,7 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
                 q = q.where(ApiRoute.path.like(pref + "%"))
         else:
             q = q.where(ApiRoute.path.like(like))
-        rows = s.exec(q).all()
+        rows = (await s.execute(q)).all()
 
     counts: dict[str, int] = {}
     routers_by_file: dict[str, set[str]] = {}
@@ -3721,10 +3744,12 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
     candidates: list[dict] = []
 
     # include coverage hint: is this router included anywhere?
-    with _offline_get_session() as s:
-        inc_rows = s.exec(
-            select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
-                ApiInclude.project_id == project_id
+    async with AsyncSessionLocal() as s:
+        inc_rows = (
+            await s.execute(
+                select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
+                    ApiInclude.project_id == project_id
+                )
             )
         ).all()
     included = set()
@@ -3756,7 +3781,7 @@ def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
     )
 
 
-def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -3772,12 +3797,12 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
     needle = tokens[-1] if tokens else path_q
     like = f"%{needle}%"
 
-    with _offline_get_session() as s:
+    async with AsyncSessionLocal() as s:
         q = select(ApiRoute).where(ApiRoute.project_id == project_id)
         if method_norm:
             q = q.where(ApiRoute.method == method_norm)
         q = q.where(ApiRoute.path.like(like)).order_by(ApiRoute.path.asc()).limit(200)
-        routes = s.exec(q).all()
+        routes = (await s.execute(q)).scalars().all()
 
     if not routes:
         return _tool_ok(
@@ -3789,7 +3814,7 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
             }
         )
 
-    prefix_map = _compute_prefix_map(project_id)
+    prefix_map = await _compute_prefix_map(project_id)
     query_tokens = split_skeleton(backend_path_skeleton(path_q))
 
     best = None
@@ -3861,7 +3886,7 @@ def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> di
     )
 
 
-def _tool_impact_route_change(project_id: int, args: dict) -> dict:
+async def _tool_impact_route_change(project_id: int, args: dict) -> dict:
     old_path = args.get("old_path")
     new_path = args.get("new_path")
     if not isinstance(old_path, str) or not old_path.strip():
@@ -3904,17 +3929,19 @@ def _tool_impact_route_change(project_id: int, args: dict) -> dict:
 
     candidate_limit = 5000
     try:
-        with _offline_get_session() as s:
+        async with AsyncSessionLocal() as s:
             q = select(ApiCall).where(ApiCall.project_id == project_id)
             if old_m:
                 q = q.where(ApiCall.method == old_m)
             if prefix_str:
                 q = q.where(ApiCall.path.like(prefix_str + "%"))
-            calls = s.exec(
-                q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(
-                    int(candidate_limit)
+            calls = (
+                await s.execute(
+                    q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(
+                        int(candidate_limit)
+                    )
                 )
-            ).all()
+            ).scalars().all()
     except Exception as e:
         return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
 
@@ -4045,7 +4072,7 @@ def _ts_type_to_py_literal(ts_type: str) -> str:
     return "None"
 
 
-def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
+async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -4060,7 +4087,7 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
     )
     max_files = _clamp_int(args.get("max_files"), 12, 1, 20)
 
-    report_result = _tool_compare_api_contract(
+    report_result = await _tool_compare_api_contract(
         project_id,
         root,
         {
@@ -4212,13 +4239,15 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                     else []
                 )
                 if missing_body:
-                    with _offline_get_session() as s:
-                        td = s.exec(
-                            select(TsTypeDef).where(
-                                TsTypeDef.project_id == project_id,
-                                TsTypeDef.name == wrapper_body_type,
+                    async with AsyncSessionLocal() as s:
+                        td = (
+                            await s.execute(
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_body_type,
+                                )
                             )
-                        ).first()
+                        ).scalar_one_or_none()
                     if td and isinstance(td.source_path, str) and td.source_path:
                         fp = ensure_loaded(td.source_path)
                         if fp:
@@ -4249,13 +4278,15 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                     else []
                 )
                 if missing_resp:
-                    with _offline_get_session() as s:
-                        td = s.exec(
-                            select(TsTypeDef).where(
-                                TsTypeDef.project_id == project_id,
-                                TsTypeDef.name == wrapper_resp_type,
+                    async with AsyncSessionLocal() as s:
+                        td = (
+                            await s.execute(
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_resp_type,
+                                )
                             )
-                        ).first()
+                        ).scalar_one_or_none()
                     if td and isinstance(td.source_path, str) and td.source_path:
                         fp = ensure_loaded(td.source_path)
                         if fp:
@@ -4289,13 +4320,15 @@ def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: 
                     # get field types from TS response typedef if possible
                     field_types: dict[str, str] = {}
                     if wrapper_resp_type:
-                        with _offline_get_session() as s:
-                            td = s.exec(
-                                select(TsTypeDef).where(
-                                    TsTypeDef.project_id == project_id,
-                                    TsTypeDef.name == wrapper_resp_type,
+                        async with AsyncSessionLocal() as s:
+                            td = (
+                                await s.execute(
+                                    select(TsTypeDef).where(
+                                        TsTypeDef.project_id == project_id,
+                                        TsTypeDef.name == wrapper_resp_type,
+                                    )
                                 )
-                            ).first()
+                            ).scalar_one_or_none()
                         if td and isinstance(td.fields_json, str):
                             try:
                                 flds = json.loads(td.fields_json or "[]")
@@ -4383,7 +4416,7 @@ def _read_text_under_root(root: Path, rel_path: str) -> tuple[str, str, str] | N
     return (rel_norm, str(abs_p), txt)
 
 
-def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
+async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     # 1) Get compare report
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
@@ -4394,7 +4427,7 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
     call_limit = _clamp_int(args.get("call_limit"), 3, 1, 10)
     max_patches = _clamp_int(args.get("max_patches"), 10, 1, 20)
 
-    report_result = _tool_compare_api_contract(
+    report_result = await _tool_compare_api_contract(
         project_id,
         root,
         {
@@ -4539,13 +4572,15 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
                 )
                 if missing_body and backend_fields:
                     # locate typedef
-                    with _offline_get_session() as s:
-                        td = s.exec(
-                            select(TsTypeDef).where(
-                                TsTypeDef.project_id == project_id,
-                                TsTypeDef.name == wrapper_body_type,
+                    async with AsyncSessionLocal() as s:
+                        td = (
+                            await s.execute(
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_body_type,
+                                )
                             )
-                        ).first()
+                        ).scalar_one_or_none()
                     if td and isinstance(td.source_path, str) and td.source_path:
                         rr = _read_text_under_root(root, td.source_path)
                         if rr:
@@ -4582,13 +4617,15 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
                     else []
                 )
                 if missing_resp:
-                    with _offline_get_session() as s:
-                        td = s.exec(
-                            select(TsTypeDef).where(
-                                TsTypeDef.project_id == project_id,
-                                TsTypeDef.name == wrapper_resp_type,
+                    async with AsyncSessionLocal() as s:
+                        td = (
+                            await s.execute(
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_resp_type,
+                                )
                             )
-                        ).first()
+                        ).scalar_one_or_none()
                     if td and isinstance(td.source_path, str) and td.source_path:
                         rr = _read_text_under_root(root, td.source_path)
                         if rr:
@@ -4642,16 +4679,18 @@ def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, a
     )
 
 
-def _load_ts_typedefs_by_name(project_id: int, names: list[str]) -> dict[str, dict]:
+async def _load_ts_typedefs_by_name(project_id: int, names: list[str]) -> dict[str, dict]:
     wanted = [n for n in (names or []) if isinstance(n, str) and n.strip()]
     if not wanted:
         return {}
     wanted = list(dict.fromkeys(wanted))[:200]
     out: dict[str, dict] = {}
-    with _offline_get_session() as s:
-        rows = s.exec(
-            select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name.in_(wanted))
-        ).all()
+    async with AsyncSessionLocal() as s:
+        rows = (
+            await s.execute(
+                select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name.in_(wanted))
+            )
+        ).scalars().all()
     for r in rows:
         nm = str(r.name or "")
         if not nm:
@@ -4669,7 +4708,7 @@ def _load_ts_typedefs_by_name(project_id: int, names: list[str]) -> dict[str, di
     return out
 
 
-def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -4680,7 +4719,7 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
     call_limit = _clamp_int(args.get("call_limit"), 10, 1, 50)
 
     # Reuse route_usages logic to find best matching routes + frontend calls
-    ru_result = _tool_route_usages(
+    ru_result = await _tool_route_usages(
         project_id,
         {
             "path": path_q,
@@ -4719,17 +4758,19 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
 
         # Load backend contract from DB; fallback to on-the-fly parse
         backend_contract: dict | None = None
-        with _offline_get_session() as s:
-            row = s.exec(
-                select(ApiRouteContract).where(
-                    ApiRouteContract.project_id == project_id,
-                    ApiRouteContract.method == r_method,
-                    ApiRouteContract.path == r_local,
-                    ApiRouteContract.source_path == r_src,
-                    ApiRouteContract.handler_name == r_handler,
-                    ApiRouteContract.lineno == r_line,
+        async with AsyncSessionLocal() as s:
+            row = (
+                await s.execute(
+                    select(ApiRouteContract).where(
+                        ApiRouteContract.project_id == project_id,
+                        ApiRouteContract.method == r_method,
+                        ApiRouteContract.path == r_local,
+                        ApiRouteContract.source_path == r_src,
+                        ApiRouteContract.handler_name == r_handler,
+                        ApiRouteContract.lineno == r_line,
+                    )
                 )
-            ).first()
+            ).scalar_one_or_none()
         if row and isinstance(row.contract_json, str) and row.contract_json.strip():
             try:
                 backend_contract = json.loads(row.contract_json)
@@ -4789,14 +4830,16 @@ def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
             c_src = str(m.get("source_path") or "")
             c_line = int(m.get("lineno") or 0)
 
-            with _offline_get_session() as s:
-                cm = s.exec(
-                    select(ApiCallMeta).where(
-                        ApiCallMeta.project_id == project_id,
-                        ApiCallMeta.method == c_method,
-                        ApiCallMeta.path == c_path,
-                        ApiCallMeta.source_path == c_src,
-                        ApiCallMeta.lineno == c_line,
+            async with AsyncSessionLocal() as s:
+                cm = (
+                    await s.execute(
+                        select(ApiCallMeta).where(
+                            ApiCallMeta.project_id == project_id,
+                            ApiCallMeta.method == c_method,
+                            ApiCallMeta.path == c_path,
+                            ApiCallMeta.source_path == c_src,
+                            ApiCallMeta.lineno == c_line,
+                        )
                     )
                 ).first()
             meta = {
