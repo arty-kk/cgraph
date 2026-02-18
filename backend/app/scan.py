@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +64,8 @@ _parse_cache_lock = Lock()
 logger = get_logger("stubgraph.scan")
 
 EMBEDDING_CHUNKS_KIND = "embedding_chunks"
+SCAN_STAGE_BATCH_SIZE = 128
+SCAN_STAGE_MAX_PARALLEL = 8
 
 
 def _today_utc():
@@ -96,6 +99,25 @@ class PreparedScanData:
     embedding_paths_to_delete: list[str]
     removed_edge_neighbors: set[str]
     snapshot: dict[str, FileSnapshot]
+
+
+@dataclass(frozen=True)
+class FileStatResult:
+    rel: str
+    exists: bool
+    is_file: bool
+    is_supported: bool
+    mtime_ns: int
+    size: int
+
+
+@dataclass(frozen=True)
+class FileReadResult:
+    rel: str
+    text: str | None
+    mtime_ns: int
+    size: int
+    oversized: bool
 
 
 def _get_cached_parse(lang: str, file_hash: str, file_suffix: str) -> tuple[int, list[dict]] | None:
@@ -195,6 +217,312 @@ def iter_code_files(root: Path) -> Iterable[Path]:
 
 def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
     return [seq[i : i + size] for i in range(0, len(seq), size)]
+
+
+async def _collect_file_stats_async(
+    project_root: Path,
+    rel_paths: list[str],
+    precomputed_stats: dict[str, tuple[int, int]] | None = None,
+    batch_size: int = SCAN_STAGE_BATCH_SIZE,
+    max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
+) -> list[FileStatResult]:
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+
+    async def _collect_one(rel: str) -> FileStatResult:
+        async with semaphore:
+            p = project_root / rel
+
+            def _sync_collect() -> FileStatResult:
+                exists = p.exists()
+                is_file = p.is_file() if exists else False
+                is_supported = _is_supported_file(p) if is_file else False
+                if precomputed_stats and rel in precomputed_stats:
+                    mtime_ns, size = precomputed_stats[rel]
+                    return FileStatResult(
+                        rel=rel,
+                        exists=exists,
+                        is_file=is_file,
+                        is_supported=is_supported,
+                        mtime_ns=int(mtime_ns),
+                        size=int(size),
+                    )
+                try:
+                    st = p.stat()
+                    return FileStatResult(
+                        rel=rel,
+                        exists=exists,
+                        is_file=is_file,
+                        is_supported=is_supported,
+                        mtime_ns=int(st.st_mtime_ns),
+                        size=int(st.st_size),
+                    )
+                except OSError:
+                    return FileStatResult(
+                        rel=rel,
+                        exists=exists,
+                        is_file=is_file,
+                        is_supported=is_supported,
+                        mtime_ns=0,
+                        size=0,
+                    )
+
+            return await asyncio.to_thread(_sync_collect)
+
+    results: list[FileStatResult] = []
+    for i in range(0, len(rel_paths), max(1, int(batch_size))):
+        batch = rel_paths[i : i + max(1, int(batch_size))]
+        results.extend(await asyncio.gather(*(_collect_one(rel) for rel in batch)))
+        await asyncio.sleep(0)
+    return results
+
+
+async def _read_file_batch_async(
+    project_root: Path,
+    batch_paths: list[str],
+    stats_map: dict[str, tuple[int, int]],
+    max_file_bytes: int,
+    max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
+) -> list[FileReadResult]:
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+
+    async def _read_one(rel: str) -> FileReadResult:
+        async with semaphore:
+            p = project_root / rel
+            stat_mtime_ns, stat_size = stats_map.get(rel, (0, 0))
+            oversized = max_file_bytes > 0 and int(stat_size) > max_file_bytes
+            if oversized:
+                return FileReadResult(rel=rel, text=None, mtime_ns=int(stat_mtime_ns), size=int(stat_size), oversized=True)
+
+            def _sync_read() -> str | None:
+                try:
+                    return p.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    return None
+
+            text = await asyncio.to_thread(_sync_read)
+            return FileReadResult(
+                rel=rel,
+                text=text,
+                mtime_ns=int(stat_mtime_ns),
+                size=int(stat_size),
+                oversized=False,
+            )
+
+    return list(await asyncio.gather(*(_read_one(rel) for rel in batch_paths)))
+
+
+async def _parse_index_batch_async(
+    project_id: int,
+    project_root: Path,
+    file_batch: list[FileReadResult],
+) -> list[dict]:
+    def _sync_parse() -> list[dict]:
+        parsed: list[dict] = []
+        js_ts_exts = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
+        for file_item in file_batch:
+            rel = file_item.rel
+            text = file_item.text
+            stat_mtime_ns = file_item.mtime_ns
+            stat_size = file_item.size
+            stat_mtime = float(stat_mtime_ns) / 1_000_000_000 if stat_mtime_ns else 0.0
+            if file_item.oversized:
+                idx = pick_indexer(rel)
+                lang = idx.language()
+                file_hash = sha256_text(f"oversized:{stat_size}:{stat_mtime_ns}")
+                parsed.append(
+                    {
+                        "rel": rel,
+                        "stat_mtime": stat_mtime,
+                        "stat_mtime_ns": int(stat_mtime_ns),
+                        "stat_size": int(stat_size),
+                        "file_hash": file_hash,
+                        "snapshot_kind": "oversized",
+                        "node_row": {
+                            "project_id": project_id,
+                            "path": rel,
+                            "language": lang,
+                            "loc": 0,
+                            "complexity": 0,
+                            "file_hash": file_hash,
+                            "file_mtime": float(stat_mtime),
+                            "file_mtime_ns": int(stat_mtime_ns),
+                            "file_size": int(stat_size),
+                        },
+                        "search_row": None,
+                        "cached_imports": [],
+                        "route_rows": [],
+                        "call_rows": [],
+                        "include_rows": [],
+                        "route_contract_rows": [],
+                        "call_meta_rows": [],
+                        "ts_type_rows": [],
+                        "text": None,
+                    }
+                )
+                continue
+            if text is None:
+                parsed.append(
+                    {
+                        "rel": rel,
+                        "stat_mtime": stat_mtime,
+                        "stat_mtime_ns": int(stat_mtime_ns),
+                        "stat_size": int(stat_size),
+                        "file_hash": "",
+                        "snapshot_kind": "stat_only",
+                        "node_row": None,
+                        "search_row": None,
+                        "cached_imports": [],
+                        "route_rows": [],
+                        "call_rows": [],
+                        "include_rows": [],
+                        "route_contract_rows": [],
+                        "call_meta_rows": [],
+                        "ts_type_rows": [],
+                        "text": None,
+                    }
+                )
+                continue
+
+            rel_l = rel.lower()
+            route_rows: list[dict] = []
+            call_rows: list[dict] = []
+            include_rows: list[dict] = []
+            route_contract_rows: list[dict] = []
+            call_meta_rows: list[dict] = []
+            ts_type_rows: list[dict] = []
+            if rel_l.endswith(".py"):
+                routes_here = []
+                try:
+                    routes_here = extract_fastapi_routes(rel, text) or []
+                except Exception:
+                    routes_here = []
+                for r in routes_here:
+                    if not isinstance(r, dict):
+                        continue
+                    r.setdefault("project_id", int(project_id))
+                    r.setdefault("source_path", rel)
+                    route_rows.append(r)
+                try:
+                    route_contract_rows.extend(
+                        extract_backend_route_contract_rows(project_id, rel, text, routes_here) or []
+                    )
+                except Exception:
+                    pass
+                raw_includes = []
+                try:
+                    raw_includes = extract_fastapi_includes(rel, text) or []
+                except Exception:
+                    raw_includes = []
+                for inc in raw_includes:
+                    if not isinstance(inc, dict):
+                        continue
+                    mod_spec = str(inc.get("child_module_spec") or "").strip()
+                    child_src = ""
+                    if mod_spec:
+                        try:
+                            child_src = resolve_spec(project_root, rel, mod_spec) or ""
+                        except Exception:
+                            child_src = ""
+                    else:
+                        child_src = rel
+                    include_rows.append(
+                        {
+                            "project_id": int(project_id),
+                            "parent_source_path": rel,
+                            "parent_instance": str(inc.get("parent_instance") or ""),
+                            "child_source_path": str(child_src or ""),
+                            "child_instance": str(inc.get("child_instance") or ""),
+                            "child_ref": str(inc.get("child_ref") or ""),
+                            "child_module_spec": str(inc.get("child_module_spec") or ""),
+                            "prefix": str(inc.get("prefix") or ""),
+                            "lineno": int(inc.get("lineno") or 0),
+                        }
+                    )
+            elif rel_l.endswith(js_ts_exts):
+                calls_here = []
+                try:
+                    calls_here = extract_frontend_api_calls(rel, text) or []
+                except Exception:
+                    calls_here = []
+                for c in calls_here:
+                    if not isinstance(c, dict):
+                        continue
+                    c.setdefault("project_id", int(project_id))
+                    c.setdefault("source_path", rel)
+                    call_rows.append(c)
+                try:
+                    call_meta_rows.extend(extract_frontend_call_meta_rows(project_id, rel, text, calls_here) or [])
+                except Exception:
+                    pass
+                if rel_l.endswith(TS_TYPEDEF_EXTS):
+                    try:
+                        rows = extract_ts_type_defs(project_id, rel, text) or []
+                        for t in rows:
+                            if not isinstance(t, dict):
+                                continue
+                            t.setdefault("project_id", int(project_id))
+                            t.setdefault("source_path", rel)
+                            ts_type_rows.append(t)
+                    except Exception:
+                        pass
+
+            idx = pick_indexer(rel)
+            lang = idx.language()
+            file_hash = sha256_text(text)
+            file_suffix = Path(rel).suffix.lower()
+            loc = sum(1 for line in text.splitlines() if line.strip())
+            cached = _get_cached_parse(lang, file_hash, file_suffix)
+            if cached:
+                complexity, cached_imports = cached
+            else:
+                complexity = idx.naive_complexity(text)
+                cached_imports = []
+                try:
+                    for imp in idx.parse_imports(project_root / rel, text) or []:
+                        cached_imports.append(
+                            {
+                                "spec": str(getattr(imp, "spec", "") or "").strip(),
+                                "kind": str(getattr(imp, "kind", "import") or "import"),
+                                "raw": str(getattr(imp, "raw", "") or ""),
+                            }
+                        )
+                except Exception:
+                    cached_imports = []
+                _store_cached_parse(lang, file_hash, file_suffix, complexity, cached_imports)
+
+            parsed.append(
+                {
+                    "rel": rel,
+                    "stat_mtime": stat_mtime,
+                    "stat_mtime_ns": int(stat_mtime_ns),
+                    "stat_size": int(stat_size),
+                    "file_hash": file_hash,
+                    "snapshot_kind": "content",
+                    "node_row": {
+                        "project_id": project_id,
+                        "path": rel,
+                        "language": lang,
+                        "loc": int(loc),
+                        "complexity": int(complexity),
+                        "file_hash": file_hash,
+                        "file_mtime": float(stat_mtime),
+                        "file_mtime_ns": int(stat_mtime_ns),
+                        "file_size": int(stat_size),
+                    },
+                    "search_row": {"project_id": int(project_id), "path": rel, "content": text[:SEARCH_INDEX_MAX_CHARS]},
+                    "cached_imports": cached_imports,
+                    "route_rows": route_rows,
+                    "call_rows": call_rows,
+                    "include_rows": include_rows,
+                    "route_contract_rows": route_contract_rows,
+                    "call_meta_rows": call_meta_rows,
+                    "ts_type_rows": ts_type_rows,
+                    "text": text,
+                }
+            )
+        return parsed
+
+    return await asyncio.to_thread(_sync_parse)
 
 
 def _is_missing_table_error(e: Exception, table: str) -> bool:
@@ -355,19 +683,15 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                     resolved_mtime_ns = int(float(mtime or 0) * 1_000_000_000)
                 existing_map[path] = (resolved_mtime_ns, int(size or 0), str(h or ""))
 
-        current_paths: list[str] = []
-        stats_map: dict[str, tuple[int, int]] = {}
-        for p in iter_code_files(project_root):
-            rel = p.relative_to(project_root).as_posix()
-            try:
-                st = p.stat()
-                stats_map[rel] = (int(st.st_mtime_ns), st.st_size)
-            except Exception:
-                stats_map[rel] = (0, 0)
-            current_paths.append(rel)
+        current_paths = await asyncio.to_thread(
+            lambda: [p.relative_to(project_root).as_posix() for p in iter_code_files(project_root)]
+        )
+        stat_results = await _collect_file_stats_async(project_root, current_paths)
+        stats_map = {item.rel: (item.mtime_ns, item.size) for item in stat_results}
 
         removed = sorted(set(existing_map.keys()) - set(current_paths))
         candidates: list[str] = []
+        verify_paths: list[str] = []
         hash_verify_max_bytes = int(
             settings.scan_hash_verify_max_file_bytes or settings.snapshot_max_file_bytes
         )
@@ -388,13 +712,25 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                 if oversized_hash != _prev_hash:
                     candidates.append(rel)
                 continue
-            try:
-                text = (project_root / rel).read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                candidates.append(rel)
-                continue
-            if sha256_text(text) != _prev_hash:
-                candidates.append(rel)
+            verify_paths.append(rel)
+
+        for i in range(0, len(verify_paths), SCAN_STAGE_BATCH_SIZE):
+            batch = verify_paths[i : i + SCAN_STAGE_BATCH_SIZE]
+            read_results = await _read_file_batch_async(
+                project_root,
+                batch,
+                stats_map,
+                hash_verify_max_bytes,
+            )
+            for item in read_results:
+                prev = existing_map.get(item.rel)
+                prev_hash = prev[2] if prev else ""
+                if item.text is None:
+                    candidates.append(item.rel)
+                    continue
+                if sha256_text(item.text) != prev_hash:
+                    candidates.append(item.rel)
+            await asyncio.sleep(0)
 
         updated = await scan_files_async(
             project_id,
@@ -439,25 +775,10 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                         except OperationalError as e:
                             if not _is_missing_table_error(e, "filechunkembedding"):
                                 raise
-                        try:
-                            await _delete_api_indexes_async(session, project_id, removed)
-                        except OperationalError as e:
-                            if not (
-                                _is_missing_table_error(e, "apiroute")
-                                or _is_missing_table_error(e, "apicall")
-                                or _is_missing_table_error(e, "apiinclude")
-                                or _is_missing_table_error(e, "apiroutecontract")
-                                or _is_missing_table_error(e, "apicallmeta")
-                                or _is_missing_table_error(e, "tstypedef")
-                            ):
-                                raise
                         await session.commit()
-    except ProjectLockTimeout as exc:
-        logger.warning("Project lock timeout during scan", extra={"project_id": project_id})
-        raise LockedError(
-            "Проект сейчас занят, повторите позже",
-            context={"project_id": project_id},
-        ) from exc
+
+    except (ProjectLockTimeout, LockedError) as exc:
+        raise LockedError(f"Project {project_id} is locked by another operation") from exc
 
     result = {
         "nodes": len(current_paths),
@@ -469,6 +790,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         result["removed_aborted"] = True
         result["reason"] = "snapshot_mismatch"
     return result
+
 
 
 async def scan_files_async(
@@ -560,16 +882,16 @@ async def _prepare_scan_files_async(
 ) -> PreparedScanData:
     present: list[str] = []
     removed: list[str] = []
-    for rel in norm_paths:
-        p = project_root / rel
-        if not p.exists():
-            removed.append(rel)
+    stat_results = await _collect_file_stats_async(project_root, norm_paths, precomputed_stats=precomputed_stats)
+    stats_map: dict[str, tuple[int, int]] = {}
+    for item in stat_results:
+        if not item.exists:
+            removed.append(item.rel)
             continue
-        if not p.is_file():
+        if not item.is_file or not item.is_supported:
             continue
-        if not _is_supported_file(p):
-            continue
-        present.append(rel)
+        present.append(item.rel)
+        stats_map[item.rel] = (item.mtime_ns, item.size)
 
     node_rows: list[dict] = []
     edge_map: dict[tuple[str, str, str], FileEdge] = {}
@@ -611,283 +933,142 @@ async def _prepare_scan_files_async(
             if not _is_missing_table_error(e, "filechunkembedding"):
                 raise
 
-    JS_TS_EXTS = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
     max_file_bytes = int(settings.snapshot_max_file_bytes)
+    for i in range(0, len(present), SCAN_STAGE_BATCH_SIZE):
+        batch = present[i : i + SCAN_STAGE_BATCH_SIZE]
+        read_batch = await _read_file_batch_async(project_root, batch, stats_map, max_file_bytes)
+        parsed_batch = await _parse_index_batch_async(project_id, project_root, read_batch)
 
-    for rel in present:
-        p = project_root / rel
-        if precomputed_stats and rel in precomputed_stats:
-            stat_mtime_ns, stat_size = precomputed_stats[rel]
-        else:
-            try:
-                st = p.stat()
-                stat_mtime_ns, stat_size = int(st.st_mtime_ns), st.st_size
-            except OSError:
-                stat_mtime_ns, stat_size = 0, 0
-        stat_mtime = float(stat_mtime_ns) / 1_000_000_000 if stat_mtime_ns else 0.0
-        oversized = max_file_bytes > 0 and int(stat_size) > max_file_bytes
-        if oversized:
-            idx = pick_indexer(rel)
-            lang = idx.language()
-            file_hash = sha256_text(f"oversized:{stat_size}:{stat_mtime_ns}")
-            node_rows.append(
-                {
-                    "project_id": project_id,
-                    "path": rel,
-                    "language": lang,
-                    "loc": 0,
-                    "complexity": 0,
-                    "file_hash": file_hash,
-                    "file_mtime": float(stat_mtime),
-                    "file_mtime_ns": int(stat_mtime_ns),
-                    "file_size": int(stat_size),
-                }
-            )
+        for parsed in parsed_batch:
+            rel = str(parsed["rel"])
             snapshot[rel] = FileSnapshot(
-                mtime_ns=int(stat_mtime_ns),
-                size=int(stat_size),
-                file_hash=file_hash,
-                hash_kind="oversized",
+                mtime_ns=int(parsed["stat_mtime_ns"]),
+                size=int(parsed["stat_size"]),
+                file_hash=str(parsed["file_hash"]),
+                hash_kind=str(parsed["snapshot_kind"]),
             )
-            continue
-        try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            snapshot[rel] = FileSnapshot(
-                mtime_ns=int(stat_mtime_ns),
-                size=int(stat_size),
-                file_hash="",
-                hash_kind="stat_only",
-            )
-            continue
 
-        rel_l = rel.lower()
-        if rel_l.endswith(".py"):
-            routes_here = []
-            try:
-                routes_here = extract_fastapi_routes(rel, text) or []
-            except Exception:
-                routes_here = []
-            for r in routes_here:
-                if not isinstance(r, dict):
-                    continue
-                r.setdefault("project_id", int(project_id))
-                r.setdefault("source_path", rel)
-                route_rows.append(r)
-            try:
-                route_contract_rows.extend(
-                    extract_backend_route_contract_rows(project_id, rel, text, routes_here) or []
-                )
-            except Exception:
-                pass
-            raw_includes = []
-            try:
-                raw_includes = extract_fastapi_includes(rel, text) or []
-            except Exception:
-                raw_includes = []
-            for inc in raw_includes:
-                if not isinstance(inc, dict):
-                    continue
-                mod_spec = str(inc.get("child_module_spec") or "").strip()
-                child_src = ""
-                if mod_spec:
-                    try:
-                        child_src = resolve_spec(project_root, rel, mod_spec) or ""
-                    except Exception:
-                        child_src = ""
-                else:
-                    child_src = rel
-                include_rows.append(
-                    {
-                        "project_id": int(project_id),
-                        "parent_source_path": rel,
-                        "parent_instance": str(inc.get("parent_instance") or ""),
-                        "child_source_path": str(child_src or ""),
-                        "child_instance": str(inc.get("child_instance") or ""),
-                        "child_ref": str(inc.get("child_ref") or ""),
-                        "child_module_spec": str(inc.get("child_module_spec") or ""),
-                        "prefix": str(inc.get("prefix") or ""),
-                        "lineno": int(inc.get("lineno") or 0),
-                    }
-                )
-        elif rel_l.endswith(JS_TS_EXTS):
-            calls_here = []
-            try:
-                calls_here = extract_frontend_api_calls(rel, text) or []
-            except Exception:
-                calls_here = []
-            for c in calls_here:
-                if not isinstance(c, dict):
-                    continue
-                c.setdefault("project_id", int(project_id))
-                c.setdefault("source_path", rel)
-                call_rows.append(c)
-            try:
-                call_meta_rows.extend(
-                    extract_frontend_call_meta_rows(project_id, rel, text, calls_here) or []
-                )
-            except Exception:
-                pass
-            if rel_l.endswith(TS_TYPEDEF_EXTS):
-                try:
-                    rows = extract_ts_type_defs(project_id, rel, text) or []
-                    for t in rows:
-                        if not isinstance(t, dict):
-                            continue
-                        t.setdefault("project_id", int(project_id))
-                        t.setdefault("source_path", rel)
-                        ts_type_rows.append(t)
-                except Exception:
-                    pass
+            node_row = parsed.get("node_row")
+            if node_row:
+                node_rows.append(node_row)
+            search_row = parsed.get("search_row")
+            if search_row:
+                search_rows.append(search_row)
+            route_rows.extend(parsed.get("route_rows") or [])
+            call_rows.extend(parsed.get("call_rows") or [])
+            include_rows.extend(parsed.get("include_rows") or [])
+            route_contract_rows.extend(parsed.get("route_contract_rows") or [])
+            call_meta_rows.extend(parsed.get("call_meta_rows") or [])
+            ts_type_rows.extend(parsed.get("ts_type_rows") or [])
 
-        idx = pick_indexer(rel)
-        lang = idx.language()
-        file_hash = sha256_text(text)
-        file_suffix = p.suffix.lower()
-        loc = sum(1 for line in text.splitlines() if line.strip())
-        embed_text_len = len(text)
-
-        search_rows.append({"project_id": int(project_id), "path": rel, "content": text[:SEARCH_INDEX_MAX_CHARS]})
-        cached = _get_cached_parse(lang, file_hash, file_suffix)
-        if cached:
-            complexity, cached_imports = cached
-        else:
-            complexity = idx.naive_complexity(text)
-            cached_imports = []
-            try:
-                for imp in idx.parse_imports(p, text) or []:
-                    cached_imports.append(
-                        {
-                            "spec": str(getattr(imp, "spec", "") or "").strip(),
-                            "kind": str(getattr(imp, "kind", "import") or "import"),
-                            "raw": str(getattr(imp, "raw", "") or ""),
-                        }
-                    )
-            except Exception:
-                cached_imports = []
-            _store_cached_parse(lang, file_hash, file_suffix, complexity, cached_imports)
-
-        node_rows.append(
-            {
-                "project_id": project_id,
-                "path": rel,
-                "language": lang,
-                "loc": int(loc),
-                "complexity": int(complexity),
-                "file_hash": file_hash,
-                "file_mtime": float(stat_mtime),
-                "file_mtime_ns": int(stat_mtime_ns),
-                "file_size": int(stat_size),
-            }
-        )
-        snapshot[rel] = FileSnapshot(
-            mtime_ns=int(stat_mtime_ns),
-            size=int(stat_size),
-            file_hash=file_hash,
-            hash_kind="content",
-        )
-
-        if embeddings_enabled and embed_text_len > 0:
-            existing_hashes = embedding_hashes.get(rel, set())
-            if file_hash not in existing_hashes:
-                if not settings.openai_api_key:
-                    if not embedding_warned_missing_key:
-                        logger.warning("Embeddings enabled but OPENAI_API_KEY is not set; skipping embeddings.")
-                        embedding_warned_missing_key = True
-                else:
-                    chunks = _chunk_text(
-                        text,
-                        int(settings.embeddings_chunk_size),
-                        int(settings.embeddings_chunk_overlap),
-                    )
-                    if chunks:
-                        symbol_meta = _symbol_chunks(text, idx.parse_symbols(p, text) or [])
-                        client = get_async_openai_client()
-                        try:
-                            chunk_limit = await get_entitlement_int_async(
-                                session,
-                                org_id,
-                                "embeddings_daily_chunk_limit",
+            text = parsed.get("text")
+            file_hash = str(parsed.get("file_hash") or "")
+            if embeddings_enabled and isinstance(text, str) and text:
+                existing_hashes = embedding_hashes.get(rel, set())
+                if file_hash not in existing_hashes:
+                    if not settings.openai_api_key:
+                        if not embedding_warned_missing_key:
+                            logger.warning("Embeddings enabled but OPENAI_API_KEY is not set; skipping embeddings.")
+                            embedding_warned_missing_key = True
+                    else:
+                        idx = pick_indexer(rel)
+                        chunks = _chunk_text(
+                            text,
+                            int(settings.embeddings_chunk_size),
+                            int(settings.embeddings_chunk_overlap),
+                        )
+                        if chunks:
+                            symbol_meta = await asyncio.to_thread(
+                                lambda: _symbol_chunks(text, idx.parse_symbols(project_root / rel, text) or [])
                             )
-                            await check_and_increment_async(
-                                session,
-                                org_id,
-                                EMBEDDING_CHUNKS_KIND,
-                                len(chunks),
-                                int(chunk_limit)
-                                if chunk_limit is not None
-                                else settings.embeddings_daily_chunk_limit,
-                            )
-                            can_generate_embeddings = True
-                        except LimitExceededError:
-                            if not embedding_warned_limit:
-                                logger.warning("Embeddings daily chunk limit exceeded; skipping embeddings.")
-                                embedding_warned_limit = True
-                            continue
-                        try:
-                            response = await client.embeddings.create(
-                                model=settings.embeddings_model,
-                                input=chunks,
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning(
-                                "Embeddings request failed for %s; skipping embeddings: %s",
-                                rel,
-                                e,
-                                exc_info=True,
-                            )
-                            continue
-                        if can_generate_embeddings and existing_hashes:
-                            embedding_paths_to_delete.append(rel)
-                        for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
-                            embedding = getattr(item, "embedding", None)
-                            if embedding is None:
+                            client = get_async_openai_client()
+                            try:
+                                chunk_limit = await get_entitlement_int_async(
+                                    session,
+                                    org_id,
+                                    "embeddings_daily_chunk_limit",
+                                )
+                                await check_and_increment_async(
+                                    session,
+                                    org_id,
+                                    EMBEDDING_CHUNKS_KIND,
+                                    len(chunks),
+                                    int(chunk_limit)
+                                    if chunk_limit is not None
+                                    else settings.embeddings_daily_chunk_limit,
+                                )
+                                can_generate_embeddings = True
+                            except LimitExceededError:
+                                if not embedding_warned_limit:
+                                    logger.warning("Embeddings daily chunk limit exceeded; skipping embeddings.")
+                                    embedding_warned_limit = True
                                 continue
-                            meta = symbol_meta[idx_chunk] if idx_chunk < len(symbol_meta) else {}
-                            embedding_rows.append(
-                                {
-                                    "project_id": project_id,
-                                    "path": rel,
-                                    "chunk_index": idx_chunk,
-                                    "file_hash": file_hash,
-                                    "embedding_json": json.dumps(embedding),
-                                    "symbol_name": str(meta.get("symbol_name", "")),
-                                    "symbol_start_line": int(meta.get("symbol_start_line", 0) or 0),
-                                    "symbol_end_line": int(meta.get("symbol_end_line", 0) or 0),
-                                }
-                            )
+                            try:
+                                response = await client.embeddings.create(
+                                    model=settings.embeddings_model,
+                                    input=chunks,
+                                )
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning(
+                                    "Embeddings request failed for %s; skipping embeddings: %s",
+                                    rel,
+                                    e,
+                                    exc_info=True,
+                                )
+                                continue
+                            if can_generate_embeddings and existing_hashes:
+                                embedding_paths_to_delete.append(rel)
+                            for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
+                                embedding = getattr(item, "embedding", None)
+                                if embedding is None:
+                                    continue
+                                meta = symbol_meta[idx_chunk] if idx_chunk < len(symbol_meta) else {}
+                                embedding_rows.append(
+                                    {
+                                        "project_id": project_id,
+                                        "path": rel,
+                                        "chunk_index": idx_chunk,
+                                        "file_hash": file_hash,
+                                        "embedding_json": json.dumps(embedding),
+                                        "symbol_name": str(meta.get("symbol_name", "")),
+                                        "symbol_start_line": int(meta.get("symbol_start_line", 0) or 0),
+                                        "symbol_end_line": int(meta.get("symbol_end_line", 0) or 0),
+                                    }
+                                )
 
-        for imp in cached_imports:
-            if not isinstance(imp, dict):
-                continue
-            spec = str(imp.get("spec") or "").strip()
-            if not spec:
-                continue
-            kind = str(imp.get("kind") or "import")
-            if kind == "runtime_dynamic":
-                continue
-            try:
-                dst_raw = resolve_spec(project_root, rel, spec)
-            except Exception:
-                dst_raw = None
-            if not dst_raw:
-                continue
-            try:
-                _abs_dst, dst = resolve_under_root(project_root, str(dst_raw))
-            except Exception:
-                continue
-            if not dst or dst == rel:
-                continue
-            raw = str(imp.get("raw") or "")
-            key = (rel, dst, kind)
-            if key not in edge_map:
-                edge_map[key] = FileEdge(
-                    project_id=project_id,
-                    src_path=rel,
-                    dst_path=dst,
-                    kind=kind,
-                    raw=raw,
-                )
+            for imp in parsed.get("cached_imports") or []:
+                if not isinstance(imp, dict):
+                    continue
+                spec = str(imp.get("spec") or "").strip()
+                if not spec:
+                    continue
+                kind = str(imp.get("kind") or "import")
+                if kind == "runtime_dynamic":
+                    continue
+                try:
+                    dst_raw = resolve_spec(project_root, rel, spec)
+                except Exception:
+                    dst_raw = None
+                if not dst_raw:
+                    continue
+                try:
+                    _abs_dst, dst = resolve_under_root(project_root, str(dst_raw))
+                except Exception:
+                    continue
+                if not dst or dst == rel:
+                    continue
+                raw = str(imp.get("raw") or "")
+                key = (rel, dst, kind)
+                if key not in edge_map:
+                    edge_map[key] = FileEdge(
+                        project_id=project_id,
+                        src_path=rel,
+                        dst_path=dst,
+                        kind=kind,
+                        raw=raw,
+                    )
+
+        await asyncio.sleep(0)
 
     removed_edge_neighbors: set[str] = set()
     if present or removed:
@@ -926,6 +1107,7 @@ async def _prepare_scan_files_async(
         removed_edge_neighbors=removed_edge_neighbors,
         snapshot=snapshot,
     )
+
 
 
 async def _write_scan_files_async(
