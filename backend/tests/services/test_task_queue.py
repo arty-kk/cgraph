@@ -4,12 +4,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.exc import SQLAlchemyError
-from sqlmodel import select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.db import get_session
+from app.async_db import AsyncSessionLocal
 from app.errors import ExternalServiceError
 from app.models import TaskJob
 from app.services.task_queue import (
@@ -19,24 +17,17 @@ from app.services.task_queue import (
     submit_scan_async,
 )
 
-
-@pytest.fixture
-def ensure_postgres():
-    try:
-        with get_session() as session:
-            session.exec(select(1)).first()
-    except SQLAlchemyError:
-        pytest.skip("Postgres is not available for task queue tests")
+from tests.services.db_helpers import ensure_async_postgres
 
 
 @pytest.mark.anyio
-async def test_submit_scan_async_reuses_existing_job(ensure_postgres):
+async def test_submit_scan_async_reuses_existing_job(ensure_async_postgres):
     project_id = 42
     org_id = 7
     job_id = uuid4().hex
     now = datetime.now(timezone.utc)
     idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
-    with get_session() as session:
+    async with AsyncSessionLocal() as session:
         job = TaskJob(
             id=job_id,
             org_id=org_id,
@@ -50,20 +41,20 @@ async def test_submit_scan_async_reuses_existing_job(ensure_postgres):
             completed_at=None,
         )
         session.add(job)
-        session.commit()
+        await session.commit()
 
     returned_id = await submit_scan_async(project_id, org_id)
     assert returned_id == job_id
 
 
 @pytest.mark.anyio
-async def test_submit_mutation_indexing_async_reuses_existing_job(ensure_postgres):
+async def test_submit_mutation_indexing_async_reuses_existing_job(ensure_async_postgres):
     project_id = 72
     org_id = 10
     job_id = uuid4().hex
     idempotency_key = f"mutation-existing-job-{uuid4().hex}"
     now = datetime.now(timezone.utc)
-    with get_session() as session:
+    async with AsyncSessionLocal() as session:
         job = TaskJob(
             id=job_id,
             org_id=org_id,
@@ -77,7 +68,7 @@ async def test_submit_mutation_indexing_async_reuses_existing_job(ensure_postgre
             completed_at=None,
         )
         session.add(job)
-        session.commit()
+        await session.commit()
 
     from unittest.mock import patch
 
@@ -94,7 +85,7 @@ async def test_submit_mutation_indexing_async_reuses_existing_job(ensure_postgre
 
 
 @pytest.mark.anyio
-async def test_submit_run_async_marks_job_failed_when_apply_async_raises(ensure_postgres):
+async def test_submit_run_async_marks_job_failed_when_apply_async_raises(ensure_async_postgres):
     payload = {"cmd": "echo hello"}
 
     from unittest.mock import patch
@@ -119,8 +110,8 @@ async def test_submit_run_async_marks_job_failed_when_apply_async_raises(ensure_
     assert err.context["queue"] == "heavy"
     assert isinstance(err.context.get("task_id"), str)
 
-    with get_session() as session:
-        job = session.get(TaskJob, err.context["task_id"])
+    async with AsyncSessionLocal() as session:
+        job = await session.get(TaskJob, err.context["task_id"])
     assert job is not None
     assert job.status == "failed"
     assert job.error == "queue unavailable"

@@ -3,25 +3,16 @@ import time
 from pathlib import Path
 
 import pytest
-from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.async_db import AsyncSessionLocal
-from app.db import get_session
 from app.errors import BadRequestError
 from app.models import OrgMembership, User
 from app.services import org_service
 
-
-@pytest.fixture
-def ensure_postgres():
-    try:
-        with get_session() as session:
-            session.exec(select(1)).first()
-    except SQLAlchemyError:
-        pytest.skip("Postgres is not available for org service tests")
+from tests.services.db_helpers import ensure_async_postgres
 
 
 async def _create_user(label: str) -> int:
@@ -51,7 +42,7 @@ async def _membership(org_id: int, user_id: int):
 
 
 @pytest.mark.anyio
-async def test_cannot_remove_last_owner(ensure_postgres) -> None:
+async def test_cannot_remove_last_owner(ensure_async_postgres) -> None:
     owner_id = await _create_user("remove_last_owner")
     async with AsyncSessionLocal() as session:
         org = await org_service.create_org_async(session, "remove-last-owner", owner_id)
@@ -68,7 +59,7 @@ async def test_cannot_remove_last_owner(ensure_postgres) -> None:
 
 
 @pytest.mark.anyio
-async def test_cannot_downgrade_last_owner(ensure_postgres) -> None:
+async def test_cannot_downgrade_last_owner(ensure_async_postgres) -> None:
     owner_id = await _create_user("downgrade_last_owner")
     async with AsyncSessionLocal() as session:
         org = await org_service.create_org_async(session, "downgrade-last-owner", owner_id)
@@ -86,7 +77,7 @@ async def test_cannot_downgrade_last_owner(ensure_postgres) -> None:
 
 @pytest.mark.anyio
 async def test_can_remove_or_downgrade_owner_when_second_active_owner_exists(
-    ensure_postgres,
+    ensure_async_postgres,
 ) -> None:
     owner_one_id = await _create_user("owner_one")
     owner_two_id = await _create_user("owner_two")

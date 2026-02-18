@@ -1,4 +1,3 @@
-import asyncio
 import io
 import sys
 import zipfile
@@ -6,49 +5,45 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from tests.services.db_helpers import ensure_async_postgres
 
-def _get_client_and_headers():
+
+async def _get_client_and_headers_async():
     try:
-        from app.db import get_session  # noqa: E402
         from app.models import OrgMembership, User  # noqa: E402
         from app.async_db import AsyncSessionLocal  # noqa: E402
         from app.services.auth_service import bootstrap_user_async, create_session_async  # noqa: E402
     except ModuleNotFoundError:
         pytest.skip("Postgres dependencies are not available for mutation response tests")
 
-    try:
-        with get_session() as session:
-            session.exec(select(1)).first()
-    except SQLAlchemyError:
-        pytest.skip("Postgres is not available for mutation response tests")
-
     from app.main import app  # noqa: E402
 
     client = TestClient(app)
-    with get_session() as session:
-        user = session.exec(select(User).limit(1)).first()
+    async with AsyncSessionLocal() as session:
+        user = ((await session.execute(select(User).limit(1))).scalars().first())
     if not user:
-        async def _bootstrap_async():
-            async with AsyncSessionLocal() as session:
-                created = await bootstrap_user_async(session, "mutation-tests@example.com", "password123")
-                token, _ = await create_session_async(session, created.id)
-                return created, token
-        user, token = asyncio.run(_bootstrap_async())
+        async with AsyncSessionLocal() as session:
+            created = await bootstrap_user_async(session, "mutation-tests@example.com", "password123")
+            token, _ = await create_session_async(session, created.id)
+            user = created
     else:
-        async def _create_session_async_for_user(user_id: int):
-            async with AsyncSessionLocal() as session:
-                token, _ = await create_session_async(session, user_id)
-                return token
-        token = asyncio.run(_create_session_async_for_user(user.id))
-    with get_session() as session:
-        membership = session.exec(
-            select(OrgMembership).where(OrgMembership.user_id == user.id).limit(1)
-        ).first()
+        async with AsyncSessionLocal() as session:
+            token, _ = await create_session_async(session, user.id)
+
+    async with AsyncSessionLocal() as session:
+        membership = (
+            (
+                await session.execute(
+                    select(OrgMembership).where(OrgMembership.user_id == user.id).limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
     if not membership:
         pytest.skip("No org membership available for mutation response tests")
     headers = {
@@ -74,8 +69,9 @@ def _create_project(client: TestClient, headers: dict) -> int:
     return int(response.json().get("id"))
 
 
-def test_update_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, headers = _get_client_and_headers()
+@pytest.mark.anyio
+async def test_update_file_returns_async_task_contract(ensure_async_postgres, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, headers = await _get_client_and_headers_async()
     project_id = _create_project(client, headers)
 
     from app.api import nodes as nodes_api  # noqa: E402
@@ -104,8 +100,9 @@ def test_update_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch
     assert payload.get("rescan_task", {}).get("task_id") == "mutation-1"
 
 
-def test_rename_file_returns_async_task_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, headers = _get_client_and_headers()
+@pytest.mark.anyio
+async def test_rename_file_returns_async_task_contract(ensure_async_postgres, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, headers = await _get_client_and_headers_async()
     project_id = _create_project(client, headers)
 
     from app.api import nodes as nodes_api  # noqa: E402
