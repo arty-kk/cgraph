@@ -13,7 +13,7 @@ from .infra.redis_client import async_redis_client
 from .logging import get_logger
 from .models import Project, TaskJob
 from .services.docs_service import build_project_docs_async
-from .services.file_mutation_service import run_mutation_indexing
+from .services.file_mutation_service import run_mutation_indexing_async
 from .services.project_service import _scan_and_update_graph_async
 from .services.routing_calibration_service import calibrate_routing_policy_thresholds_async
 from .services.task_queue import cleanup_completed_jobs_async
@@ -120,8 +120,7 @@ async def _mutation_indexing_task_async(
     root = await _resolve_project_root_async(project_id, org_id)
     try:
         str_paths = [str(path) for path in rel_paths]
-        result = await asyncio.to_thread(
-            run_mutation_indexing,
+        result = await run_mutation_indexing_async(
             project_id=project_id,
             org_id=org_id,
             root=root,

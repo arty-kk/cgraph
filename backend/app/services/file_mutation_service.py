@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ..graph import update_graph_metrics_incremental
-from ..scan import scan_files
+from ..scan import scan_files_async
 
 IndexStatus = Literal["ok", "rescan_scheduled", "failed"]
 TaskStatus = Literal["pending", "running", "succeeded", "failed"]
@@ -73,14 +73,14 @@ def build_mutation_queued_response(
     return payload.model_dump(exclude_none=True)
 
 
-def run_mutation_indexing(
+async def run_mutation_indexing_async(
     *,
     project_id: int,
     org_id: int,
     root: Path,
     rel_paths: list[str],
 ) -> dict:
-    reindexed = scan_files(project_id, org_id, root, rel_paths)
+    reindexed = await scan_files_async(project_id, org_id, root, rel_paths)
     if scan_aborted(reindexed):
         return {
             "ok": False,

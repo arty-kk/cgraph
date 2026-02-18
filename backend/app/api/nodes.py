@@ -16,7 +16,7 @@ from ..infra.cache import cache_invalidate_prefix_async
 from ..logging import get_logger
 from ..models import FileNode
 from ..policy import require_project_access_async
-from ..scan import scan_files
+from ..scan import scan_files_async
 from ..services.file_mutation_service import (
     build_mutation_queued_response,
     removed_neighbors,
@@ -86,7 +86,7 @@ async def _unlink_async(path: Path) -> None:
 
 
 async def _scan_files_async(project_id: int, org_id: int, root: Path, rel_paths: list[str]):
-    return await asyncio.to_thread(scan_files, project_id, org_id, root, rel_paths)
+    return await scan_files_async(project_id, org_id, root, rel_paths)
 
 
 async def _update_graph_metrics_incremental_async(
