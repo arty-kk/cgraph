@@ -38,7 +38,7 @@ from ..models import (
     TsTypeDef,
 )
 from ..patches import delete_patch_blob_for_sha
-from ..scan import SEARCH_INDEX_MAX_CHARS, scan_project
+from ..scan import SEARCH_INDEX_MAX_CHARS, scan_project_async
 from ..search import search_text_paths_async
 from ..services.entitlements_service import (
     get_entitlement_bool_async,
@@ -1239,7 +1239,7 @@ async def _scan_and_update_graph_async(
             raise NotFoundError("Проект не найден", context={"project_id": project_id})
 
     root = await _normalize_project_root_async(project.root_path)
-    stats = await asyncio.to_thread(scan_project, project_id, org_id, root)
+    stats = await scan_project_async(project_id, org_id, root)
 
     try:
         async with AsyncSessionLocal() as session:

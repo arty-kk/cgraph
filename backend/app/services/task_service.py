@@ -64,7 +64,7 @@ from ..models import (
     TaskJob,
 )
 from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
-from ..scan import scan_files
+from ..scan import scan_files_async
 from ..services.entitlements_service import (
     get_entitlement_bool_async,
     get_entitlement_int_async,
@@ -139,7 +139,7 @@ async def _apply_unified_diff_async(
 
 
 async def _scan_files_async(project_id: int, org_id: int, root: Path, paths: list[str]) -> dict:
-    return await asyncio.to_thread(scan_files, project_id, org_id, root, paths)
+    return await scan_files_async(project_id, org_id, root, paths)
 
 
 async def _update_graph_metrics_incremental_async(

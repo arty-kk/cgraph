@@ -65,3 +65,34 @@ async def test_resolve_project_root_async_uses_async_normalizer(
     result = await celery_tasks._resolve_project_root_async(project_id=1, org_id=7)
 
     assert result == Path("/normalized")
+
+
+@pytest.mark.anyio
+async def test_mutation_indexing_task_async_uses_async_indexer(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    async def _fake_set_job_status_async(*_args, **_kwargs):
+        calls.append("status")
+
+    async def _fake_resolve_project_root_async(*_args, **_kwargs):
+        return Path("/repo")
+
+    async def _fake_run_mutation_indexing_async(**kwargs):
+        assert kwargs["project_id"] == 1
+        assert kwargs["org_id"] == 7
+        assert kwargs["root"] == Path("/repo")
+        assert kwargs["rel_paths"] == ["a.py"]
+        calls.append("index")
+        return {"aborted": False}
+
+    async def _fail_to_thread(*_args, **_kwargs):
+        raise AssertionError("asyncio.to_thread must not be used for async mutation scan path")
+
+    monkeypatch.setattr(celery_tasks, "_set_job_status_async", _fake_set_job_status_async)
+    monkeypatch.setattr(celery_tasks, "_resolve_project_root_async", _fake_resolve_project_root_async)
+    monkeypatch.setattr(celery_tasks, "run_mutation_indexing_async", _fake_run_mutation_indexing_async)
+    monkeypatch.setattr(celery_tasks.asyncio, "to_thread", _fail_to_thread)
+
+    await celery_tasks._mutation_indexing_task_async("job-1", 1, 7, ["a.py"], "update")
+
+    assert "index" in calls

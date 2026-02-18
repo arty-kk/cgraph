@@ -201,3 +201,23 @@ async def test_normalize_project_root_async_uses_to_thread(monkeypatch: pytest.M
     assert calls["func"] is nodes.normalize_project_root
     assert calls["args"] == ("/repo",)
     assert calls["kwargs"] == {"max_length": nodes.settings.max_root_path_chars}
+
+
+@pytest.mark.anyio
+async def test_scan_files_async_uses_async_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_scan_files_async(project_id: int, org_id: int, root: Path, rel_paths: list[str]):
+        assert project_id == 1
+        assert org_id == 2
+        assert root == Path('/repo')
+        assert rel_paths == ['a.py']
+        return {'ok': True}
+
+    async def _fail_to_thread(*_args, **_kwargs):
+        raise AssertionError('scan path must not use asyncio.to_thread')
+
+    monkeypatch.setattr(nodes, 'scan_files_async', _fake_scan_files_async)
+    monkeypatch.setattr(nodes.asyncio, 'to_thread', _fail_to_thread)
+
+    result = await nodes._scan_files_async(1, 2, Path('/repo'), ['a.py'])
+
+    assert result == {'ok': True}

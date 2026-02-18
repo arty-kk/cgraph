@@ -1342,12 +1342,16 @@ async def test_scan_and_update_graph_async_does_not_call_sync_graph_metrics(monk
             return False
 
     async def _fake_to_thread(func, *args, **kwargs):
-        if func is project_service.scan_project:
-            calls.append("scan")
-            return {"files": 1}
         if getattr(func, "__name__", "") == "compute_graph_metrics_with_threshold":
             raise AssertionError("sync graph metrics path must not be used")
         return func(*args, **kwargs)
+
+    async def _fake_scan_project_async(project_id: int, org_id: int, root: Path):
+        assert project_id == 1
+        assert org_id == 7
+        assert root == Path("/repo")
+        calls.append("scan")
+        return {"files": 1}
 
     async def _fake_compute_graph_metrics_async(session, project_id, background_tasks=None):
         _ = background_tasks
@@ -1365,7 +1369,7 @@ async def test_scan_and_update_graph_async_does_not_call_sync_graph_metrics(monk
         return Path("/repo")
 
     monkeypatch.setattr(project_service, "_normalize_project_root_async", _fake_normalize_project_root_async)
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "scan_project_async", _fake_scan_project_async)
     monkeypatch.setattr(project_service, "compute_graph_metrics_async", _fake_compute_graph_metrics_async)
     monkeypatch.setattr(project_service, "cache_invalidate_prefix_async", _fake_cache_invalidate_prefix_async)
 
@@ -1411,10 +1415,8 @@ async def test_scan_and_update_graph_async_does_not_touch_sync_get_session(monke
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    async def _fake_to_thread(func, *_args, **_kwargs):
-        if func is project_service.scan_project:
-            return {"files": 1}
-        raise AssertionError("unexpected to_thread call")
+    async def _fake_scan_project_async(_project_id: int, _org_id: int, _root: Path):
+        return {"files": 1}
 
     async def _fake_compute_graph_metrics_async(_session, _project_id, background_tasks=None):
         _ = background_tasks
@@ -1432,7 +1434,7 @@ async def test_scan_and_update_graph_async_does_not_touch_sync_get_session(monke
         return None
 
     monkeypatch.setattr(project_service, "_normalize_project_root_async", _fake_normalize_project_root_async)
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "scan_project_async", _fake_scan_project_async)
     monkeypatch.setattr(project_service, "compute_graph_metrics_async", _fake_compute_graph_metrics_async)
     monkeypatch.setattr(project_service, "cache_invalidate_prefix_async", _fake_cache_invalidate_prefix_async)
     monkeypatch.setattr(graph, "get_session", _fail_get_session)

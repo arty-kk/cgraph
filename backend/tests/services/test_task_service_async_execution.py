@@ -153,7 +153,11 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
     monkeypatch.setattr(task_service, "project_lock_async", lambda *_args, **_kwargs: _Lock())
     monkeypatch.setattr(task_service, "_parse_diff_paths", lambda root, patch_text: ["a.py"])
     monkeypatch.setattr(task_service, "apply_unified_diff", lambda *args, **kwargs: ["a.py"])
-    monkeypatch.setattr(task_service, "scan_files", lambda *args, **kwargs: {"aborted": False})
+    async def _fake_scan_files_async(*args, **kwargs):
+        _ = args, kwargs
+        return {"aborted": False}
+
+    monkeypatch.setattr(task_service, "scan_files_async", _fake_scan_files_async)
     monkeypatch.setattr(
         task_service,
         "update_graph_metrics_incremental",
@@ -216,7 +220,11 @@ async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
         calls.append((func, args, kwargs))
         return "ok"
 
+    async def _fake_scan_files_async(*_args, **_kwargs):
+        return "scan-ok"
+
     monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "scan_files_async", _fake_scan_files_async)
 
     result_patch = await task_service._apply_unified_diff_async(
         Path("/tmp"),
@@ -232,11 +240,10 @@ async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
     )
 
     assert result_patch == "ok"
-    assert result_scan == "ok"
+    assert result_scan == "scan-ok"
     assert result_metrics is None
     assert calls[0][0] is task_service.apply_unified_diff
-    assert calls[1][0] is task_service.scan_files
-    assert calls[2][0] is task_service.update_graph_metrics_incremental
+    assert calls[1][0] is task_service.update_graph_metrics_incremental
 
 
 @pytest.mark.anyio
