@@ -77,7 +77,15 @@ async def test_get_run_patch_async_reads_blob_via_async_helper(monkeypatch):
         return "diff --git a/a.py b/a.py\n"
 
     monkeypatch.setattr(task_service, "_read_patch_blob_async", _fake_read_patch_blob_async)
-    monkeypatch.setattr(task_service, "get_patch_download_url", lambda meta: None)
+    async def _fake_get_patch_download_url_async(meta):
+        _ = meta
+        return None
+
+    monkeypatch.setattr(
+        task_service,
+        "get_patch_download_url_async",
+        _fake_get_patch_download_url_async,
+    )
 
     payload = await task_service.get_run_patch_async(session, 77, 55, 101)
 
@@ -150,7 +158,15 @@ async def test_build_patch_payload_from_run_async_uses_blob_meta(monkeypatch):
 
     monkeypatch.setattr(task_service, "_json_loads_or_async", _fake_json_loads_or_async)
     monkeypatch.setattr(task_service, "_read_patch_blob_async", _fake_read_patch_blob_async)
-    monkeypatch.setattr(task_service, "get_patch_download_url", lambda meta: "https://example.test/diff")
+    async def _fake_get_patch_download_url_async(meta):
+        _ = meta
+        return "https://example.test/diff"
+
+    monkeypatch.setattr(
+        task_service,
+        "get_patch_download_url_async",
+        _fake_get_patch_download_url_async,
+    )
 
     payload = await task_service._build_patch_payload_from_run_async(run, run_id=101)
 
