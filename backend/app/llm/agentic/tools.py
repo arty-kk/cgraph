@@ -20,7 +20,7 @@ from ...api_scaffold import build_frontend_snippet, suggest_frontend_module_file
 from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ...contracts import get_or_build_contract_async
-from ...graph import search_nodes, search_semantic_async
+from ...graph import search_semantic_async
 from ...models import (
     ApiCall,
     ApiCallMeta,
@@ -1129,15 +1129,11 @@ def _tool_get_neighbors(project_id: int, root: Path, args: dict) -> dict:
 
 
 def _tool_search_paths(project_id: int, args: dict) -> dict:
-    indexed_error = _check_indexed(project_id)
-    if indexed_error:
-        return indexed_error
-    query = args.get("query")
-    limit = _clamp_int(args.get("limit"), 20, 1, 100)
-    if not isinstance(query, str) or not query.strip():
-        return _tool_error("bad_args", "query is required")
-    rows = search_nodes(project_id, query.strip(), limit=limit)
-    return _tool_ok({"query": query.strip(), "limit": limit, "results": rows})
+    async def _run() -> dict:
+        async with AsyncSessionLocal() as session:
+            return await _tool_search_paths_async(session, project_id, args)
+
+    return asyncio.run(_run())
 
 
 async def _tool_search_tests(project_id: int, args: dict) -> dict:

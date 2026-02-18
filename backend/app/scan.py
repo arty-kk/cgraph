@@ -52,7 +52,6 @@ from .services.usage_service import check_and_increment_async
 from .utils import (
     ProjectLockTimeout,
     _chunk_text,
-    project_lock,
     project_lock_async,
     resolve_under_root,
     sha256_text,
