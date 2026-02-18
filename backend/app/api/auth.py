@@ -4,7 +4,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from ..async_db import AsyncSessionLocal
 from ..auth import extract_token
 from ..errors import BadRequestError, UnauthorizedError
 from ..services.auth_service import (
@@ -39,24 +38,21 @@ def _require_token(request: Request) -> str:
 
 
 @router.post("/bootstrap")
-async def bootstrap(body: AuthCredentials):
-    async with AsyncSessionLocal() as session:
-        user = await bootstrap_user_async(session, body.email, body.password)
+async def bootstrap(request: Request, body: AuthCredentials):
+    user = await bootstrap_user_async(request.state.db_session, body.email, body.password)
     return {"id": user.id, "email": user.email}
 
 
 @router.post("/register")
-async def register(body: AuthCredentials):
-    async with AsyncSessionLocal() as session:
-        user = await register_user_async(session, body.email, body.password)
+async def register(request: Request, body: AuthCredentials):
+    user = await register_user_async(request.state.db_session, body.email, body.password)
     return {"id": user.id, "email": user.email}
 
 
 @router.post("/login")
-async def login(body: AuthCredentials):
-    async with AsyncSessionLocal() as session:
-        user = await authenticate_user_async(session, body.email, body.password)
-        token, expires_at = await create_session_async(session, user.id)
+async def login(request: Request, body: AuthCredentials):
+    user = await authenticate_user_async(request.state.db_session, body.email, body.password)
+    token, expires_at = await create_session_async(request.state.db_session, user.id)
     return {"token": token, "expires_at": expires_at.isoformat()}
 
 
