@@ -1,6 +1,7 @@
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -16,12 +17,12 @@ from app.services.task_queue import (
     submit_run_async,
     submit_scan_async,
 )
-
-from tests.services.db_helpers import ensure_async_postgres
+from tests.services.db_helpers import ensure_async_postgres  # noqa: F401
 
 
 @pytest.mark.anyio
-async def test_submit_scan_async_reuses_existing_job(ensure_async_postgres):
+@pytest.mark.usefixtures("ensure_async_postgres")
+async def test_submit_scan_async_reuses_existing_job():
     project_id = 42
     org_id = 7
     job_id = uuid4().hex
@@ -48,7 +49,8 @@ async def test_submit_scan_async_reuses_existing_job(ensure_async_postgres):
 
 
 @pytest.mark.anyio
-async def test_submit_mutation_indexing_async_reuses_existing_job(ensure_async_postgres):
+@pytest.mark.usefixtures("ensure_async_postgres")
+async def test_submit_mutation_indexing_async_reuses_existing_job():
     project_id = 72
     org_id = 10
     job_id = uuid4().hex
@@ -85,7 +87,8 @@ async def test_submit_mutation_indexing_async_reuses_existing_job(ensure_async_p
 
 
 @pytest.mark.anyio
-async def test_submit_run_async_marks_job_failed_when_apply_async_raises(ensure_async_postgres):
+@pytest.mark.usefixtures("ensure_async_postgres")
+async def test_submit_run_async_marks_job_failed_when_apply_async_raises():
     payload = {"cmd": "echo hello"}
 
     from unittest.mock import patch
@@ -93,11 +96,10 @@ async def test_submit_run_async_marks_job_failed_when_apply_async_raises(ensure_
     async def _noop_guard(*args, **kwargs):
         _ = (args, kwargs)
 
-    async def _noop_release(*args, **kwargs):
-        _ = (args, kwargs)
+    release_mock = AsyncMock()
 
     with patch("app.services.task_queue._guard_inflight_async", side_effect=_noop_guard), patch(
-        "app.services.task_queue._release_inflight_async", side_effect=_noop_release
+        "app.services.task_queue._release_inflight_async", release_mock
     ), patch(
         "app.celery_tasks.run_task_job.apply_async",
         side_effect=RuntimeError("queue unavailable"),
@@ -109,6 +111,7 @@ async def test_submit_run_async_marks_job_failed_when_apply_async_raises(ensure_
     assert err.code == "external_service_error"
     assert err.context["queue"] == "heavy"
     assert isinstance(err.context.get("task_id"), str)
+    release_mock.assert_awaited_once_with("heavy", err.context["task_id"])
 
     async with AsyncSessionLocal() as session:
         job = await session.get(TaskJob, err.context["task_id"])

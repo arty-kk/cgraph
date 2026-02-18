@@ -11,6 +11,7 @@ from uuid import uuid4
 from redis import RedisError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import func
 from sqlmodel import delete, select
 
 from ..async_db import AsyncSessionLocal
@@ -31,6 +32,8 @@ class TaskState:
 
 
 logger = get_logger("stubgraph.task_queue")
+
+_HEAVY_INFLIGHT_KEY = "stubgraph:queue:heavy:inflight"
 
 
 async def _enqueue_celery_task_async(task: Any, *, args: list[Any], queue: str) -> None:
@@ -151,6 +154,7 @@ async def _guard_inflight_async(
     queue: str,
     job_id: str | None = None,
 ) -> None:
+    _ = session
     if queue != "heavy":
         return
     limit = settings.task_queue_inflight_heavy_limit
@@ -161,28 +165,6 @@ async def _guard_inflight_async(
 
     try:
         async with async_redis_client() as client:
-            key = "stubgraph:queue:heavy:inflight"
-            active_rows = list(
-                (
-                    await session.execute(
-                        select(TaskJob.id).where(
-                            TaskJob.queue == "heavy",
-                            TaskJob.status.in_(("pending", "running")),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            active_ids = {row for row in active_rows if isinstance(row, str) and row}
-
-            existing_ids = await client.smembers(key)
-            zombies = set(existing_ids) - active_ids
-            missing = active_ids - set(existing_ids)
-            if zombies:
-                await client.srem(key, *zombies)
-            if missing:
-                await client.sadd(key, *missing)
             lua = """
             local set_key = KEYS[1]
             local limit = tonumber(ARGV[1])
@@ -195,7 +177,15 @@ async def _guard_inflight_async(
             count = redis.call("SCARD", set_key)
             return {1, count}
             """
-            added, _count = await client.eval(lua, 1, key, int(limit), job_id)
+            added, count = await client.eval(lua, 1, _HEAVY_INFLIGHT_KEY, int(limit), job_id)
+            if int(added) != 1 and int(count) > int(limit):
+                try:
+                    await _reconcile_heavy_inflight_async()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Heavy inflight reconciliation failed",
+                        extra={"reason": str(exc)},
+                    )
             if int(added) != 1:
                 raise BadRequestError("Превышен лимит одновременных heavy задач")
     except RedisError as exc:
@@ -218,10 +208,46 @@ async def _release_inflight_async(queue: str, job_id: str) -> None:
         return
     try:
         async with async_redis_client() as client:
-            key = "stubgraph:queue:heavy:inflight"
-            await client.srem(key, job_id)
+            await client.srem(_HEAVY_INFLIGHT_KEY, job_id)
     except RedisError as exc:
         logger.warning("Failed to release inflight job", extra={"reason": str(exc)})
+
+
+async def _reconcile_heavy_inflight_async() -> None:
+    async with AsyncSessionLocal() as session:
+        db_count = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(TaskJob)
+                    .where(
+                        TaskJob.queue == "heavy",
+                        TaskJob.status.in_(("pending", "running")),
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        async with async_redis_client() as client:
+            redis_count = int(await client.scard(_HEAVY_INFLIGHT_KEY))
+            if redis_count == db_count:
+                return
+
+            active_ids = list(
+                (
+                    await session.execute(
+                        select(TaskJob.id).where(
+                            TaskJob.queue == "heavy",
+                            TaskJob.status.in_(("pending", "running")),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            await client.delete(_HEAVY_INFLIGHT_KEY)
+            if active_ids:
+                await client.sadd(_HEAVY_INFLIGHT_KEY, *active_ids)
 
 
 async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
