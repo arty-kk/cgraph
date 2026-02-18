@@ -164,6 +164,47 @@ async def test_select_contract_paths_async_uses_to_thread(
 
 
 @pytest.mark.anyio
+async def test_collect_compact_contracts_async_uses_single_session_and_keeps_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_factory_calls = 0
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def _fake_session_local():
+        nonlocal session_factory_calls
+        session_factory_calls += 1
+        return _SessionCtx()
+
+    async def _fake_get_or_build_contract_async(session, project_id, root, path):
+        _ = (session, project_id, root)
+        if path == "bad.py":
+            raise RuntimeError("boom")
+        return {"exports": [path]}
+
+    monkeypatch.setattr(docs_service, "AsyncSessionLocal", _fake_session_local)
+    monkeypatch.setattr(docs_service, "get_or_build_contract_async", _fake_get_or_build_contract_async)
+    monkeypatch.setattr(docs_service, "_compact_contract", lambda contract: {"exports": contract["exports"]})
+
+    result = await docs_service._collect_compact_contracts_async(
+        1,
+        Path("/repo"),
+        ["ok.py", "bad.py", "ok2.py"],
+    )
+
+    assert session_factory_calls == 1
+    assert result == [
+        {"path": "ok.py", "contract": {"exports": ["ok.py"]}},
+        {"path": "ok2.py", "contract": {"exports": ["ok2.py"]}},
+    ]
+
+
+@pytest.mark.anyio
 async def test_build_api_summary_async_uses_to_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
