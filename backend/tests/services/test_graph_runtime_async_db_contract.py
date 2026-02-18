@@ -9,11 +9,20 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from app import graph
 
 GRAPH_PATH = Path(__file__).resolve().parents[2] / "app" / "graph.py"
+TASK_SERVICE_PATH = Path(__file__).resolve().parents[2] / "app" / "services" / "task_service.py"
 RUNTIME_ASYNC_FUNCS = {
     "compute_graph_metrics_async",
     "update_graph_metrics_incremental_async",
     "search_semantic_async",
 }
+
+
+def _find_task_service_async_fn(symbol: str) -> ast.AsyncFunctionDef:
+    tree = ast.parse(TASK_SERVICE_PATH.read_text(encoding="utf-8"), filename=str(TASK_SERVICE_PATH))
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == symbol:
+            return node
+    raise AssertionError(f"Async function `{symbol}` not found in {TASK_SERVICE_PATH}")
 
 
 def _find_async_functions() -> dict[str, ast.AsyncFunctionDef]:
@@ -161,3 +170,29 @@ async def test_search_semantic_async_uses_async_execute_and_cpu_to_thread(monkey
     assert "results" in result
     assert session.calls == 2
     assert to_thread_calls == ["_score_semantic_candidates_cpu"]
+
+
+def test_task_service_ensure_node_exists_async_uses_async_graph_metrics() -> None:
+    fn = _find_task_service_async_fn("_ensure_node_exists_async")
+    has_to_thread_compute_sync = False
+    has_async_compute_call = False
+
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "asyncio"
+                and node.func.attr == "to_thread"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "compute_graph_metrics"
+            ):
+                has_to_thread_compute_sync = True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "compute_graph_metrics_async":
+                has_async_compute_call = True
+
+    assert not has_to_thread_compute_sync, (
+        "_ensure_node_exists_async must not call asyncio.to_thread(compute_graph_metrics, ...)"
+    )
+    assert has_async_compute_call, "_ensure_node_exists_async must call compute_graph_metrics_async(...)"

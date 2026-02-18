@@ -29,7 +29,7 @@ from ..errors import (
     NotFoundError,
     ServerError,
 )
-from ..graph import compute_graph_metrics, update_graph_metrics_incremental_async
+from ..graph import compute_graph_metrics_async, update_graph_metrics_incremental_async
 from ..llm.agentic import (
     AgenticMeta,
     analyze_agentic_async,
@@ -752,7 +752,7 @@ async def _ensure_node_exists_async(
             raise ValueError("Цель должна быть файлом")
         await _scan_files_async(project_id, org_id, root, [target])
         async with project_lock_async(session, project_id):
-            await asyncio.to_thread(compute_graph_metrics, project_id)
+            await compute_graph_metrics_async(session, project_id)
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
