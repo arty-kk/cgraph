@@ -54,8 +54,55 @@ def test_async_functions_do_not_call_sync_search_text_paths() -> None:
                 )
 
 
-def test_dispatch_passes_session_to_search_text_async() -> None:
-    module = _load_ast(DISPATCH_PATH)
+def test_dispatch_passes_session_to_runtime_async_tools() -> None:
+    _ = _load_ast(DISPATCH_PATH)
     src = DISPATCH_PATH.read_text(encoding="utf-8")
+    assert '"get_node": ("_tool_get_node_async", (session, project_id, root, args), {})' in src
+    assert (
+        '"get_neighbors": ("_tool_get_neighbors_async", (session, project_id, root, args), {})'
+        in src
+    )
+    assert '"search_paths": ("_tool_search_paths_async", (session, project_id, args), {})' in src
+    assert '"search_tests": ("_tool_search_tests_async", (session, project_id, args), {})' in src
+    assert '"search_symbols": ("_tool_search_symbols_async", (session, project_id, args), {})' in src
+    assert '"get_tree_outline": ("_tool_get_tree_outline_async", (session, project_id, args), {})' in src
+    assert (
+        '"project_summary": ("_tool_project_summary_async", (session, project_id, root, args), {})'
+        in src
+    )
     assert '"search_text": (' in src
-    assert '(session, project_id, root, args)' in src
+    assert '"search_semantic": (' in src
+    assert '"search_routes": ("_tool_search_routes_async", (session, project_id, args), {})' in src
+    assert '"search_api_calls": ("_tool_search_api_calls_async", (session, project_id, args), {})' in src
+    assert '"route_usages": ("_tool_route_usages_async", (session, project_id, args), {})' in src
+    assert (
+        '"suggest_endpoint_location": (\n            "_tool_suggest_endpoint_location_async",\n            (session, project_id, args),\n            {},\n        ),'
+        in src
+    )
+    assert (
+        '"suggest_frontend_client": (\n            "_tool_suggest_frontend_client_async",\n            (session, project_id, root, args),\n            {},\n        ),'
+        in src
+    )
+    assert (
+        '"impact_route_change": ("_tool_impact_route_change_async", (session, project_id, args), {})'
+        in src
+    )
+    assert (
+        '"api_coverage_summary": ("_tool_api_coverage_summary_async", (session, project_id, args), {})'
+        in src
+    )
+    assert '"unmatched_routes": ("_tool_unmatched_routes_async", (session, project_id, args), {})' in src
+    assert '"unmatched_calls": ("_tool_unmatched_calls_async", (session, project_id, args), {})' in src
+    assert (
+        '"compare_api_contract": (\n            "_tool_compare_api_contract_async",\n            (session, project_id, root, args),\n            {},\n        ),'
+        in src
+    )
+    assert (
+        '"suggest_contract_fix": (\n            "_tool_suggest_contract_fix_async",\n            (session, project_id, root, meta, args),\n            {},\n        ),'
+        in src
+    )
+    assert (
+        '"suggest_api_fix": (\n            "_tool_suggest_api_fix_async",\n            (session, project_id, root, meta, args),\n            {},\n        ),'
+        in src
+    )
+    assert src.count("(session, project_id, root, args)") >= 2
