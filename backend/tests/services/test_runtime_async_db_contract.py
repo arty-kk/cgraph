@@ -119,6 +119,29 @@ def test_mixed_runtime_modules_do_not_use_sync_db_primitives_inside_async_functi
     )
 
 
+def test_scan_module_does_not_call_session_exec() -> None:
+    path = BACKEND_ROOT / "app" / "scan.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations: list[str] = []
+
+    for node in (n for n in ast.walk(tree) if isinstance(n, ast.Call)):
+        if not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "exec":
+            continue
+        if not isinstance(node.func.value, ast.Name):
+            continue
+        if node.func.value.id != "session":
+            continue
+        violations.append(f"{path}:{node.lineno}")
+
+    assert not violations, (
+        "backend/app/scan.py must not call sync `session.exec(...)`; "
+        "use async helpers with `await session.execute(...)` only: "
+        + ", ".join(violations)
+    )
+
+
 def test_mixed_runtime_async_functions_do_not_call_local_sync_db_helpers() -> None:
     violations: list[str] = []
     for path in sorted(MIXED_RUNTIME_FILES):
