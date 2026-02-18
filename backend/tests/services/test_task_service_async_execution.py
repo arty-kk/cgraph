@@ -262,6 +262,26 @@ async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_store_patch_blob_async_helper_uses_async_storage_api(monkeypatch):
+    calls: dict[str, object] = {}
+
+    async def _fake_store_patch_blob_async(patch_text: str):
+        calls["patch_text"] = patch_text
+        return {"storage": "local", "sha256": "sha-1"}
+
+    monkeypatch.setattr(task_service, "store_patch_blob_async", _fake_store_patch_blob_async)
+
+    payload = await task_service._store_patch_blob_async("x" * 10)
+
+    assert calls["patch_text"] == "x" * 10
+    assert payload["storage"] == "local"
+    assert payload["sha256"] == "sha-1"
+    assert payload["omitted"] is True
+    assert payload["chars"] == 10
+    assert payload["store_limit_chars"] == task_service.MAX_PATCH_STORE_CHARS
+
+
+@pytest.mark.anyio
 async def test_resolve_under_root_async_uses_to_thread(monkeypatch):
     calls: dict[str, object] = {}
 
@@ -651,7 +671,11 @@ async def test_run_task_impl_async_non_agentic_does_not_touch_sync_get_session(
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "cache_enabled", False)
-    monkeypatch.setattr(task_service, "resolve_runtime_policy", lambda **kwargs: task_service.DEFAULT_POLICY)
+    monkeypatch.setattr(
+        task_service,
+        "resolve_runtime_policy",
+        lambda **kwargs: task_service.DEFAULT_POLICY,
+    )
     monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
     monkeypatch.setattr(task_service, "analyze_with_usage_async", _analyze_async)
     monkeypatch.setattr(context_pack, "get_or_build_contract_async", _contract_async)

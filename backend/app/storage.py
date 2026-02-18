@@ -7,6 +7,7 @@ or get_patch_download_url() when returning the artifact to clients.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -224,3 +225,19 @@ def get_patch_download_url(meta: dict) -> str | None:
     if not isinstance(bucket, str) or not isinstance(key, str):
         return None
     return _s3_signed_url(bucket, key)
+
+
+async def store_patch_blob_async(patch_text: str) -> dict:
+    return await asyncio.to_thread(store_patch_blob, patch_text)
+
+
+async def read_patch_blob_async(meta: dict) -> str:
+    return await asyncio.to_thread(read_patch_blob, meta)
+
+
+async def get_patch_download_url_async(meta: dict) -> str | None:
+    return await asyncio.to_thread(get_patch_download_url, meta)
+
+
+async def delete_patch_blob_async(meta: dict | None) -> None:
+    await asyncio.to_thread(delete_patch_blob, meta)

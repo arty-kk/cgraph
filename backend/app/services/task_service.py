@@ -73,7 +73,12 @@ from ..services.usage_service import (
     LLM_REQUESTS_KIND,
     check_and_increment_async,
 )
-from ..storage import StorageError, get_patch_download_url, read_patch_blob, store_patch_blob
+from ..storage import (
+    StorageError,
+    get_patch_download_url_async,
+    read_patch_blob_async,
+    store_patch_blob_async,
+)
 from ..utils import (
     ProjectLockTimeout,
     normalize_project_root,
@@ -158,7 +163,7 @@ async def _update_graph_metrics_incremental_async(
 
 
 async def _read_patch_blob_async(meta: dict) -> str:
-    return await asyncio.to_thread(read_patch_blob, meta)
+    return await read_patch_blob_async(meta)
 
 
 async def _delete_patch_blob_for_sha_async(sha: str) -> None:
@@ -469,8 +474,8 @@ def _resolve_agentic_retry_stop_reason(
     return None
 
 
-def _store_patch_blob(patch_text: str) -> dict:
-    meta = store_patch_blob(patch_text)
+async def _store_patch_blob_async(patch_text: str) -> dict:
+    meta = await store_patch_blob_async(patch_text)
     meta["omitted"] = True
     meta["chars"] = len(patch_text)
     meta["store_limit_chars"] = MAX_PATCH_STORE_CHARS
@@ -2019,7 +2024,7 @@ async def _run_task_impl_async(
         patch_text = result_full.get("patch_unified_diff")
         if isinstance(patch_text, str) and len(patch_text) > MAX_PATCH_STORE_CHARS:
             patch_text_full = patch_text
-            meta = _store_patch_blob(patch_text_full)
+            meta = await _store_patch_blob_async(patch_text_full)
             compact = dict(result_full)
             compact["patch_unified_diff"] = ""
             compact["patch_unified_diff_meta"] = meta
@@ -2254,7 +2259,7 @@ async def _build_patch_payload_from_run_async(run: AnalysisRun, *, run_id: int) 
                         context={"reason": str(error)},
                     )
                 payload = {"patch_unified_diff": text}
-                url = get_patch_download_url(meta)
+                url = await get_patch_download_url_async(meta)
                 if url:
                     payload["download_url"] = url
                 expires_at = meta.get("expires_at") if isinstance(meta, dict) else None
