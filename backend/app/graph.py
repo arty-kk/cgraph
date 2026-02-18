@@ -16,7 +16,7 @@ from sqlmodel import select
 
 from .config import settings
 from .async_db import AsyncSessionLocal
-from .llm.client import get_openai_client
+from .llm.client import get_async_openai_client
 from .models import FileChunkEmbedding, FileEdge, FileNode
 from .utils import _chunk_text, resolve_under_root
 
@@ -613,8 +613,8 @@ async def search_semantic_async(
     ).all()
 
     try:
-        client = get_openai_client()
-        resp = client.embeddings.create(model=settings.embeddings_model, input=[q])
+        client = get_async_openai_client()
+        resp = await client.embeddings.create(model=settings.embeddings_model, input=[q])
     except Exception as e:  # noqa: BLE001
         return {
             "error": "embedding_failed",
@@ -670,4 +670,3 @@ async def search_semantic_async(
             "reason": "",
         },
     }
-

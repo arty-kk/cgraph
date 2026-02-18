@@ -136,7 +136,7 @@ async def test_search_semantic_async_uses_async_execute_and_cpu_to_thread(monkey
 
     class _Embeddings:
         @staticmethod
-        def create(**_kwargs):
+        async def create(**_kwargs):
             return type("Resp", (), {"data": [type("D", (), {"embedding": [1.0, 0.0]})()]})()
 
     class _Client:
@@ -148,7 +148,7 @@ async def test_search_semantic_async_uses_async_execute_and_cpu_to_thread(monkey
         to_thread_calls.append(func.__name__)
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(graph, "get_openai_client", lambda: _Client())
+    monkeypatch.setattr(graph, "get_async_openai_client", lambda: _Client())
     monkeypatch.setattr(graph.settings, "embeddings_enabled", True)
     monkeypatch.setattr(graph.settings, "openai_api_key", "test")
     monkeypatch.setattr(
