@@ -204,29 +204,6 @@ def _is_missing_table_error(e: Exception, table: str) -> bool:
     )
 
 
-def _search_index_delete(session, project_id: int, paths: list[str]) -> None:
-    if not paths:
-        return
-    stmt = delete(FileText).where(
-        FileText.project_id == project_id,
-        FileText.path.in_(bindparam("paths", expanding=True)),
-    )
-    for chunk in _chunks(paths, 400):
-        session.exec(stmt, {"paths": chunk})
-
-
-def _delete_embeddings(session, project_id: int, paths: list[str]) -> None:
-    if not paths:
-        return
-    for chunk in _chunks(paths, 400):
-        session.exec(
-            delete(FileChunkEmbedding).where(
-                FileChunkEmbedding.project_id == project_id,
-                FileChunkEmbedding.path.in_(chunk),
-            )
-        )
-
-
 def _symbol_chunks(text: str, symbols: Iterable[object]) -> list[dict]:
     lines = text.splitlines(keepends=True)
     chunks: list[dict] = []
@@ -245,49 +222,6 @@ def _symbol_chunks(text: str, symbols: Iterable[object]) -> list[dict]:
             }
         )
     return chunks
-
-
-def _delete_api_indexes(session, project_id: int, paths: list[str]) -> None:
-    if not paths:
-        return
-    for chunk in _chunks(paths, 400):
-        session.exec(
-            delete(ApiRoute).where(
-                ApiRoute.project_id == project_id,
-                ApiRoute.source_path.in_(chunk),
-            )
-        )
-        session.exec(
-            delete(ApiCall).where(
-                ApiCall.project_id == project_id,
-                ApiCall.source_path.in_(chunk),
-            )
-        )
-        session.exec(
-            delete(ApiRouteContract).where(
-                ApiRouteContract.project_id == project_id,
-                ApiRouteContract.source_path.in_(chunk),
-            )
-        )
-        session.exec(
-            delete(ApiCallMeta).where(
-                ApiCallMeta.project_id == project_id,
-                ApiCallMeta.source_path.in_(chunk),
-            )
-        )
-        session.exec(
-            delete(TsTypeDef).where(
-                TsTypeDef.project_id == project_id,
-                TsTypeDef.source_path.in_(chunk),
-            )
-        )
-        session.exec(
-            delete(ApiInclude).where(
-                ApiInclude.project_id == project_id,
-                (ApiInclude.parent_source_path.in_(chunk))
-                | (ApiInclude.child_source_path.in_(chunk)),
-            )
-        )
 
 
 def _verify_scan_snapshot(
