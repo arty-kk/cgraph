@@ -1437,7 +1437,7 @@ async def test_scan_and_update_graph_async_does_not_touch_sync_get_session(monke
     monkeypatch.setattr(project_service, "scan_project_async", _fake_scan_project_async)
     monkeypatch.setattr(project_service, "compute_graph_metrics_async", _fake_compute_graph_metrics_async)
     monkeypatch.setattr(project_service, "cache_invalidate_prefix_async", _fake_cache_invalidate_prefix_async)
-    monkeypatch.setattr(graph, "get_session", _fail_get_session)
+    monkeypatch.setattr(graph, "get_session", _fail_get_session, raising=False)
 
     result = await project_service._scan_and_update_graph_async(1, 7)
 

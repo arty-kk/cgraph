@@ -17,7 +17,6 @@ CRITICAL_RUNTIME_FILES = (
 # Keep empty by default: runtime contract requires AsyncSession/AsyncSessionLocal everywhere.
 OFFLINE_DEV_ONLY_ALLOWLIST: dict[tuple[str, str], str] = {}
 MIXED_RUNTIME_FILES = {
-    BACKEND_ROOT / "app" / "graph.py",
     BACKEND_ROOT / "app" / "scan.py",
     BACKEND_ROOT / "app" / "search.py",
 }
@@ -71,6 +70,17 @@ def _collect_async_sync_db_violations(path: Path, tree: ast.AST) -> list[str]:
                     )
 
     return violations
+
+
+def _contains_with_get_session(node: ast.AST) -> bool:
+    for inner in ast.walk(node):
+        if not isinstance(inner, ast.With):
+            continue
+        for item in inner.items:
+            expr = item.context_expr
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "get_session":
+                return True
+    return False
 
 
 def test_runtime_modules_do_not_import_sync_db_session_primitives() -> None:
@@ -131,6 +141,25 @@ def test_mixed_runtime_async_functions_do_not_call_local_sync_db_helpers() -> No
         + ", ".join(violations)
     )
 
+
+
+def test_runtime_modules_do_not_use_with_get_session_blocks() -> None:
+    violations: list[str] = []
+    for path in _iter_runtime_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+        for fn in (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            if not _contains_with_get_session(fn):
+                continue
+            if _allowlisted(path, fn.name):
+                continue
+            violations.append(f"{path}:{fn.lineno}:{fn.name}")
+
+    assert not violations, (
+        "Runtime modules must not use `with get_session()` DB blocks; "
+        "use AsyncSession/AsyncSessionLocal or explicit offline allowlist: "
+        + ", ".join(violations)
+    )
 
 
 
