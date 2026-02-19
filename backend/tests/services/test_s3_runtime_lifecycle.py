@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -96,5 +97,42 @@ async def test_s3_runtime_init_and_close_are_idempotent(monkeypatch: pytest.Monk
     await s3_runtime.close_s3_runtime()
     await s3_runtime.close_s3_runtime()
 
+    assert entered["count"] == 1
+    assert exited["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_s3_runtime_concurrent_init_close_reuses_single_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = {"count": 0}
+    exited = {"count": 0}
+    client = object()
+
+    class _ClientCtx:
+        async def __aenter__(self):
+            entered["count"] += 1
+            return client
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = exc_type, exc, tb
+            exited["count"] += 1
+
+    class _Session:
+        def client(self, *_args, **_kwargs):
+            return _ClientCtx()
+
+    monkeypatch.setattr(s3_runtime, "_build_session", lambda: _Session())
+
+    await s3_runtime.close_s3_runtime()
+    clients = await asyncio.gather(*[s3_runtime.init_s3_runtime() for _ in range(20)])
+    _ = clients
+
+    fetched = await asyncio.gather(
+        *[asyncio.to_thread(s3_runtime.get_s3_client) for _ in range(20)]
+    )
+    await asyncio.gather(*[s3_runtime.close_s3_runtime() for _ in range(20)])
+
+    assert all(item is client for item in fetched)
     assert entered["count"] == 1
     assert exited["count"] == 1
