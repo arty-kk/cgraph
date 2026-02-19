@@ -6,7 +6,6 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...async_db import AsyncSessionLocal
 from sqlmodel import select
 
 from ...config import settings
@@ -18,6 +17,7 @@ _FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
 async def _neighbors_limited_async(
+    session: AsyncSession,
     project_id: int,
     start: str,
     *,
@@ -38,55 +38,52 @@ async def _neighbors_limited_async(
 
     SQLITE_IN_CHUNK = 400
 
-    async with AsyncSessionLocal() as s:
-        for _ in range(depth):
-            if not frontier or len(ordered) >= limit:
-                break
-            frontier = list(dict.fromkeys(frontier))
-            nxt: list[str] = []
-            stop = False
-            for chunk in _chunks(frontier, SQLITE_IN_CHUNK):
-                if direction == "in":
-                    rows = (
-                        (
-                            await s.execute(
-                                select(FileEdge.src_path)
-                                .where(
-                                    FileEdge.project_id == project_id,
-                                    FileEdge.dst_path.in_(chunk),
-                                )
-                                .order_by(FileEdge.src_path)
+    for _ in range(depth):
+        if not frontier or len(ordered) >= limit:
+            break
+        frontier = list(dict.fromkeys(frontier))
+        nxt: list[str] = []
+        for chunk in _chunks(frontier, SQLITE_IN_CHUNK):
+            if direction == "in":
+                rows = (
+                    (
+                        await session.execute(
+                            select(FileEdge.src_path)
+                            .where(
+                                FileEdge.project_id == project_id,
+                                FileEdge.dst_path.in_(chunk),
                             )
+                            .order_by(FileEdge.src_path)
                         )
-                        .all()
                     )
-                else:
-                    rows = (
-                        (
-                            await s.execute(
-                                select(FileEdge.dst_path)
-                                .where(
-                                    FileEdge.project_id == project_id,
-                                    FileEdge.src_path.in_(chunk),
-                                )
-                                .order_by(FileEdge.dst_path)
+                    .all()
+                )
+            else:
+                rows = (
+                    (
+                        await session.execute(
+                            select(FileEdge.dst_path)
+                            .where(
+                                FileEdge.project_id == project_id,
+                                FileEdge.src_path.in_(chunk),
                             )
+                            .order_by(FileEdge.dst_path)
                         )
-                        .all()
                     )
-                for row in rows:
-                    val = row[0] if isinstance(row, (tuple, list)) else row
-                    if not isinstance(val, str) or not val or val in visited:
-                        continue
-                    visited.add(val)
-                    ordered.append(val)
-                    nxt.append(val)
-                    if len(ordered) >= limit:
-                        stop = True
-                        break
-                if stop:
+                    .all()
+                )
+            for row in rows:
+                val = row[0] if isinstance(row, (tuple, list)) else row
+                if not isinstance(val, str) or not val or val in visited:
+                    continue
+                visited.add(val)
+                ordered.append(val)
+                nxt.append(val)
+                if len(ordered) >= limit:
                     break
-            frontier = nxt
+            if len(ordered) >= limit:
+                break
+        frontier = nxt
     return ordered[:limit]
 
 
@@ -216,10 +213,10 @@ async def _seed_context_async(
     out_depth = max(0, min(depth, 6))
     in_depth = max(0, min(depth, 2))
     outbound = await _neighbors_limited_async(
-        project_id, target_norm, direction="out", depth=out_depth, limit=200
+        session, project_id, target_norm, direction="out", depth=out_depth, limit=200
     )
     inbound = await _neighbors_limited_async(
-        project_id, target_norm, direction="in", depth=in_depth, limit=200
+        session, project_id, target_norm, direction="in", depth=in_depth, limit=200
     )
 
     return {
@@ -240,4 +237,3 @@ async def _seed_context_async(
             "note": "Lists are truncated hints. Use get_neighbors() to expand.",
         },
     }
-
