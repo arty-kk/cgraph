@@ -40,6 +40,10 @@ class Settings(BaseSettings):
         default=3600,
         alias="STUBGRAPH_S3_SIGNED_URL_TTL_SECONDS",
     )
+    s3_signed_url_concurrency_limit: int = Field(
+        default=8,
+        alias="STUBGRAPH_S3_SIGNED_URL_CONCURRENCY_LIMIT",
+    )
     patch_retention_days: int = Field(default=7, alias="STUBGRAPH_PATCH_RETENTION_DAYS")
     snapshot_max_bytes: int = Field(default=200_000_000, alias="STUBGRAPH_SNAPSHOT_MAX_BYTES")
     snapshot_max_files: int = Field(default=200_000, alias="STUBGRAPH_SNAPSHOT_MAX_FILES")
@@ -301,6 +305,8 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_S3_BUCKET обязателен для S3 хранилища")
         if self.s3_signed_url_ttl_seconds <= 0:
             raise ValueError("STUBGRAPH_S3_SIGNED_URL_TTL_SECONDS должен быть положительным")
+        if self.s3_signed_url_concurrency_limit < 1:
+            raise ValueError("STUBGRAPH_S3_SIGNED_URL_CONCURRENCY_LIMIT должен быть >= 1")
         if self.patch_retention_days < 0:
             raise ValueError("STUBGRAPH_PATCH_RETENTION_DAYS должен быть неотрицательным")
         if self.snapshot_max_bytes <= 0:
