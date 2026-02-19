@@ -1,8 +1,8 @@
 # backend/app/storage.py
 """Storage abstraction for large artifacts (e.g., patch blobs).
 
-Usage: call store_patch_blob() for large payloads, then read_patch_blob()
-or get_patch_download_url() when returning the artifact to clients.
+Usage: call store_patch_blob_async() for large payloads, then read_patch_blob_async()
+or get_patch_download_url_async() when returning the artifact to clients.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .config import settings
 from .logging import get_logger
+from .s3_runtime import get_s3_client
 from .utils import sha256_text
 
 logger = get_logger("stubgraph.storage")
@@ -53,23 +54,6 @@ def _local_patch_path(sha: str) -> Path:
     return (base / "patches" / f"{sha}.diff").resolve()
 
 
-def _s3_client():
-    try:
-        import boto3  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        raise StorageError("boto3 is required for S3 storage") from exc
-
-    session = boto3.session.Session(
-        aws_access_key_id=settings.s3_access_key_id or None,
-        aws_secret_access_key=settings.s3_secret_access_key or None,
-    )
-    return session.client(
-        "s3",
-        region_name=settings.s3_region or None,
-        endpoint_url=settings.s3_endpoint_url or None,
-    )
-
-
 def _s3_patch_key(sha: str) -> str:
     prefix = (settings.s3_prefix or "").strip().strip("/")
     base = f"{prefix}/patches/{sha}.diff" if prefix else f"patches/{sha}.diff"
@@ -78,7 +62,7 @@ def _s3_patch_key(sha: str) -> str:
 
 def _s3_signed_url(bucket: str, key: str) -> str | None:
     try:
-        client = _s3_client()
+        client = get_s3_client()
         return client.generate_presigned_url(
             "get_object",
             Params={"Bucket": bucket, "Key": key},
@@ -89,7 +73,25 @@ def _s3_signed_url(bucket: str, key: str) -> str | None:
         return None
 
 
+def _write_patch_blob_if_missing(path: Path, patch_text: str) -> None:
+    with path.open("x", encoding="utf-8") as f:
+        f.write(patch_text)
+
+
+async def _maybe_await_close(body) -> None:
+    close_fn = getattr(body, "close", None)
+    if close_fn is None:
+        return
+    close_result = close_fn()
+    if asyncio.iscoroutine(close_result):
+        await close_result
+
+
 def store_patch_blob(patch_text: str) -> dict:
+    return asyncio.run(store_patch_blob_async(patch_text))
+
+
+async def store_patch_blob_async(patch_text: str) -> dict:
     sha = sha256_text(patch_text)
     expires_at = _expires_at()
     backend = _storage_backend()
@@ -99,10 +101,9 @@ def store_patch_blob(patch_text: str) -> dict:
         base = Path(settings.db_dir).resolve()
         if base not in fp.parents and fp != base:
             raise StorageError("Refusing to write patch blob outside db_dir")
-        fp.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(fp.parent.mkdir, parents=True, exist_ok=True)
         try:
-            with fp.open("x", encoding="utf-8") as f:
-                f.write(patch_text)
+            await asyncio.to_thread(_write_patch_blob_if_missing, fp, patch_text)
         except FileExistsError:
             pass
         return {
@@ -116,8 +117,8 @@ def store_patch_blob(patch_text: str) -> dict:
     if not bucket:
         raise StorageError("S3 bucket is not configured")
     key = _s3_patch_key(sha)
-    client = _s3_client()
-    client.put_object(
+    client = get_s3_client()
+    await client.put_object(
         Bucket=bucket,
         Key=key,
         Body=patch_text.encode("utf-8"),
@@ -137,9 +138,13 @@ def store_patch_blob(patch_text: str) -> dict:
 
 
 def read_patch_blob(meta: dict) -> str:
+    return asyncio.run(read_patch_blob_async(meta))
+
+
+async def read_patch_blob_async(meta: dict) -> str:
     expires_at = meta.get("expires_at") if isinstance(meta, dict) else None
     if _is_expired(expires_at if isinstance(expires_at, str) else None):
-        delete_patch_blob(meta)
+        await delete_patch_blob_async(meta)
         raise StorageError("Patch blob expired")
 
     storage = (meta.get("storage") or "").strip().lower() if isinstance(meta, dict) else ""
@@ -148,12 +153,15 @@ def read_patch_blob(meta: dict) -> str:
         key = meta.get("key")
         if not isinstance(bucket, str) or not isinstance(key, str):
             raise StorageError("Missing S3 patch metadata")
-        client = _s3_client()
-        resp = client.get_object(Bucket=bucket, Key=key)
+        client = get_s3_client()
+        resp = await client.get_object(Bucket=bucket, Key=key)
         body = resp.get("Body")
         if body is None:
             raise StorageError("Empty S3 response body")
-        data = body.read()
+        try:
+            data = await body.read()
+        finally:
+            await _maybe_await_close(body)
         return data.decode("utf-8", errors="replace")
 
     sha = meta.get("sha256")
@@ -163,12 +171,18 @@ def read_patch_blob(meta: dict) -> str:
     base = Path(settings.db_dir).resolve()
     if base not in fp.parents and fp != base:
         raise StorageError("Invalid patch path")
-    if not fp.exists() or not fp.is_file():
+    exists = await asyncio.to_thread(fp.exists)
+    is_file = await asyncio.to_thread(fp.is_file)
+    if not exists or not is_file:
         raise StorageError("Patch blob not found")
-    return fp.read_text(encoding="utf-8", errors="replace")
+    return await asyncio.to_thread(fp.read_text, encoding="utf-8", errors="replace")
 
 
 def delete_patch_blob(meta: dict | None) -> None:
+    asyncio.run(delete_patch_blob_async(meta))
+
+
+async def delete_patch_blob_async(meta: dict | None) -> None:
     if not isinstance(meta, dict):
         return
     storage = (meta.get("storage") or "").strip().lower()
@@ -177,17 +191,21 @@ def delete_patch_blob(meta: dict | None) -> None:
         key = meta.get("key")
         if isinstance(bucket, str) and isinstance(key, str):
             try:
-                _s3_client().delete_object(Bucket=bucket, Key=key)
+                await get_s3_client().delete_object(Bucket=bucket, Key=key)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to delete S3 patch blob", extra={"reason": str(exc)})
         return
 
     sha = meta.get("sha256")
     if isinstance(sha, str) and sha:
-        delete_patch_blob_by_sha(sha)
+        await delete_patch_blob_by_sha_async(sha)
 
 
 def delete_patch_blob_by_sha(sha: str) -> None:
+    asyncio.run(delete_patch_blob_by_sha_async(sha))
+
+
+async def delete_patch_blob_by_sha_async(sha: str) -> None:
     if not isinstance(sha, str) or not sha:
         return
 
@@ -197,7 +215,7 @@ def delete_patch_blob_by_sha(sha: str) -> None:
         logger.warning("Refusing to delete patch blob outside db_dir", extra={"sha": sha})
         return
     try:
-        fp.unlink(missing_ok=True)
+        await asyncio.to_thread(fp.unlink, True)
     except Exception as error:  # noqa: BLE001
         logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
 
@@ -209,12 +227,16 @@ def delete_patch_blob_by_sha(sha: str) -> None:
         return
     key = _s3_patch_key(sha)
     try:
-        _s3_client().delete_object(Bucket=bucket, Key=key)
+        await get_s3_client().delete_object(Bucket=bucket, Key=key)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to delete S3 patch blob", extra={"reason": str(exc)})
 
 
 def get_patch_download_url(meta: dict) -> str | None:
+    return asyncio.run(get_patch_download_url_async(meta))
+
+
+async def get_patch_download_url_async(meta: dict) -> str | None:
     if not isinstance(meta, dict):
         return None
     storage = (meta.get("storage") or "").strip().lower()
@@ -225,19 +247,3 @@ def get_patch_download_url(meta: dict) -> str | None:
     if not isinstance(bucket, str) or not isinstance(key, str):
         return None
     return _s3_signed_url(bucket, key)
-
-
-async def store_patch_blob_async(patch_text: str) -> dict:
-    return await asyncio.to_thread(store_patch_blob, patch_text)
-
-
-async def read_patch_blob_async(meta: dict) -> str:
-    return await asyncio.to_thread(read_patch_blob, meta)
-
-
-async def get_patch_download_url_async(meta: dict) -> str | None:
-    return await asyncio.to_thread(get_patch_download_url, meta)
-
-
-async def delete_patch_blob_async(meta: dict | None) -> None:
-    await asyncio.to_thread(delete_patch_blob, meta)
