@@ -1,12 +1,14 @@
 import asyncio
 import sys
+import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.errors import BadRequestError
+from app.errors import BadRequestError, ExternalServiceError
 from app.services import task_queue
 
 
@@ -41,15 +43,27 @@ class _FakeRedisClient:
         _ = (key, values)
 
 
-class _FakeRedisContext:
-    def __init__(self, client):
-        self.client = client
+class _FakeJob:
+    status = "pending"
+    error = None
+    completed_at = None
+    updated_at = None
 
-    async def __aenter__(self):
-        return self.client
 
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
+class _FakeDbSession:
+    def __init__(self):
+        self.job = _FakeJob()
+        self.commits = 0
+
+    async def get(self, model, task_id):
+        _ = (model, task_id)
+        return self.job
+
+    def add(self, job):
+        _ = job
+
+    async def commit(self):
+        self.commits += 1
 
 
 @pytest.mark.anyio
@@ -151,21 +165,104 @@ async def test_enqueue_celery_task_async_uses_shared_adapter(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_celery_enqueue_adapter_recreates_executor_after_shutdown():
+async def test_celery_enqueue_adapter_limits_concurrency_with_workers(monkeypatch):
+    monkeypatch.setattr(task_queue.settings, "task_queue_enqueue_workers", 2)
     adapter = task_queue._CeleryEnqueueAdapter()
-    calls: list[tuple[list[str], str]] = []
+
+    active = 0
+    max_active = 0
 
     class _Task:
         def apply_async(self, *, args, queue):
-            calls.append((args, queue))
+            _ = (args, queue)
+            nonlocal active, max_active
+            time.sleep(0.005)
+            active += 1
+            max_active = max(max_active, active)
+            time.sleep(0.05)
+            active -= 1
 
-    task = _Task()
-    await adapter.enqueue_async(task, args=["job-1"], queue="heavy")
-    adapter.shutdown()
-    await adapter.enqueue_async(task, args=["job-2"], queue="medium")
+    await asyncio.gather(*[adapter.enqueue_async(_Task(), args=[str(i)], queue="medium") for i in range(12)])
     adapter.shutdown()
 
-    assert calls == [(["job-1"], "heavy"), (["job-2"], "medium")]
+    assert max_active <= 2
+    assert max_active > 1
+
+
+@pytest.mark.anyio
+async def test_celery_enqueue_adapter_shutdown_waits_and_rejects_new(monkeypatch):
+    monkeypatch.setattr(task_queue.settings, "task_queue_enqueue_workers", 2)
+    adapter = task_queue._CeleryEnqueueAdapter()
+
+    started = Event()
+    release = Event()
+
+    class _Task:
+        def apply_async(self, *, args, queue):
+            _ = (args, queue)
+            started.set()
+            while not release.is_set():
+                time.sleep(0.01)
+
+    pending = asyncio.create_task(adapter.enqueue_async(_Task(), args=["job-1"], queue="medium"))
+    await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1)
+
+    shutdown_task = asyncio.create_task(asyncio.to_thread(adapter.shutdown))
+    await asyncio.sleep(0.05)
+    assert not shutdown_task.done()
+
+    release.set()
+    await asyncio.wait_for(pending, timeout=1)
+    await asyncio.wait_for(shutdown_task, timeout=1)
+
+    with pytest.raises(RuntimeError):
+        await adapter.enqueue_async(_Task(), args=["job-2"], queue="medium")
+
+
+@pytest.mark.anyio
+async def test_enqueue_error_mapping_timeout(monkeypatch):
+    session = _FakeDbSession()
+
+    async def _slow_enqueue(task, *, args, queue):
+        _ = (task, args, queue)
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(task_queue, "_ENQUEUE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(task_queue, "_enqueue_celery_task_async", _slow_enqueue)
+
+    with pytest.raises(ExternalServiceError) as exc_ctx:
+        await task_queue._enqueue_with_error_mapping_async(
+            session,
+            task=object(),
+            args=["job-1"],
+            queue="medium",
+            task_id="job-1",
+        )
+
+    assert exc_ctx.value.context["enqueue_reason"] == "timeout"
+    assert session.commits == 1
+
+
+@pytest.mark.anyio
+async def test_enqueue_error_mapping_broker_error(monkeypatch):
+    session = _FakeDbSession()
+
+    async def _broken_enqueue(task, *, args, queue):
+        _ = (task, args, queue)
+        raise task_queue._EnqueueBrokerError("broker down")
+
+    monkeypatch.setattr(task_queue, "_enqueue_celery_task_async", _broken_enqueue)
+
+    with pytest.raises(ExternalServiceError) as exc_ctx:
+        await task_queue._enqueue_with_error_mapping_async(
+            session,
+            task=object(),
+            args=["job-2"],
+            queue="medium",
+            task_id="job-2",
+        )
+
+    assert exc_ctx.value.context["enqueue_reason"] == "broker_error"
 
 
 @pytest.mark.anyio
@@ -220,15 +317,16 @@ async def test_submit_run_async_enqueues_when_quota_available(monkeypatch):
         _ = (args, kwargs)
         return "job-1", True
 
-    async def _fake_enqueue(task, *, args, queue):
-        enqueue_calls.append({"task": task, "args": args, "queue": queue})
+    async def _fake_enqueue(session, *, task, args, queue, task_id):
+        _ = (session, task)
+        enqueue_calls.append({"args": args, "queue": queue, "task_id": task_id})
 
     monkeypatch.setattr(task_queue, "uuid4", lambda: _UUID())
     monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency)
     monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
     monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing)
     monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job)
-    monkeypatch.setattr(task_queue, "_enqueue_celery_task_async", _fake_enqueue)
+    monkeypatch.setattr(task_queue, "_enqueue_with_error_mapping_async", _fake_enqueue)
     monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 2)
     monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: client)
 
