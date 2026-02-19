@@ -54,10 +54,48 @@ async def cache_invalidate_prefix_async(parts: list[str]) -> None:
     if not settings.cache_enabled:
         return
     key = _cache_key(parts)
+    pattern = f"{key}*"
+    deleted_count = 0
+    batches = 0
+    batch: list[str] = []
+
+    async def _delete_batch(client: Any, keys: list[str]) -> None:
+        try:
+            await client.unlink(*keys)
+            return
+        except (AttributeError, NotImplementedError):
+            pass
+        except RedisError as unlink_exc:
+            message = str(unlink_exc).lower()
+            if "unlink" not in message or "unknown command" not in message:
+                raise
+
+        pipeline = client.pipeline(transaction=False)
+        for batch_key in keys:
+            pipeline.delete(batch_key)
+        await pipeline.execute()
+
     try:
         client = get_async_redis_client()
-        async for match in client.scan_iter(match=f"{key}*"):
-            await client.delete(match)
+        async for match in client.scan_iter(match=pattern):
+            batch.append(match)
+            if len(batch) >= settings.cache_invalidate_batch_size:
+                await _delete_batch(client, batch)
+                deleted_count += len(batch)
+                batches += 1
+                batch.clear()
+        if batch:
+            await _delete_batch(client, batch)
+            deleted_count += len(batch)
+            batches += 1
     except RedisError as exc:
         logger.warning("Cache invalidate failed", extra={"reason": str(exc)})
-        raise ExternalServiceError("Не удалось инвалидировать кэш", context={"key": key}) from exc
+        raise ExternalServiceError(
+            "Не удалось инвалидировать кэш",
+            context={
+                "key": key,
+                "pattern": pattern,
+                "deleted_count": deleted_count,
+                "batches": batches,
+            },
+        ) from exc

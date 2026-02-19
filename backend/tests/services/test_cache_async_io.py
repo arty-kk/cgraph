@@ -13,13 +13,43 @@ from app.infra import cache, redis_client
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
+class _AsyncPipeline:
+    def __init__(self, client: "_AsyncClient") -> None:
+        self.client = client
+        self.batch: list[str] = []
+
+    def delete(self, key: str) -> None:
+        self.batch.append(key)
+
+    async def execute(self) -> None:
+        self.client.pipeline_execute_calls += 1
+        batch_no = self.client.pipeline_execute_calls
+        self.client.pipeline_batches.append(list(self.batch))
+        if batch_no == self.client.fail_on_pipeline_batch:
+            raise cache.RedisError(f"pipeline batch {batch_no} failed")
+
+
 class _AsyncClient:
-    def __init__(self, *, get_payload: str | None = '{"ok": true}'):
+    def __init__(
+        self,
+        *,
+        get_payload: str | None = '{"ok": true}',
+        scan_values: list[str] | None = None,
+        fail_on_unlink_batch: int | None = None,
+        fail_on_pipeline_batch: int | None = None,
+        unlink_unavailable: bool = False,
+    ):
         self.get_payload = get_payload
         self.get_calls: list[str] = []
         self.setex_calls: list[tuple[str, int, str]] = []
-        self.delete_calls: list[str] = []
-        self.scan_values: list[str] = ["stubgraph:k:1", "stubgraph:k:2"]
+        self.scan_values: list[str] = scan_values or ["stubgraph:k:1", "stubgraph:k:2"]
+        self.unlink_batches: list[list[str]] = []
+        self.pipeline_batches: list[list[str]] = []
+        self.unlink_calls = 0
+        self.pipeline_execute_calls = 0
+        self.fail_on_unlink_batch = fail_on_unlink_batch
+        self.fail_on_pipeline_batch = fail_on_pipeline_batch
+        self.unlink_unavailable = unlink_unavailable
 
     async def get(self, key: str):
         self.get_calls.append(key)
@@ -28,8 +58,17 @@ class _AsyncClient:
     async def setex(self, key: str, ttl: int, payload: str):
         self.setex_calls.append((key, ttl, payload))
 
-    async def delete(self, key: str):
-        self.delete_calls.append(key)
+    async def unlink(self, *keys: str):
+        if self.unlink_unavailable:
+            raise AttributeError("unlink is unavailable")
+        self.unlink_calls += 1
+        self.unlink_batches.append(list(keys))
+        if self.unlink_calls == self.fail_on_unlink_batch:
+            raise cache.RedisError(f"unlink batch {self.unlink_calls} failed")
+
+    def pipeline(self, transaction: bool = False):
+        _ = transaction
+        return _AsyncPipeline(self)
 
     async def scan_iter(self, match: str):
         _ = match
@@ -96,7 +135,7 @@ async def test_cache_async_uses_shared_client_for_concurrent_calls(
     assert get_client_calls == 3
     assert len(client.get_calls) == 1
     assert len(client.setex_calls) == 1
-    assert client.delete_calls == ["stubgraph:k:1", "stubgraph:k:2"]
+    assert client.unlink_batches == [["stubgraph:k:1", "stubgraph:k:2"]]
 
 
 @pytest.mark.anyio
@@ -135,6 +174,64 @@ async def test_cache_set_json_async_maps_redis_error_to_external_service_error(
 
 
 @pytest.mark.anyio
+async def test_cache_invalidate_prefix_async_uses_batched_unlink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_values = [f"stubgraph:k:{index}" for index in range(1, 2501)]
+    client = _AsyncClient(scan_values=scan_values)
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_invalidate_batch_size", 1000)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
+
+    await cache.cache_invalidate_prefix_async(["k"])
+
+    assert client.unlink_calls == 3
+    assert [len(batch) for batch in client.unlink_batches] == [1000, 1000, 500]
+    assert client.pipeline_execute_calls == 0
+
+
+@pytest.mark.anyio
+async def test_cache_invalidate_prefix_async_falls_back_to_pipeline_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_values = [f"stubgraph:k:{index}" for index in range(1, 2201)]
+    client = _AsyncClient(scan_values=scan_values, unlink_unavailable=True)
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_invalidate_batch_size", 1000)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
+
+    await cache.cache_invalidate_prefix_async(["k"])
+
+    assert client.unlink_calls == 0
+    assert client.pipeline_execute_calls == 3
+    assert [len(batch) for batch in client.pipeline_batches] == [1000, 1000, 200]
+
+
+@pytest.mark.anyio
+async def test_cache_invalidate_prefix_async_returns_partial_stats_on_second_batch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_values = [f"stubgraph:k:{index}" for index in range(1, 2501)]
+    client = _AsyncClient(scan_values=scan_values, fail_on_unlink_batch=2)
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_invalidate_batch_size", 1000)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
+
+    with pytest.raises(ExternalServiceError) as exc:
+        await cache.cache_invalidate_prefix_async(["k"])
+
+    assert exc.value.context == {
+        "key": "stubgraph:k",
+        "pattern": "stubgraph:k*",
+        "deleted_count": 1000,
+        "batches": 1,
+    }
+
+
+@pytest.mark.anyio
 async def test_cache_invalidate_prefix_async_maps_redis_error_to_external_service_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -150,4 +247,9 @@ async def test_cache_invalidate_prefix_async_maps_redis_error_to_external_servic
     with pytest.raises(ExternalServiceError) as exc:
         await cache.cache_invalidate_prefix_async(["k"])
 
-    assert exc.value.context == {"key": "stubgraph:k"}
+    assert exc.value.context == {
+        "key": "stubgraph:k",
+        "pattern": "stubgraph:k*",
+        "deleted_count": 0,
+        "batches": 0,
+    }
