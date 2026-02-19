@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import asyncio
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -721,6 +722,16 @@ async def _delete_api_indexes_async(session: AsyncSession, project_id: int, path
 
 async def scan_project_async(project_id: int, org_id: int, project_root: Path) -> dict:
     project_root = project_root.resolve()
+    scan_metrics: dict[str, dict[str, float | int]] = {
+        "producer": {
+            "duration_s": 0.0,
+            "batches": 0,
+            "paths": 0,
+        },
+        "read": {"duration_s": 0.0, "batches": 0, "files": 0},
+        "parse": {"duration_s": 0.0, "batches": 0, "files": 0},
+        "db": {"duration_s": 0.0, "batches": 0},
+    }
     try:
         async with AsyncSessionLocal() as session:
             existing = (
@@ -807,34 +818,42 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                         _mark_candidate(item.rel, item.mtime_ns, item.size)
                 await asyncio.sleep(0)
 
-        queue_size = max(1, SCAN_STAGE_BATCH_SIZE * SCAN_STAGE_MAX_PARALLEL)
-        path_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=queue_size)
+        queue_size = max(1, SCAN_STAGE_MAX_PARALLEL)
+        path_queue: asyncio.Queue[list[str] | None] = asyncio.Queue(maxsize=queue_size)
         producer_done = asyncio.Event()
         loop = asyncio.get_running_loop()
 
         def _produce_paths() -> None:
+            producer_started = time.monotonic()
+            current_batch: list[str] = []
             try:
                 for path in iter_code_files(project_root):
                     rel = path.relative_to(project_root).as_posix()
-                    asyncio.run_coroutine_threadsafe(path_queue.put(rel), loop).result()
+                    current_batch.append(rel)
+                    if len(current_batch) >= SCAN_STAGE_BATCH_SIZE:
+                        asyncio.run_coroutine_threadsafe(path_queue.put(current_batch), loop).result()
+                        scan_metrics["producer"]["batches"] += 1
+                        scan_metrics["producer"]["paths"] += len(current_batch)
+                        current_batch = []
+                if current_batch:
+                    asyncio.run_coroutine_threadsafe(path_queue.put(current_batch), loop).result()
+                    scan_metrics["producer"]["batches"] += 1
+                    scan_metrics["producer"]["paths"] += len(current_batch)
             finally:
                 asyncio.run_coroutine_threadsafe(path_queue.put(None), loop).result()
                 loop.call_soon_threadsafe(producer_done.set)
+                scan_metrics["producer"]["duration_s"] = (
+                    scan_metrics["producer"].get("duration_s", 0.0) + time.monotonic() - producer_started
+                )
 
         producer_task = asyncio.create_task(asyncio.to_thread(_produce_paths))
-        path_batch: list[str] = []
         while True:
-            rel = await path_queue.get()
-            if rel is None:
+            rel_batch = await path_queue.get()
+            if rel_batch is None:
                 break
-            seen_paths.add(rel)
-            path_batch.append(rel)
-            if len(path_batch) >= SCAN_STAGE_BATCH_SIZE:
-                await _process_path_batch(path_batch)
-                path_batch = []
-
-        if path_batch:
-            await _process_path_batch(path_batch)
+            for rel in rel_batch:
+                seen_paths.add(rel)
+            await _process_path_batch(rel_batch)
 
         await producer_done.wait()
         await producer_task
@@ -848,6 +867,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
             project_root,
             sorted_candidates,
             precomputed_stats=candidate_stats,
+            scan_metrics=scan_metrics,
         )
 
         removed_aborted = False
@@ -894,6 +914,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         "nodes": len(seen_paths),
         "changed": len(sorted_candidates),
         "removed": len(removed),
+        "scan_metrics": scan_metrics,
         **updated,
     }
     if removed_aborted:
@@ -909,6 +930,7 @@ async def scan_files_async(
     project_root: Path,
     rel_paths: Iterable[str],
     precomputed_stats: dict[str, tuple[int, int]] | None = None,
+    scan_metrics: dict[str, dict[str, float | int]] | None = None,
 ) -> dict:
     project_root = project_root.resolve()
     norm_paths: list[str] = []
@@ -930,6 +952,7 @@ async def scan_files_async(
             project_root,
             norm_paths,
             precomputed_stats=precomputed_stats,
+            scan_metrics=scan_metrics,
         )
         if not prepared.present and not prepared.removed:
             return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
@@ -960,6 +983,7 @@ async def scan_files_async(
                             project_root,
                             norm_paths,
                             precomputed_stats=precomputed_stats,
+                            scan_metrics=scan_metrics,
                         )
                         if not prepared.present and not prepared.removed:
                             return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
@@ -971,7 +995,7 @@ async def scan_files_async(
                         "aborted": True,
                         "reason": "snapshot_mismatch",
                     }
-                await _write_scan_files_async(session, project_id, prepared)
+                await _write_scan_files_async(session, project_id, prepared, scan_metrics=scan_metrics)
                 break
 
     return {
@@ -989,6 +1013,7 @@ async def _prepare_scan_files_async(
     project_root: Path,
     norm_paths: list[str],
     precomputed_stats: dict[str, tuple[int, int]] | None = None,
+    scan_metrics: dict[str, dict[str, float | int]] | None = None,
 ) -> PreparedScanData:
     present: list[str] = []
     removed: list[str] = []
@@ -1046,8 +1071,21 @@ async def _prepare_scan_files_async(
     max_file_bytes = int(settings.snapshot_max_file_bytes)
     for i in range(0, len(present), SCAN_STAGE_BATCH_SIZE):
         batch = present[i : i + SCAN_STAGE_BATCH_SIZE]
+        read_started = time.monotonic()
         read_batch = await _read_file_batch_async(project_root, batch, stats_map, max_file_bytes)
+        if scan_metrics is not None:
+            scan_metrics.setdefault("read", {"duration_s": 0.0, "batches": 0, "files": 0})
+            scan_metrics["read"]["duration_s"] += time.monotonic() - read_started
+            scan_metrics["read"]["batches"] += 1
+            scan_metrics["read"]["files"] += len(read_batch)
+
+        parse_started = time.monotonic()
         parsed_batch = await _parse_index_batch_async(project_id, project_root, read_batch)
+        if scan_metrics is not None:
+            scan_metrics.setdefault("parse", {"duration_s": 0.0, "batches": 0, "files": 0})
+            scan_metrics["parse"]["duration_s"] += time.monotonic() - parse_started
+            scan_metrics["parse"]["batches"] += 1
+            scan_metrics["parse"]["files"] += len(parsed_batch)
 
         for parsed in parsed_batch:
             rel = str(parsed["rel"])
@@ -1224,7 +1262,9 @@ async def _write_scan_files_async(
     session: AsyncSession,
     project_id: int,
     prepared: PreparedScanData,
+    scan_metrics: dict[str, dict[str, float | int]] | None = None,
 ) -> None:
+    db_started = time.monotonic()
     if prepared.removed:
         await session.execute(
             delete(FileEdge).where(
@@ -1410,3 +1450,7 @@ async def _write_scan_files_async(
         await session.execute(stmt_e)
 
     await session.commit()
+    if scan_metrics is not None:
+        scan_metrics.setdefault("db", {"duration_s": 0.0, "batches": 0})
+        scan_metrics["db"]["duration_s"] += time.monotonic() - db_started
+        scan_metrics["db"]["batches"] += 1

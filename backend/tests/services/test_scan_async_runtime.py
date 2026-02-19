@@ -251,9 +251,11 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
             return None
 
     captured: dict[str, object] = {}
+    collect_batch_sizes: list[int] = []
 
     async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
         _ = precomputed_stats, batch_size, max_parallel
+        collect_batch_sizes.append(len(rel_paths))
         results = []
         for rel in rel_paths:
             if rel in changed_by_stat:
@@ -270,9 +272,10 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
             out.append(scan.FileReadResult(rel=rel, text=text, mtime_ns=20, size=20, oversized=False))
         return out
 
-    async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None):
+    async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
         captured["rel_paths"] = list(rel_paths)
         captured["precomputed_stats"] = dict(precomputed_stats or {})
+        _ = scan_metrics
         return {"updated_nodes": len(captured["rel_paths"]), "updated_edges": 0, "removed": 0}
 
     verify_calls = {"removed": []}
@@ -302,9 +305,69 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
     assert result["nodes"] == len(all_paths)
     assert result["changed"] == len(expected_changed)
     assert result["removed"] == 0
+    assert "scan_metrics" in result
+    assert result["scan_metrics"]["producer"]["batches"] == 5
+    assert result["scan_metrics"]["producer"]["paths"] == len(all_paths)
     assert verify_calls["removed"] == [["gone.py"]]
     assert captured["rel_paths"] == expected_changed
     assert set(captured["precomputed_stats"].keys()) == set(expected_changed)
+    assert collect_batch_sizes[:5] == [128, 128, 128, 128, 88]
+
+
+@pytest.mark.anyio
+async def test_scan_project_async_allows_concurrent_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    roots = {
+        Path("/repo-a").resolve(): ["src/a.py", "src/b.py"],
+        Path("/repo-b").resolve(): ["main.py"],
+    }
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Session:
+        async def execute(self, *_args, **_kwargs):
+            return _Result([])
+
+        async def commit(self):
+            return None
+
+    async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        return [scan.FileStatResult(rel, True, True, True, 1, 1) for rel in rel_paths]
+
+    async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
+        _ = precomputed_stats, scan_metrics
+        await scan.asyncio.sleep(0)
+        return {
+            "updated_nodes": len(list(rel_paths)),
+            "updated_edges": 0,
+            "removed": 0,
+        }
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(
+        scan,
+        "iter_code_files",
+        lambda root: (root / rel for rel in roots[root.resolve()]),
+    )
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
+    monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
+
+    result_a, result_b = await scan.asyncio.gather(
+        scan.scan_project_async(101, 201, Path("/repo-a")),
+        scan.scan_project_async(102, 202, Path("/repo-b")),
+    )
+
+    assert result_a["removed"] == 0
+    assert result_b["removed"] == 0
+    assert result_a["nodes"] == 2
+    assert result_b["nodes"] == 1
+    assert "scan_metrics" in result_a
+    assert "scan_metrics" in result_b
 
 
 @pytest.mark.anyio
