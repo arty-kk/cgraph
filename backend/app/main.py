@@ -24,6 +24,7 @@ from .infra.redis_client import close_redis_pool_async, init_redis_pool_async
 from .llm.client import close_async_openai_client
 from .logging import log_requests, setup_logging
 from .s3_runtime import close_s3_runtime, init_s3_runtime
+from .scan import close_scan_runtime
 from .services.auth_service import get_user_from_token_async
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ async def lifespan(_: FastAPI):
             ("close_s3_runtime", close_s3_runtime),
             ("close_redis_pool_async", close_redis_pool_async),
             ("close_async_openai_client", close_async_openai_client),
+            ("close_scan_runtime", close_scan_runtime),
             ("close_async_db", close_async_db),
         ]
         for name, cleanup in cleanup_steps:
