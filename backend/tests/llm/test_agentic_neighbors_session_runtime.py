@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.llm import agentic
+from app.llm.agentic import tools as agentic_tools
 
 
 class _Rows:
@@ -17,6 +18,10 @@ class _Rows:
 
     def all(self):
         return list(self._rows)
+
+    def first(self):
+        rows = list(self._rows)
+        return rows[0] if rows else None
 
 
 class _SessionOk:
@@ -150,6 +155,45 @@ class TestAgenticNeighborsSessionRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(local_factory_calls, 0)
         self.assertEqual(session.execute_calls, 25)
         self.assertGreaterEqual(session.max_in_flight, 2)
+
+    async def test_check_indexed_async_uses_explicit_session_only(self) -> None:
+        session = _SessionOk()
+
+        def _forbidden_local_session_factory(*_args, **_kwargs):
+            raise AssertionError("_check_indexed_async must not create local sessions")
+
+        with patch("app.llm.agentic.tools.AsyncSessionLocal", side_effect=_forbidden_local_session_factory):
+            result = await agentic_tools._check_indexed_async(session, 1)
+
+        self.assertIsNone(result)
+        self.assertEqual(session.execute_calls, 1)
+
+    async def test_get_tree_outline_async_uses_external_session_without_local_factory(self) -> None:
+        class _TreeSession:
+            def __init__(self):
+                self.execute_calls = 0
+
+            async def execute(self, _query):
+                self.execute_calls += 1
+                if self.execute_calls == 1:
+                    class _First:
+                        def first(self):
+                            return (1,)
+
+                    return _First()
+                return _Rows([("backend/app/main.py",), ("backend/tests/test_x.py",)])
+
+        session = _TreeSession()
+
+        def _forbidden_local_session_factory(*_args, **_kwargs):
+            raise AssertionError("AsyncSessionLocal fallback must not be used with external session")
+
+        with patch("app.llm.agentic.tools.AsyncSessionLocal", side_effect=_forbidden_local_session_factory):
+            result = await agentic._tool_get_tree_outline_async(session, 1, {"max_lines": 200})
+
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(len(result["data"]["lines"]), 1)
+        self.assertEqual(session.execute_calls, 2)
 
 
 if __name__ == "__main__":
