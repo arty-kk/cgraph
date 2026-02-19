@@ -1,147 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ..policy import DEFAULT_POLICY, ModelPolicy
 from ..schemas import ANALYZE_SCHEMA, FIX_SCHEMA
 from .call import _agentic_json_call_async
 from .context import _seed_context_async
 from .types import AgenticMeta
-
-
-def _run_with_async_session(
-    runner: callable,
-) -> tuple[dict, AgenticMeta]:
-    async def _run() -> tuple[dict, AgenticMeta]:
-        async with AsyncSessionLocal() as session:
-            return await runner(session)
-
-    return asyncio.run(_run())
-
-
-def analyze_agentic(
-    project_id: int,
-    root: Path,
-    target_rel: str,
-    *,
-    depth: int,
-    user_prompt: str,
-    policy: ModelPolicy = DEFAULT_POLICY,
-    instructions: str | None = None,
-    max_calls: int | None = None,
-    max_total_tool_output_chars: int | None = None,
-    max_file_chars: int | None = None,
-    temperature: float | None = None,
-    reasoning_effort: str | None = None,
-    evidence_mode: bool,
-    allow_self_check_retry: bool = True,
-    allow_evidence_retry: bool = True,
-) -> tuple[dict, AgenticMeta]:
-    return _run_with_async_session(
-        lambda session: analyze_agentic_async(
-            session,
-            project_id,
-            root,
-            target_rel,
-            depth=depth,
-            user_prompt=user_prompt,
-            policy=policy,
-            instructions=instructions,
-            max_calls=max_calls,
-            max_total_tool_output_chars=max_total_tool_output_chars,
-            max_file_chars=max_file_chars,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            evidence_mode=evidence_mode,
-            allow_self_check_retry=allow_self_check_retry,
-            allow_evidence_retry=allow_evidence_retry,
-        )
-    )
-
-
-def evolve_agentic(
-    project_id: int,
-    root: Path,
-    target_rel: str,
-    *,
-    depth: int,
-    user_prompt: str,
-    policy: ModelPolicy = DEFAULT_POLICY,
-    instructions: str | None = None,
-    max_calls: int | None = None,
-    max_total_tool_output_chars: int | None = None,
-    max_file_chars: int | None = None,
-    temperature: float | None = None,
-    reasoning_effort: str | None = None,
-    evidence_mode: bool,
-    allow_self_check_retry: bool = True,
-    allow_evidence_retry: bool = True,
-) -> tuple[dict, AgenticMeta]:
-    return _run_with_async_session(
-        lambda session: evolve_agentic_async(
-            session,
-            project_id,
-            root,
-            target_rel,
-            depth=depth,
-            user_prompt=user_prompt,
-            policy=policy,
-            instructions=instructions,
-            max_calls=max_calls,
-            max_total_tool_output_chars=max_total_tool_output_chars,
-            max_file_chars=max_file_chars,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            evidence_mode=evidence_mode,
-            allow_self_check_retry=allow_self_check_retry,
-            allow_evidence_retry=allow_evidence_retry,
-        )
-    )
-
-
-def fix_agentic(
-    project_id: int,
-    root: Path,
-    target_rel: str,
-    *,
-    depth: int,
-    user_prompt: str,
-    policy: ModelPolicy = DEFAULT_POLICY,
-    instructions: str | None = None,
-    max_calls: int | None = None,
-    max_total_tool_output_chars: int | None = None,
-    max_file_chars: int | None = None,
-    temperature: float | None = None,
-    reasoning_effort: str | None = None,
-    evidence_mode: bool,
-    allow_self_check_retry: bool = True,
-    allow_evidence_retry: bool = True,
-) -> tuple[dict, AgenticMeta]:
-    return _run_with_async_session(
-        lambda session: fix_agentic_async(
-            session,
-            project_id,
-            root,
-            target_rel,
-            depth=depth,
-            user_prompt=user_prompt,
-            policy=policy,
-            instructions=instructions,
-            max_calls=max_calls,
-            max_total_tool_output_chars=max_total_tool_output_chars,
-            max_file_chars=max_file_chars,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            evidence_mode=evidence_mode,
-            allow_self_check_retry=allow_self_check_retry,
-            allow_evidence_retry=allow_evidence_retry,
-        )
-    )
 
 
 async def analyze_agentic_async(

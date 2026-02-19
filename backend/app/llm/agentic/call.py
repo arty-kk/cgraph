@@ -9,7 +9,6 @@ from typing import Any
 import openai
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ..client import get_async_openai_client
 from ..model_caps import supports_reasoning, supports_temperature
@@ -45,52 +44,6 @@ def _has_valid_sources_structure(result: dict[str, Any]) -> tuple[bool, str]:
             return False, "invalid sources"
 
     return True, ""
-
-
-def _agentic_json_call(
-    *,
-    model: str,
-    self_check_model: str | None,
-    self_check_reasoning_effort: str | None,
-    schema: dict,
-    project_id: int,
-    root: Path,
-    seed: dict,
-    user_prompt: str,
-    reasoning_effort: str | None,
-    evidence_mode: bool,
-    instructions: str | None = None,
-    max_calls: int | None = None,
-    max_total_tool_output_chars: int | None = None,
-    max_file_chars: int | None = None,
-    temperature: float | None = None,
-    allow_self_check_retry: bool = True,
-    allow_evidence_retry: bool = True,
-) -> tuple[dict, AgenticMeta]:
-    async def _run() -> tuple[dict, AgenticMeta]:
-        async with AsyncSessionLocal() as session:
-            return await _agentic_json_call_async(
-                session=session,
-                model=model,
-                self_check_model=self_check_model,
-                self_check_reasoning_effort=self_check_reasoning_effort,
-                schema=schema,
-                project_id=project_id,
-                root=root,
-                seed=seed,
-                user_prompt=user_prompt,
-                reasoning_effort=reasoning_effort,
-                evidence_mode=evidence_mode,
-                instructions=instructions,
-                max_calls=max_calls,
-                max_total_tool_output_chars=max_total_tool_output_chars,
-                max_file_chars=max_file_chars,
-                temperature=temperature,
-                allow_self_check_retry=allow_self_check_retry,
-                allow_evidence_retry=allow_evidence_retry,
-            )
-
-    return asyncio.run(_run())
 
 
 async def _agentic_json_call_async(

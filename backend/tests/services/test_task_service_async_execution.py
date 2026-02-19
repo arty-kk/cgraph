@@ -683,3 +683,9 @@ async def test_run_task_impl_async_non_agentic_does_not_touch_sync_get_session(
     result = await task_service._run_task_impl_async(_Session(), 1, 1, request)
 
     assert result.get("result", {}).get("summary") == "ok"
+
+
+def test_task_service_agentic_imports_are_async_only() -> None:
+    assert callable(task_service.analyze_agentic_async)
+    assert callable(task_service.evolve_agentic_async)
+    assert callable(task_service.fix_agentic_async)

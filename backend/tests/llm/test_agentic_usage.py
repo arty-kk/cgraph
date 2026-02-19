@@ -7,7 +7,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.llm.agentic.call import _agentic_json_call, _agentic_json_call_async
+from app.llm.agentic.call import _agentic_json_call_async
 
 
 
@@ -126,50 +126,3 @@ async def test_agentic_usage_retry_uses_async_tool_dispatch(monkeypatch):
 
     assert result["summary"] == "ok"
 
-
-def test_agentic_sync_call_delegates_to_async(monkeypatch):
-    called = {"count": 0}
-
-    class _SessionCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = exc_type, exc, tb
-            return False
-
-    class _SessionFactory:
-        def __call__(self):
-            return _SessionCtx()
-
-    async def _fake_call_async(**kwargs):
-        called["count"] += 1
-        assert kwargs["model"] == "gpt-5-mini"
-        return (
-            {
-                "summary": "ok",
-                "sources": [{"path": "a.py", "start_line": 1, "end_line": 1}],
-            },
-            SimpleNamespace(),
-        )
-
-    monkeypatch.setattr("app.llm.agentic.call.AsyncSessionLocal", _SessionFactory())
-    monkeypatch.setattr("app.llm.agentic.call._agentic_json_call_async", _fake_call_async)
-
-    result, _meta = _agentic_json_call(
-        model="gpt-5-mini",
-        self_check_model=None,
-        self_check_reasoning_effort=None,
-        schema={"name": "result", "schema": {"type": "object"}, "strict": True},
-        project_id=1,
-        root=Path("."),
-        seed={"target_path": "a.py"},
-        user_prompt="do work",
-        reasoning_effort=None,
-        evidence_mode=False,
-        allow_self_check_retry=False,
-        allow_evidence_retry=False,
-    )
-
-    assert called["count"] == 1
-    assert result["summary"] == "ok"
