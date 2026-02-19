@@ -20,17 +20,30 @@ from .errors import install_exception_handlers
 from .infra.rate_limit import allow_request_async, rate_limit_response
 from .infra.redis_client import close_redis_pool_async, init_redis_pool_async
 from .logging import log_requests, setup_logging
+from .s3_runtime import close_s3_runtime, init_s3_runtime
 from .services.auth_service import get_user_from_token_async
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+  
     await init_async_db()
+    
     try:
         await init_redis_pool_async()
         yield
     finally:
         await close_redis_pool_async()
+        
+    use_s3 = (settings.storage_backend or "local").strip().lower() == "s3"
+    
+    if use_s3:
+        await init_s3_runtime()
+    try:
+        yield
+    finally:
+        if use_s3:
+            await close_s3_runtime()
 
 
 app = FastAPI(title="StubGraph", version="0.1.0", lifespan=lifespan)

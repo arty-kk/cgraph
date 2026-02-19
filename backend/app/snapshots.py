@@ -13,6 +13,7 @@ from uuid import uuid4
 from .config import settings
 from .errors import BadRequestError
 from .logging import get_logger
+from .s3_runtime import get_s3_client
 from .utils import sha256_file
 
 logger = get_logger("stubgraph.snapshots")
@@ -68,23 +69,6 @@ def _archive_ext(filename: str) -> str:
     if lower.endswith(".zip"):
         return ".zip"
     raise BadRequestError("Неподдерживаемый формат архива (ожидаются .zip или .tar/.tar.gz/.tgz)")
-
-
-def _s3_client():
-    try:
-        import boto3  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        raise SnapshotError("boto3 is required for S3 storage") from exc
-
-    session = boto3.session.Session(
-        aws_access_key_id=settings.s3_access_key_id or None,
-        aws_secret_access_key=settings.s3_secret_access_key or None,
-    )
-    return session.client(
-        "s3",
-        region_name=settings.s3_region or None,
-        endpoint_url=settings.s3_endpoint_url or None,
-    )
 
 
 def _s3_snapshot_key(sha: str, archive_name: str) -> str:
@@ -222,43 +206,82 @@ def _resolve_root_and_get_state(path: Path, marker_name: str = ".extracted_ok") 
     return root_dir, marker_path, has_any_files, marker_exists
 
 
-def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: Path) -> None:
+async def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: Path) -> None:
     if not meta.bucket or not meta.key:
         raise SnapshotError("Missing S3 snapshot metadata")
-    resp = _s3_client().get_object(Bucket=meta.bucket, Key=meta.key)
+    resp = await get_s3_client().get_object(Bucket=meta.bucket, Key=meta.key)
     body = resp.get("Body")
     if body is None:
         raise SnapshotError("Empty snapshot payload")
     try:
-        with archive_path.open("wb") as out:
-            chunk_iter = getattr(body, "iter_chunks", None)
-            if callable(chunk_iter):
-                for chunk in chunk_iter(chunk_size=1024 * 1024):
-                    if chunk:
-                        out.write(chunk)
-            else:
-                out.write(body.read())
+        while True:
+            chunk = await body.read(1024 * 1024)
+            if not chunk:
+                break
+            await asyncio.to_thread(_append_file_chunk, archive_path, chunk)
     except Exception:
-        archive_path.unlink(missing_ok=True)
+        await asyncio.to_thread(archive_path.unlink, True)
         raise
     finally:
-        close_fn = getattr(body, "close", None)
-        if callable(close_fn):
-            close_fn()
+        await _maybe_await_close(body)
 
+
+
+
+async def _maybe_await_close(body) -> None:
+    close_result = body.close()
+    if asyncio.iscoroutine(close_result):
+        await close_result
 
 def _append_file_chunk(path: Path, chunk: bytes) -> None:
     with path.open("ab") as tmp:
         tmp.write(chunk)
 
 
-def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> None:
-    with archive_path.open("rb") as f:
-        _s3_client().put_object(Bucket=bucket, Key=key, Body=f)
+async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> None:
+    client = get_s3_client()
+    upload_id = None
+    parts: list[dict[str, str | int]] = []
+    part_number = 1
+    chunk_size = 8 * 1024 * 1024
+    try:
+        create_resp = await client.create_multipart_upload(Bucket=bucket, Key=key)
+        upload_id = create_resp.get("UploadId")
+        if not upload_id:
+            raise SnapshotError("Failed to start multipart upload")
+
+        with archive_path.open("rb") as stream:
+            while True:
+                chunk = await asyncio.to_thread(stream.read, chunk_size)
+                if not chunk:
+                    break
+                resp = await client.upload_part(
+                    Bucket=bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    Body=chunk,
+                )
+                etag = resp.get("ETag")
+                if not isinstance(etag, str) or not etag:
+                    raise SnapshotError("S3 upload part missing ETag")
+                parts.append({"ETag": etag, "PartNumber": part_number})
+                part_number += 1
+
+        await client.complete_multipart_upload(
+            Bucket=bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+    except Exception:
+        if upload_id:
+            await client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+        raise
 
 
-def _delete_snapshot_from_s3(bucket: str, key: str) -> None:
-    _s3_client().delete_object(Bucket=bucket, Key=key)
+async def _delete_snapshot_from_s3(bucket: str, key: str) -> None:
+    await get_s3_client().delete_object(Bucket=bucket, Key=key)
 
 
 def _archive_needs_update(archive_path: Path, expected_size: int, expected_sha: str) -> bool:
@@ -267,10 +290,11 @@ def _archive_needs_update(archive_path: Path, expected_size: int, expected_sha: 
     return sha256_file(archive_path) != expected_sha
 
 
-def _ensure_local_snapshot_archive(meta: SnapshotMeta) -> Path:
+async def _ensure_local_snapshot_archive(meta: SnapshotMeta) -> Path:
     archive_path = _local_archive_path(meta.sha256, meta.archive_ext)
-    if not archive_path.exists() and meta.storage == "s3":
-        _download_snapshot_archive_from_s3(meta, archive_path)
+    exists = await asyncio.to_thread(archive_path.exists)
+    if not exists and meta.storage == "s3":
+        await _download_snapshot_archive_from_s3(meta, archive_path)
     return archive_path
 
 
@@ -287,13 +311,13 @@ def _extract_archive_to_root(
     marker_path.write_text("ok")
 
 
-def _ensure_archive_and_extract(
+async def _ensure_archive_and_extract(
     meta: SnapshotMeta,
     root_dir: Path,
     marker_path: Path,
 ) -> None:
-    archive_path = _ensure_local_snapshot_archive(meta)
-    _extract_archive_to_root(meta.archive_ext, archive_path, root_dir, marker_path)
+    archive_path = await _ensure_local_snapshot_archive(meta)
+    await asyncio.to_thread(_extract_archive_to_root, meta.archive_ext, archive_path, root_dir, marker_path)
 
 
 def _finalize_local_archive(
@@ -346,8 +370,7 @@ async def prepare_snapshot_root_async(meta: SnapshotMeta) -> Path:
             return root_dir
         await asyncio.to_thread(_clear_dir_contents, root_dir)
 
-    await asyncio.to_thread(
-        _ensure_archive_and_extract,
+    await _ensure_archive_and_extract(
         meta,
         root_dir,
         marker_path,
@@ -381,7 +404,7 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
         if meta.storage != "s3" or not meta.bucket or not meta.key:
             return
         try:
-            await asyncio.to_thread(_delete_snapshot_from_s3, meta.bucket, meta.key)
+            await _delete_snapshot_from_s3(meta.bucket, meta.key)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to delete snapshot from S3", extra={"reason": str(exc)})
 
@@ -464,7 +487,7 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
             raise SnapshotError("S3 bucket is not configured")
         key = _s3_snapshot_key(sha, archive_name)
         try:
-            await asyncio.to_thread(_upload_archive_to_s3, archive_path, bucket, key)
+            await _upload_archive_to_s3(archive_path, bucket, key)
         except Exception as exc:  # noqa: BLE001
             raise SnapshotError(f"Failed to upload snapshot to S3: {exc}") from exc
 
