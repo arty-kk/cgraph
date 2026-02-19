@@ -6,7 +6,9 @@ import os
 import asyncio
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Tuple
@@ -67,6 +69,51 @@ logger = get_logger("stubgraph.scan")
 EMBEDDING_CHUNKS_KIND = "embedding_chunks"
 SCAN_STAGE_BATCH_SIZE = 128
 SCAN_STAGE_MAX_PARALLEL = 8
+
+
+@dataclass
+class ScanRuntime:
+    executor: ThreadPoolExecutor
+    batch_size: int
+    max_parallel: int
+
+    @property
+    def queue_size(self) -> int:
+        return self.max_parallel
+
+
+_scan_runtime: ScanRuntime | None = None
+_scan_runtime_lock = Lock()
+
+
+def get_scan_runtime() -> ScanRuntime:
+    global _scan_runtime
+    with _scan_runtime_lock:
+        if _scan_runtime is None:
+            max_parallel = max(1, int(SCAN_STAGE_MAX_PARALLEL))
+            _scan_runtime = ScanRuntime(
+                executor=ThreadPoolExecutor(max_workers=max_parallel, thread_name_prefix="scan-runtime"),
+                batch_size=max(1, int(SCAN_STAGE_BATCH_SIZE)),
+                max_parallel=max_parallel,
+            )
+        return _scan_runtime
+
+
+async def close_scan_runtime() -> None:
+    global _scan_runtime
+    with _scan_runtime_lock:
+        runtime = _scan_runtime
+        _scan_runtime = None
+    if runtime is None:
+        return
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, partial(runtime.executor.shutdown, wait=True, cancel_futures=True))
+
+
+async def _run_scan_batch(sync_fn, *args):
+    runtime = get_scan_runtime()
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(runtime.executor, partial(sync_fn, *args))
 
 
 def _today_utc():
@@ -227,19 +274,21 @@ async def _collect_file_stats_async(
     batch_size: int = SCAN_STAGE_BATCH_SIZE,
     max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
 ) -> list[FileStatResult]:
-    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+    runtime = get_scan_runtime()
+    batch_size = max(1, int(batch_size or runtime.batch_size))
+    max_parallel = max(1, int(max_parallel or runtime.max_parallel))
 
-    async def _collect_one(rel: str) -> FileStatResult:
-        async with semaphore:
+    def _sync_collect_batch(batch: list[str]) -> list[FileStatResult]:
+        batch_results: list[FileStatResult] = []
+        for rel in batch:
             p = project_root / rel
-
-            def _sync_collect() -> FileStatResult:
-                exists = p.exists()
-                is_file = p.is_file() if exists else False
-                is_supported = _is_supported_file(p) if is_file else False
-                if precomputed_stats and rel in precomputed_stats:
-                    mtime_ns, size = precomputed_stats[rel]
-                    return FileStatResult(
+            exists = p.exists()
+            is_file = p.is_file() if exists else False
+            is_supported = _is_supported_file(p) if is_file else False
+            if precomputed_stats and rel in precomputed_stats:
+                mtime_ns, size = precomputed_stats[rel]
+                batch_results.append(
+                    FileStatResult(
                         rel=rel,
                         exists=exists,
                         is_file=is_file,
@@ -247,9 +296,12 @@ async def _collect_file_stats_async(
                         mtime_ns=int(mtime_ns),
                         size=int(size),
                     )
-                try:
-                    st = p.stat()
-                    return FileStatResult(
+                )
+                continue
+            try:
+                st = p.stat()
+                batch_results.append(
+                    FileStatResult(
                         rel=rel,
                         exists=exists,
                         is_file=is_file,
@@ -257,8 +309,10 @@ async def _collect_file_stats_async(
                         mtime_ns=int(st.st_mtime_ns),
                         size=int(st.st_size),
                     )
-                except OSError:
-                    return FileStatResult(
+                )
+            except OSError:
+                batch_results.append(
+                    FileStatResult(
                         rel=rel,
                         exists=exists,
                         is_file=is_file,
@@ -266,15 +320,19 @@ async def _collect_file_stats_async(
                         mtime_ns=0,
                         size=0,
                     )
+                )
+        return batch_results
 
-            return await asyncio.to_thread(_sync_collect)
+    batches = [rel_paths[i : i + batch_size] for i in range(0, len(rel_paths), batch_size)]
+    semaphore = asyncio.Semaphore(max_parallel)
 
-    results: list[FileStatResult] = []
-    for i in range(0, len(rel_paths), max(1, int(batch_size))):
-        batch = rel_paths[i : i + max(1, int(batch_size))]
-        results.extend(await asyncio.gather(*(_collect_one(rel) for rel in batch)))
-        await asyncio.sleep(0)
-    return results
+    async def _run(index: int, batch: list[str]) -> tuple[int, list[FileStatResult]]:
+        async with semaphore:
+            return index, await _run_scan_batch(_sync_collect_batch, batch)
+
+    indexed = await asyncio.gather(*(_run(index, batch) for index, batch in enumerate(batches)))
+    indexed.sort(key=lambda item: item[0])
+    return [item for _, batch in indexed for item in batch]
 
 
 async def _read_file_batch_async(
@@ -284,32 +342,44 @@ async def _read_file_batch_async(
     max_file_bytes: int,
     max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
 ) -> list[FileReadResult]:
-    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+    runtime = get_scan_runtime()
+    batch_size = runtime.batch_size
+    max_parallel = max(1, int(max_parallel or runtime.max_parallel))
 
-    async def _read_one(rel: str) -> FileReadResult:
-        async with semaphore:
+    def _sync_read_batch(paths: list[str]) -> list[FileReadResult]:
+        out: list[FileReadResult] = []
+        for rel in paths:
             p = project_root / rel
             stat_mtime_ns, stat_size = stats_map.get(rel, (0, 0))
             oversized = max_file_bytes > 0 and int(stat_size) > max_file_bytes
             if oversized:
-                return FileReadResult(rel=rel, text=None, mtime_ns=int(stat_mtime_ns), size=int(stat_size), oversized=True)
-
-            def _sync_read() -> str | None:
-                try:
-                    return p.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    return None
-
-            text = await asyncio.to_thread(_sync_read)
-            return FileReadResult(
-                rel=rel,
-                text=text,
-                mtime_ns=int(stat_mtime_ns),
-                size=int(stat_size),
-                oversized=False,
+                out.append(FileReadResult(rel=rel, text=None, mtime_ns=int(stat_mtime_ns), size=int(stat_size), oversized=True))
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                text = None
+            out.append(
+                FileReadResult(
+                    rel=rel,
+                    text=text,
+                    mtime_ns=int(stat_mtime_ns),
+                    size=int(stat_size),
+                    oversized=False,
+                )
             )
+        return out
 
-    return list(await asyncio.gather(*(_read_one(rel) for rel in batch_paths)))
+    batches = [batch_paths[i : i + batch_size] for i in range(0, len(batch_paths), batch_size)]
+    semaphore = asyncio.Semaphore(max_parallel)
+
+    async def _run(index: int, batch: list[str]) -> tuple[int, list[FileReadResult]]:
+        async with semaphore:
+            return index, await _run_scan_batch(_sync_read_batch, batch)
+
+    indexed = await asyncio.gather(*(_run(index, batch) for index, batch in enumerate(batches)))
+    indexed.sort(key=lambda item: item[0])
+    return [item for _, batch in indexed for item in batch]
 
 
 async def _parse_index_batch_async(
@@ -523,7 +593,7 @@ async def _parse_index_batch_async(
             )
         return parsed
 
-    return await asyncio.to_thread(_sync_parse)
+    return await _run_scan_batch(_sync_parse)
 
 
 def _is_missing_table_error(e: Exception, table: str) -> bool:
@@ -594,62 +664,56 @@ async def _verify_scan_snapshot_async(
     batch_size: int = SCAN_STAGE_BATCH_SIZE,
     max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
 ) -> tuple[bool, str]:
-    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
-    batch_size = max(1, int(batch_size))
+    runtime = get_scan_runtime()
+    batch_size = max(1, int(batch_size or runtime.batch_size))
+    max_parallel = max(1, int(max_parallel or runtime.max_parallel))
+    semaphore = asyncio.Semaphore(max_parallel)
 
-    async def _check_removed(rel: str) -> tuple[bool, str]:
-        async with semaphore:
-            exists = await asyncio.to_thread((project_root / rel).exists)
-        if exists:
-            return False, f"removed_path_exists:{rel}"
+    def _check_removed_batch(batch: list[str]) -> tuple[bool, str]:
+        for rel in batch:
+            if (project_root / rel).exists():
+                return False, f"removed_path_exists:{rel}"
         return True, ""
 
-    async def _check_snapshot_item(rel: str, snap: FileSnapshot) -> tuple[bool, str]:
-        async with semaphore:
+    def _check_snapshot_batch(batch: list[tuple[str, FileSnapshot]]) -> tuple[bool, str]:
+        for rel, snap in batch:
             p = project_root / rel
             try:
-                st = await asyncio.to_thread(p.stat)
+                st = p.stat()
             except OSError:
                 return False, f"missing:{rel}"
             if int(st.st_mtime_ns) != int(snap.mtime_ns) or int(st.st_size) != int(snap.size):
                 return False, f"stat_changed:{rel}"
             if snap.hash_kind == "content":
                 try:
-                    text = await asyncio.to_thread(p.read_text, encoding="utf-8", errors="replace")
+                    text = p.read_text(encoding="utf-8", errors="replace")
                 except Exception:
                     return False, f"read_failed:{rel}"
-                file_hash = await asyncio.to_thread(sha256_text, text)
-                if file_hash != snap.file_hash:
+                if sha256_text(text) != snap.file_hash:
                     return False, f"hash_changed:{rel}"
             elif snap.hash_kind == "oversized":
-                expected_hash = await asyncio.to_thread(
-                    sha256_text,
-                    f"oversized:{snap.size}:{snap.mtime_ns}",
-                )
-                if expected_hash != snap.file_hash:
+                if sha256_text(f"oversized:{snap.size}:{snap.mtime_ns}") != snap.file_hash:
                     return False, f"hash_changed:{rel}"
             elif snap.hash_kind == "stat_only":
-                return True, ""
+                continue
             else:
                 return False, f"unknown_hash_kind:{rel}"
         return True, ""
 
+    async def _run(sync_fn, batch):
+        async with semaphore:
+            return await _run_scan_batch(sync_fn, batch)
+
     for i in range(0, len(removed), batch_size):
-        batch = removed[i : i + batch_size]
-        checks = await asyncio.gather(*(_check_removed(rel) for rel in batch))
-        for ok, reason in checks:
-            if not ok:
-                return ok, reason
-        await asyncio.sleep(0)
+        ok, reason = await _run(_check_removed_batch, removed[i : i + batch_size])
+        if not ok:
+            return ok, reason
 
     snapshot_items = list(snapshot.items())
     for i in range(0, len(snapshot_items), batch_size):
-        batch = snapshot_items[i : i + batch_size]
-        checks = await asyncio.gather(*(_check_snapshot_item(rel, snap) for rel, snap in batch))
-        for ok, reason in checks:
-            if not ok:
-                return ok, reason
-        await asyncio.sleep(0)
+        ok, reason = await _run(_check_snapshot_batch, snapshot_items[i : i + batch_size])
+        if not ok:
+            return ok, reason
 
     return True, ""
 
@@ -780,7 +844,12 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         async def _process_path_batch(rel_batch: list[str]) -> None:
             if not rel_batch:
                 return
-            stat_results = await _collect_file_stats_async(project_root, rel_batch)
+            stat_results = await _collect_file_stats_async(
+                project_root,
+                rel_batch,
+                batch_size=runtime.batch_size,
+                max_parallel=runtime.max_parallel,
+            )
             batch_stats = {item.rel: (item.mtime_ns, item.size) for item in stat_results}
             verify_paths: list[str] = []
 
@@ -803,13 +872,14 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                     continue
                 verify_paths.append(rel)
 
-            for i in range(0, len(verify_paths), SCAN_STAGE_BATCH_SIZE):
-                verify_batch = verify_paths[i : i + SCAN_STAGE_BATCH_SIZE]
+            for i in range(0, len(verify_paths), runtime.batch_size):
+                verify_batch = verify_paths[i : i + runtime.batch_size]
                 read_results = await _read_file_batch_async(
                     project_root,
                     verify_batch,
                     batch_stats,
                     hash_verify_max_bytes,
+                    max_parallel=runtime.max_parallel,
                 )
                 for item in read_results:
                     prev = existing_map.get(item.rel)
@@ -818,7 +888,8 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                         _mark_candidate(item.rel, item.mtime_ns, item.size)
                 await asyncio.sleep(0)
 
-        queue_size = max(1, SCAN_STAGE_MAX_PARALLEL)
+        runtime = get_scan_runtime()
+        queue_size = runtime.queue_size
         path_queue: asyncio.Queue[list[str] | None] = asyncio.Queue(maxsize=queue_size)
         producer_done = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -830,7 +901,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                 for path in iter_code_files(project_root):
                     rel = path.relative_to(project_root).as_posix()
                     current_batch.append(rel)
-                    if len(current_batch) >= SCAN_STAGE_BATCH_SIZE:
+                    if len(current_batch) >= runtime.batch_size:
                         asyncio.run_coroutine_threadsafe(path_queue.put(current_batch), loop).result()
                         scan_metrics["producer"]["batches"] += 1
                         scan_metrics["producer"]["paths"] += len(current_batch)
@@ -874,7 +945,13 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         if removed and not updated.get("aborted"):
             async with AsyncSessionLocal() as session:
                 async with project_lock_async(session, project_id):
-                    ok, reason = await _verify_scan_snapshot_async(project_root, {}, removed)
+                    ok, reason = await _verify_scan_snapshot_async(
+                        project_root,
+                        {},
+                        removed,
+                        batch_size=runtime.batch_size,
+                        max_parallel=runtime.max_parallel,
+                    )
                     if not ok:
                         logger.warning(
                             "scan_project snapshot mismatch before delete",
@@ -961,10 +1038,13 @@ async def scan_files_async(
         while True:
             attempts += 1
             async with project_lock_async(session, project_id):
+                runtime = get_scan_runtime()
                 ok, reason = await _verify_scan_snapshot_async(
                     project_root,
                     prepared.snapshot,
                     prepared.removed,
+                    batch_size=runtime.batch_size,
+                    max_parallel=runtime.max_parallel,
                 )
                 if not ok:
                     logger.warning(
@@ -1017,7 +1097,14 @@ async def _prepare_scan_files_async(
 ) -> PreparedScanData:
     present: list[str] = []
     removed: list[str] = []
-    stat_results = await _collect_file_stats_async(project_root, norm_paths, precomputed_stats=precomputed_stats)
+    runtime = get_scan_runtime()
+    stat_results = await _collect_file_stats_async(
+        project_root,
+        norm_paths,
+        precomputed_stats=precomputed_stats,
+        batch_size=runtime.batch_size,
+        max_parallel=runtime.max_parallel,
+    )
     stats_map: dict[str, tuple[int, int]] = {}
     for item in stat_results:
         if not item.exists:
@@ -1069,10 +1156,16 @@ async def _prepare_scan_files_async(
                 raise
 
     max_file_bytes = int(settings.snapshot_max_file_bytes)
-    for i in range(0, len(present), SCAN_STAGE_BATCH_SIZE):
-        batch = present[i : i + SCAN_STAGE_BATCH_SIZE]
+    for i in range(0, len(present), runtime.batch_size):
+        batch = present[i : i + runtime.batch_size]
         read_started = time.monotonic()
-        read_batch = await _read_file_batch_async(project_root, batch, stats_map, max_file_bytes)
+        read_batch = await _read_file_batch_async(
+            project_root,
+            batch,
+            stats_map,
+            max_file_bytes,
+            max_parallel=runtime.max_parallel,
+        )
         if scan_metrics is not None:
             scan_metrics.setdefault("read", {"duration_s": 0.0, "batches": 0, "files": 0})
             scan_metrics["read"]["duration_s"] += time.monotonic() - read_started

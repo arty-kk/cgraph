@@ -8,6 +8,14 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from app import scan
 
 
+@pytest.fixture(autouse=True)
+def _reset_scan_runtime() -> None:
+    runtime = scan._scan_runtime
+    scan._scan_runtime = None
+    if runtime is not None:
+        runtime.executor.shutdown(wait=True, cancel_futures=True)
+
+
 class _AsyncSessionCtx:
     def __init__(self, session):
         self._session = session
@@ -252,6 +260,7 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
 
     captured: dict[str, object] = {}
     collect_batch_sizes: list[int] = []
+    queue_sizes: list[int] = []
 
     async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
         _ = precomputed_stats, batch_size, max_parallel
@@ -275,6 +284,7 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
     async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
         captured["rel_paths"] = list(rel_paths)
         captured["precomputed_stats"] = dict(precomputed_stats or {})
+        captured["queue_sizes"] = list(queue_sizes)
         _ = scan_metrics
         return {"updated_nodes": len(captured["rel_paths"]), "updated_edges": 0, "removed": 0}
 
@@ -298,6 +308,17 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
     monkeypatch.setattr(scan, "sha256_text", lambda text: f"hash:{text}")
     monkeypatch.setattr(scan.settings, "scan_hash_verify_max_file_bytes", 1024)
     monkeypatch.setattr(scan.settings, "snapshot_max_file_bytes", 1024)
+    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 64)
+    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 4)
+
+    orig_queue = scan.asyncio.Queue
+
+    class _QueueProbe(orig_queue):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            queue_sizes.append(self.maxsize)
+
+    monkeypatch.setattr(scan.asyncio, "Queue", _QueueProbe)
 
     result = await scan.scan_project_async(1, 2, Path("/repo"))
 
@@ -306,12 +327,13 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
     assert result["changed"] == len(expected_changed)
     assert result["removed"] == 0
     assert "scan_metrics" in result
-    assert result["scan_metrics"]["producer"]["batches"] == 5
+    assert result["scan_metrics"]["producer"]["batches"] == 10
     assert result["scan_metrics"]["producer"]["paths"] == len(all_paths)
     assert verify_calls["removed"] == [["gone.py"]]
     assert captured["rel_paths"] == expected_changed
     assert set(captured["precomputed_stats"].keys()) == set(expected_changed)
-    assert collect_batch_sizes[:5] == [128, 128, 128, 128, 88]
+    assert collect_batch_sizes[:10] == [64, 64, 64, 64, 64, 64, 64, 64, 64, 24]
+    assert captured["queue_sizes"] == [4]
 
 
 @pytest.mark.anyio
@@ -335,8 +357,11 @@ async def test_scan_project_async_allows_concurrent_runs(monkeypatch: pytest.Mon
         async def commit(self):
             return None
 
+    collect_limits: list[tuple[int, int]] = []
+
     async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
-        _ = precomputed_stats, batch_size, max_parallel
+        _ = precomputed_stats
+        collect_limits.append((batch_size, max_parallel))
         return [scan.FileStatResult(rel, True, True, True, 1, 1) for rel in rel_paths]
 
     async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
@@ -356,6 +381,8 @@ async def test_scan_project_async_allows_concurrent_runs(monkeypatch: pytest.Mon
     )
     monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
     monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
+    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 32)
+    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 3)
 
     result_a, result_b = await scan.asyncio.gather(
         scan.scan_project_async(101, 201, Path("/repo-a")),
@@ -368,6 +395,37 @@ async def test_scan_project_async_allows_concurrent_runs(monkeypatch: pytest.Mon
     assert result_b["nodes"] == 1
     assert "scan_metrics" in result_a
     assert "scan_metrics" in result_b
+    assert collect_limits
+    assert all(batch_size == 32 and max_parallel == 3 for batch_size, max_parallel in collect_limits)
+
+
+@pytest.mark.anyio
+async def test_scan_pipeline_avoids_mass_to_thread_per_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
+    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
+    file_count = 6
+    rel_paths = [f"f{i}.py" for i in range(file_count)]
+    stats_map = {rel: (1, 10) for rel in rel_paths}
+    snapshot = {
+        rel: scan.FileSnapshot(mtime_ns=1, size=10, file_hash=f"hash:{rel}", hash_kind="content") for rel in rel_paths
+    }
+
+    to_thread_calls = {"count": 0}
+
+    async def _to_thread_spy(*_args, **_kwargs):
+        to_thread_calls["count"] += 1
+        raise AssertionError("scan runtime should not call asyncio.to_thread per-file")
+
+    monkeypatch.setattr(scan.asyncio, "to_thread", _to_thread_spy)
+    monkeypatch.setattr(scan, "sha256_text", lambda text: f"hash:{text}")
+
+    await scan._collect_file_stats_async(Path("/missing"), rel_paths, precomputed_stats=stats_map)
+    await scan._read_file_batch_async(Path("/missing"), rel_paths, stats_map, max_file_bytes=100)
+    ok, _ = await scan._verify_scan_snapshot_async(Path("/missing"), snapshot, [])
+
+    assert ok is False
+    expected_batch_ceiling = (file_count + scan.SCAN_STAGE_BATCH_SIZE - 1) // scan.SCAN_STAGE_BATCH_SIZE
+    assert to_thread_calls["count"] <= expected_batch_ceiling
 
 
 @pytest.mark.anyio
