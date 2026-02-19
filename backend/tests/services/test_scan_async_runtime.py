@@ -215,6 +215,99 @@ async def test_scan_project_async_uses_async_snapshot_verify_for_removed(monkeyp
 
 
 @pytest.mark.anyio
+async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    all_paths = [f"src/file_{i:04d}.py" for i in range(600)]
+    changed_by_stat = {all_paths[i] for i in range(0, 120, 3)}
+    changed_by_hash = {all_paths[i] for i in range(300, 360, 2)}
+    unchanged = set(all_paths) - changed_by_stat - changed_by_hash
+
+    existing_rows = []
+    for rel in sorted(unchanged | changed_by_stat | changed_by_hash):
+        if rel in changed_by_stat:
+            existing_rows.append((rel, 0.0, 10, 10, f"hash:{rel}"))
+        else:
+            existing_rows.append((rel, 0.0, 20, 20, f"hash:{rel}"))
+    existing_rows.append(("gone.py", 0.0, 10, 10, "hash:gone.py"))
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Session:
+        def __init__(self):
+            self._calls = 0
+
+        async def execute(self, statement, *_args, **_kwargs):
+            _ = statement
+            self._calls += 1
+            if self._calls == 1:
+                return _Result(existing_rows)
+            return _Result([])
+
+        async def commit(self):
+            return None
+
+    captured: dict[str, object] = {}
+
+    async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        results = []
+        for rel in rel_paths:
+            if rel in changed_by_stat:
+                results.append(scan.FileStatResult(rel, True, True, True, 21, 21))
+            else:
+                results.append(scan.FileStatResult(rel, True, True, True, 20, 20))
+        return results
+
+    async def _fake_read(_root, batch_paths, stats_map, _max_file_bytes, max_parallel=8):
+        _ = max_parallel, stats_map
+        out = []
+        for rel in batch_paths:
+            text = f"new:{rel}" if rel in changed_by_hash else rel
+            out.append(scan.FileReadResult(rel=rel, text=text, mtime_ns=20, size=20, oversized=False))
+        return out
+
+    async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None):
+        captured["rel_paths"] = list(rel_paths)
+        captured["precomputed_stats"] = dict(precomputed_stats or {})
+        return {"updated_nodes": len(captured["rel_paths"]), "updated_edges": 0, "removed": 0}
+
+    verify_calls = {"removed": []}
+
+    async def _fake_verify(_project_root, _snapshot, removed, **_kwargs):
+        verify_calls["removed"].append(list(removed))
+        return (True, "")
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(
+        scan,
+        "iter_code_files",
+        lambda _root: (Path("/repo") / rel for rel in all_paths),
+    )
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
+    monkeypatch.setattr(scan, "_read_file_batch_async", _fake_read)
+    monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
+    monkeypatch.setattr(scan, "project_lock_async", lambda *_args, **_kwargs: _NoopLock())
+    monkeypatch.setattr(scan, "_verify_scan_snapshot_async", _fake_verify)
+    monkeypatch.setattr(scan, "sha256_text", lambda text: f"hash:{text}")
+    monkeypatch.setattr(scan.settings, "scan_hash_verify_max_file_bytes", 1024)
+    monkeypatch.setattr(scan.settings, "snapshot_max_file_bytes", 1024)
+
+    result = await scan.scan_project_async(1, 2, Path("/repo"))
+
+    expected_changed = sorted(changed_by_stat | changed_by_hash)
+    assert result["nodes"] == len(all_paths)
+    assert result["changed"] == len(expected_changed)
+    assert result["removed"] == 0
+    assert verify_calls["removed"] == [["gone.py"]]
+    assert captured["rel_paths"] == expected_changed
+    assert set(captured["precomputed_stats"].keys()) == set(expected_changed)
+
+
+@pytest.mark.anyio
 async def test_verify_scan_snapshot_async_keeps_read_failed_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     file_path = tmp_path / "a.py"
     file_path.write_text("print('ok')", encoding="utf-8")

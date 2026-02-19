@@ -27,5 +27,22 @@ class TestIterCodeFiles(unittest.TestCase):
             self.assertNotIn(".git/config", found)
 
 
+    def test_large_tree_keeps_stable_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            expected: list[str] = []
+            for folder_idx in range(25):
+                folder = root / f"pkg_{folder_idx:02d}"
+                folder.mkdir(parents=True)
+                for file_idx in range(20):
+                    rel = f"pkg_{folder_idx:02d}/file_{file_idx:02d}.py"
+                    (root / rel).write_text("print('ok')\n", encoding="utf-8")
+                    expected.append(rel)
+
+            actual = [path.relative_to(root).as_posix() for path in iter_code_files(root)]
+
+            self.assertEqual(expected, actual)
+
+
 if __name__ == "__main__":
     unittest.main()
