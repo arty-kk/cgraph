@@ -22,6 +22,8 @@ from .utils import sha256_text
 
 logger = get_logger("stubgraph.storage")
 
+_S3_SIGNED_URL_SEMAPHORE = asyncio.Semaphore(settings.s3_signed_url_concurrency_limit)
+
 
 class StorageError(RuntimeError):
     pass
@@ -75,6 +77,15 @@ def _s3_signed_url(bucket: str, key: str) -> str | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to generate signed URL", extra={"reason": str(exc)})
         return None
+
+
+async def _s3_signed_url_async(bucket: str, key: str) -> str | None:
+    async with _S3_SIGNED_URL_SEMAPHORE:
+        try:
+            return await asyncio.to_thread(_s3_signed_url, bucket, key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to generate signed URL", extra={"reason": str(exc)})
+            return None
 
 
 def _write_patch_blob_if_missing(path: Path, patch_text: str) -> None:
@@ -131,7 +142,7 @@ async def store_patch_blob_async(patch_text: str) -> dict:
         "key": key,
         "expires_at": expires_at,
     }
-    url = _s3_signed_url(bucket, key)
+    url = await _s3_signed_url_async(bucket, key)
     if url:
         meta["download_url"] = url
     return meta
@@ -230,4 +241,4 @@ async def get_patch_download_url_async(meta: dict) -> str | None:
     key = meta.get("key")
     if not isinstance(bucket, str) or not isinstance(key, str):
         return None
-    return _s3_signed_url(bucket, key)
+    return await _s3_signed_url_async(bucket, key)
