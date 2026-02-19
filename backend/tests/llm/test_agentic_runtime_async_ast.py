@@ -79,8 +79,14 @@ def test_dispatch_passes_session_to_runtime_async_tools() -> None:
         '"project_summary": ("_tool_project_summary_async", (session, project_id, root, args), {})'
         in src
     )
-    assert '"search_text": (' in src
-    assert '"search_semantic": (' in src
+    assert (
+        '"search_text": (\n            "_tool_search_text_async",\n            (session, project_id, root, args),\n            {"max_file_chars": max_file_chars, "meta": meta},\n        ),'
+        in src
+    )
+    assert (
+        '"search_semantic": (\n            "_tool_search_semantic_async",\n            (session, project_id, root, args),\n            {"max_file_chars": max_file_chars, "meta": meta},\n        ),'
+        in src
+    )
     assert '"search_routes": ("_tool_search_routes_async", (session, project_id, args), {})' in src
     assert '"search_api_calls": ("_tool_search_api_calls_async", (session, project_id, args), {})' in src
     assert '"route_usages": ("_tool_route_usages_async", (session, project_id, args), {})' in src
@@ -161,3 +167,33 @@ def test_neighbors_helper_uses_passed_session_without_local_factory() -> None:
     chunk = src.split(marker, 1)[1].split("\n\n", 1)[0]
     assert "AsyncSessionLocal" not in chunk
     assert "session: AsyncSession" in chunk
+
+
+def test_check_indexed_async_has_no_session_fallback_creation() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    fn = fn_nodes["_check_indexed_async"]
+    arg_names = [a.arg for a in fn.args.args]
+    assert arg_names[:2] == ["session", "project_id"]
+    source = TOOLS_PATH.read_text(encoding="utf-8")
+    chunk = source.split("async def _check_indexed_async", 1)[1].split("\n\n", 1)[0]
+    assert "AsyncSessionLocal" not in chunk
+    assert "session is None" not in chunk
+
+
+def test_async_file_tools_have_no_sync_file_prechecks() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    for fn_name in {"_tool_get_file_async", "_tool_get_file_lines_async", "_tool_search_text_async"}:
+        fn = fn_nodes[fn_name]
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            if isinstance(call.func, ast.Attribute) and call.func.attr in {"exists", "is_file"}:
+                raise AssertionError(f"{fn_name} contains sync pre-check .{call.func.attr}()")

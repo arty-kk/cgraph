@@ -231,12 +231,12 @@ async def _dispatch_tool_async(
         "search_text": (
             "_tool_search_text_async",
             (session, project_id, root, args),
-            {"max_file_chars": max_file_chars},
+            {"max_file_chars": max_file_chars, "meta": meta},
         ),
         "search_semantic": (
             "_tool_search_semantic_async",
             (session, project_id, root, args),
-            {"max_file_chars": max_file_chars},
+            {"max_file_chars": max_file_chars, "meta": meta},
         ),
         "search_routes": ("_tool_search_routes_async", (session, project_id, args), {}),
         "search_api_calls": ("_tool_search_api_calls_async", (session, project_id, args), {}),

@@ -216,6 +216,10 @@ class Settings(BaseSettings):
         default=1,
         alias="STUBGRAPH_LLM_AGENTIC_ESCALATION_MAX_PER_STAGE",
     )
+    llm_agentic_fs_ops_concurrency: int = Field(
+        default=8,
+        alias="STUBGRAPH_LLM_AGENTIC_FS_OPS_CONCURRENCY",
+    )
     llm_evidence_min_sources: int = Field(
         default=1,
         alias="STUBGRAPH_LLM_EVIDENCE_MIN_SOURCES",
@@ -436,6 +440,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "STUBGRAPH_LLM_AGENTIC_ESCALATION_MAX_PER_STAGE должен быть неотрицательным"
             )
+        if self.llm_agentic_fs_ops_concurrency <= 0:
+            raise ValueError("STUBGRAPH_LLM_AGENTIC_FS_OPS_CONCURRENCY должен быть положительным")
         if self.llm_evidence_min_sources < 1:
             raise ValueError("STUBGRAPH_LLM_EVIDENCE_MIN_SOURCES должен быть >= 1")
         if self.project_lock_timeout_seconds < 0:

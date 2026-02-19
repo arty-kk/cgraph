@@ -7,6 +7,7 @@ from unittest.mock import patch
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.llm import agentic  # noqa: E402
+from app.llm.agentic import tools as agentic_tools  # noqa: E402
 
 
 class TestAgenticFileToolsAsync(unittest.IsolatedAsyncioTestCase):
@@ -59,6 +60,64 @@ class TestAgenticFileToolsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["start_line"], 2)
         self.assertEqual(calls, 1)
+
+    async def test_get_file_async_preserves_not_found_error_shape(self) -> None:
+        meta = agentic.AgenticMeta()
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            result = await agentic._tool_get_file_async(
+                1,
+                root,
+                meta,
+                {"path": "missing.txt", "max_chars": 50},
+                max_file_chars=80,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "not_found")
+        self.assertEqual(result["error"]["details"], {"path": "missing.txt"})
+
+    async def test_get_file_lines_async_preserves_not_a_file_error_shape(self) -> None:
+        meta = agentic.AgenticMeta()
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "folder").mkdir()
+            result = await agentic._tool_get_file_lines_async(
+                1,
+                root,
+                meta,
+                {"path": "folder", "start_line": 1, "end_line": 2, "max_chars": 50},
+                max_file_chars=80,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "not_a_file")
+        self.assertEqual(result["error"]["details"], {"path": "folder"})
+
+    async def test_get_file_async_preserves_read_failed_error_shape(self) -> None:
+        meta = agentic.AgenticMeta()
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "boom.txt").write_text("hello", encoding="utf-8")
+
+            with patch(
+                "app.llm.agentic.tools._resolve_and_read_file_under_root",
+                side_effect=agentic_tools._file_read_failed("boom.txt", "denied: boom.txt"),
+            ):
+                result = await agentic._tool_get_file_async(
+                    1,
+                    root,
+                    meta,
+                    {"path": "boom.txt", "max_chars": 50},
+                    max_file_chars=80,
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "read_failed")
+        self.assertEqual(
+            result["error"]["details"],
+            {"path": "boom.txt", "reason": "denied: boom.txt"},
+        )
 
 
 if __name__ == "__main__":

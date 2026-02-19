@@ -788,19 +788,72 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
     return tools
 
 
-async def _check_indexed_async(session: AsyncSession | None, project_id: int) -> dict | None:
-    if session is None:
-        # Fallback for call sites that do not accept an external session by contract.
-        async with AsyncSessionLocal() as local_session:
-            row = (
-                await local_session.execute(
-                    select(FileNode.id).where(FileNode.project_id == project_id).limit(1)
-                )
-            ).first()
-    else:
-        row = (
-            await session.execute(select(FileNode.id).where(FileNode.project_id == project_id).limit(1))
-        ).first()
+class _ToolFileReadError(RuntimeError):
+    def __init__(self, code: str, message: str, details: dict | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details
+
+
+def _file_read_failed(path: str, reason: str) -> _ToolFileReadError:
+    return _ToolFileReadError(
+        "read_failed",
+        "failed to read file",
+        {"path": path, "reason": reason},
+    )
+
+
+async def _to_thread_fs_async(meta: AgenticMeta | None, fn: Any, *args: Any) -> Any:
+    semaphore = meta.fs_ops_semaphore if isinstance(meta, AgenticMeta) else None
+    if semaphore is None:
+        fallback_limit = max(1, int(settings.llm_agentic_fs_ops_concurrency))
+        semaphore = asyncio.Semaphore(fallback_limit)
+    async with semaphore:
+        return await asyncio.to_thread(fn, *args)
+
+
+def _resolve_and_read_file_under_root(
+    root: Path,
+    path: str,
+    reader: Any,
+) -> tuple[str, Any]:
+    try:
+        abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
+    except Exception as exc:
+        raise _ToolFileReadError("invalid_path", str(exc)) from exc
+    try:
+        stat_result = abs_path.stat()
+    except FileNotFoundError as exc:
+        raise _ToolFileReadError("not_found", "path not found", {"path": rel_norm}) from exc
+    except Exception as exc:
+        raise _file_read_failed(rel_norm, str(exc)) from exc
+
+    if not stat_result or not abs_path.is_file():
+        raise _ToolFileReadError("not_a_file", "path is not a file", {"path": rel_norm})
+
+    try:
+        payload = reader(abs_path)
+    except Exception as exc:
+        raise _file_read_failed(rel_norm, str(exc)) from exc
+    return rel_norm, payload
+
+
+async def _read_file_under_root_async(
+    root: Path,
+    path: str,
+    reader: Any,
+    *,
+    meta: AgenticMeta | None,
+) -> tuple[str, Any] | dict:
+    try:
+        return await _to_thread_fs_async(meta, _resolve_and_read_file_under_root, root, path, reader)
+    except _ToolFileReadError as exc:
+        return _tool_error(exc.code, exc.message, exc.details)
+
+
+async def _check_indexed_async(session: AsyncSession, project_id: int) -> dict | None:
+    row = (await session.execute(select(FileNode.id).where(FileNode.project_id == project_id).limit(1))).first()
     if not row:
         return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
     return None
@@ -815,27 +868,15 @@ async def _tool_get_file_async(
     max_file_chars = max(1, min(int(max_file_chars), 200_000))
     max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
     max_chars = min(max_chars, max_file_chars)
-    try:
-        abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-    except Exception as e:
-        return _tool_error("invalid_path", str(e))
-    if not abs_path.exists():
-        return _tool_error("not_found", "path not found", {"path": rel_norm})
-    if not abs_path.is_file():
-        return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
 
-    def _read_local() -> str:
+    def _read_local(abs_path: Path) -> str:
         with abs_path.open(encoding="utf-8", errors="replace") as f:
             return f.read(max_chars + 1)
 
-    try:
-        text = await asyncio.to_thread(_read_local)
-    except Exception as e:
-        return _tool_error(
-            "read_failed",
-            "failed to read file",
-            {"path": rel_norm, "reason": str(e)},
-        )
+    read_result = await _read_file_under_root_async(root, path, _read_local, meta=meta)
+    if isinstance(read_result, dict):
+        return read_result
+    rel_norm, text = read_result
     truncated = len(text) > max_chars
     text = text[:max_chars]
     meta.full_file_paths.add(rel_norm)
@@ -867,20 +908,8 @@ async def _tool_get_file_lines_async(
     max_file_chars = max(1, min(int(max_file_chars), 200_000))
     max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
     max_chars = min(max_chars, max_file_chars)
-    try:
-        abs_path, rel_norm = resolve_under_root(
-            root,
-            path,
-            max_length=settings.max_rel_path_chars,
-        )
-    except Exception as e:
-        return _tool_error("invalid_path", str(e))
-    if not abs_path.exists():
-        return _tool_error("not_found", "path not found", {"path": rel_norm})
-    if not abs_path.is_file():
-        return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
 
-    def _read_lines() -> list[str]:
+    def _read_lines(abs_path: Path) -> list[str]:
         with abs_path.open(encoding="utf-8", errors="replace") as f:
             buffer: list[str] = []
             for line_num, line in enumerate(f, start=1):
@@ -891,14 +920,10 @@ async def _tool_get_file_lines_async(
                     break
             return buffer
 
-    try:
-        buffer = await asyncio.to_thread(_read_lines)
-    except Exception as e:
-        return _tool_error(
-            "read_failed",
-            "failed to read file",
-            {"path": rel_norm, "reason": str(e)},
-        )
+    read_result = await _read_file_under_root_async(root, path, _read_lines, meta=meta)
+    if isinstance(read_result, dict):
+        return read_result
+    rel_norm, buffer = read_result
     snippet = "".join(buffer)
     truncated = len(snippet) > max_chars
     if truncated:
@@ -1091,9 +1116,6 @@ async def _tool_get_symbol(
 
 
 async def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
-    indexed_error = await _check_indexed_async(None, project_id)
-    if indexed_error:
-        return indexed_error
     prefix = args.get("prefix")
     prefix_norm = ""
     if isinstance(prefix, str) and prefix.strip():
@@ -1106,6 +1128,9 @@ async def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
         max_depth = _clamp_int(max_depth_raw, 10, 1, 20)
 
     async with AsyncSessionLocal() as s:
+        indexed_error = await _check_indexed_async(s, project_id)
+        if indexed_error:
+            return indexed_error
         q = select(FileNode.path).where(FileNode.project_id == project_id)
         if prefix_norm:
             like = f"{prefix_norm}/%"
@@ -1171,6 +1196,7 @@ async def _tool_search_semantic_impl(
     session: AsyncSession,
     project_id: int,
     root: Path,
+    runtime_meta: AgenticMeta,
     args: dict,
     *,
     max_file_chars: int,
@@ -1225,6 +1251,7 @@ async def _tool_search_semantic_impl(
             root,
             fallback_args,
             max_file_chars=max_file_chars,
+            meta=runtime_meta,
         )
         if not text_result.get("ok"):
             return text_result
@@ -2616,11 +2643,13 @@ async def _tool_search_semantic_async(
     args: dict,
     *,
     max_file_chars: int,
+    meta: AgenticMeta | None = None,
 ) -> dict:
     return await _tool_search_semantic_impl(
         session,
         project_id,
         root,
+        meta or AgenticMeta(),
         args,
         max_file_chars=max_file_chars,
     )
@@ -2777,7 +2806,9 @@ async def _tool_search_text_async(
     args: dict,
     *,
     max_file_chars: int,
+    meta: AgenticMeta | None = None,
 ) -> dict:
+    runtime_meta = meta or AgenticMeta()
     indexed_error = await _check_indexed_async(session, project_id)
     if indexed_error:
         return indexed_error
@@ -2828,25 +2859,17 @@ async def _tool_search_text_async(
     matched_files: set[str] = set()
     truncated_files = 0
 
-    # Runtime file scanning is intentionally sequential: there is no task fan-out,
-    # each read goes through asyncio.to_thread, so semaphore throttling is unnecessary.
     for p in paths:
         if len(matches) >= max_matches:
             break
-        try:
-            abs_path, rel_norm = resolve_under_root(root, p, max_length=settings.max_rel_path_chars)
-        except Exception:
-            continue
-        if not abs_path.exists() or not abs_path.is_file():
-            continue
-        def _read_capped(max_chars: int) -> str:
+        def _read_capped(abs_path: Path) -> str:
             with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                return f.read(int(max_chars) + 1)
+                return f.read(int(scan_max_chars) + 1)
 
-        try:
-            text = await asyncio.to_thread(_read_capped, scan_max_chars)
-        except Exception:
+        read_result = await _read_file_under_root_async(root, p, _read_capped, meta=runtime_meta)
+        if isinstance(read_result, dict):
             continue
+        rel_norm, text = read_result
         scanned += 1
         truncated_initial = len(text) > scan_max_chars
         if truncated_initial:
@@ -2885,10 +2908,19 @@ async def _tool_search_text_async(
         truncated = truncated_initial
         matched = _search_text(text, truncated_flag=truncated)
         if truncated_initial and not matched and scan_max_chars < index_scan_max_chars:
-            try:
-                text = await asyncio.to_thread(_read_capped, index_scan_max_chars)
-            except Exception:
+            def _read_capped_extended(abs_path: Path) -> str:
+                with abs_path.open("r", encoding="utf-8", errors="replace") as f:
+                    return f.read(int(index_scan_max_chars) + 1)
+
+            read_result_extended = await _read_file_under_root_async(
+                root,
+                p,
+                _read_capped_extended,
+                meta=runtime_meta,
+            )
+            if isinstance(read_result_extended, dict):
                 continue
+            _rel_norm_extended, text = read_result_extended
             truncated = len(text) > index_scan_max_chars
             if truncated:
                 text = text[:index_scan_max_chars]
