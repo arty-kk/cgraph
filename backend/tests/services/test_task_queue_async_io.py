@@ -127,28 +127,45 @@ async def test_submit_docs_async_uses_async_idempotency_key(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_enqueue_celery_task_async_uses_to_thread(monkeypatch):
-    calls: dict[str, object] = {}
+async def test_enqueue_celery_task_async_uses_shared_adapter(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    class _Adapter:
+        async def enqueue_async(self, task, *, args, queue):
+            calls.append({"task": task, "args": args, "queue": queue})
 
     class _Task:
         def apply_async(self, *, args, queue):
             _ = (args, queue)
             return None
 
-    async def _fake_to_thread(func, *args, **kwargs):
-        calls["func"] = func
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        return None
-
-    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_queue, "_enqueue_adapter", _Adapter())
 
     task = _Task()
     await task_queue._enqueue_celery_task_async(task, args=["a", "b"], queue="heavy")
 
-    assert calls["func"] == task.apply_async
-    assert calls["args"] == ()
-    assert calls["kwargs"] == {"args": ["a", "b"], "queue": "heavy"}
+    assert len(calls) == 1
+    assert calls[0]["task"] == task
+    assert calls[0]["args"] == ["a", "b"]
+    assert calls[0]["queue"] == "heavy"
+
+
+@pytest.mark.anyio
+async def test_celery_enqueue_adapter_recreates_executor_after_shutdown():
+    adapter = task_queue._CeleryEnqueueAdapter()
+    calls: list[tuple[list[str], str]] = []
+
+    class _Task:
+        def apply_async(self, *, args, queue):
+            calls.append((args, queue))
+
+    task = _Task()
+    await adapter.enqueue_async(task, args=["job-1"], queue="heavy")
+    adapter.shutdown()
+    await adapter.enqueue_async(task, args=["job-2"], queue="medium")
+    adapter.shutdown()
+
+    assert calls == [(["job-1"], "heavy"), (["job-2"], "medium")]
 
 
 @pytest.mark.anyio
