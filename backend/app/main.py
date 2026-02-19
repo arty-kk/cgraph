@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 
@@ -48,7 +49,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         async def _shutdown_celery_enqueue_adapter() -> None:
-            shutdown_celery_enqueue_adapter()
+            await asyncio.to_thread(shutdown_celery_enqueue_adapter)
 
         cleanup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
             ("shutdown_celery_enqueue_adapter", _shutdown_celery_enqueue_adapter),

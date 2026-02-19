@@ -84,6 +84,29 @@ async def test_parallel_submit_is_idempotent_and_non_blocking(monkeypatch):
 
 @pytest.mark.anyio
 @pytest.mark.usefixtures("ensure_async_postgres")
+async def test_high_concurrency_submit_scan_not_serialized(monkeypatch):
+    monkeypatch.setattr(task_queue.settings, "task_queue_enqueue_workers", 8)
+
+    def _fake_scan(*, args, queue):
+        _ = (args, queue)
+        time.sleep(0.05)
+
+    with patch("app.celery_tasks.scan_task.apply_async", side_effect=_fake_scan):
+        started = time.monotonic()
+        task_ids = await asyncio.wait_for(
+            asyncio.gather(
+                *[submit_scan_async(project_id=1000 + i, org_id=77) for i in range(80)]
+            ),
+            timeout=6,
+        )
+        elapsed = time.monotonic() - started
+
+    assert len(set(task_ids)) == 80
+    assert elapsed < 2.5
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("ensure_async_postgres")
 async def test_submit_run_async_rolls_back_status_and_inflight_on_enqueue_error(monkeypatch):
     redis_client = _FakeRedisClient()
     monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: redis_client)
@@ -96,6 +119,7 @@ async def test_submit_run_async_rolls_back_status_and_inflight_on_enqueue_error(
     err = exc_ctx.value
     task_id = err.context["task_id"]
     assert err.context["queue"] == "heavy"
+    assert err.context["enqueue_reason"] == "broker_error"
 
     async with AsyncSessionLocal() as session:
         job = await session.get(TaskJob, task_id)

@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from threading import Condition, Lock
 from typing import Any
 from uuid import uuid4
 
@@ -36,31 +36,75 @@ class TaskState:
 logger = get_logger("stubgraph.task_queue")
 
 _HEAVY_INFLIGHT_KEY = "stubgraph:queue:heavy:inflight"
+_ENQUEUE_TIMEOUT_SECONDS = 10.0
+_ENQUEUE_REASON_KEY = "enqueue_reason"
+
+
+class _EnqueueBrokerError(Exception):
+    """Synchronous broker-side enqueue failure from Celery apply_async."""
 
 
 class _CeleryEnqueueAdapter:
     def __init__(self) -> None:
         self._lock = Lock()
+        self._pending_condition = Condition(self._lock)
         self._executor: ThreadPoolExecutor | None = None
+        self._semaphore: asyncio.Semaphore | None = None
+        self._is_shutting_down = False
+        self._pending_submissions = 0
 
-    def _get_executor(self) -> ThreadPoolExecutor:
+    @staticmethod
+    def _apply_async_sync(task: Any, args: list[Any], queue: str) -> None:
+        try:
+            task.apply_async(args=args, queue=queue)
+        except Exception as exc:  # noqa: BLE001
+            raise _EnqueueBrokerError(str(exc)) from exc
+
+    def _accept_submission(self) -> tuple[ThreadPoolExecutor, asyncio.Semaphore]:
         with self._lock:
+            if self._is_shutting_down:
+                raise RuntimeError("Celery enqueue adapter is shutting down")
             if self._executor is None:
-                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="celery-enqueue")
-            return self._executor
+                self._executor = ThreadPoolExecutor(
+                    max_workers=settings.task_queue_enqueue_workers,
+                    thread_name_prefix="celery-enqueue",
+                )
+            if self._semaphore is None:
+                # Semaphore limit is intentionally synchronized with enqueue workers to keep
+                # executor queue pressure deterministic: at most N apply_async calls in-flight.
+                self._semaphore = asyncio.Semaphore(settings.task_queue_enqueue_workers)
+            self._pending_submissions += 1
+            return self._executor, self._semaphore
+
+    def _finish_submission(self) -> None:
+        with self._lock:
+            self._pending_submissions = max(0, self._pending_submissions - 1)
+            if self._pending_submissions == 0:
+                self._pending_condition.notify_all()
 
     async def enqueue_async(self, task: Any, *, args: list[Any], queue: str) -> None:
         loop = asyncio.get_running_loop()
-        executor = self._get_executor()
-        await loop.run_in_executor(
-            executor,
-            lambda: task.apply_async(args=args, queue=queue),
-        )
+        executor, semaphore = self._accept_submission()
+        try:
+            async with semaphore:
+                await loop.run_in_executor(
+                    executor,
+                    self._apply_async_sync,
+                    task,
+                    args,
+                    queue,
+                )
+        finally:
+            self._finish_submission()
 
     def shutdown(self) -> None:
         with self._lock:
+            self._is_shutting_down = True
+            while self._pending_submissions > 0:
+                self._pending_condition.wait()
             executor = self._executor
             self._executor = None
+            self._semaphore = None
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=False)
 
@@ -74,6 +118,54 @@ async def _enqueue_celery_task_async(task: Any, *, args: list[Any], queue: str) 
 
 def shutdown_celery_enqueue_adapter() -> None:
     _enqueue_adapter.shutdown()
+
+
+def _classify_enqueue_failure(exc: Exception) -> str:
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timeout"
+    if isinstance(exc, _EnqueueBrokerError):
+        return "broker_error"
+    return "internal_enqueue_failure"
+
+
+async def _mark_enqueue_failure_async(session: AsyncSession, task_id: str, exc: Exception) -> None:
+    now = datetime.now(timezone.utc)
+    try:
+        job = await session.get(TaskJob, task_id)
+        if job:
+            job.status = "failed"
+            job.error = str(exc)
+            job.completed_at = now
+            job.updated_at = now
+            session.add(job)
+            await session.commit()
+    except Exception as update_exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to persist enqueue failure status",
+            extra={"task_id": task_id, "reason": str(update_exc)},
+        )
+
+
+async def _enqueue_with_error_mapping_async(
+    session: AsyncSession,
+    *,
+    task: Any,
+    args: list[Any],
+    queue: str,
+    task_id: str,
+) -> None:
+    try:
+        await asyncio.wait_for(
+            _enqueue_celery_task_async(task, args=args, queue=queue),
+            timeout=_ENQUEUE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        reason = _classify_enqueue_failure(exc)
+        await _mark_enqueue_failure_async(session, task_id, exc)
+        raise ExternalServiceError(
+            "Не удалось отправить задачу в очередь",
+            context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
+        ) from exc
 
 
 def _normalize_payload(value: Any) -> Any:
@@ -320,32 +412,16 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
         from ..celery_tasks import run_task_job
 
         try:
-            await _enqueue_celery_task_async(
-                run_task_job,
+            await _enqueue_with_error_mapping_async(
+                session,
+                task=run_task_job,
                 args=[task_id, project_id, org_id, payload],
                 queue="heavy",
+                task_id=task_id,
             )
-        except Exception as exc:
+        except ExternalServiceError:
             await _release_inflight_async("heavy", task_id)
-            now = datetime.now(timezone.utc)
-            try:
-                job = await session.get(TaskJob, task_id)
-                if job:
-                    job.status = "failed"
-                    job.error = str(exc)
-                    job.completed_at = now
-                    job.updated_at = now
-                    session.add(job)
-                    await session.commit()
-            except Exception as update_exc:
-                logger.warning(
-                    "Failed to persist enqueue failure status",
-                    extra={"task_id": task_id, "reason": str(update_exc)},
-                )
-            raise ExternalServiceError(
-                "Не удалось отправить задачу в очередь",
-                context={"task_id": task_id, "queue": "heavy"},
-            ) from exc
+            raise
     return task_id
 
 
@@ -365,43 +441,13 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
         )
         if created:
             from ..celery_tasks import scan_task
-
-            try:
-                await _enqueue_celery_task_async(
-                    scan_task,
-                    args=[task_id, project_id, org_id],
-                    queue="medium",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to enqueue task",
-                    extra={
-                        "task_id": task_id,
-                        "queue": "medium",
-                        "project_id": project_id,
-                        "org_id": org_id,
-                        "reason": str(exc),
-                    },
-                )
-                now = datetime.now(timezone.utc)
-                try:
-                    job = await session.get(TaskJob, task_id)
-                    if job:
-                        job.status = "failed"
-                        job.error = str(exc)
-                        job.completed_at = now
-                        job.updated_at = now
-                        session.add(job)
-                        await session.commit()
-                except Exception as update_exc:
-                    logger.warning(
-                        "Failed to persist enqueue failure status",
-                        extra={"task_id": task_id, "reason": str(update_exc)},
-                    )
-                raise ExternalServiceError(
-                    "Не удалось отправить задачу в очередь",
-                    context={"task_id": task_id, "queue": "medium"},
-                ) from exc
+            await _enqueue_with_error_mapping_async(
+                session,
+                task=scan_task,
+                args=[task_id, project_id, org_id],
+                queue="medium",
+                task_id=task_id,
+            )
         return task_id
 
 
@@ -422,43 +468,13 @@ async def submit_docs_async(project_id: int, org_id: int) -> str:
         )
         if created:
             from ..celery_tasks import docs_task
-
-            try:
-                await _enqueue_celery_task_async(
-                    docs_task,
-                    args=[task_id, project_id, org_id],
-                    queue="light",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to enqueue task",
-                    extra={
-                        "task_id": task_id,
-                        "queue": "light",
-                        "project_id": project_id,
-                        "org_id": org_id,
-                        "reason": str(exc),
-                    },
-                )
-                now = datetime.now(timezone.utc)
-                try:
-                    job = await session.get(TaskJob, task_id)
-                    if job:
-                        job.status = "failed"
-                        job.error = str(exc)
-                        job.completed_at = now
-                        job.updated_at = now
-                        session.add(job)
-                        await session.commit()
-                except Exception as update_exc:
-                    logger.warning(
-                        "Failed to persist enqueue failure status",
-                        extra={"task_id": task_id, "reason": str(update_exc)},
-                    )
-                raise ExternalServiceError(
-                    "Не удалось отправить задачу в очередь",
-                    context={"task_id": task_id, "queue": "light"},
-                ) from exc
+            await _enqueue_with_error_mapping_async(
+                session,
+                task=docs_task,
+                args=[task_id, project_id, org_id],
+                queue="light",
+                task_id=task_id,
+            )
         return task_id
 
 
@@ -489,43 +505,13 @@ async def submit_mutation_indexing_async(
         )
         if created:
             from ..celery_tasks import mutation_indexing_task
-
-            try:
-                await _enqueue_celery_task_async(
-                    mutation_indexing_task,
-                    args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
-                    queue="medium",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to enqueue task",
-                    extra={
-                        "task_id": task_id,
-                        "queue": "medium",
-                        "project_id": project_id,
-                        "org_id": org_id,
-                        "reason": str(exc),
-                    },
-                )
-                now = datetime.now(timezone.utc)
-                try:
-                    job = await session.get(TaskJob, task_id)
-                    if job:
-                        job.status = "failed"
-                        job.error = str(exc)
-                        job.completed_at = now
-                        job.updated_at = now
-                        session.add(job)
-                        await session.commit()
-                except Exception as update_exc:
-                    logger.warning(
-                        "Failed to persist enqueue failure status",
-                        extra={"task_id": task_id, "reason": str(update_exc)},
-                    )
-                raise ExternalServiceError(
-                    "Не удалось отправить задачу в очередь",
-                    context={"task_id": task_id, "queue": "medium"},
-                ) from exc
+            await _enqueue_with_error_mapping_async(
+                session,
+                task=mutation_indexing_task,
+                args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
+                queue="medium",
+                task_id=task_id,
+            )
     return task_id, "pending"
 
 
