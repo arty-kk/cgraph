@@ -37,7 +37,7 @@ from ..models import (
     TaskJob,
     TsTypeDef,
 )
-from ..patches import delete_patch_blob_for_sha
+from ..patches import delete_patch_blob_for_sha_async
 from ..scan import SEARCH_INDEX_MAX_CHARS, scan_project_async
 from ..search import search_text_paths_async
 from ..services.entitlements_service import (
@@ -68,7 +68,7 @@ logger = get_logger("stubgraph.project_service")
 
 
 async def _delete_patch_blob_for_sha_async(sha: str) -> None:
-    await asyncio.to_thread(delete_patch_blob_for_sha, sha)
+    await delete_patch_blob_for_sha_async(sha)
 
 
 async def _delete_patch_blobs_async(
