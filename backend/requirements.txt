@@ -5,7 +5,7 @@ pydantic-settings==2.4.0
 sqlmodel==0.0.22
 alembic==1.13.2
 psycopg[binary]==3.2.1
-boto3==1.35.99
+aioboto3==13.4.0
 celery==5.4.0
 redis==5.0.8
 networkx==3.3
