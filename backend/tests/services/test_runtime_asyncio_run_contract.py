@@ -6,7 +6,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = BACKEND_ROOT / "app"
-ALLOWLIST = {"app/celery_tasks.py"}
+ALLOWLIST: set[str] = set()
 
 
 def _contains_asyncio_run(path: Path) -> bool:
