@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -31,6 +32,28 @@ class _SyncClient:
 
     def close(self):
         self.closed = True
+
+
+class _AsyncClient:
+    def __init__(self):
+        self.get_calls: list[str] = []
+        self.setex_calls: list[tuple[str, int, str]] = []
+        self.delete_calls: list[str] = []
+
+    async def get(self, key: str):
+        self.get_calls.append(key)
+        return '{"ok": true}'
+
+    async def setex(self, key: str, ttl: int, payload: str):
+        self.setex_calls.append((key, ttl, payload))
+
+    async def delete(self, key: str):
+        self.delete_calls.append(key)
+
+    async def scan_iter(self, match: str):
+        _ = match
+        for item in ["stubgraph:k:1", "stubgraph:k:2"]:
+            yield item
 
 
 @pytest.mark.anyio
@@ -95,3 +118,31 @@ async def test_cache_invalidate_prefix_closes_sync_client(monkeypatch: pytest.Mo
 
     assert client.deleted == ["stubgraph:a", "stubgraph:b"]
     assert client.closed is True
+
+
+@pytest.mark.anyio
+async def test_cache_async_uses_shared_client_for_concurrent_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _AsyncClient()
+    get_client_calls = 0
+
+    def _get_client():
+        nonlocal get_client_calls
+        get_client_calls += 1
+        return client
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_default_ttl_seconds", 60)
+    monkeypatch.setattr(cache, "get_async_redis_client", _get_client)
+
+    await asyncio.gather(
+        cache.cache_get_json_async(["k"]),
+        cache.cache_set_json_async(["k"], {"x": 1}),
+        cache.cache_invalidate_prefix_async(["k"]),
+    )
+
+    assert get_client_calls == 3
+    assert len(client.get_calls) == 1
+    assert len(client.setex_calls) == 1
+    assert client.delete_calls == ["stubgraph:k:1", "stubgraph:k:2"]

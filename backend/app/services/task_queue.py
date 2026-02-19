@@ -17,7 +17,7 @@ from sqlmodel import delete, select
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
-from ..infra.redis_client import async_redis_client
+from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
 from ..utils import sha256_text
@@ -164,8 +164,8 @@ async def _guard_inflight_async(
         raise BadRequestError("Job id is required for inflight guard")
 
     try:
-        async with async_redis_client() as client:
-            lua = """
+        client = get_async_redis_client()
+        lua = """
             local set_key = KEYS[1]
             local limit = tonumber(ARGV[1])
             local job_id = ARGV[2]
@@ -177,17 +177,17 @@ async def _guard_inflight_async(
             count = redis.call("SCARD", set_key)
             return {1, count}
             """
-            added, count = await client.eval(lua, 1, _HEAVY_INFLIGHT_KEY, int(limit), job_id)
-            if int(added) != 1 and int(count) > int(limit):
-                try:
-                    await _reconcile_heavy_inflight_async()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Heavy inflight reconciliation failed",
-                        extra={"reason": str(exc)},
-                    )
-            if int(added) != 1:
-                raise BadRequestError("Превышен лимит одновременных heavy задач")
+        added, count = await client.eval(lua, 1, _HEAVY_INFLIGHT_KEY, int(limit), job_id)
+        if int(added) != 1 and int(count) > int(limit):
+            try:
+                await _reconcile_heavy_inflight_async()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Heavy inflight reconciliation failed",
+                    extra={"reason": str(exc)},
+                )
+        if int(added) != 1:
+            raise BadRequestError("Превышен лимит одновременных heavy задач")
     except RedisError as exc:
         logger.warning(
             "In-flight queue check failed",
@@ -207,8 +207,8 @@ async def _release_inflight_async(queue: str, job_id: str) -> None:
     if queue != "heavy":
         return
     try:
-        async with async_redis_client() as client:
-            await client.srem(_HEAVY_INFLIGHT_KEY, job_id)
+        client = get_async_redis_client()
+        await client.srem(_HEAVY_INFLIGHT_KEY, job_id)
     except RedisError as exc:
         logger.warning("Failed to release inflight job", extra={"reason": str(exc)})
 
@@ -228,26 +228,26 @@ async def _reconcile_heavy_inflight_async() -> None:
             ).scalar_one()
             or 0
         )
-        async with async_redis_client() as client:
-            redis_count = int(await client.scard(_HEAVY_INFLIGHT_KEY))
-            if redis_count == db_count:
-                return
+        client = get_async_redis_client()
+        redis_count = int(await client.scard(_HEAVY_INFLIGHT_KEY))
+        if redis_count == db_count:
+            return
 
-            active_ids = list(
-                (
-                    await session.execute(
-                        select(TaskJob.id).where(
-                            TaskJob.queue == "heavy",
-                            TaskJob.status.in_(("pending", "running")),
-                        )
+        active_ids = list(
+            (
+                await session.execute(
+                    select(TaskJob.id).where(
+                        TaskJob.queue == "heavy",
+                        TaskJob.status.in_(("pending", "running")),
                     )
                 )
-                .scalars()
-                .all()
             )
-            await client.delete(_HEAVY_INFLIGHT_KEY)
-            if active_ids:
-                await client.sadd(_HEAVY_INFLIGHT_KEY, *active_ids)
+            .scalars()
+            .all()
+        )
+        await client.delete(_HEAVY_INFLIGHT_KEY)
+        if active_ids:
+            await client.sadd(_HEAVY_INFLIGHT_KEY, *active_ids)
 
 
 async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
