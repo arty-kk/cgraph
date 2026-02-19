@@ -59,6 +59,14 @@ class Settings(BaseSettings):
         default=1_000_000_000,
         alias="STUBGRAPH_SNAPSHOT_MAX_UNPACKED_BYTES",
     )
+    snapshot_disk_concurrency: int = Field(
+        default=4,
+        alias="STUBGRAPH_SNAPSHOT_DISK_CONCURRENCY",
+    )
+    snapshot_s3_concurrency: int = Field(
+        default=4,
+        alias="STUBGRAPH_SNAPSHOT_S3_CONCURRENCY",
+    )
     allow_local_root_path: bool = Field(default=False, alias="STUBGRAPH_ALLOW_LOCAL_ROOT_PATH")
 
     celery_broker_url: str = Field(
@@ -323,6 +331,10 @@ class Settings(BaseSettings):
             )
         if self.snapshot_max_unpacked_bytes <= 0:
             raise ValueError("STUBGRAPH_SNAPSHOT_MAX_UNPACKED_BYTES должен быть положительным")
+        if self.snapshot_disk_concurrency < 1:
+            raise ValueError("STUBGRAPH_SNAPSHOT_DISK_CONCURRENCY должен быть >= 1")
+        if self.snapshot_s3_concurrency < 1:
+            raise ValueError("STUBGRAPH_SNAPSHOT_S3_CONCURRENCY должен быть >= 1")
         if not isinstance(self.allow_local_root_path, bool):
             raise ValueError("STUBGRAPH_ALLOW_LOCAL_ROOT_PATH должен быть булевым")
         if not isinstance(self.celery_broker_url, str) or not self.celery_broker_url.strip():

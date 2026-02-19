@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import shutil
 import tarfile
 import zipfile
@@ -17,6 +18,9 @@ from .s3_runtime import get_s3_client
 from .utils import sha256_file
 
 logger = get_logger("stubgraph.snapshots")
+
+_SNAPSHOT_DISK_IO_SEMAPHORE = asyncio.Semaphore(settings.snapshot_disk_concurrency)
+_SNAPSHOT_S3_IO_SEMAPHORE = asyncio.Semaphore(settings.snapshot_s3_concurrency)
 
 
 class SnapshotError(RuntimeError):
@@ -199,7 +203,10 @@ def _ensure_root_and_get_state(root_dir: Path, marker_path: Path) -> tuple[bool,
     return _snapshot_root_state(root_dir, marker_path)
 
 
-def _resolve_root_and_get_state(path: Path, marker_name: str = ".extracted_ok") -> tuple[Path, Path, bool, bool]:
+def _resolve_root_and_get_state(
+    path: Path,
+    marker_name: str = ".extracted_ok",
+) -> tuple[Path, Path, bool, bool]:
     root_dir = path.resolve()
     marker_path = root_dir / marker_name
     has_any_files, marker_exists = _ensure_root_and_get_state(root_dir, marker_path)
@@ -209,18 +216,32 @@ def _resolve_root_and_get_state(path: Path, marker_name: str = ".extracted_ok") 
 async def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: Path) -> None:
     if not meta.bucket or not meta.key:
         raise SnapshotError("Missing S3 snapshot metadata")
-    resp = await get_s3_client().get_object(Bucket=meta.bucket, Key=meta.key)
+    async with _SNAPSHOT_S3_IO_SEMAPHORE:
+        resp = await get_s3_client().get_object(Bucket=meta.bucket, Key=meta.key)
     body = resp.get("Body")
     if body is None:
         raise SnapshotError("Empty snapshot payload")
     try:
+        chunks: list[bytes] = []
+        buffered = 0
+        flush_threshold = 4 * 1024 * 1024
         while True:
-            chunk = await body.read(1024 * 1024)
+            async with _SNAPSHOT_S3_IO_SEMAPHORE:
+                chunk = await body.read(1024 * 1024)
             if not chunk:
                 break
-            await asyncio.to_thread(_append_file_chunk, archive_path, chunk)
+            chunks.append(chunk)
+            buffered += len(chunk)
+            if buffered >= flush_threshold:
+                async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+                    await asyncio.to_thread(_append_file_chunks, archive_path, chunks)
+                chunks.clear()
+                buffered = 0
+        if chunks:
+            async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+                await asyncio.to_thread(_append_file_chunks, archive_path, chunks)
     except Exception:
-        await asyncio.to_thread(archive_path.unlink, True)
+        await _cleanup_path_async(archive_path)
         raise
     finally:
         await _maybe_await_close(body)
@@ -229,13 +250,33 @@ async def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: P
 
 
 async def _maybe_await_close(body) -> None:
-    close_result = body.close()
-    if asyncio.iscoroutine(close_result):
+    close_fn = getattr(body, "close", None)
+    if close_fn is None:
+        return
+    close_result = close_fn()
+    if inspect.isawaitable(close_result):
         await close_result
 
-def _append_file_chunk(path: Path, chunk: bytes) -> None:
+
+def _append_file_chunks(path: Path, chunks: list[bytes]) -> None:
     with path.open("ab") as tmp:
-        tmp.write(chunk)
+        for chunk in chunks:
+            tmp.write(chunk)
+
+
+def _read_chunk_batch(stream, chunk_size: int, batch_size: int = 4) -> list[bytes]:
+    chunks: list[bytes] = []
+    for _ in range(batch_size):
+        chunk = stream.read(chunk_size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return chunks
+
+
+async def _cleanup_path_async(path: Path) -> None:
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        await asyncio.to_thread(path.unlink, missing_ok=True)
 
 
 async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> None:
@@ -245,38 +286,45 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
     part_number = 1
     chunk_size = 8 * 1024 * 1024
     try:
-        create_resp = await client.create_multipart_upload(Bucket=bucket, Key=key)
-        upload_id = create_resp.get("UploadId")
-        if not upload_id:
-            raise SnapshotError("Failed to start multipart upload")
+        async with _SNAPSHOT_S3_IO_SEMAPHORE:
+            create_resp = await client.create_multipart_upload(Bucket=bucket, Key=key)
+            upload_id = create_resp.get("UploadId")
+            if not upload_id:
+                raise SnapshotError("Failed to start multipart upload")
 
         with archive_path.open("rb") as stream:
             while True:
-                chunk = await asyncio.to_thread(stream.read, chunk_size)
-                if not chunk:
+                async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+                    chunk_batch = await asyncio.to_thread(_read_chunk_batch, stream, chunk_size)
+                if not chunk_batch:
                     break
-                resp = await client.upload_part(
-                    Bucket=bucket,
-                    Key=key,
-                    UploadId=upload_id,
-                    PartNumber=part_number,
-                    Body=chunk,
-                )
-                etag = resp.get("ETag")
-                if not isinstance(etag, str) or not etag:
-                    raise SnapshotError("S3 upload part missing ETag")
-                parts.append({"ETag": etag, "PartNumber": part_number})
-                part_number += 1
 
-        await client.complete_multipart_upload(
-            Bucket=bucket,
-            Key=key,
-            UploadId=upload_id,
-            MultipartUpload={"Parts": parts},
-        )
+                for chunk in chunk_batch:
+                    async with _SNAPSHOT_S3_IO_SEMAPHORE:
+                        resp = await client.upload_part(
+                            Bucket=bucket,
+                            Key=key,
+                            UploadId=upload_id,
+                            PartNumber=part_number,
+                            Body=chunk,
+                        )
+                    etag = resp.get("ETag")
+                    if not isinstance(etag, str) or not etag:
+                        raise SnapshotError("S3 upload part missing ETag")
+                    parts.append({"ETag": etag, "PartNumber": part_number})
+                    part_number += 1
+
+        async with _SNAPSHOT_S3_IO_SEMAPHORE:
+            await client.complete_multipart_upload(
+                Bucket=bucket,
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": parts},
+            )
     except Exception:
         if upload_id:
-            await client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+            async with _SNAPSHOT_S3_IO_SEMAPHORE:
+                await client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
         raise
 
 
@@ -317,7 +365,14 @@ async def _ensure_archive_and_extract(
     marker_path: Path,
 ) -> None:
     archive_path = await _ensure_local_snapshot_archive(meta)
-    await asyncio.to_thread(_extract_archive_to_root, meta.archive_ext, archive_path, root_dir, marker_path)
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        await asyncio.to_thread(
+            _extract_archive_to_root,
+            meta.archive_ext,
+            archive_path,
+            root_dir,
+            marker_path,
+        )
 
 
 def _finalize_local_archive(
@@ -353,22 +408,25 @@ def _path_exists_and_is_dir(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_dir_async(path: Path) -> tuple[bool, bool]:
-    return await asyncio.to_thread(_path_exists_and_is_dir, path)
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        return await asyncio.to_thread(_path_exists_and_is_dir, path)
 
 
 async def _unlink_if_exists_async(path: Path) -> None:
-    await asyncio.to_thread(path.unlink, True)
+    await _cleanup_path_async(path)
 
 
 async def prepare_snapshot_root_async(meta: SnapshotMeta) -> Path:
-    root_dir, marker_path, has_any_files, marker_exists = await asyncio.to_thread(
-        _resolve_root_and_get_state,
-        settings.db_dir / meta.root_dir,
-    )
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        root_dir, marker_path, has_any_files, marker_exists = await asyncio.to_thread(
+            _resolve_root_and_get_state,
+            settings.db_dir / meta.root_dir,
+        )
     if has_any_files:
         if marker_exists:
             return root_dir
-        await asyncio.to_thread(_clear_dir_contents, root_dir)
+        async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+            await asyncio.to_thread(_clear_dir_contents, root_dir)
 
     await _ensure_archive_and_extract(
         meta,
@@ -382,19 +440,22 @@ async def prepare_project_snapshot_root_async(meta: SnapshotMeta) -> Path:
     shared_root = await prepare_snapshot_root_async(meta)
     project_base = _snapshot_dir(meta.sha256) / "projects" / uuid4().hex
     project_root = project_base / "repo"
-    await asyncio.to_thread(_clone_shared_snapshot_to_project, shared_root, project_root)
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        await asyncio.to_thread(_clone_shared_snapshot_to_project, shared_root, project_root)
     return project_root
 
 
 async def delete_project_snapshot_root_async(root_path: str | Path) -> None:
-    root_dir, exists, is_dir = await asyncio.to_thread(
-        _resolve_path_and_dir_state,
-        Path(root_path),
-    )
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        root_dir, exists, is_dir = await asyncio.to_thread(
+            _resolve_path_and_dir_state,
+            Path(root_path),
+        )
     if not _is_project_snapshot_root(root_dir):
         return
     if exists and is_dir:
-        await asyncio.to_thread(_clear_dir_and_rmdir, root_dir)
+        async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+            await asyncio.to_thread(_clear_dir_and_rmdir, root_dir)
 
 
 async def delete_snapshot_async(meta: SnapshotMeta) -> None:
@@ -416,15 +477,17 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
         snapshot_exists, snapshot_is_dir = await _path_exists_and_is_dir_async(snapshot_dir)
 
         if snapshot_exists and snapshot_is_dir:
-            await asyncio.to_thread(_clear_dir_and_rmdir, snapshot_dir)
+            async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+                await asyncio.to_thread(_clear_dir_and_rmdir, snapshot_dir)
         else:
             archive_path = _local_archive_path(meta.sha256, meta.archive_ext)
             unlink_archive_task = asyncio.create_task(_unlink_if_exists_async(archive_path))
             try:
-                await asyncio.to_thread(
-                    _resolve_and_clear_dir_if_exists,
-                    settings.db_dir / meta.root_dir,
-                )
+                async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+                    await asyncio.to_thread(
+                        _resolve_and_clear_dir_if_exists,
+                        settings.db_dir / meta.root_dir,
+                    )
             finally:
                 await unlink_archive_task
     finally:
@@ -435,14 +498,16 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
 async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
     await upload_file.seek(0)
     tmp_dir = settings.db_dir / "snapshots" / "tmp"
-    await asyncio.to_thread(tmp_dir.mkdir, parents=True, exist_ok=True)
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        await asyncio.to_thread(tmp_dir.mkdir, parents=True, exist_ok=True)
 
     ext = _archive_ext(archive_name)
     tmp_path = tmp_dir / f"{uuid4().hex}{ext}"
 
     total = 0
     hasher = hashlib.sha256()
-    write_buffer = bytearray()
+    chunks: list[bytes] = []
+    buffered = 0
     flush_threshold = 4 * 1024 * 1024
     try:
         while True:
@@ -456,27 +521,33 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
                     context={"max_bytes": settings.snapshot_max_bytes, "size": total},
                 )
             hasher.update(chunk)
-            write_buffer.extend(chunk)
-            if len(write_buffer) >= flush_threshold:
-                await asyncio.to_thread(_append_file_chunk, tmp_path, bytes(write_buffer))
-                write_buffer.clear()
+            chunks.append(chunk)
+            buffered += len(chunk)
+            if buffered >= flush_threshold:
+                async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+                    await asyncio.to_thread(_append_file_chunks, tmp_path, chunks)
+                chunks.clear()
+                buffered = 0
 
-        if write_buffer:
-            await asyncio.to_thread(_append_file_chunk, tmp_path, bytes(write_buffer))
+        if chunks:
+            async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+                await asyncio.to_thread(_append_file_chunks, tmp_path, chunks)
     except Exception:
-        await asyncio.to_thread(tmp_path.unlink, True)
+        await _cleanup_path_async(tmp_path)
         raise
 
     if total <= 0:
-        await asyncio.to_thread(tmp_path.unlink, True)
+        await _cleanup_path_async(tmp_path)
         raise BadRequestError("Архив пустой")
 
     sha = hasher.hexdigest()
     root_dir = _snapshot_dir(sha)
-    await asyncio.to_thread(root_dir.mkdir, parents=True, exist_ok=True)
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        await asyncio.to_thread(root_dir.mkdir, parents=True, exist_ok=True)
     archive_path = _local_archive_path(sha, ext)
 
-    await asyncio.to_thread(_finalize_local_archive, tmp_path, archive_path, total, sha)
+    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
+        await asyncio.to_thread(_finalize_local_archive, tmp_path, archive_path, total, sha)
 
     backend = _ensure_storage_backend()
     bucket = None

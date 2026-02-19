@@ -102,6 +102,21 @@ class _FakeS3:
         self.objects.pop((Bucket, Key), None)
 
 
+class _ObservedSemaphore:
+    def __init__(self):
+        self.active = 0
+        self.max_active = 0
+
+    async def __aenter__(self):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        _ = exc_type, exc, tb
+        self.active -= 1
+
+
 def _zip_payload(content: str = "hello") -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
@@ -269,6 +284,112 @@ async def test_snapshot_s3_concurrent_upload_download_delete(monkeypatch: pytest
 
             await asyncio.gather(*[snapshots.delete_snapshot_async(meta) for meta in metas])
             assert len(fake.deleted) == len(metas)
+    finally:
+        settings.db_dir = original_dir
+        settings.storage_backend = original_backend
+        settings.s3_bucket = original_bucket
+
+
+@pytest.mark.anyio
+async def test_snapshot_io_uses_configured_limiters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disk_sem = _ObservedSemaphore()
+    s3_sem = _ObservedSemaphore()
+    monkeypatch.setattr(snapshots, "_SNAPSHOT_DISK_IO_SEMAPHORE", disk_sem)
+    monkeypatch.setattr(snapshots, "_SNAPSHOT_S3_IO_SEMAPHORE", s3_sem)
+
+    fake = _FakeS3()
+    fake.objects[("bucket", "snapshots/sha/repo.zip")] = b"abcdef"
+    monkeypatch.setattr(snapshots, "get_s3_client", lambda: fake)
+
+    meta = snapshots.SnapshotMeta(
+        storage="s3",
+        sha256="sha",
+        archive_name="repo.zip",
+        archive_ext=".zip",
+        size=6,
+        file="snapshots/sha/archive.zip",
+        root_dir="snapshots/sha/repo",
+        bucket="bucket",
+        key="snapshots/sha/repo.zip",
+    )
+
+    await snapshots._download_snapshot_archive_from_s3(meta, tmp_path / "limiter.zip")
+
+    assert disk_sem.max_active >= 1
+    assert s3_sem.max_active >= 1
+
+
+@pytest.mark.anyio
+async def test_store_snapshot_upload_aborts_multipart_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_dir = settings.db_dir
+    original_backend = settings.storage_backend
+    original_bucket = settings.s3_bucket
+
+    class _BrokenS3(_FakeS3):
+        def __init__(self):
+            super().__init__()
+            self.abort_calls = 0
+
+        async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+            _ = Bucket, Key, UploadId, Body
+            if PartNumber == 1:
+                raise RuntimeError("upload failed")
+            return await super().upload_part(
+                Bucket=Bucket,
+                Key=Key,
+                UploadId=UploadId,
+                PartNumber=PartNumber,
+                Body=Body,
+            )
+
+        async def abort_multipart_upload(self, *, Bucket: str, Key: str, UploadId: str):
+            self.abort_calls += 1
+            await super().abort_multipart_upload(Bucket=Bucket, Key=Key, UploadId=UploadId)
+
+    broken = _BrokenS3()
+    monkeypatch.setattr(snapshots, "get_s3_client", lambda: broken)
+
+    try:
+        with TemporaryDirectory() as tmpdir:
+            settings.db_dir = Path(tmpdir)
+            settings.storage_backend = "s3"
+            settings.s3_bucket = "bucket"
+
+            with pytest.raises(snapshots.SnapshotError, match="Failed to upload snapshot to S3"):
+                await snapshots.store_snapshot_upload(_Upload(_zip_payload("err")), "repo.zip")
+    finally:
+        settings.db_dir = original_dir
+        settings.storage_backend = original_backend
+        settings.s3_bucket = original_bucket
+
+    assert broken.abort_calls == 1
+
+
+@pytest.mark.anyio
+async def test_snapshot_parallel_mixed_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_dir = settings.db_dir
+    original_backend = settings.storage_backend
+    original_bucket = settings.s3_bucket
+    fake = _FakeS3()
+    monkeypatch.setattr(snapshots, "get_s3_client", lambda: fake)
+
+    async def _pipeline(idx: int) -> None:
+        meta = await snapshots.store_snapshot_upload(_Upload(_zip_payload(f"mix-{idx}")), f"repo-{idx}.zip")
+        root = await snapshots.prepare_snapshot_root_async(meta)
+        assert (root / "repo" / "README.md").read_text(encoding="utf-8") == f"mix-{idx}"
+        await snapshots.delete_snapshot_async(meta)
+
+    try:
+        with TemporaryDirectory() as tmpdir:
+            settings.db_dir = Path(tmpdir)
+            settings.storage_backend = "s3"
+            settings.s3_bucket = "bucket"
+
+            await asyncio.gather(*[_pipeline(idx) for idx in range(6)])
+            assert len(fake.deleted) == 6
     finally:
         settings.db_dir = original_dir
         settings.storage_backend = original_backend
