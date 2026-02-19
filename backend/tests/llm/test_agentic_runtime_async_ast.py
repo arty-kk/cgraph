@@ -143,3 +143,21 @@ def test_runtime_search_async_functions_avoid_direct_file_io_calls() -> None:
                 raise AssertionError(
                     f"{fn_name} has direct .{call.func.attr}() call in async runtime path"
                 )
+
+
+def test_get_neighbors_runtime_path_avoids_local_session_factory() -> None:
+    tools_src = TOOLS_PATH.read_text(encoding="utf-8")
+    marker = "async def _tool_get_neighbors_async"
+    assert marker in tools_src
+    chunk = tools_src.split(marker, 1)[1].split("\n\n", 1)[0]
+    assert "AsyncSessionLocal" not in chunk
+
+
+def test_neighbors_helper_uses_passed_session_without_local_factory() -> None:
+    context_path = Path("backend/app/llm/agentic/context.py")
+    src = context_path.read_text(encoding="utf-8")
+    marker = "async def _neighbors_limited_async"
+    assert marker in src
+    chunk = src.split(marker, 1)[1].split("\n\n", 1)[0]
+    assert "AsyncSessionLocal" not in chunk
+    assert "session: AsyncSession" in chunk

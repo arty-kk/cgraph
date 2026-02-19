@@ -790,6 +790,7 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
 
 async def _check_indexed_async(session: AsyncSession | None, project_id: int) -> dict | None:
     if session is None:
+        # Fallback for call sites that do not accept an external session by contract.
         async with AsyncSessionLocal() as local_session:
             row = (
                 await local_session.execute(
@@ -2099,7 +2100,6 @@ async def _tool_get_neighbors_async(
     root: Path,
     args: dict,
 ) -> dict:
-    del session
     path = args.get("path")
     direction = args.get("direction")
     depth = _clamp_int(args.get("depth"), 1, 0, 6)
@@ -2119,6 +2119,7 @@ async def _tool_get_neighbors_async(
     from .context import _neighbors_limited_async
 
     neigh = await _neighbors_limited_async(
+        session,
         project_id,
         rel_norm,
         direction=direction,
