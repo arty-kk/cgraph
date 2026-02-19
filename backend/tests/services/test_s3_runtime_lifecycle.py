@@ -11,12 +11,17 @@ from app.config import settings
 
 
 @pytest.mark.anyio
-async def test_lifespan_initializes_and_closes_s3_runtime_once(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_lifespan_initializes_and_closes_s3_runtime_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[str] = []
     original_backend = settings.storage_backend
 
     async def _fake_init_db() -> None:
         calls.append("init_db")
+
+    async def _fake_init_redis() -> None:
+        calls.append("init_redis")
 
     async def _fake_init_s3() -> None:
         calls.append("init_s3")
@@ -24,9 +29,22 @@ async def test_lifespan_initializes_and_closes_s3_runtime_once(monkeypatch: pyte
     async def _fake_close_s3() -> None:
         calls.append("close_s3")
 
+    async def _fake_close_redis() -> None:
+        calls.append("close_redis")
+
+    async def _fake_close_openai() -> None:
+        calls.append("close_openai")
+
+    async def _fake_close_db() -> None:
+        calls.append("close_db")
+
     monkeypatch.setattr(main, "init_async_db", _fake_init_db)
+    monkeypatch.setattr(main, "init_redis_pool_async", _fake_init_redis)
     monkeypatch.setattr(main, "init_s3_runtime", _fake_init_s3)
     monkeypatch.setattr(main, "close_s3_runtime", _fake_close_s3)
+    monkeypatch.setattr(main, "close_redis_pool_async", _fake_close_redis)
+    monkeypatch.setattr(main, "close_async_openai_client", _fake_close_openai)
+    monkeypatch.setattr(main, "close_async_db", _fake_close_db)
 
     try:
         settings.storage_backend = "s3"
@@ -35,7 +53,16 @@ async def test_lifespan_initializes_and_closes_s3_runtime_once(monkeypatch: pyte
     finally:
         settings.storage_backend = original_backend
 
-    assert calls == ["init_db", "init_s3", "inside", "close_s3"]
+    assert calls == [
+        "init_db",
+        "init_redis",
+        "init_s3",
+        "inside",
+        "close_s3",
+        "close_redis",
+        "close_openai",
+        "close_db",
+    ]
 
 
 @pytest.mark.anyio

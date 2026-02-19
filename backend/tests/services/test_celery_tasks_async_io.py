@@ -156,3 +156,24 @@ async def test_decrement_inflight_async_initializes_redis_pool(
     await celery_tasks._decrement_inflight_async("job-2")
 
     assert calls == ["init", "srem:stubgraph:queue:heavy:inflight:job-2"]
+
+
+def test_worker_shutdown_cleanup_calls_all_close_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    async def _fake_close_redis() -> None:
+        calls.append("close_redis")
+
+    async def _fake_close_openai() -> None:
+        calls.append("close_openai")
+
+    async def _fake_close_db() -> None:
+        calls.append("close_db")
+
+    monkeypatch.setattr(celery_tasks, "close_redis_pool_async", _fake_close_redis)
+    monkeypatch.setattr(celery_tasks, "close_async_openai_client", _fake_close_openai)
+    monkeypatch.setattr(celery_tasks, "close_async_db", _fake_close_db)
+
+    celery_tasks._on_worker_shutdown()
+
+    assert calls == ["close_redis", "close_openai", "close_db"]
