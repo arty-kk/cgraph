@@ -1,26 +1,11 @@
 # backend/app/infra/redis_client.py
 from __future__ import annotations
 
-from contextlib import contextmanager
 from threading import Lock
 
-import redis
 import redis.asyncio as redis_async
 
 from ..config import settings
-
-
-def get_redis_client() -> redis.Redis:
-    return redis.Redis.from_url(settings.redis_url, decode_responses=True)
-
-
-@contextmanager
-def sync_redis_client() -> redis.Redis:
-    client = get_redis_client()
-    try:
-        yield client
-    finally:
-        client.close()
 
 
 _async_redis_client_singleton: redis_async.Redis | None = None

@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import sys
 from pathlib import Path
@@ -6,43 +7,23 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.infra import cache
+from app.errors import ExternalServiceError
+from app.infra import cache, redis_client
 
-
-class _SyncClient:
-    def __init__(self, data: str | None = None):
-        self._data = data
-        self.closed = False
-        self.setex_calls: list[tuple[str, int, str]] = []
-        self.deleted: list[str] = []
-
-    def get(self, _key: str):
-        return self._data
-
-    def setex(self, key: str, ttl: int, payload: str):
-        self.setex_calls.append((key, ttl, payload))
-
-    def scan_iter(self, match: str):
-        _ = match
-        yield "stubgraph:a"
-        yield "stubgraph:b"
-
-    def delete(self, key: str):
-        self.deleted.append(key)
-
-    def close(self):
-        self.closed = True
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _AsyncClient:
-    def __init__(self):
+    def __init__(self, *, get_payload: str | None = '{"ok": true}'):
+        self.get_payload = get_payload
         self.get_calls: list[str] = []
         self.setex_calls: list[tuple[str, int, str]] = []
         self.delete_calls: list[str] = []
+        self.scan_values: list[str] = ["stubgraph:k:1", "stubgraph:k:2"]
 
     async def get(self, key: str):
         self.get_calls.append(key)
-        return '{"ok": true}'
+        return self.get_payload
 
     async def setex(self, key: str, ttl: int, payload: str):
         self.setex_calls.append((key, ttl, payload))
@@ -52,72 +33,42 @@ class _AsyncClient:
 
     async def scan_iter(self, match: str):
         _ = match
-        for item in ["stubgraph:k:1", "stubgraph:k:2"]:
+        for item in self.scan_values:
             yield item
 
 
-@pytest.mark.anyio
-async def test_cache_get_json_closes_sync_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _SyncClient('{"ok": true}')
-
-    class _Ctx:
-        def __enter__(self):
-            return client
-
-        def __exit__(self, exc_type, exc, tb):
-            client.close()
-            return False
-
-    monkeypatch.setattr(cache.settings, "cache_enabled", True)
-    monkeypatch.setattr(cache, "sync_redis_client", lambda: _Ctx())
-
-    result = cache.cache_get_json(["k"])
-
-    assert result == {"ok": True}
-    assert client.closed is True
+def _load_function_names(relative_path: str) -> set[str]:
+    path = BACKEND_ROOT / relative_path
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
-@pytest.mark.anyio
-async def test_cache_set_json_closes_sync_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _SyncClient()
+def test_sync_cache_and_redis_api_is_not_publicly_available() -> None:
+    assert not hasattr(cache, "cache_get_json")
+    assert not hasattr(cache, "cache_set_json")
+    assert not hasattr(cache, "cache_invalidate_prefix")
+    assert not hasattr(redis_client, "get_redis_client")
+    assert not hasattr(redis_client, "sync_redis_client")
 
-    class _Ctx:
-        def __enter__(self):
-            return client
 
-        def __exit__(self, exc_type, exc, tb):
-            client.close()
-            return False
+def test_sync_cache_and_redis_api_is_absent_in_source_contract() -> None:
+    cache_functions = _load_function_names("app/infra/cache.py")
+    redis_functions = _load_function_names("app/infra/redis_client.py")
 
-    monkeypatch.setattr(cache.settings, "cache_enabled", True)
-    monkeypatch.setattr(cache.settings, "cache_default_ttl_seconds", 60)
-    monkeypatch.setattr(cache, "sync_redis_client", lambda: _Ctx())
-
-    cache.cache_set_json(["k"], {"x": 1})
-
-    assert client.setex_calls
-    assert client.closed is True
+    assert {"cache_get_json", "cache_set_json", "cache_invalidate_prefix"}.isdisjoint(cache_functions)
+    assert {"get_redis_client", "sync_redis_client"}.isdisjoint(redis_functions)
 
 
 @pytest.mark.anyio
-async def test_cache_invalidate_prefix_closes_sync_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _SyncClient()
-
-    class _Ctx:
-        def __enter__(self):
-            return client
-
-        def __exit__(self, exc_type, exc, tb):
-            client.close()
-            return False
+async def test_cache_get_json_async_returns_none_on_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _AsyncClient(get_payload="not-json")
 
     monkeypatch.setattr(cache.settings, "cache_enabled", True)
-    monkeypatch.setattr(cache, "sync_redis_client", lambda: _Ctx())
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
 
-    cache.cache_invalidate_prefix(["k"])
+    result = await cache.cache_get_json_async(["k"])
 
-    assert client.deleted == ["stubgraph:a", "stubgraph:b"]
-    assert client.closed is True
+    assert result is None
 
 
 @pytest.mark.anyio
@@ -146,3 +97,57 @@ async def test_cache_async_uses_shared_client_for_concurrent_calls(
     assert len(client.get_calls) == 1
     assert len(client.setex_calls) == 1
     assert client.delete_calls == ["stubgraph:k:1", "stubgraph:k:2"]
+
+
+@pytest.mark.anyio
+async def test_cache_get_json_async_maps_redis_error_to_external_service_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingClient:
+        async def get(self, _key: str):
+            raise cache.RedisError("boom")
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: _FailingClient())
+
+    with pytest.raises(ExternalServiceError) as exc:
+        await cache.cache_get_json_async(["k"])
+
+    assert exc.value.context == {"key": "stubgraph:k"}
+
+
+@pytest.mark.anyio
+async def test_cache_set_json_async_maps_redis_error_to_external_service_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingClient:
+        async def setex(self, _key: str, _ttl: int, _payload: str):
+            raise cache.RedisError("boom")
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_default_ttl_seconds", 60)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: _FailingClient())
+
+    with pytest.raises(ExternalServiceError) as exc:
+        await cache.cache_set_json_async(["k"], {"x": 1})
+
+    assert exc.value.context == {"key": "stubgraph:k"}
+
+
+@pytest.mark.anyio
+async def test_cache_invalidate_prefix_async_maps_redis_error_to_external_service_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingClient:
+        async def scan_iter(self, match: str):
+            _ = match
+            raise cache.RedisError("boom")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: _FailingClient())
+
+    with pytest.raises(ExternalServiceError) as exc:
+        await cache.cache_invalidate_prefix_async(["k"])
+
+    assert exc.value.context == {"key": "stubgraph:k"}
