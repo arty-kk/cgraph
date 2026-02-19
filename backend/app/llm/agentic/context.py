@@ -5,35 +5,16 @@ import re
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
 
 from ...async_db import AsyncSessionLocal
+from sqlmodel import select
+
 from ...config import settings
 from ...contracts import get_or_build_contract_async
 from ...models import ApiCall, ApiRoute, FileEdge, FileNode
 from ...utils import resolve_under_root
 
 _FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
-
-
-def _neighbors_limited(
-    project_id: int,
-    start: str,
-    *,
-    direction: str,
-    depth: int,
-    limit: int,
-) -> list[str]:
-    """Offline/sync compatibility wrapper. Runtime code must use async variant."""
-    return asyncio.run(
-        _neighbors_limited_async(
-            project_id,
-            start,
-            direction=direction,
-            depth=depth,
-            limit=limit,
-        )
-    )
 
 
 async def _neighbors_limited_async(
@@ -118,24 +99,6 @@ def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
     for t in tokens:
         esc.append(t.replace('"', '""'))
     return " AND ".join([f'"{t}"' for t in esc if t])
-
-
-def _seed_context(
-    project_id: int, root: Path, target_rel: str, depth: int, *, max_file_chars: int
-) -> dict:
-    """Offline/sync compatibility wrapper. Runtime code must use async variant."""
-    async def _run() -> dict:
-        async with AsyncSessionLocal() as s:
-            return await _seed_context_async(
-                s,
-                project_id,
-                root,
-                target_rel,
-                depth,
-                max_file_chars=max_file_chars,
-            )
-
-    return asyncio.run(_run())
 
 
 async def _seed_context_async(

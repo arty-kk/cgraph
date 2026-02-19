@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import importlib
 import sys
 from pathlib import Path
@@ -8,7 +7,6 @@ from typing import Any, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...async_db import AsyncSessionLocal
 from .types import AgenticMeta
 
 
@@ -70,24 +68,6 @@ def _validate_tool_result(name: str, result: Any) -> dict:
     if not isinstance(err.get("message"), str) or not err.get("message"):
         raise RuntimeError(f"Tool {name} error result missing error.message")
     return result
-
-
-def _dispatch_tool(
-    project_id: int, root: Path, meta: AgenticMeta, name: str, args: dict, *, max_file_chars: int
-) -> dict:
-    async def _run() -> dict:
-        async with AsyncSessionLocal() as session:
-            return await _dispatch_tool_async(
-                session,
-                project_id,
-                root,
-                meta,
-                name,
-                args,
-                max_file_chars=max_file_chars,
-            )
-
-    return asyncio.run(_run())
 
 
 async def _dispatch_tool_async(

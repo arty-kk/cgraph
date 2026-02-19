@@ -1,15 +1,20 @@
 # agentic
 
-Пакет `agentic` содержит логику агентного вызова LLM: подготовку контекста, вызовы модели и вспомогательные инструменты.
+Пакет `agentic` содержит runtime-логику агентного вызова LLM: подготовку контекста, вызовы модели и диспетчеризацию инструментов.
 
-## Публичный API
+## Runtime API (async-only)
 
-Публичный API находится в `public.py`. Доступные функции: `analyze_agentic`, `evolve_agentic`, `fix_agentic`.
+Публичный runtime-контракт пакета — только async entrypoints:
 
-## Использование
+- `analyze_agentic_async`
+- `evolve_agentic_async`
+- `fix_agentic_async`
+- `_dispatch_tool_async`
+- `_seed_context_async`
+- `_agentic_json_call_async`
 
-Пакет вызывается через функции `analyze_agentic`, `evolve_agentic`, `fix_agentic` из `public.py`.
+Синхронные runtime entrypoints не поддерживаются и не экспортируются из `app.llm.agentic`.
 
-## Приватные функции
+## Инструменты
 
-Внутренние функции считаются приватными при префиксе `_`, но они используются тестами.
+Инструменты для runtime также вызываются через async-функции (например `*_async` из `tools.py`), которые использует `_dispatch_tool_async`.

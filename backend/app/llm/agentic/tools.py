@@ -38,7 +38,6 @@ from ...services.docs_service import _compute_project_summary_facts, _tree_outli
 from ...ts_edits import ts_add_fields_to_typedef, ts_patch_wrapper_function
 from ...ts_edits import unified_diff as _unified_diff
 from ...utils import resolve_under_root
-from .context import _neighbors_limited
 from .dispatch import _clamp_int, _tool_error, _tool_ok
 from .types import AgenticMeta
 
@@ -789,10 +788,6 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
     return tools
 
 
-def _check_indexed(project_id: int) -> dict | None:
-    return asyncio.run(_check_indexed_async(project_id))
-
-
 async def _check_indexed_async(project_id: int) -> dict | None:
     async with AsyncSessionLocal() as s:
         row = (
@@ -803,100 +798,6 @@ async def _check_indexed_async(project_id: int) -> dict | None:
     if not row:
         return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
     return None
-
-
-def _tool_get_file(
-    project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int
-) -> dict:
-    path = args.get("path")
-    if not isinstance(path, str) or not path.strip():
-        return _tool_error("bad_args", "path is required")
-    max_file_chars = max(1, min(int(max_file_chars), 200_000))
-    max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
-    max_chars = min(max_chars, max_file_chars)
-    try:
-        abs_path, rel_norm = resolve_under_root(
-            root,
-            path,
-            max_length=settings.max_rel_path_chars,
-        )
-    except Exception as e:
-        return _tool_error("invalid_path", str(e))
-    if not abs_path.exists():
-        return _tool_error("not_found", "path not found", {"path": rel_norm})
-    if not abs_path.is_file():
-        return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
-    try:
-        with abs_path.open(encoding="utf-8", errors="replace") as f:
-            text = f.read(max_chars + 1)
-    except Exception as e:
-        return _tool_error(
-            "read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)}
-        )
-    truncated = len(text) > max_chars
-    text = text[:max_chars]
-    meta.full_file_paths.add(rel_norm)
-    return _tool_ok(
-        {"path": rel_norm, "content": text, "truncated": truncated, "max_chars": max_chars}
-    )
-
-
-def _tool_get_file_lines(
-    project_id: int, root: Path, meta: AgenticMeta, args: dict, *, max_file_chars: int
-) -> dict:
-    path = args.get("path")
-    start_line = args.get("start_line")
-    end_line = args.get("end_line")
-    if not isinstance(path, str) or not path.strip():
-        return _tool_error("bad_args", "path is required")
-    try:
-        s_ln = int(start_line)
-        e_ln = int(end_line)
-    except Exception:
-        return _tool_error("bad_args", "start_line/end_line must be integers")
-    if s_ln < 1 or e_ln < 1 or e_ln < s_ln:
-        return _tool_error("bad_args", "invalid line range")
-    max_file_chars = max(1, min(int(max_file_chars), 200_000))
-    max_chars = _clamp_int(args.get("max_chars"), max_file_chars, 1, 200_000)
-    max_chars = min(max_chars, max_file_chars)
-    try:
-        abs_path, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-    except Exception as e:
-        return _tool_error("invalid_path", str(e))
-    if not abs_path.exists():
-        return _tool_error("not_found", "path not found", {"path": rel_norm})
-    if not abs_path.is_file():
-        return _tool_error("not_a_file", "path is not a file", {"path": rel_norm})
-    try:
-        with abs_path.open(encoding="utf-8", errors="replace") as f:
-            buffer: list[str] = []
-            for line_num, line in enumerate(f, start=1):
-                if line_num < s_ln:
-                    continue
-                buffer.append(line)
-                if line_num >= e_ln:
-                    break
-    except Exception as e:
-        return _tool_error(
-            "read_failed", "failed to read file", {"path": rel_norm, "reason": str(e)}
-        )
-    snippet = "".join(buffer)
-    truncated = len(snippet) > max_chars
-    if truncated:
-        snippet = snippet[:max_chars]
-    meta.full_file_paths.add(rel_norm)
-    return _tool_ok(
-        {
-            "path": rel_norm,
-            "start_line": s_ln,
-            "end_line": e_ln,
-            "content": snippet,
-            "truncated": truncated,
-            "max_chars": max_chars,
-        }
-    )
-
-
 
 
 async def _tool_get_file_async(
@@ -1101,39 +1002,6 @@ async def _tool_get_node(project_id: int, root: Path, args: dict) -> dict:
             "status": n.status,
         }
     )
-
-
-def _tool_get_neighbors(project_id: int, root: Path, args: dict) -> dict:
-    path = args.get("path")
-    direction = args.get("direction")
-    depth = _clamp_int(args.get("depth"), 1, 0, 6)
-    limit = _clamp_int(args.get("limit"), 200, 1, 2000)
-    if not isinstance(path, str) or not path.strip():
-        return _tool_error("bad_args", "path is required")
-    if direction not in ("in", "out"):
-        return _tool_error("bad_args", "direction must be 'in' or 'out'")
-    try:
-        _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-    except Exception as e:
-        return _tool_error("invalid_path", str(e))
-    neigh = _neighbors_limited(project_id, rel_norm, direction=direction, depth=depth, limit=limit)
-    return _tool_ok(
-        {
-            "path": rel_norm,
-            "direction": direction,
-            "depth": depth,
-            "neighbors": neigh,
-            "count": len(neigh),
-        }
-    )
-
-
-def _tool_search_paths(project_id: int, args: dict) -> dict:
-    async def _run() -> dict:
-        async with AsyncSessionLocal() as session:
-            return await _tool_search_paths_async(session, project_id, args)
-
-    return asyncio.run(_run())
 
 
 async def _tool_search_tests(project_id: int, args: dict) -> dict:
@@ -1593,20 +1461,6 @@ async def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file
             "matches": matches,
         }
     )
-
-
-def _tool_search_semantic(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
-    async def _run() -> dict:
-        async with AsyncSessionLocal() as session:
-            return await _tool_search_semantic_impl(
-                session,
-                project_id,
-                root,
-                args,
-                max_file_chars=max_file_chars,
-            )
-
-    return asyncio.run(_run())
 
 
 async def _tool_search_semantic_impl(
@@ -2515,209 +2369,6 @@ async def _compute_api_coverage_async(
         "matched_call_ids": matched_call_ids,
         "patterns_by_route": patterns_by_route,
     }
-
-
-def _tool_api_coverage_summary(project_id: int, args: dict) -> dict:
-    prefix = _prefix_norm(args.get("prefix"), default="/api")
-    method_filter = _method_norm(args.get("method"))
-    limit_examples = _clamp_int(args.get("limit_examples"), 10, 0, 50)
-
-    cov = asyncio.run(
-        _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
-    )
-    routes: list[ApiRoute] = cov["routes"]
-    calls: list[ApiCall] = cov["calls"]
-    matched_routes: set[int] = cov["matched_route_ids"]
-    matched_calls: set[int] = cov["matched_call_ids"]
-    patterns_by_route: dict[int, list[dict]] = cov["patterns_by_route"]
-
-    total_routes = len(routes)
-    total_calls = len(calls)
-    unmatched_routes_ids = [
-        int(getattr(r, "id", 0) or 0)
-        for r in routes
-        if int(getattr(r, "id", 0) or 0) not in matched_routes
-    ]
-    unmatched_calls_ids = [
-        int(getattr(c, "id", 0) or 0)
-        for c in calls
-        if int(getattr(c, "id", 0) or 0) not in matched_calls
-    ]
-
-    examples_routes: list[dict] = []
-    if limit_examples > 0:
-        for r in routes:
-            rid = int(getattr(r, "id", 0) or 0)
-            if rid in matched_routes:
-                continue
-            vars = patterns_by_route.get(rid) or []
-            examples_routes.append(
-                {
-                    "method": str(r.method or ""),
-                    "local_path": str(r.path or ""),
-                    "source_path": str(r.source_path or ""),
-                    "handler_name": str(r.handler_name or ""),
-                    "lineno": int(r.lineno or 0),
-                    "resolved_full_paths": [
-                        v.get("full_path") for v in vars[:5] if isinstance(v, dict)
-                    ],
-                    "reachable_hint": any(
-                        bool(v.get("reachable")) for v in vars if isinstance(v, dict)
-                    ),
-                }
-            )
-            if len(examples_routes) >= limit_examples:
-                break
-
-    examples_calls: list[dict] = []
-    if limit_examples > 0:
-        for c in calls:
-            cid = int(getattr(c, "id", 0) or 0)
-            if cid in matched_calls:
-                continue
-            examples_calls.append(
-                {
-                    "method": str(c.method or ""),
-                    "path": str(c.path or ""),
-                    "source_path": str(c.source_path or ""),
-                    "lineno": int(c.lineno or 0),
-                    "client": str(c.client or ""),
-                }
-            )
-            if len(examples_calls) >= limit_examples:
-                break
-
-    return _tool_ok(
-        {
-            "prefix": prefix,
-            "method_filter": method_filter,
-            "counts": {
-                "routes_total": total_routes,
-                "calls_total": total_calls,
-                "routes_matched": int(len(matched_routes)),
-                "routes_unmatched": int(len(unmatched_routes_ids)),
-                "calls_matched": int(len(matched_calls)),
-                "calls_unmatched": int(len(unmatched_calls_ids)),
-            },
-            "examples": {
-                "unmatched_routes": examples_routes,
-                "unmatched_calls": examples_calls,
-                "examples_limit": int(limit_examples),
-            },
-            "notes": (
-                "Matching is template-based. For backend routes, include_router resolution is "
-                "best-effort. Routes may be legitimately server-only; unmatched does not always "
-                "mean a bug."
-            ),
-        }
-    )
-
-
-def _tool_unmatched_routes(project_id: int, args: dict) -> dict:
-    prefix = _prefix_norm(args.get("prefix"), default="/api")
-    method_filter = _method_norm(args.get("method"))
-    limit = _clamp_int(args.get("limit"), 100, 1, 500)
-
-    cov = asyncio.run(
-        _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
-    )
-    routes: list[ApiRoute] = cov["routes"]
-    matched_routes: set[int] = cov["matched_route_ids"]
-    patterns_by_route: dict[int, list[dict]] = cov["patterns_by_route"]
-
-    out: list[dict] = []
-    for r in routes:
-        rid = int(getattr(r, "id", 0) or 0)
-        if rid in matched_routes:
-            continue
-        vars = patterns_by_route.get(rid) or []
-        resolved = [
-            v.get("full_path")
-            for v in vars
-            if isinstance(v, dict) and isinstance(v.get("full_path"), str)
-        ]
-        resolved = list(dict.fromkeys([x for x in resolved if x]))
-        reachable_hint = any(bool(v.get("reachable")) for v in vars if isinstance(v, dict))
-        # small scaffold hint
-        full_for_hint = resolved[0] if resolved else str(r.path or "")
-        try:
-            tpl = build_frontend_snippet(
-                str(r.method or "GET"), str(full_for_hint), handler_name=str(r.handler_name or "")
-            )
-            scaffold = {
-                "path_template": tpl.get("path_template"),
-                "function_name": tpl.get("function_name"),
-                "uses_encodePath": bool(tpl.get("uses_encodePath")),
-                "suggested_file": suggest_frontend_module_file(str(full_for_hint)),
-            }
-        except Exception:
-            scaffold = {}
-
-        out.append(
-            {
-                "method": str(r.method or ""),
-                "local_path": str(r.path or ""),
-                "resolved_full_paths": resolved[:5],
-                "source_path": str(r.source_path or ""),
-                "handler_name": str(r.handler_name or ""),
-                "lineno": int(r.lineno or 0),
-                "decorator": str(r.decorator or ""),
-                "reachable_hint": bool(reachable_hint),
-                "frontend_scaffold_hint": scaffold,
-            }
-        )
-        if len(out) >= limit:
-            break
-
-    return _tool_ok(
-        {
-            "prefix": prefix,
-            "method_filter": method_filter,
-            "count": len(out),
-            "limit": int(limit),
-            "routes": out,
-        }
-    )
-
-
-def _tool_unmatched_calls(project_id: int, args: dict) -> dict:
-    prefix = _prefix_norm(args.get("prefix"), default="/api")
-    method_filter = _method_norm(args.get("method"))
-    limit = _clamp_int(args.get("limit"), 100, 1, 500)
-
-    cov = asyncio.run(
-        _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
-    )
-    calls: list[ApiCall] = cov["calls"]
-    matched_calls: set[int] = cov["matched_call_ids"]
-
-    out: list[dict] = []
-    for c in calls:
-        cid = int(getattr(c, "id", 0) or 0)
-        if cid in matched_calls:
-            continue
-        out.append(
-            {
-                "method": str(c.method or ""),
-                "path": str(c.path or ""),
-                "path_skeleton": str(c.path_skeleton or ""),
-                "source_path": str(c.source_path or ""),
-                "lineno": int(c.lineno or 0),
-                "client": str(c.client or ""),
-            }
-        )
-        if len(out) >= limit:
-            break
-
-    return _tool_ok(
-        {
-            "prefix": prefix,
-            "method_filter": method_filter,
-            "count": len(out),
-            "limit": int(limit),
-            "calls": out,
-        }
-    )
 
 
 def _join(prefix: str, path: str) -> str:
