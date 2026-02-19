@@ -585,6 +585,74 @@ def _verify_scan_snapshot(
     return True, ""
 
 
+async def _verify_scan_snapshot_async(
+    project_root: Path,
+    snapshot: dict[str, FileSnapshot],
+    removed: list[str],
+    *,
+    batch_size: int = SCAN_STAGE_BATCH_SIZE,
+    max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
+) -> tuple[bool, str]:
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+    batch_size = max(1, int(batch_size))
+
+    async def _check_removed(rel: str) -> tuple[bool, str]:
+        async with semaphore:
+            exists = await asyncio.to_thread((project_root / rel).exists)
+        if exists:
+            return False, f"removed_path_exists:{rel}"
+        return True, ""
+
+    async def _check_snapshot_item(rel: str, snap: FileSnapshot) -> tuple[bool, str]:
+        async with semaphore:
+            p = project_root / rel
+            try:
+                st = await asyncio.to_thread(p.stat)
+            except OSError:
+                return False, f"missing:{rel}"
+            if int(st.st_mtime_ns) != int(snap.mtime_ns) or int(st.st_size) != int(snap.size):
+                return False, f"stat_changed:{rel}"
+            if snap.hash_kind == "content":
+                try:
+                    text = await asyncio.to_thread(p.read_text, encoding="utf-8", errors="replace")
+                except Exception:
+                    return False, f"read_failed:{rel}"
+                file_hash = await asyncio.to_thread(sha256_text, text)
+                if file_hash != snap.file_hash:
+                    return False, f"hash_changed:{rel}"
+            elif snap.hash_kind == "oversized":
+                expected_hash = await asyncio.to_thread(
+                    sha256_text,
+                    f"oversized:{snap.size}:{snap.mtime_ns}",
+                )
+                if expected_hash != snap.file_hash:
+                    return False, f"hash_changed:{rel}"
+            elif snap.hash_kind == "stat_only":
+                return True, ""
+            else:
+                return False, f"unknown_hash_kind:{rel}"
+        return True, ""
+
+    for i in range(0, len(removed), batch_size):
+        batch = removed[i : i + batch_size]
+        checks = await asyncio.gather(*(_check_removed(rel) for rel in batch))
+        for ok, reason in checks:
+            if not ok:
+                return ok, reason
+        await asyncio.sleep(0)
+
+    snapshot_items = list(snapshot.items())
+    for i in range(0, len(snapshot_items), batch_size):
+        batch = snapshot_items[i : i + batch_size]
+        checks = await asyncio.gather(*(_check_snapshot_item(rel, snap) for rel, snap in batch))
+        for ok, reason in checks:
+            if not ok:
+                return ok, reason
+        await asyncio.sleep(0)
+
+    return True, ""
+
+
 async def _search_index_delete_async(session: AsyncSession, project_id: int, paths: list[str]) -> None:
     if not paths:
         return
@@ -744,7 +812,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         if removed and not updated.get("aborted"):
             async with AsyncSessionLocal() as session:
                 async with project_lock_async(session, project_id):
-                    ok, reason = _verify_scan_snapshot(project_root, {}, removed)
+                    ok, reason = await _verify_scan_snapshot_async(project_root, {}, removed)
                     if not ok:
                         logger.warning(
                             "scan_project snapshot mismatch before delete",
@@ -828,7 +896,7 @@ async def scan_files_async(
         while True:
             attempts += 1
             async with project_lock_async(session, project_id):
-                ok, reason = _verify_scan_snapshot(
+                ok, reason = await _verify_scan_snapshot_async(
                     project_root,
                     prepared.snapshot,
                     prepared.removed,

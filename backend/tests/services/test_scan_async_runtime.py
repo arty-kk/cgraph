@@ -108,7 +108,11 @@ async def test_scan_files_async_returns_aborted_on_snapshot_mismatch(monkeypatch
     monkeypatch.setattr(scan, "project_lock_async", lambda *_args, **_kwargs: _NoopLock())
     monkeypatch.setattr(scan, "_prepare_scan_files_async", _fake_prepare)
     monkeypatch.setattr(scan, "_write_scan_files_async", _fake_write)
-    monkeypatch.setattr(scan, "_verify_scan_snapshot", lambda *_args, **_kwargs: (False, "changed"))
+
+    async def _fake_verify(*_args, **_kwargs):
+        return (False, "changed")
+
+    monkeypatch.setattr(scan, "_verify_scan_snapshot_async", _fake_verify)
 
     result = await scan.scan_files_async(1, 2, Path("/repo"), ["a.py"])
 
@@ -116,6 +120,162 @@ async def test_scan_files_async_returns_aborted_on_snapshot_mismatch(monkeypatch
     assert result["reason"] == "snapshot_mismatch"
     assert calls["prepare"] == 2
     assert calls["write"] == 0
+
+
+@pytest.mark.anyio
+async def test_scan_files_async_uses_async_snapshot_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared = scan.PreparedScanData(
+        present=["a.py"],
+        removed=[],
+        node_rows=[{"path": "a.py"}],
+        edge_map={},
+        search_rows=[],
+        route_rows=[],
+        call_rows=[],
+        include_rows=[],
+        route_contract_rows=[],
+        call_meta_rows=[],
+        ts_type_rows=[],
+        embedding_rows=[],
+        embedding_paths_to_delete=[],
+        removed_edge_neighbors=set(),
+        snapshot={},
+    )
+
+    class _Session:
+        pass
+
+    called = {"verify": 0}
+
+    async def _fake_prepare(*_args, **_kwargs):
+        return prepared
+
+    async def _fake_write(*_args, **_kwargs):
+        return None
+
+    async def _fake_verify(*_args, **_kwargs):
+        called["verify"] += 1
+        return (True, "")
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(scan, "project_lock_async", lambda *_args, **_kwargs: _NoopLock())
+    monkeypatch.setattr(scan, "_prepare_scan_files_async", _fake_prepare)
+    monkeypatch.setattr(scan, "_write_scan_files_async", _fake_write)
+    monkeypatch.setattr(scan, "_verify_scan_snapshot_async", _fake_verify)
+
+    result = await scan.scan_files_async(1, 2, Path("/repo"), ["a.py"])
+
+    assert result["updated_nodes"] == 1
+    assert called["verify"] == 1
+
+
+@pytest.mark.anyio
+async def test_scan_project_async_uses_async_snapshot_verify_for_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Session:
+        async def execute(self, *_args, **_kwargs):
+            return _Result([("gone.py", 0.0, 0, 0, "")])
+
+        async def commit(self):
+            return None
+
+    called = {"verify": 0}
+
+    async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = rel_paths, precomputed_stats, batch_size, max_parallel
+        return []
+
+    async def _fake_scan_files(*_args, **_kwargs):
+        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+
+    async def _fake_verify(_project_root, _snapshot, removed, **_kwargs):
+        called["verify"] += 1
+        if removed:
+            return (False, f"removed_path_exists:{removed[0]}")
+        return (True, "")
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(scan, "iter_code_files", lambda _root: [])
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
+    monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
+    monkeypatch.setattr(scan, "project_lock_async", lambda *_args, **_kwargs: _NoopLock())
+    monkeypatch.setattr(scan, "_verify_scan_snapshot_async", _fake_verify)
+
+    result = await scan.scan_project_async(1, 2, Path("/repo"))
+
+    assert called["verify"] == 1
+    assert result["removed_aborted"] is True
+    assert result["reason"] == "snapshot_mismatch"
+
+
+@pytest.mark.anyio
+async def test_verify_scan_snapshot_async_keeps_read_failed_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    file_path = tmp_path / "a.py"
+    file_path.write_text("print('ok')", encoding="utf-8")
+    st = file_path.stat()
+    snapshot = {
+        "a.py": scan.FileSnapshot(
+            mtime_ns=int(st.st_mtime_ns),
+            size=int(st.st_size),
+            file_hash="irrelevant",
+            hash_kind="content",
+        )
+    }
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("cannot read")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+    ok, reason = await scan._verify_scan_snapshot_async(tmp_path, snapshot, [])
+
+    assert ok is False
+    assert reason == "read_failed:a.py"
+
+
+@pytest.mark.anyio
+async def test_verify_scan_snapshot_async_keeps_hash_changed_reason(tmp_path: Path) -> None:
+    file_path = tmp_path / "a.py"
+    file_path.write_text("print('ok')", encoding="utf-8")
+    st = file_path.stat()
+    snapshot = {
+        "a.py": scan.FileSnapshot(
+            mtime_ns=int(st.st_mtime_ns),
+            size=int(st.st_size),
+            file_hash="bad-hash",
+            hash_kind="content",
+        )
+    }
+
+    ok, reason = await scan._verify_scan_snapshot_async(tmp_path, snapshot, [])
+
+    assert ok is False
+    assert reason == "hash_changed:a.py"
+
+
+@pytest.mark.anyio
+async def test_verify_scan_snapshot_async_keeps_unknown_hash_kind_reason(tmp_path: Path) -> None:
+    file_path = tmp_path / "a.py"
+    file_path.write_text("print('ok')", encoding="utf-8")
+    st = file_path.stat()
+    snapshot = {
+        "a.py": scan.FileSnapshot(
+            mtime_ns=int(st.st_mtime_ns),
+            size=int(st.st_size),
+            file_hash="",
+            hash_kind="weird",
+        )
+    }
+
+    ok, reason = await scan._verify_scan_snapshot_async(tmp_path, snapshot, [])
+
+    assert ok is False
+    assert reason == "unknown_hash_kind:a.py"
 
 
 
