@@ -18,6 +18,15 @@ RUNTIME_ASYNC_FUNCS = {
     "_tool_suggest_api_fix_async",
 }
 
+RUNTIME_SEARCH_ASYNC_FUNCS = {
+    "_tool_search_text_async",
+    "_tool_search_semantic_async",
+    "_tool_search_tests_async",
+    "_tool_search_symbols_async",
+    "_tool_search_routes_async",
+    "_tool_search_api_calls_async",
+}
+
 
 def _load_ast(path: Path) -> ast.AST:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -106,3 +115,31 @@ def test_dispatch_passes_session_to_runtime_async_tools() -> None:
         in src
     )
     assert src.count("(session, project_id, root, args)") >= 2
+
+
+def test_runtime_search_async_functions_avoid_direct_file_io_calls() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+
+    def _iter_calls_outside_nested_defs(node: ast.AST):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(child, ast.Call):
+                yield child
+            yield from _iter_calls_outside_nested_defs(child)
+
+    banned_attrs = {"open", "read", "read_text", "read_bytes"}
+    for fn_name in RUNTIME_SEARCH_ASYNC_FUNCS:
+        fn = fn_nodes[fn_name]
+        for call in _iter_calls_outside_nested_defs(fn):
+            if isinstance(call.func, ast.Name) and call.func.id == "open":
+                raise AssertionError(f"{fn_name} has direct open() call in async runtime path")
+            if isinstance(call.func, ast.Attribute) and call.func.attr in banned_attrs:
+                raise AssertionError(
+                    f"{fn_name} has direct .{call.func.attr}() call in async runtime path"
+                )

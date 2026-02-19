@@ -788,12 +788,17 @@ def _tool_definitions(max_file_chars: int) -> list[dict]:
     return tools
 
 
-async def _check_indexed_async(project_id: int) -> dict | None:
-    async with AsyncSessionLocal() as s:
+async def _check_indexed_async(session: AsyncSession | None, project_id: int) -> dict | None:
+    if session is None:
+        async with AsyncSessionLocal() as local_session:
+            row = (
+                await local_session.execute(
+                    select(FileNode.id).where(FileNode.project_id == project_id).limit(1)
+                )
+            ).first()
+    else:
         row = (
-            await s.execute(
-                select(FileNode.id).where(FileNode.project_id == project_id).limit(1)
-            )
+            await session.execute(select(FileNode.id).where(FileNode.project_id == project_id).limit(1))
         ).first()
     if not row:
         return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
@@ -974,155 +979,6 @@ async def _tool_get_symbol(
     return _tool_error("not_found", "symbol not found", {"path": rel_norm, "name": needle})
 
 
-async def _tool_get_node(project_id: int, root: Path, args: dict) -> dict:
-    path = args.get("path")
-    if not isinstance(path, str) or not path.strip():
-        return _tool_error("bad_args", "path is required")
-    try:
-        _abs, rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-    except Exception as e:
-        return _tool_error("invalid_path", str(e))
-    async with AsyncSessionLocal() as s:
-        n = (
-            await s.execute(
-                select(FileNode).where(FileNode.project_id == project_id, FileNode.path == rel_norm)
-            )
-        ).scalar_one_or_none()
-    if not n:
-        return _tool_error("not_found", "node not found", {"path": rel_norm})
-    return _tool_ok(
-        {
-            "path": n.path,
-            "language": n.language,
-            "loc": n.loc,
-            "complexity": n.complexity,
-            "fan_in": n.fan_in,
-            "fan_out": n.fan_out,
-            "scc_id": n.scc_id,
-            "status": n.status,
-        }
-    )
-
-
-async def _tool_search_tests(project_id: int, args: dict) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
-    if indexed_error:
-        return indexed_error
-    query = args.get("query")
-    query_norm = ""
-    if isinstance(query, str) and query.strip():
-        query_norm = query.strip()
-    limit = _clamp_int(args.get("limit"), 50, 1, 500)
-
-    patterns = [
-        "tests/%",
-        "%/tests/%",
-        "__tests__/%",
-        "%/__tests__/%",
-        "%.spec.%",
-        "%.test.%",
-        "test\\_%.py",
-        "%/test\\_%.py",
-        "%\\_test.%",
-    ]
-    cond = None
-    for pattern in patterns:
-        clause = FileNode.path.like(pattern, escape="\\")
-        cond = clause if cond is None else (cond | clause)
-    if query_norm:
-        like = f"%{query_norm}%"
-        cond = cond & FileNode.path.like(like)
-
-    async with AsyncSessionLocal() as s:
-        rows = (
-            await s.execute(
-                select(FileNode.path, FileNode.language, FileNode.fan_in, FileNode.fan_out)
-                .where(FileNode.project_id == project_id, cond)
-                .order_by(FileNode.path.asc())
-                .limit(int(limit))
-            )
-        ).all()
-
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        if isinstance(row, (tuple, list)):
-            path, lang, fi, fo = row[0], row[1], row[2], row[3]
-        else:
-            path = getattr(row, "path", "")
-            lang = getattr(row, "language", "")
-            fi = getattr(row, "fan_in", 0)
-            fo = getattr(row, "fan_out", 0)
-        if not isinstance(path, str) or not path:
-            continue
-        try:
-            fi_val = int(fi or 0)
-        except Exception:
-            fi_val = 0
-        try:
-            fo_val = int(fo or 0)
-        except Exception:
-            fo_val = 0
-        results.append(
-            {
-                "path": path,
-                "language": lang,
-                "fan_in": fi_val,
-                "fan_out": fo_val,
-            }
-        )
-
-    return _tool_ok({"query": query_norm, "limit": int(limit), "results": results})
-
-
-async def _tool_search_symbols(project_id: int, args: dict) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
-    if indexed_error:
-        return indexed_error
-    query = args.get("query")
-    if not isinstance(query, str) or not query.strip():
-        return _tool_error("bad_args", "query is required")
-    needle = query.strip()
-    match = args.get("match")
-    match_mode = (
-        match if isinstance(match, str) and match in ("exact", "prefix", "contains") else None
-    )
-    if match_mode is None:
-        match_mode = "contains"
-
-    case_sensitive_raw = args.get("case_sensitive")
-    case_sensitive = bool(case_sensitive_raw) if case_sensitive_raw is not None else False
-
-    exported_only = args.get("exported_only") is True
-
-    limit = _clamp_int(args.get("limit"), 100, 1, 500)
-
-    def _cmp_val(val: str) -> str:
-        return val if case_sensitive else val.lower()
-
-    needle_cmp = _cmp_val(needle)
-
-    def _match_type(name: str) -> str | None:
-        if not name:
-            return None
-        name_cmp = _cmp_val(name)
-        if name_cmp == needle_cmp:
-            return "exact"
-        if name_cmp.startswith(needle_cmp):
-            return "prefix"
-        if needle_cmp in name_cmp:
-            return "contains"
-        return None
-
-    def _allow_match(match_type: str) -> bool:
-        if match_mode == "exact":
-            return match_type == "exact"
-        if match_mode == "prefix":
-            return match_type in ("exact", "prefix")
-        if match_mode == "contains":
-            return match_type in ("exact", "prefix", "contains")
-        return False
-
-    rows: list[ModuleContract] = []
     async with AsyncSessionLocal() as s:
         rows = (
             await s.execute(
@@ -1234,7 +1090,7 @@ async def _tool_search_symbols(project_id: int, args: dict) -> dict:
 
 
 async def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
+    indexed_error = await _check_indexed_async(None, project_id)
     if indexed_error:
         return indexed_error
     prefix = args.get("prefix")
@@ -1306,159 +1162,6 @@ async def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict
                 "hubs_by_fan_in": bool(summary["hubs_by_fan_in_truncated"]),
                 "module_map": bool(summary["module_map_truncated"]),
             },
-        }
-    )
-
-
-async def _tool_search_text(project_id: int, root: Path, args: dict, *, max_file_chars: int) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
-    if indexed_error:
-        return indexed_error
-    query = args.get("query")
-    if not isinstance(query, str) or not query.strip():
-        return _tool_error("bad_args", "query is required")
-    needle = query.strip()
-
-    prefix = args.get("prefix")
-    prefix_norm: str | None = None
-    if isinstance(prefix, str) and prefix.strip():
-        prefix_norm = prefix.strip().replace("\\", "/").strip("/")
-        if not prefix_norm:
-            prefix_norm = None
-
-    case_sensitive_raw = args.get("case_sensitive")
-    case_sensitive = bool(case_sensitive_raw) if case_sensitive_raw is not None else False
-
-    max_files = _clamp_int(args.get("max_files"), 200, 1, 2000)
-    max_matches = _clamp_int(args.get("max_matches"), 50, 1, 500)
-    context_chars = _clamp_int(args.get("context_chars"), 160, 40, 400)
-
-    # Cap per-file read for search to avoid heavy IO (second pass limited by
-    # max_file_chars/SEARCH_INDEX_MAX_CHARS).
-    scan_max_chars = max(1, min(int(max_file_chars), 200_000))
-    index_scan_max_chars = min(SEARCH_INDEX_MAX_CHARS, scan_max_chars)
-
-    paths: list[str] = []
-    async with AsyncSessionLocal() as s:
-        try:
-            paths = await search_text_paths_async(
-                s,
-                project_id,
-                needle,
-                limit=max_files,
-                prefix=prefix_norm,
-            )
-        except Exception:
-            paths = []
-
-        if not paths:
-            q = select(FileNode.path).where(FileNode.project_id == project_id)
-            if prefix_norm:
-                like = f"{prefix_norm}/%"
-                q = q.where((FileNode.path.like(like)) | (FileNode.path == prefix_norm))
-            q = q.order_by(FileNode.fan_in.desc(), FileNode.path.asc()).limit(int(max_files))
-            rows = (await s.execute(q)).all()
-            for row in rows:
-                p = row[0] if isinstance(row, (tuple, list)) else row
-                if isinstance(p, str) and p:
-                    paths.append(p)
-
-    if not case_sensitive:
-        needle_cmp = needle.lower()
-    else:
-        needle_cmp = needle
-
-    matches: list[dict] = []
-    scanned = 0
-    matched_files: set[str] = set()
-    truncated_files = 0
-
-    for p in paths:
-        if len(matches) >= max_matches:
-            break
-        try:
-            abs_path, rel_norm = resolve_under_root(root, p, max_length=settings.max_rel_path_chars)
-        except Exception:
-            continue
-        if not abs_path.exists() or not abs_path.is_file():
-            continue
-        try:
-            with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                text = f.read(int(scan_max_chars) + 1)
-        except Exception:
-            continue
-        scanned += 1
-        truncated_initial = len(text) > scan_max_chars
-        if truncated_initial:
-            text = text[:scan_max_chars]
-
-        def _search_text(payload: str, *, truncated_flag: bool) -> bool:
-            haystack = payload if case_sensitive else payload.lower()
-            start_idx = 0
-            found_any = False
-            while True:
-                if len(matches) >= max_matches:
-                    break
-                idx = haystack.find(needle_cmp, start_idx)
-                if idx == -1:
-                    break
-                found_any = True
-                matched_files.add(rel_norm)
-
-                # Line/col (1-based)
-                line = payload.count("\n", 0, idx) + 1
-                last_nl = payload.rfind("\n", 0, idx)
-                col = (idx - (last_nl + 1)) + 1 if last_nl != -1 else idx + 1
-
-                half = max(10, context_chars // 2)
-                s0 = max(0, idx - half)
-                e0 = min(len(payload), idx + len(needle) + half)
-                snippet = payload[s0:e0]
-
-                matches.append(
-                    {
-                        "path": rel_norm,
-                        "line": int(line),
-                        "col": int(col),
-                        "snippet": snippet,
-                        "truncated_file": bool(truncated_flag),
-                    }
-                )
-
-                step = max(1, len(needle_cmp))
-                start_idx = idx + step
-            return found_any
-
-        truncated = truncated_initial
-        matched = _search_text(text, truncated_flag=truncated)
-
-        if truncated_initial and not matched and scan_max_chars < index_scan_max_chars:
-            try:
-                with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                    text = f.read(int(index_scan_max_chars) + 1)
-            except Exception:
-                continue
-            truncated = len(text) > index_scan_max_chars
-            if truncated:
-                text = text[:index_scan_max_chars]
-            matched = _search_text(text, truncated_flag=truncated)
-
-        if truncated:
-            truncated_files += 1
-
-    return _tool_ok(
-        {
-            "query": needle,
-            "prefix": prefix_norm or "",
-            "case_sensitive": bool(case_sensitive),
-            "max_files": int(max_files),
-            "max_matches": int(max_matches),
-            "context_chars": int(context_chars),
-            "scan_max_chars_per_file": int(scan_max_chars),
-            "scanned_files": int(scanned),
-            "matched_files": int(len(matched_files)),
-            "truncated_files": int(truncated_files),
-            "matches": matches,
         }
     )
 
@@ -1539,97 +1242,6 @@ async def _tool_search_semantic_impl(
     meta["fallback_used"] = False
     semantic["meta"] = meta
     return _tool_ok(semantic)
-
-
-async def _tool_search_routes(project_id: int, args: dict) -> dict:
-    query = args.get("query")
-    if not isinstance(query, str):
-        query = ""
-    query = query.strip()
-    method = args.get("method")
-    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
-    limit = _clamp_int(args.get("limit"), 50, 1, 500)
-
-    try:
-        async with AsyncSessionLocal() as s:
-            q = select(ApiRoute).where(ApiRoute.project_id == project_id)
-            if method_norm:
-                q = q.where(ApiRoute.method == method_norm)
-            if query:
-                like = f"%{query}%"
-                q = q.where(
-                    (ApiRoute.path.like(like))
-                    | (ApiRoute.handler_name.like(like))
-                    | (ApiRoute.source_path.like(like))
-                )
-            q = q.order_by(ApiRoute.path.asc(), ApiRoute.method.asc()).limit(int(limit))
-            rows = (await s.execute(q)).all()
-    except Exception as e:
-        return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
-
-    out = [
-        {
-            "method": r.method,
-            "path": r.path,
-            "source_path": r.source_path,
-            "handler_name": r.handler_name,
-            "lineno": int(r.lineno or 0),
-            "decorator": r.decorator,
-        }
-        for r in rows
-    ]
-    return _tool_ok(
-        {
-            "query": query,
-            "method": method_norm,
-            "limit": int(limit),
-            "count": len(out),
-            "routes": out,
-        }
-    )
-
-
-async def _tool_search_api_calls(project_id: int, args: dict) -> dict:
-    query = args.get("query")
-    if not isinstance(query, str):
-        query = ""
-    query = query.strip()
-    method = args.get("method")
-    method_norm = str(method).strip().upper() if isinstance(method, str) and method.strip() else ""
-    limit = _clamp_int(args.get("limit"), 50, 1, 500)
-
-    try:
-        async with AsyncSessionLocal() as s:
-            q = select(ApiCall).where(ApiCall.project_id == project_id)
-            if method_norm:
-                q = q.where(ApiCall.method == method_norm)
-            if query:
-                like = f"%{query}%"
-                q = q.where((ApiCall.path.like(like)) | (ApiCall.source_path.like(like)))
-            q = q.order_by(ApiCall.path.asc(), ApiCall.method.asc()).limit(int(limit))
-            rows = (await s.execute(q)).all()
-    except Exception as e:
-        return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
-
-    out = [
-        {
-            "method": c.method,
-            "path": c.path,
-            "source_path": c.source_path,
-            "lineno": int(c.lineno or 0),
-            "client": c.client,
-        }
-        for c in rows
-    ]
-    return _tool_ok(
-        {
-            "query": query,
-            "method": method_norm,
-            "limit": int(limit),
-            "count": len(out),
-            "calls": out,
-        }
-    )
 
 
 async def _tool_route_usages(project_id: int, args: dict) -> dict:
@@ -2525,7 +2137,7 @@ async def _tool_get_neighbors_async(
 
 
 async def _tool_search_paths_async(session: AsyncSession, project_id: int, args: dict) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
+    indexed_error = await _check_indexed_async(session, project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -2564,7 +2176,7 @@ async def _tool_search_paths_async(session: AsyncSession, project_id: int, args:
 
 
 async def _tool_search_symbols_async(session: AsyncSession, project_id: int, args: dict) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
+    indexed_error = await _check_indexed_async(session, project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -3014,7 +2626,7 @@ async def _tool_search_semantic_async(
 
 
 async def _tool_search_tests_async(session: AsyncSession, project_id: int, args: dict) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
+    indexed_error = await _check_indexed_async(session, project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -3077,7 +2689,7 @@ async def _tool_search_tests_async(session: AsyncSession, project_id: int, args:
 
 
 async def _tool_get_tree_outline_async(session: AsyncSession, project_id: int, args: dict) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
+    indexed_error = await _check_indexed_async(session, project_id)
     if indexed_error:
         return indexed_error
     prefix = args.get("prefix")
@@ -3165,7 +2777,7 @@ async def _tool_search_text_async(
     *,
     max_file_chars: int,
 ) -> dict:
-    indexed_error = await _check_indexed_async(project_id)
+    indexed_error = await _check_indexed_async(session, project_id)
     if indexed_error:
         return indexed_error
     query = args.get("query")
@@ -3215,6 +2827,8 @@ async def _tool_search_text_async(
     matched_files: set[str] = set()
     truncated_files = 0
 
+    # Runtime file scanning is intentionally sequential: there is no task fan-out,
+    # each read goes through asyncio.to_thread, so semaphore throttling is unnecessary.
     for p in paths:
         if len(matches) >= max_matches:
             break

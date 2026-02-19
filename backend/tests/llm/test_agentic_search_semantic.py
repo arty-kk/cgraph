@@ -67,12 +67,9 @@ class TestAgenticSearchSemantic(unittest.IsolatedAsyncioTestCase):
             session = object()
             semantic_mock = AsyncMock(return_value={"results": [], "meta": {"reason": "no_hits"}})
             text_async_mock = AsyncMock(return_value=agentic._tool_ok({"matches": [], "meta": {}}))
-            text_sync_mock = AsyncMock(side_effect=AssertionError("sync fallback path must not be used"))
-
             with (
                 patch("app.llm.agentic.tools.search_semantic_async", semantic_mock),
                 patch("app.llm.agentic.tools._tool_search_text_async", text_async_mock),
-                patch("app.llm.agentic.tools._tool_search_text", text_sync_mock),
             ):
                 result = await agentic._tool_search_semantic_async(
                     session,
