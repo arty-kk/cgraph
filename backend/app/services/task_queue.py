@@ -5,6 +5,8 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -36,8 +38,42 @@ logger = get_logger("stubgraph.task_queue")
 _HEAVY_INFLIGHT_KEY = "stubgraph:queue:heavy:inflight"
 
 
+class _CeleryEnqueueAdapter:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._executor: ThreadPoolExecutor | None = None
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        with self._lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="celery-enqueue")
+            return self._executor
+
+    async def enqueue_async(self, task: Any, *, args: list[Any], queue: str) -> None:
+        loop = asyncio.get_running_loop()
+        executor = self._get_executor()
+        await loop.run_in_executor(
+            executor,
+            lambda: task.apply_async(args=args, queue=queue),
+        )
+
+    def shutdown(self) -> None:
+        with self._lock:
+            executor = self._executor
+            self._executor = None
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=False)
+
+
+_enqueue_adapter = _CeleryEnqueueAdapter()
+
+
 async def _enqueue_celery_task_async(task: Any, *, args: list[Any], queue: str) -> None:
-    await asyncio.to_thread(task.apply_async, args=args, queue=queue)
+    await _enqueue_adapter.enqueue_async(task, args=args, queue=queue)
+
+
+def shutdown_celery_enqueue_adapter() -> None:
+    _enqueue_adapter.shutdown()
 
 
 def _normalize_payload(value: Any) -> Any:
