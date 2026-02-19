@@ -442,13 +442,33 @@ async def test_run_task_impl_async_uses_async_orchestrator_calls(monkeypatch, tm
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "cache_enabled", False)
+    async def _policy_async(**kwargs):
+        _ = kwargs
+        return task_service.DEFAULT_POLICY
+
+    monkeypatch.setattr(task_service, "resolve_runtime_policy_async", _policy_async)
     monkeypatch.setattr(
         task_service,
         "resolve_runtime_policy",
-        lambda **kwargs: task_service.DEFAULT_POLICY,
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("sync runtime policy used")),
+        raising=False,
     )
     monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
     monkeypatch.setattr(task_service, "analyze_with_usage_async", _analyze_async)
+    monkeypatch.setattr(
+        task_service,
+        "analyze_with_usage",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sync analyze used")),
+        raising=False,
+    )
+    import app.llm.orchestrator as orchestrator
+
+    if hasattr(orchestrator, "analyze"):
+        monkeypatch.setattr(
+            orchestrator,
+            "analyze",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sync analyze used")),
+        )
     async def _pack_context_async(*args, **kwargs):
         _ = (args, kwargs)
         return type("Pack", (), {"target_path": "target.py", "files": [], "graph": {"deps": []}})()
@@ -536,11 +556,11 @@ async def test_run_task_impl_async_uses_async_agentic_calls(monkeypatch, tmp_pat
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "cache_enabled", False)
-    monkeypatch.setattr(
-        task_service,
-        "resolve_runtime_policy",
-        lambda **kwargs: task_service.DEFAULT_POLICY,
-    )
+    async def _policy_async(**kwargs):
+        _ = kwargs
+        return task_service.DEFAULT_POLICY
+
+    monkeypatch.setattr(task_service, "resolve_runtime_policy_async", _policy_async)
     monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
     monkeypatch.setattr(task_service, "analyze_agentic_async", _agentic_async)
 
@@ -671,11 +691,11 @@ async def test_run_task_impl_async_non_agentic_does_not_touch_sync_get_session(
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "cache_enabled", False)
-    monkeypatch.setattr(
-        task_service,
-        "resolve_runtime_policy",
-        lambda **kwargs: task_service.DEFAULT_POLICY,
-    )
+    async def _policy_async(**kwargs):
+        _ = kwargs
+        return task_service.DEFAULT_POLICY
+
+    monkeypatch.setattr(task_service, "resolve_runtime_policy_async", _policy_async)
     monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
     monkeypatch.setattr(task_service, "analyze_with_usage_async", _analyze_async)
     monkeypatch.setattr(context_pack, "get_or_build_contract_async", _contract_async)

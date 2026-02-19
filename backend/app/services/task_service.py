@@ -48,7 +48,6 @@ from ..llm.policy import (
     ProfileName,
     ProfileParams,
     resolve_profile,
-    resolve_runtime_policy,  # noqa: F401 - compatibility for monkeypatch-based tests
     resolve_runtime_policy_async,
 )
 from ..llm.quality_gates import QualityGateError, validate_llm_result
