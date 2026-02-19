@@ -9,7 +9,7 @@ from typing import Any
 
 from .async_db import AsyncSessionLocal
 from .celery_app import celery_app
-from .infra.redis_client import async_redis_client
+from .infra.redis_client import get_async_redis_client, init_redis_pool_async
 from .logging import get_logger
 from .models import Project, TaskJob
 from .services.docs_service import build_project_docs_async
@@ -180,11 +180,13 @@ async def _normalize_project_root_async(root_path: str) -> Path:
 
 async def _touch_inflight_async(job_id: str) -> None:
     key = "stubgraph:queue:heavy:inflight"
-    async with async_redis_client() as client:
-        await client.sadd(key, job_id)
+    await init_redis_pool_async()
+    client = get_async_redis_client()
+    await client.sadd(key, job_id)
 
 
 async def _decrement_inflight_async(job_id: str) -> None:
     key = "stubgraph:queue:heavy:inflight"
-    async with async_redis_client() as client:
-        await client.srem(key, job_id)
+    await init_redis_pool_async()
+    client = get_async_redis_client()
+    await client.srem(key, job_id)

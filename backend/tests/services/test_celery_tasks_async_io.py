@@ -68,7 +68,9 @@ async def test_resolve_project_root_async_uses_async_normalizer(
 
 
 @pytest.mark.anyio
-async def test_mutation_indexing_task_async_uses_async_indexer(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mutation_indexing_task_async_uses_async_indexer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[str] = []
 
     async def _fake_set_job_status_async(*_args, **_kwargs):
@@ -98,11 +100,59 @@ async def test_mutation_indexing_task_async_uses_async_indexer(monkeypatch: pyte
         raise AssertionError("asyncio.to_thread must not be used for async mutation scan path")
 
     monkeypatch.setattr(celery_tasks, "_set_job_status_async", _fake_set_job_status_async)
-    monkeypatch.setattr(celery_tasks, "_resolve_project_root_async", _fake_resolve_project_root_async)
-    monkeypatch.setattr(celery_tasks, "run_mutation_indexing_async", _fake_run_mutation_indexing_async)
+    monkeypatch.setattr(
+        celery_tasks,
+        "_resolve_project_root_async",
+        _fake_resolve_project_root_async,
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "run_mutation_indexing_async",
+        _fake_run_mutation_indexing_async,
+    )
     monkeypatch.setattr(celery_tasks, "AsyncSessionLocal", lambda: _Session())
     monkeypatch.setattr(celery_tasks.asyncio, "to_thread", _fail_to_thread)
 
     await celery_tasks._mutation_indexing_task_async("job-1", 1, 7, ["a.py"], "update")
 
     assert "index" in calls
+
+
+@pytest.mark.anyio
+async def test_touch_inflight_async_initializes_redis_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class _Client:
+        async def sadd(self, key: str, value: str) -> None:
+            calls.append(f"sadd:{key}:{value}")
+
+    async def _fake_init() -> None:
+        calls.append("init")
+
+    monkeypatch.setattr(celery_tasks, "init_redis_pool_async", _fake_init)
+    monkeypatch.setattr(celery_tasks, "get_async_redis_client", lambda: _Client())
+
+    await celery_tasks._touch_inflight_async("job-1")
+
+    assert calls == ["init", "sadd:stubgraph:queue:heavy:inflight:job-1"]
+
+
+@pytest.mark.anyio
+async def test_decrement_inflight_async_initializes_redis_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _Client:
+        async def srem(self, key: str, value: str) -> None:
+            calls.append(f"srem:{key}:{value}")
+
+    async def _fake_init() -> None:
+        calls.append("init")
+
+    monkeypatch.setattr(celery_tasks, "init_redis_pool_async", _fake_init)
+    monkeypatch.setattr(celery_tasks, "get_async_redis_client", lambda: _Client())
+
+    await celery_tasks._decrement_inflight_async("job-2")
+
+    assert calls == ["init", "srem:stubgraph:queue:heavy:inflight:job-2"]

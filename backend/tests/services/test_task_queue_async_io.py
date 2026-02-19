@@ -165,7 +165,7 @@ async def test_guard_inflight_async_does_not_materialize_task_ids(monkeypatch):
 
     session = _Session()
     monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 2)
-    monkeypatch.setattr(task_queue, "async_redis_client", lambda: _FakeRedisContext(client))
+    monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: client)
 
     await task_queue._guard_inflight_async(session, "heavy", "job-1")
 
@@ -177,7 +177,7 @@ async def test_guard_inflight_async_does_not_materialize_task_ids(monkeypatch):
 async def test_guard_inflight_async_raises_bad_request_when_limit_exhausted(monkeypatch):
     client = _FakeRedisClient(eval_result=(0, 2))
     monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 2)
-    monkeypatch.setattr(task_queue, "async_redis_client", lambda: _FakeRedisContext(client))
+    monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: client)
 
     with pytest.raises(BadRequestError):
         await task_queue._guard_inflight_async(object(), "heavy", "job-1")
@@ -213,7 +213,7 @@ async def test_submit_run_async_enqueues_when_quota_available(monkeypatch):
     monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job)
     monkeypatch.setattr(task_queue, "_enqueue_celery_task_async", _fake_enqueue)
     monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 2)
-    monkeypatch.setattr(task_queue, "async_redis_client", lambda: _FakeRedisContext(client))
+    monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: client)
 
     task_id = await task_queue.submit_run_async(project_id=12, org_id=99, payload={"a": 1})
 
@@ -222,3 +222,25 @@ async def test_submit_run_async_enqueues_when_quota_available(monkeypatch):
     assert len(enqueue_calls) == 1
     assert enqueue_calls[0]["args"] == ["job-1", 12, 99, {"a": 1}]
     assert enqueue_calls[0]["queue"] == "heavy"
+
+
+@pytest.mark.anyio
+async def test_guard_inflight_async_uses_shared_client_concurrently(monkeypatch):
+    client = _FakeRedisClient(eval_result=(1, 1))
+    get_client_calls = 0
+
+    def _get_client():
+        nonlocal get_client_calls
+        get_client_calls += 1
+        return client
+
+    monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 3)
+    monkeypatch.setattr(task_queue, "get_async_redis_client", _get_client)
+
+    await asyncio.gather(
+        task_queue._guard_inflight_async(object(), "heavy", "job-1"),
+        task_queue._guard_inflight_async(object(), "heavy", "job-2"),
+    )
+
+    assert get_client_calls == 2
+    assert [call[4] for call in client.eval_calls] == ["job-1", "job-2"]

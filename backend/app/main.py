@@ -18,6 +18,7 @@ from .auth import extract_token
 from .config import settings
 from .errors import install_exception_handlers
 from .infra.rate_limit import allow_request_async, rate_limit_response
+from .infra.redis_client import close_redis_pool_async, init_redis_pool_async
 from .logging import log_requests, setup_logging
 from .services.auth_service import get_user_from_token_async
 
@@ -25,7 +26,11 @@ from .services.auth_service import get_user_from_token_async
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_async_db()
-    yield
+    try:
+        await init_redis_pool_async()
+        yield
+    finally:
+        await close_redis_pool_async()
 
 
 app = FastAPI(title="StubGraph", version="0.1.0", lifespan=lifespan)

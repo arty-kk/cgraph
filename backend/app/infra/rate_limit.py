@@ -10,7 +10,7 @@ from redis.asyncio import RedisError as AsyncRedisError
 
 from ..config import settings
 from ..logging import get_logger
-from .redis_client import async_redis_client
+from .redis_client import get_async_redis_client
 
 logger = get_logger("stubgraph.rate_limit")
 
@@ -76,11 +76,11 @@ async def allow_request_async(request: Request) -> bool:
     limit = int(settings.rate_limit_requests_per_minute)
     key = f"stubgraph:rl:{_client_id(request)}"
     try:
-        async with async_redis_client() as client:
-            count = await client.incr(key)
-            if count == 1:
-                await client.expire(key, 60)
-            return count <= limit
+        client = get_async_redis_client()
+        count = await client.incr(key)
+        if count == 1:
+            await client.expire(key, 60)
+        return count <= limit
     except AsyncRedisError as exc:
         logger.warning("Rate limit check failed", extra={"reason": str(exc)})
         return False
