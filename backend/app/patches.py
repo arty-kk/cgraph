@@ -8,7 +8,7 @@ from pathlib import Path
 from unidiff import PatchSet
 
 from .logging import get_logger
-from .storage import delete_patch_blob_by_sha
+from .storage import delete_patch_blob_by_sha_async
 
 logger = get_logger("stubgraph.api")
 
@@ -105,8 +105,8 @@ def apply_unified_diff(
     return modified
 
 
-def delete_patch_blob_for_sha(sha: str) -> None:
-    delete_patch_blob_by_sha(sha)
+async def delete_patch_blob_for_sha_async(sha: str) -> None:
+    await delete_patch_blob_by_sha_async(sha)
 
 
 def _apply_file_patch(original: list[str], file_patch) -> list[str]:

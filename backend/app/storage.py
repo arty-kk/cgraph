@@ -1,8 +1,12 @@
 # backend/app/storage.py
 """Storage abstraction for large artifacts (e.g., patch blobs).
 
-Usage: call store_patch_blob_async() for large payloads, then read_patch_blob_async()
-or get_patch_download_url_async() when returning the artifact to clients.
+Публичный API этого модуля — только async-функции:
+- store_patch_blob_async
+- read_patch_blob_async
+- delete_patch_blob_async
+- delete_patch_blob_by_sha_async
+- get_patch_download_url_async
 """
 
 from __future__ import annotations
@@ -87,10 +91,6 @@ async def _maybe_await_close(body) -> None:
         await close_result
 
 
-def store_patch_blob(patch_text: str) -> dict:
-    return asyncio.run(store_patch_blob_async(patch_text))
-
-
 async def store_patch_blob_async(patch_text: str) -> dict:
     sha = sha256_text(patch_text)
     expires_at = _expires_at()
@@ -137,10 +137,6 @@ async def store_patch_blob_async(patch_text: str) -> dict:
     return meta
 
 
-def read_patch_blob(meta: dict) -> str:
-    return asyncio.run(read_patch_blob_async(meta))
-
-
 async def read_patch_blob_async(meta: dict) -> str:
     expires_at = meta.get("expires_at") if isinstance(meta, dict) else None
     if _is_expired(expires_at if isinstance(expires_at, str) else None):
@@ -178,10 +174,6 @@ async def read_patch_blob_async(meta: dict) -> str:
     return await asyncio.to_thread(fp.read_text, encoding="utf-8", errors="replace")
 
 
-def delete_patch_blob(meta: dict | None) -> None:
-    asyncio.run(delete_patch_blob_async(meta))
-
-
 async def delete_patch_blob_async(meta: dict | None) -> None:
     if not isinstance(meta, dict):
         return
@@ -199,10 +191,6 @@ async def delete_patch_blob_async(meta: dict | None) -> None:
     sha = meta.get("sha256")
     if isinstance(sha, str) and sha:
         await delete_patch_blob_by_sha_async(sha)
-
-
-def delete_patch_blob_by_sha(sha: str) -> None:
-    asyncio.run(delete_patch_blob_by_sha_async(sha))
 
 
 async def delete_patch_blob_by_sha_async(sha: str) -> None:
@@ -230,10 +218,6 @@ async def delete_patch_blob_by_sha_async(sha: str) -> None:
         await get_s3_client().delete_object(Bucket=bucket, Key=key)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to delete S3 patch blob", extra={"reason": str(exc)})
-
-
-def get_patch_download_url(meta: dict) -> str | None:
-    return asyncio.run(get_patch_download_url_async(meta))
 
 
 async def get_patch_download_url_async(meta: dict) -> str | None:

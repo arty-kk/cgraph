@@ -62,7 +62,7 @@ from ..models import (
     Project,
     TaskJob,
 )
-from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha
+from ..patches import PatchApplyError, apply_unified_diff, delete_patch_blob_for_sha_async
 from ..scan import scan_files_async
 from ..services.entitlements_service import (
     get_entitlement_bool_async,
@@ -166,7 +166,7 @@ async def _read_patch_blob_async(meta: dict) -> str:
 
 
 async def _delete_patch_blob_for_sha_async(sha: str) -> None:
-    await asyncio.to_thread(delete_patch_blob_for_sha, sha)
+    await delete_patch_blob_for_sha_async(sha)
 
 
 def _json_loads_or(raw: str | None, fallback):

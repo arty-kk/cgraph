@@ -9,10 +9,11 @@ from sqlmodel import delete, select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.async_db import AsyncSessionLocal, async_engine
-from app.models import AnalysisRun, Project, RepoSnapshot
-from app.services import project_service
-from tests.services.db_helpers import ensure_async_postgres
+pytest_plugins = ("tests.services.db_helpers",)
+
+from app.async_db import AsyncSessionLocal, async_engine  # noqa: E402
+from app.models import AnalysisRun, Project, RepoSnapshot  # noqa: E402
+from app.services import project_service  # noqa: E402
 
 
 @pytest.mark.anyio
@@ -69,27 +70,33 @@ async def test_delete_project_file_errors_do_not_rollback_db(ensure_async_postgr
 
             cache_calls: list[list[str]] = []
 
-            async def _cache_set_json_async(parts: list[str], payload: object, *, ttl_seconds=None) -> None:
+            async def _cache_set_json_async(
+                parts: list[str], payload: object, *, ttl_seconds=None
+            ) -> None:
                 _ = (payload, ttl_seconds)
                 cache_calls.append(parts)
 
             with (
                 mock.patch.object(
                     project_service,
-                    "delete_project_snapshot_root",
+                    "delete_project_snapshot_root_async",
                     side_effect=RuntimeError("root delete failed"),
                 ),
                 mock.patch.object(
                     project_service,
-                    "delete_patch_blob_for_sha",
+                    "delete_patch_blob_for_sha_async",
                     side_effect=RuntimeError("patch delete failed"),
                 ),
                 mock.patch.object(
                     project_service,
-                    "delete_snapshot",
+                    "delete_snapshot_async",
                     side_effect=RuntimeError("snapshot delete failed"),
                 ),
-                mock.patch.object(project_service, "cache_set_json_async", side_effect=_cache_set_json_async),
+                mock.patch.object(
+                    project_service,
+                    "cache_set_json_async",
+                    side_effect=_cache_set_json_async,
+                ),
             ):
                 async with AsyncSessionLocal() as session:
                     await project_service.delete_project_async(session, project_id, org_id)
@@ -98,12 +105,20 @@ async def test_delete_project_file_errors_do_not_rollback_db(ensure_async_postgr
                 project_row = await session.get(Project, project_id)
                 assert project_row is None
                 runs = (
-                    (await session.execute(select(AnalysisRun).where(AnalysisRun.project_id == project_id)))
+                    (
+                        await session.execute(
+                            select(AnalysisRun).where(AnalysisRun.project_id == project_id)
+                        )
+                    )
                     .scalars()
                     .all()
                 )
                 snapshots = (
-                    (await session.execute(select(RepoSnapshot).where(RepoSnapshot.project_id == project_id)))
+                    (
+                        await session.execute(
+                            select(RepoSnapshot).where(RepoSnapshot.project_id == project_id)
+                        )
+                    )
                     .scalars()
                     .all()
                 )

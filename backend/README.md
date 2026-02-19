@@ -11,3 +11,8 @@
 Фактическое подключение lifecycle уже сделано в `app.main.lifespan`:
 - startup: `init_redis_pool_async`;
 - shutdown: `close_redis_pool_async`.
+
+
+Patch storage в `app.storage` также работает только в async-режиме:
+- используйте `store_patch_blob_async`, `read_patch_blob_async`, `delete_patch_blob_async`, `delete_patch_blob_by_sha_async`, `get_patch_download_url_async`;
+- sync API для patch blob не поддерживается.
