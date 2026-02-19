@@ -3,13 +3,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
-from .async_db import AsyncSessionLocal
+from celery.signals import worker_shutdown
+
+from .async_db import AsyncSessionLocal, close_async_db
 from .celery_app import celery_app
-from .infra.redis_client import get_async_redis_client, init_redis_pool_async
+from .infra.redis_client import (
+    close_redis_pool_async,
+    get_async_redis_client,
+    init_redis_pool_async,
+)
+from .llm.client import close_async_openai_client
 from .logging import get_logger
 from .models import Project, TaskJob
 from .services.docs_service import build_project_docs_async
@@ -21,6 +30,50 @@ from .services.task_service import TaskRequest, run_task_async
 from .utils import normalize_project_root
 
 logger = get_logger("stubgraph.celery")
+
+
+def _run_async_cleanup(cleanup: Callable[[], Awaitable[None]]) -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(cleanup())
+        return
+
+    errors: list[BaseException] = []
+
+    def _target() -> None:
+        try:
+            asyncio.run(cleanup())
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join()
+
+    if errors:
+        raise RuntimeError("Cleanup coroutine failed in helper thread") from errors[0]
+
+
+async def _cleanup_worker_resources_async() -> None:
+    cleanup_steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+        ("close_redis_pool_async", close_redis_pool_async),
+        ("close_async_openai_client", close_async_openai_client),
+        ("close_async_db", close_async_db),
+    ]
+    for name, cleanup in cleanup_steps:
+        try:
+            await cleanup()
+        except Exception:  # noqa: BLE001
+            logger.exception("Celery cleanup failed", extra={"step": name})
+
+
+@worker_shutdown.connect
+def _on_worker_shutdown(**_kwargs: Any) -> None:
+    try:
+        _run_async_cleanup(_cleanup_worker_resources_async)
+    except Exception:  # noqa: BLE001
+        logger.exception("Celery worker cleanup bridge failed")
 
 
 async def _set_job_status_async(

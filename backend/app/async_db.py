@@ -38,6 +38,10 @@ async def init_async_db() -> None:
         raise RuntimeError(f"DB init failed: {e}") from e
 
 
+async def close_async_db() -> None:
+    await async_engine.dispose()
+
+
 async def get_async_session() -> AsyncIterator[AsyncSession]:
     async with AsyncSessionLocal() as session:
         yield session
