@@ -16,6 +16,12 @@ async def test_close_async_db_is_idempotent() -> None:
 
 
 @pytest.mark.anyio
+async def test_close_async_db_is_stable_for_repeated_cycles() -> None:
+    for _ in range(5):
+        await async_db.close_async_db()
+
+
+@pytest.mark.anyio
 async def test_close_async_openai_client_resets_singleton_with_aclose(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -59,6 +65,26 @@ async def test_close_async_openai_client_is_noop_when_singleton_absent(
 
     await llm_client.close_async_openai_client()
 
+    assert llm_client._async_client is None
+
+
+@pytest.mark.anyio
+async def test_close_async_openai_client_is_idempotent_across_many_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _Client:
+        async def aclose(self) -> None:
+            calls.append("aclose")
+
+    monkeypatch.setattr(llm_client, "_async_client", _Client())
+
+    await llm_client.close_async_openai_client()
+    await llm_client.close_async_openai_client()
+    await llm_client.close_async_openai_client()
+
+    assert calls == ["aclose"]
     assert llm_client._async_client is None
 
 
