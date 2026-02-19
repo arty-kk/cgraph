@@ -751,61 +751,103 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                     resolved_mtime_ns = int(float(mtime or 0) * 1_000_000_000)
                 existing_map[path] = (resolved_mtime_ns, int(size or 0), str(h or ""))
 
-        current_paths = await asyncio.to_thread(
-            lambda: [p.relative_to(project_root).as_posix() for p in iter_code_files(project_root)]
-        )
-        stat_results = await _collect_file_stats_async(project_root, current_paths)
-        stats_map = {item.rel: (item.mtime_ns, item.size) for item in stat_results}
-
-        removed = sorted(set(existing_map.keys()) - set(current_paths))
+        existing_keys = set(existing_map.keys())
+        seen_paths: set[str] = set()
+        candidate_set: set[str] = set()
         candidates: list[str] = []
-        verify_paths: list[str] = []
+        candidate_stats: dict[str, tuple[int, int]] = {}
         hash_verify_max_bytes = int(
             settings.scan_hash_verify_max_file_bytes or settings.snapshot_max_file_bytes
         )
-        for rel in current_paths:
-            mtime_ns, size = stats_map.get(rel, (0, 0))
-            prev = existing_map.get(rel)
-            if not prev:
-                candidates.append(rel)
-                continue
-            prev_mtime_ns, prev_size, _prev_hash = prev
-            if int(prev_size) != int(size) or int(prev_mtime_ns) != int(mtime_ns):
-                candidates.append(rel)
-                continue
-            if not _prev_hash:
-                continue
-            if hash_verify_max_bytes > 0 and int(size) > hash_verify_max_bytes:
-                oversized_hash = sha256_text(f"oversized:{size}:{mtime_ns}")
-                if oversized_hash != _prev_hash:
-                    candidates.append(rel)
-                continue
-            verify_paths.append(rel)
 
-        for i in range(0, len(verify_paths), SCAN_STAGE_BATCH_SIZE):
-            batch = verify_paths[i : i + SCAN_STAGE_BATCH_SIZE]
-            read_results = await _read_file_batch_async(
-                project_root,
-                batch,
-                stats_map,
-                hash_verify_max_bytes,
-            )
-            for item in read_results:
-                prev = existing_map.get(item.rel)
-                prev_hash = prev[2] if prev else ""
-                if item.text is None:
-                    candidates.append(item.rel)
+        def _mark_candidate(rel: str, mtime_ns: int, size: int) -> None:
+            if rel not in candidate_set:
+                candidate_set.add(rel)
+                candidates.append(rel)
+            candidate_stats[rel] = (int(mtime_ns), int(size))
+
+        async def _process_path_batch(rel_batch: list[str]) -> None:
+            if not rel_batch:
+                return
+            stat_results = await _collect_file_stats_async(project_root, rel_batch)
+            batch_stats = {item.rel: (item.mtime_ns, item.size) for item in stat_results}
+            verify_paths: list[str] = []
+
+            for rel in rel_batch:
+                mtime_ns, size = batch_stats.get(rel, (0, 0))
+                prev = existing_map.get(rel)
+                if not prev:
+                    _mark_candidate(rel, mtime_ns, size)
                     continue
-                if sha256_text(item.text) != prev_hash:
-                    candidates.append(item.rel)
-            await asyncio.sleep(0)
+                prev_mtime_ns, prev_size, prev_hash = prev
+                if int(prev_size) != int(size) or int(prev_mtime_ns) != int(mtime_ns):
+                    _mark_candidate(rel, mtime_ns, size)
+                    continue
+                if not prev_hash:
+                    continue
+                if hash_verify_max_bytes > 0 and int(size) > hash_verify_max_bytes:
+                    oversized_hash = sha256_text(f"oversized:{size}:{mtime_ns}")
+                    if oversized_hash != prev_hash:
+                        _mark_candidate(rel, mtime_ns, size)
+                    continue
+                verify_paths.append(rel)
+
+            for i in range(0, len(verify_paths), SCAN_STAGE_BATCH_SIZE):
+                verify_batch = verify_paths[i : i + SCAN_STAGE_BATCH_SIZE]
+                read_results = await _read_file_batch_async(
+                    project_root,
+                    verify_batch,
+                    batch_stats,
+                    hash_verify_max_bytes,
+                )
+                for item in read_results:
+                    prev = existing_map.get(item.rel)
+                    prev_hash = prev[2] if prev else ""
+                    if item.text is None or sha256_text(item.text) != prev_hash:
+                        _mark_candidate(item.rel, item.mtime_ns, item.size)
+                await asyncio.sleep(0)
+
+        queue_size = max(1, SCAN_STAGE_BATCH_SIZE * SCAN_STAGE_MAX_PARALLEL)
+        path_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=queue_size)
+        producer_done = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _produce_paths() -> None:
+            try:
+                for path in iter_code_files(project_root):
+                    rel = path.relative_to(project_root).as_posix()
+                    asyncio.run_coroutine_threadsafe(path_queue.put(rel), loop).result()
+            finally:
+                asyncio.run_coroutine_threadsafe(path_queue.put(None), loop).result()
+                loop.call_soon_threadsafe(producer_done.set)
+
+        producer_task = asyncio.create_task(asyncio.to_thread(_produce_paths))
+        path_batch: list[str] = []
+        while True:
+            rel = await path_queue.get()
+            if rel is None:
+                break
+            seen_paths.add(rel)
+            path_batch.append(rel)
+            if len(path_batch) >= SCAN_STAGE_BATCH_SIZE:
+                await _process_path_batch(path_batch)
+                path_batch = []
+
+        if path_batch:
+            await _process_path_batch(path_batch)
+
+        await producer_done.wait()
+        await producer_task
+
+        removed = sorted(existing_keys - seen_paths)
+        sorted_candidates = sorted(candidates)
 
         updated = await scan_files_async(
             project_id,
             org_id,
             project_root,
-            candidates,
-            precomputed_stats=stats_map,
+            sorted_candidates,
+            precomputed_stats=candidate_stats,
         )
 
         removed_aborted = False
@@ -849,8 +891,8 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         raise LockedError(f"Project {project_id} is locked by another operation") from exc
 
     result = {
-        "nodes": len(current_paths),
-        "changed": len(candidates),
+        "nodes": len(seen_paths),
+        "changed": len(sorted_candidates),
         "removed": len(removed),
         **updated,
     }
