@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..config import settings
-from .routing_thresholds import resolve_routing_thresholds, resolve_routing_thresholds_async
+from .routing_thresholds import resolve_routing_thresholds_async
 
 
 @dataclass(frozen=True)
@@ -34,21 +34,17 @@ def _select_model_from_pool(
     pool: list[str],
     complexity_coeff: float,
     *,
-    threshold_low: float | None = None,
-    threshold_mid: float | None = None,
-    threshold_high: float | None = None,
+    threshold_low: float,
+    threshold_mid: float,
+    threshold_high: float,
 ) -> str:
     if not pool:
         return ""
     if len(pool) == 1:
         return pool[0]
-    low, mid, high = resolve_routing_thresholds()
-    if threshold_low is not None:
-        low = float(threshold_low)
-    if threshold_mid is not None:
-        mid = float(threshold_mid)
-    if threshold_high is not None:
-        high = float(threshold_high)
+    low = float(threshold_low)
+    mid = float(threshold_mid)
+    high = float(threshold_high)
 
     if len(pool) == 2:
         return pool[1] if complexity_coeff >= mid else pool[0]
@@ -77,58 +73,6 @@ def _resolve_verifier_effort(
     return "low"
 
 
-def resolve_runtime_policy(
-    *,
-    task_kind: str | None,
-    complexity_coeff: float,
-    prompt_len: int,
-) -> ModelPolicy:
-    triage_pool = _parse_model_pool(settings.triage_model)
-    analysis_pool = _parse_model_pool(settings.analysis_model)
-    patch_pool = _parse_model_pool(settings.patch_model)
-
-    prompt_factor = min(1.0, max(0.0, prompt_len / max(1, int(settings.max_prompt_chars))))
-    triage_complexity = 1.0 + prompt_factor
-    task_bias = 0.15 if task_kind == "fix" else 0.0
-    eff_complexity = max(1.0, min(2.0, float(complexity_coeff) + task_bias))
-
-    triage_model = _select_model_from_pool(triage_pool, triage_complexity) or settings.triage_model
-    analysis_model = (
-        _select_model_from_pool(analysis_pool, eff_complexity) or settings.analysis_model
-    )
-    patch_model = _select_model_from_pool(patch_pool, eff_complexity) or settings.patch_model
-
-    threshold_low, threshold_mid, threshold_high = resolve_routing_thresholds()
-    verifier_model = (
-        _select_model_from_pool(
-            analysis_pool,
-            min(threshold_mid, eff_complexity),
-            threshold_low=threshold_low,
-            threshold_mid=threshold_mid,
-            threshold_high=threshold_high,
-        )
-        or settings.analysis_model
-    )
-    verifier_effort = _resolve_verifier_effort(
-        task_kind,
-        eff_complexity,
-        prompt_factor,
-        threshold_low=threshold_low,
-        threshold_high=threshold_high,
-    )
-
-    return ModelPolicy(
-        triage_model=triage_model,
-        analysis_model=analysis_model,
-        patch_model=patch_model,
-        verifier_model=verifier_model,
-        triage_effort=settings.reasoning_effort_triage,
-        analysis_effort=settings.reasoning_effort_analysis,
-        patch_effort=settings.reasoning_effort_patch,
-        verifier_effort=verifier_effort,
-    )
-
-
 async def resolve_runtime_policy_async(
     *,
     task_kind: str | None,
@@ -143,14 +87,39 @@ async def resolve_runtime_policy_async(
     triage_complexity = 1.0 + prompt_factor
     task_bias = 0.15 if task_kind == "fix" else 0.0
     eff_complexity = max(1.0, min(2.0, float(complexity_coeff) + task_bias))
-
-    triage_model = _select_model_from_pool(triage_pool, triage_complexity) or settings.triage_model
-    analysis_model = (
-        _select_model_from_pool(analysis_pool, eff_complexity) or settings.analysis_model
-    )
-    patch_model = _select_model_from_pool(patch_pool, eff_complexity) or settings.patch_model
-
     threshold_low, threshold_mid, threshold_high = await resolve_routing_thresholds_async()
+
+    triage_model = (
+        _select_model_from_pool(
+            triage_pool,
+            triage_complexity,
+            threshold_low=threshold_low,
+            threshold_mid=threshold_mid,
+            threshold_high=threshold_high,
+        )
+        or settings.triage_model
+    )
+    analysis_model = (
+        _select_model_from_pool(
+            analysis_pool,
+            eff_complexity,
+            threshold_low=threshold_low,
+            threshold_mid=threshold_mid,
+            threshold_high=threshold_high,
+        )
+        or settings.analysis_model
+    )
+    patch_model = (
+        _select_model_from_pool(
+            patch_pool,
+            eff_complexity,
+            threshold_low=threshold_low,
+            threshold_mid=threshold_mid,
+            threshold_high=threshold_high,
+        )
+        or settings.patch_model
+    )
+
     verifier_model = (
         _select_model_from_pool(
             analysis_pool,

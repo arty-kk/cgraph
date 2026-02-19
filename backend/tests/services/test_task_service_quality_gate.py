@@ -82,7 +82,11 @@ def _patch_common(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
     monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
-    monkeypatch.setattr(task_service, "resolve_runtime_policy", lambda **kwargs: ModelPolicy())
+    async def _policy_async(**kwargs):
+        _ = kwargs
+        return ModelPolicy()
+
+    monkeypatch.setattr(task_service, "resolve_runtime_policy_async", _policy_async)
     
     async def _plan_task_async(*args, **kwargs):
         _ = (args, kwargs)
