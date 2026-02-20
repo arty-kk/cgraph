@@ -6,9 +6,7 @@ import os
 import asyncio
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Tuple
@@ -36,6 +34,7 @@ from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
 from .llm.client import get_async_openai_client
 from .infra.external_io_runtime import run_openai_io_async
+from .infra.fs_runtime import run_fs_io_async
 from .logging import get_logger
 from .models import (
     ApiCall,
@@ -74,7 +73,6 @@ SCAN_STAGE_MAX_PARALLEL = 8
 
 @dataclass
 class ScanRuntime:
-    executor: ThreadPoolExecutor
     batch_size: int
     max_parallel: int
 
@@ -83,38 +81,20 @@ class ScanRuntime:
         return self.max_parallel
 
 
-_scan_runtime: ScanRuntime | None = None
-_scan_runtime_lock = Lock()
-
-
 def get_scan_runtime() -> ScanRuntime:
-    global _scan_runtime
-    with _scan_runtime_lock:
-        if _scan_runtime is None:
-            max_parallel = max(1, int(SCAN_STAGE_MAX_PARALLEL))
-            _scan_runtime = ScanRuntime(
-                executor=ThreadPoolExecutor(max_workers=max_parallel, thread_name_prefix="scan-runtime"),
-                batch_size=max(1, int(SCAN_STAGE_BATCH_SIZE)),
-                max_parallel=max_parallel,
-            )
-        return _scan_runtime
+    max_parallel = max(1, int(SCAN_STAGE_MAX_PARALLEL))
+    return ScanRuntime(
+        batch_size=max(1, int(SCAN_STAGE_BATCH_SIZE)),
+        max_parallel=max_parallel,
+    )
 
 
 async def close_scan_runtime() -> None:
-    global _scan_runtime
-    with _scan_runtime_lock:
-        runtime = _scan_runtime
-        _scan_runtime = None
-    if runtime is None:
-        return
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, partial(runtime.executor.shutdown, wait=True, cancel_futures=True))
+    return
 
 
 async def _run_scan_batch(sync_fn, *args):
-    runtime = get_scan_runtime()
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(runtime.executor, partial(sync_fn, *args))
+    return await run_fs_io_async(sync_fn, *args, operation="scan_batch")
 
 
 def _today_utc():
@@ -891,44 +871,69 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
 
         runtime = get_scan_runtime()
         queue_size = runtime.queue_size
-        path_queue: asyncio.Queue[list[str] | None] = asyncio.Queue(maxsize=queue_size)
-        producer_done = asyncio.Event()
-        loop = asyncio.get_running_loop()
+        sentinel = object()
+        path_queue: asyncio.Queue[list[str] | object] = asyncio.Queue(maxsize=queue_size)
+        limiter = asyncio.Semaphore(queue_size)
 
-        def _produce_paths() -> None:
+        def _collect_all_paths(root: Path) -> list[str]:
+            return [path.relative_to(root).as_posix() for path in iter_code_files(root)]
+
+        async def _produce_paths_async() -> None:
             producer_started = time.monotonic()
-            current_batch: list[str] = []
             try:
-                for path in iter_code_files(project_root):
-                    rel = path.relative_to(project_root).as_posix()
-                    current_batch.append(rel)
-                    if len(current_batch) >= runtime.batch_size:
-                        asyncio.run_coroutine_threadsafe(path_queue.put(current_batch), loop).result()
-                        scan_metrics["producer"]["batches"] += 1
-                        scan_metrics["producer"]["paths"] += len(current_batch)
-                        current_batch = []
-                if current_batch:
-                    asyncio.run_coroutine_threadsafe(path_queue.put(current_batch), loop).result()
+                rel_paths = await run_fs_io_async(_collect_all_paths, project_root, operation="scan_paths")
+                for i in range(0, len(rel_paths), runtime.batch_size):
+                    rel_batch = rel_paths[i : i + runtime.batch_size]
+                    await limiter.acquire()
+                    try:
+                        await path_queue.put(rel_batch)
+                    except BaseException:
+                        limiter.release()
+                        raise
                     scan_metrics["producer"]["batches"] += 1
-                    scan_metrics["producer"]["paths"] += len(current_batch)
+                    scan_metrics["producer"]["paths"] += len(rel_batch)
             finally:
-                asyncio.run_coroutine_threadsafe(path_queue.put(None), loop).result()
-                loop.call_soon_threadsafe(producer_done.set)
+                while True:
+                    try:
+                        await asyncio.shield(path_queue.put(sentinel))
+                        break
+                    except asyncio.CancelledError:
+                        if path_queue.full():
+                            try:
+                                dropped = path_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                await asyncio.sleep(0)
+                            else:
+                                if dropped is not sentinel:
+                                    limiter.release()
+                            continue
+                        raise
                 scan_metrics["producer"]["duration_s"] = (
                     scan_metrics["producer"].get("duration_s", 0.0) + time.monotonic() - producer_started
                 )
 
-        producer_task = asyncio.create_task(asyncio.to_thread(_produce_paths))
-        while True:
-            rel_batch = await path_queue.get()
-            if rel_batch is None:
-                break
-            for rel in rel_batch:
-                seen_paths.add(rel)
-            await _process_path_batch(rel_batch)
+        async def _consume_paths_async() -> None:
+            while True:
+                rel_batch = await path_queue.get()
+                if rel_batch is sentinel:
+                    break
+                assert isinstance(rel_batch, list)
+                try:
+                    for rel in rel_batch:
+                        seen_paths.add(rel)
+                    await _process_path_batch(rel_batch)
+                finally:
+                    limiter.release()
 
-        await producer_done.wait()
-        await producer_task
+        producer_task = asyncio.create_task(_produce_paths_async(), name=f"scan-producer-{project_id}")
+        consumer_task = asyncio.create_task(_consume_paths_async(), name=f"scan-consumer-{project_id}")
+        try:
+            await asyncio.gather(producer_task, consumer_task)
+        finally:
+            for task in (producer_task, consumer_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(producer_task, consumer_task, return_exceptions=True)
 
         removed = sorted(existing_keys - seen_paths)
         sorted_candidates = sorted(candidates)
