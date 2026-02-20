@@ -98,7 +98,10 @@ async def test_update_graph_metrics_incremental_async_uses_async_session_execute
 
 
 @pytest.mark.anyio
-async def test_search_semantic_async_uses_async_execute_and_cpu_to_thread(monkeypatch):
+async def test_search_semantic_async_uses_async_execute_cpu_to_thread_and_fs_runtime(
+    monkeypatch,
+    tmp_path: Path,
+):
     class _ScalarResult:
         def __init__(self, value):
             self._value = value
@@ -143,26 +146,31 @@ async def test_search_semantic_async_uses_async_execute_and_cpu_to_thread(monkey
         embeddings = _Embeddings()
 
     to_thread_calls: list[str] = []
+    fs_calls: list[str] = []
+
+    target_file = tmp_path / "a.py"
+    target_file.write_text("def func():\n    return 1\n", encoding="utf-8")
 
     async def _fake_to_thread(func, *args, **kwargs):
         to_thread_calls.append(func.__name__)
         return func(*args, **kwargs)
 
+    async def _fake_run_fs_io_async(fn, *args, **kwargs):
+        fs_calls.append(kwargs.get("operation", ""))
+        kwargs.pop("operation", None)
+        return fn(*args, **kwargs)
+
     monkeypatch.setattr(graph, "get_async_openai_client", lambda: _Client())
     monkeypatch.setattr(graph.settings, "embeddings_enabled", True)
     monkeypatch.setattr(graph.settings, "openai_api_key", "test")
-    monkeypatch.setattr(
-        graph,
-        "resolve_under_root",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no fs")),
-    )
+    monkeypatch.setattr(graph, "run_fs_io_async", _fake_run_fs_io_async)
     monkeypatch.setattr(graph.asyncio, "to_thread", _fake_to_thread)
 
     session = _Session()
     result = await graph.search_semantic_async(
         session,
         1,
-        Path("/repo"),
+        tmp_path,
         "find symbol",
         max_results=5,
     )
@@ -170,6 +178,7 @@ async def test_search_semantic_async_uses_async_execute_and_cpu_to_thread(monkey
     assert "results" in result
     assert session.calls == 2
     assert to_thread_calls == ["_score_semantic_candidates_cpu"]
+    assert "graph.semantic.read_candidate" in fs_calls
 
 
 def test_task_service_ensure_node_exists_async_uses_async_graph_metrics() -> None:
