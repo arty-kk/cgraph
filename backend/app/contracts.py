@@ -1,7 +1,6 @@
 # backend/app/contracts.py
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import delete, select
 
 from .errors import PathValidationError
+from .infra.fs_runtime import run_fs_io_async
 from .indexers import pick_indexer
 from .models import ModuleContract
 from .resolve import resolve_spec
@@ -89,23 +89,33 @@ def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
-    return await asyncio.to_thread(_path_exists_and_is_file, path)
+    return await run_fs_io_async(_path_exists_and_is_file, path, operation="contracts.path_is_file")
 
 
 async def _resolve_path_async(path: Path) -> Path:
-    return await asyncio.to_thread(path.resolve)
+    return await run_fs_io_async(path.resolve, operation="contracts.resolve_path")
 
 
 async def _resolve_under_root_async(project_root: Path, rel_path: str) -> tuple[Path, str]:
-    return await asyncio.to_thread(resolve_under_root, project_root, rel_path)
+    return await run_fs_io_async(
+        resolve_under_root,
+        project_root,
+        rel_path,
+        operation="contracts.resolve_under_root",
+    )
 
 
 async def _sha256_file_async(path: Path) -> str:
-    return await asyncio.to_thread(sha256_file, path)
+    return await run_fs_io_async(sha256_file, path, operation="contracts.sha256")
 
 
 async def _read_text_async(path: Path) -> str:
-    return await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+    return await run_fs_io_async(
+        path.read_text,
+        encoding="utf-8",
+        errors="replace",
+        operation="contracts.read_text",
+    )
 
 
 async def _build_contract_payload_async(
@@ -114,7 +124,14 @@ async def _build_contract_payload_async(
     p: Path,
     file_text: str,
 ) -> dict:
-    return await asyncio.to_thread(_build_contract_payload, project_root, rel_norm, p, file_text)
+    return await run_fs_io_async(
+        _build_contract_payload,
+        project_root,
+        rel_norm,
+        p,
+        file_text,
+        operation="contracts.build_payload",
+    )
 
 
 async def get_or_build_contract_async(

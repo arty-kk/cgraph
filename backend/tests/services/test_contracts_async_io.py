@@ -9,16 +9,16 @@ from app import contracts
 
 
 @pytest.mark.anyio
-async def test_read_text_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_read_text_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return "payload"
 
-    monkeypatch.setattr(contracts.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(contracts, "run_fs_io_async", _fake_fs_runtime)
 
     path = Path("/tmp/module.py")
     result = await contracts._read_text_async(path)
@@ -26,20 +26,20 @@ async def test_read_text_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -
     assert result == "payload"
     assert calls["func"] == path.read_text
     assert calls["args"] == ()
-    assert calls["kwargs"] == {"encoding": "utf-8", "errors": "replace"}
+    assert calls["kwargs"] == {"encoding": "utf-8", "errors": "replace", "operation": "contracts.read_text"}
 
 
 @pytest.mark.anyio
-async def test_build_contract_payload_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_build_contract_payload_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return {"path": "src/main.py"}
 
-    monkeypatch.setattr(contracts.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(contracts, "run_fs_io_async", _fake_fs_runtime)
 
     result = await contracts._build_contract_payload_async(
         Path("/repo"),
@@ -56,27 +56,27 @@ async def test_build_contract_payload_async_uses_to_thread(monkeypatch: pytest.M
         Path("/repo/src/main.py"),
         "print('ok')",
     )
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "contracts.build_payload"}
 
 
 @pytest.mark.anyio
-async def test_resolve_under_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_under_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/repo/a.py"), "a.py"
 
-    monkeypatch.setattr(contracts.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(contracts, "run_fs_io_async", _fake_fs_runtime)
 
     result = await contracts._resolve_under_root_async(Path("/repo"), "a.py")
 
     assert result == (Path("/repo/a.py"), "a.py")
     assert calls["func"] is contracts.resolve_under_root
     assert calls["args"] == (Path("/repo"), "a.py")
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "contracts.resolve_under_root"}
 
 
 @pytest.mark.anyio
@@ -141,25 +141,25 @@ async def test_get_or_build_contract_async_uses_async_resolve(
 
 
 @pytest.mark.anyio
-async def test_path_exists_and_is_file_async_uses_to_thread(
+async def test_path_exists_and_is_file_async_uses_fs_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return True, True
 
-    monkeypatch.setattr(contracts.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(contracts, "run_fs_io_async", _fake_fs_runtime)
 
     result = await contracts._path_exists_and_is_file_async(Path("/repo/a.py"))
 
     assert result == (True, True)
     assert calls["func"] is contracts._path_exists_and_is_file
     assert calls["args"] == (Path("/repo/a.py"),)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "contracts.path_is_file"}
 
 
 @pytest.mark.anyio
@@ -224,16 +224,16 @@ async def test_get_or_build_contract_async_uses_path_exists_and_is_file_async(
 
 
 @pytest.mark.anyio
-async def test_resolve_path_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_path_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/repo")
 
-    monkeypatch.setattr(contracts.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(contracts, "run_fs_io_async", _fake_fs_runtime)
 
     path = Path("/repo")
     result = await contracts._resolve_path_async(path)
@@ -241,7 +241,7 @@ async def test_resolve_path_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch
     assert result == Path("/repo")
     assert calls["func"] == path.resolve
     assert calls["args"] == ()
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "contracts.resolve_path"}
 
 
 @pytest.mark.anyio

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..graph import update_graph_metrics_incremental_async
 from ..infra.cache import cache_invalidate_prefix_async
+from ..infra.fs_runtime import run_fs_io_async
 from ..logging import get_logger
 from ..models import FileNode
 from ..policy import require_project_access_async
@@ -68,23 +69,23 @@ def _read_text_limited(path: str, max_chars: int | None) -> tuple[str, bool]:
     return chunk, truncated
 
 async def _read_text_limited_async(path: str, max_chars: int | None) -> tuple[str, bool]:
-    return await asyncio.to_thread(_read_text_limited, path, max_chars)
+    return await run_fs_io_async(_read_text_limited, path, max_chars, operation="nodes.read_text_limited")
 
 
 async def _write_text_async(path: Path, content: str) -> None:
-    await asyncio.to_thread(path.write_text, content, encoding="utf-8")
+    await run_fs_io_async(path.write_text, content, encoding="utf-8", operation="nodes.write_text")
 
 
 async def _mkdir_async(path: Path) -> None:
-    await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
+    await run_fs_io_async(path.mkdir, parents=True, exist_ok=True, operation="nodes.mkdir")
 
 
 async def _rename_async(src: Path, dst: Path) -> None:
-    await asyncio.to_thread(src.rename, dst)
+    await run_fs_io_async(src.rename, dst, operation="nodes.rename")
 
 
 async def _unlink_async(path: Path) -> None:
-    await asyncio.to_thread(path.unlink)
+    await run_fs_io_async(path.unlink, operation="nodes.unlink")
 
 
 async def _scan_files_async(project_id: int, org_id: int, root: Path, rel_paths: list[str]):
@@ -107,7 +108,7 @@ async def _update_graph_metrics_incremental_async(
 
 
 async def _path_exists_async(path: Path) -> bool:
-    return await asyncio.to_thread(path.exists)
+    return await run_fs_io_async(path.exists, operation="nodes.path_exists")
 
 
 def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
@@ -116,7 +117,7 @@ def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
-    return await asyncio.to_thread(_path_exists_and_is_file, path)
+    return await run_fs_io_async(_path_exists_and_is_file, path, operation="nodes.path_is_file")
 
 
 def _path_exists_and_is_dir(path: Path) -> tuple[bool, bool]:
@@ -125,7 +126,7 @@ def _path_exists_and_is_dir(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_dir_async(path: Path) -> tuple[bool, bool]:
-    return await asyncio.to_thread(_path_exists_and_is_dir, path)
+    return await run_fs_io_async(_path_exists_and_is_dir, path, operation="nodes.path_is_dir")
 
 
 async def _ensure_existing_file_async(path: Path, rel_norm: str) -> None:
@@ -139,10 +140,11 @@ async def _ensure_existing_file_async(path: Path, rel_norm: str) -> None:
 
 
 async def _normalize_project_root_async(root_path: str) -> Path:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         normalize_project_root,
         root_path,
         max_length=settings.max_root_path_chars,
+        operation="nodes.normalize_root",
     )
 
 async def _resolve_under_root_async(
@@ -151,11 +153,12 @@ async def _resolve_under_root_async(
     *,
     max_length: int,
 ) -> tuple[Path, str]:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         resolve_under_root,
         root,
         path,
         max_length=max_length,
+        operation="nodes.resolve_under_root",
     )
 
 

@@ -9,23 +9,23 @@ from app import celery_tasks
 
 
 @pytest.mark.anyio
-async def test_normalize_project_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_normalize_project_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/repo")
 
-    monkeypatch.setattr(celery_tasks.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(celery_tasks, "run_fs_io_async", _fake_fs_runtime)
 
     result = await celery_tasks._normalize_project_root_async("/repo")
 
     assert result == Path("/repo")
     assert calls["func"] is celery_tasks.normalize_project_root
     assert calls["args"] == ("/repo",)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "celery.normalize_root"}
 
 
 @pytest.mark.anyio
@@ -170,6 +170,9 @@ def test_worker_process_init_runs_startup_steps_in_order(monkeypatch: pytest.Mon
     async def _fake_init_s3() -> None:
         calls.append("init_s3")
 
+    async def _fake_init_fs() -> None:
+        calls.append("init_fs")
+
     def _fake_openai() -> object:
         calls.append("openai")
         return object()
@@ -177,6 +180,7 @@ def test_worker_process_init_runs_startup_steps_in_order(monkeypatch: pytest.Mon
     monkeypatch.setattr(celery_tasks, "init_redis_pool_async", _fake_init_redis)
     monkeypatch.setattr(celery_tasks, "init_async_db", _fake_init_db)
     monkeypatch.setattr(celery_tasks, "init_s3_runtime", _fake_init_s3)
+    monkeypatch.setattr(celery_tasks, "init_fs_runtime", _fake_init_fs)
     monkeypatch.setattr(celery_tasks, "get_async_openai_client", _fake_openai)
     monkeypatch.setattr(celery_tasks.settings, "storage_backend", "s3")
     monkeypatch.setattr(celery_tasks.settings, "openai_api_key", "test-key")
@@ -184,7 +188,7 @@ def test_worker_process_init_runs_startup_steps_in_order(monkeypatch: pytest.Mon
     celery_tasks._on_worker_process_init()
     celery_tasks._on_worker_process_shutdown()
 
-    assert calls == ["init_redis", "init_db", "init_s3", "openai"]
+    assert calls == ["init_redis", "init_db", "init_fs", "init_s3", "openai"]
 
 
 def test_worker_process_shutdown_cleanup_is_idempotent_and_safe(
@@ -206,6 +210,7 @@ def test_worker_process_shutdown_cleanup_is_idempotent_and_safe(
     monkeypatch.setattr(celery_tasks, "close_s3_runtime", lambda: _ok("close_s3"))
     monkeypatch.setattr(celery_tasks, "close_redis_pool_async", _fail_redis)
     monkeypatch.setattr(celery_tasks, "close_async_openai_client", lambda: _ok("close_openai"))
+    monkeypatch.setattr(celery_tasks, "close_fs_runtime", lambda: _ok("close_fs"))
     monkeypatch.setattr(celery_tasks, "close_async_db", lambda: _ok("close_db"))
 
     celery_tasks._on_worker_process_init()
@@ -215,6 +220,7 @@ def test_worker_process_shutdown_cleanup_is_idempotent_and_safe(
     assert calls.count("close_s3") == 1
     assert calls.count("close_redis") == 1
     assert calls.count("close_openai") == 1
+    assert calls.count("close_fs") == 1
     assert calls.count("close_db") == 1
 
 
@@ -239,6 +245,9 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
     async def _close_openai() -> None:
         calls.append("close_openai")
 
+    async def _close_fs() -> None:
+        calls.append("close_fs")
+
     async def _close_db() -> None:
         calls.append("close_db")
 
@@ -249,6 +258,7 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
     monkeypatch.setattr(celery_tasks, "close_s3_runtime", _close_s3)
     monkeypatch.setattr(celery_tasks, "close_redis_pool_async", _close_redis)
     monkeypatch.setattr(celery_tasks, "close_async_openai_client", _close_openai)
+    monkeypatch.setattr(celery_tasks, "close_fs_runtime", _close_fs)
     monkeypatch.setattr(celery_tasks, "close_async_db", _close_db)
 
     with pytest.raises(RuntimeError, match="db boom"):
@@ -260,6 +270,7 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
         "close_s3",
         "close_redis",
         "close_openai",
+        "close_fs",
         "close_db",
     ]
 

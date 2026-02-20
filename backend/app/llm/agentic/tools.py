@@ -22,6 +22,7 @@ from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ...contracts import get_or_build_contract_async
 from ...graph import search_semantic_async
+from ...infra.fs_runtime import run_fs_io_async
 from ...models import (
     ApiCall,
     ApiCallMeta,
@@ -811,7 +812,7 @@ async def _to_thread_fs_async(meta: AgenticMeta | None, fn: Any, *args: Any) -> 
         fallback_limit = max(1, int(settings.llm_agentic_fs_ops_concurrency))
         semaphore = asyncio.Semaphore(fallback_limit)
     async with semaphore:
-        return await asyncio.to_thread(fn, *args)
+        return await run_fs_io_async(fn, *args, operation="agentic.fs_tool")
 
 
 def _resolve_and_read_file_under_root(

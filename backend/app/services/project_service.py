@@ -16,6 +16,7 @@ from ..config import settings
 from ..errors import BadRequestError, ForbiddenError, LockedError, NotFoundError
 from ..graph import compute_graph_metrics_async
 from ..infra.cache import cache_get_json_async, cache_invalidate_prefix_async, cache_set_json_async
+from ..infra.fs_runtime import run_fs_io_async
 from ..llm.client import get_async_openai_client
 from ..logging import get_logger
 from ..models import (
@@ -137,7 +138,7 @@ def _extract_patch_blob_shas(runs) -> set[str]:
 
 
 async def _extract_patch_blob_shas_async(runs) -> set[str]:
-    return await asyncio.to_thread(_extract_patch_blob_shas, runs)
+    return await run_fs_io_async(_extract_patch_blob_shas, runs, operation="project.extract_patch_blob_shas")
 
 
 def _parse_snapshot_storage_payloads(snapshots) -> list[tuple[RepoSnapshot, dict]]:
@@ -155,7 +156,11 @@ def _parse_snapshot_storage_payloads(snapshots) -> list[tuple[RepoSnapshot, dict
 async def _parse_snapshot_storage_payloads_async(
     snapshots,
 ) -> list[tuple[RepoSnapshot, dict]]:
-    return await asyncio.to_thread(_parse_snapshot_storage_payloads, snapshots)
+    return await run_fs_io_async(
+        _parse_snapshot_storage_payloads,
+        snapshots,
+        operation="project.parse_snapshot_payloads",
+    )
 
 
 async def _collect_delete_artifacts_async(
@@ -266,23 +271,25 @@ def _read_text_if_file(path, max_chars: int) -> str | None:
 
 
 async def _read_text_if_file_async(path, max_chars: int) -> str | None:
-    return await asyncio.to_thread(_read_text_if_file, path, max_chars)
+    return await run_fs_io_async(_read_text_if_file, path, max_chars, operation="project.read_text_if_file")
 
 
 async def _resolve_under_root_async(root, rel_path: str, *, max_length: int):
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         resolve_under_root,
         root,
         rel_path,
         max_length=max_length,
+        operation="project.resolve_under_root",
     )
 
 
 async def _normalize_project_root_async(root_path: str) -> Path:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         normalize_project_root,
         root_path,
         max_length=settings.max_root_path_chars,
+        operation="project.normalize_root",
     )
 
 
@@ -315,12 +322,13 @@ async def _resolve_and_read_text_under_root_async(
     max_rel_path_length: int,
     max_chars: int,
 ) -> tuple[str, str] | None:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         _resolve_and_read_text_under_root,
         root,
         rel_path,
         max_rel_path_length=max_rel_path_length,
         max_chars=max_chars,
+        operation="project.resolve_and_read",
     )
 
 
@@ -456,13 +464,14 @@ async def _score_semantic_rows_async(
     chunk_size: int,
     step: int,
 ) -> tuple[int, list[dict]]:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         _score_semantic_rows,
         rows,
         query_embedding=query_embedding,
         file_cache=file_cache,
         chunk_size=chunk_size,
         step=step,
+        operation="project.score_semantic_rows",
     )
 
 
@@ -526,7 +535,7 @@ async def _find_text_matches_in_payload_async(
     start_count: int,
     truncated_flag: bool,
 ) -> tuple[list[dict], bool]:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         _find_text_matches_in_payload,
         payload,
         needle=needle,
@@ -536,6 +545,7 @@ async def _find_text_matches_in_payload_async(
         limit_matches=limit_matches,
         start_count=start_count,
         truncated_flag=truncated_flag,
+        operation="project.find_text_matches",
     )
 
 
@@ -573,7 +583,7 @@ def _build_graph_node_payload(nodes) -> tuple[list[dict], list[str]]:
 
 
 async def _build_graph_node_payload_async(nodes) -> tuple[list[dict], list[str]]:
-    return await asyncio.to_thread(_build_graph_node_payload, nodes)
+    return await run_fs_io_async(_build_graph_node_payload, nodes, operation="project.build_graph_nodes")
 
 
 def _build_graph_edge_payload(
@@ -609,11 +619,12 @@ async def _build_graph_edge_payload_async(
     effective_limit: int | None,
     node_set: set[str],
 ) -> list[dict]:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         _build_graph_edge_payload,
         edges,
         effective_limit=effective_limit,
         node_set=node_set,
+        operation="project.build_graph_edges",
     )
 
 
@@ -659,7 +670,13 @@ async def _build_local_graph_payload_async(
     edge_set: set[tuple[str, str, str]],
     nodes_set: set[str],
 ) -> tuple[list[dict], list[dict]]:
-    return await asyncio.to_thread(_build_local_graph_payload, node_rows, edge_set, nodes_set)
+    return await run_fs_io_async(
+        _build_local_graph_payload,
+        node_rows,
+        edge_set,
+        nodes_set,
+        operation="project.build_local_graph",
+    )
 
 
 def _build_project_files_payload(rows, *, limit: int) -> tuple[list[dict], bool, str | None]:
@@ -691,7 +708,12 @@ def _build_project_files_payload(rows, *, limit: int) -> tuple[list[dict], bool,
 
 
 async def _build_project_files_payload_async(rows, *, limit: int) -> tuple[list[dict], bool, str | None]:
-    return await asyncio.to_thread(_build_project_files_payload, rows, limit=limit)
+    return await run_fs_io_async(
+        _build_project_files_payload,
+        rows,
+        limit=limit,
+        operation="project.build_project_files",
+    )
 
 
 def _build_project_tree_payload(
@@ -797,13 +819,14 @@ async def _build_project_tree_payload_async(
     scan_limit: int,
     has_more_rows: bool,
 ) -> tuple[list[dict], str | None, bool]:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         _build_project_tree_payload,
         rows,
         prefix_norm=prefix_norm,
         limit=limit,
         scan_limit=scan_limit,
         has_more_rows=has_more_rows,
+        operation="project.build_project_tree",
     )
 
 

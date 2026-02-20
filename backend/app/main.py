@@ -20,6 +20,7 @@ from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .auth import extract_token
 from .config import settings
 from .errors import install_exception_handlers
+from .infra.fs_runtime import close_fs_runtime, init_fs_runtime
 from .infra.rate_limit import allow_request_async, rate_limit_response
 from .infra.redis_client import close_redis_pool_async, init_redis_pool_async
 from .llm.client import close_async_openai_client
@@ -37,6 +38,7 @@ async def lifespan(_: FastAPI):
     startup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
         ("init_async_db", init_async_db),
         ("init_redis_pool_async", init_redis_pool_async),
+        ("init_fs_runtime", init_fs_runtime),
     ]
 
     use_s3 = (settings.storage_backend or "local").strip().lower() == "s3"
@@ -55,6 +57,7 @@ async def lifespan(_: FastAPI):
             ("shutdown_celery_enqueue_adapter", _shutdown_celery_enqueue_adapter),
             ("close_s3_runtime", close_s3_runtime),
             ("close_redis_pool_async", close_redis_pool_async),
+            ("close_fs_runtime", close_fs_runtime),
             ("close_async_openai_client", close_async_openai_client),
             ("close_scan_runtime", close_scan_runtime),
             ("close_async_db", close_async_db),
