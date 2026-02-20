@@ -1,7 +1,6 @@
 # backend/app/context_pack.py
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +10,7 @@ from sqlmodel import select
 
 from .async_db import AsyncSessionLocal
 from .contracts import get_or_build_contract_async
+from .infra.fs_runtime import run_fs_io_async
 from .infra.cache import cache_get_json_async, cache_set_json_async
 from .logging import get_logger
 from .models import FileEdge, FileNode
@@ -92,7 +92,7 @@ def _read_file(path: Path, max_chars: int) -> str:
 
 
 async def _read_file_async(path: Path, max_chars: int) -> str:
-    return await asyncio.to_thread(_read_file, path, max_chars)
+    return await run_fs_io_async(_read_file, path, max_chars, operation="context_pack.read_file")
 
 
 def _path_exists_and_is_file(path: Path) -> bool:
@@ -100,7 +100,7 @@ def _path_exists_and_is_file(path: Path) -> bool:
 
 
 async def _path_exists_and_is_file_async(path: Path) -> bool:
-    return await asyncio.to_thread(_path_exists_and_is_file, path)
+    return await run_fs_io_async(_path_exists_and_is_file, path, operation="context_pack.path_is_file")
 
 
 async def pack_context_async(
@@ -116,7 +116,7 @@ async def pack_context_async(
     *,
     session: AsyncSession | None = None,
 ) -> PackedContext:
-    project_root = await asyncio.to_thread(project_root.resolve)
+    project_root = await run_fs_io_async(project_root.resolve, operation="context_pack.resolve_root")
     cache_hits = {"file": 0, "contract": 0}
 
     async def _read_file_cached(path: str, max_chars: int) -> str:

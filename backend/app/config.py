@@ -67,6 +67,14 @@ class Settings(BaseSettings):
         default=4,
         alias="STUBGRAPH_SNAPSHOT_S3_CONCURRENCY",
     )
+    fs_runtime_max_workers: int = Field(
+        default=8,
+        alias="STUBGRAPH_FS_RUNTIME_MAX_WORKERS",
+    )
+    fs_runtime_max_concurrency: int = Field(
+        default=32,
+        alias="STUBGRAPH_FS_RUNTIME_MAX_CONCURRENCY",
+    )
     allow_local_root_path: bool = Field(default=False, alias="STUBGRAPH_ALLOW_LOCAL_ROOT_PATH")
 
     celery_broker_url: str = Field(

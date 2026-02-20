@@ -14,6 +14,7 @@ from celery.signals import worker_process_init, worker_process_shutdown
 from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .celery_app import celery_app
 from .config import settings
+from .infra.fs_runtime import close_fs_runtime, init_fs_runtime, run_fs_io_async
 from .infra.redis_client import (
     close_redis_pool_async,
     get_async_redis_client,
@@ -86,6 +87,7 @@ async def _startup_worker_resources_async() -> None:
     startup_steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
         ("init_redis_pool_async", init_redis_pool_async),
         ("init_async_db", init_async_db),
+        ("init_fs_runtime", init_fs_runtime),
     ]
     if (settings.storage_backend or "local").strip().lower() == "s3":
         startup_steps.append(("init_s3_runtime", init_s3_runtime))
@@ -103,6 +105,7 @@ async def _cleanup_worker_resources_async() -> None:
         ("close_s3_runtime", close_s3_runtime),
         ("close_redis_pool_async", close_redis_pool_async),
         ("close_async_openai_client", close_async_openai_client),
+        ("close_fs_runtime", close_fs_runtime),
         ("close_async_db", close_async_db),
     ]
     for name, cleanup in cleanup_steps:
@@ -298,7 +301,7 @@ async def _resolve_project_root_async(project_id: int, org_id: int) -> Path:
 
 
 async def _normalize_project_root_async(root_path: str) -> Path:
-    return await asyncio.to_thread(normalize_project_root, root_path)
+    return await run_fs_io_async(normalize_project_root, root_path, operation="celery.normalize_root")
 
 
 async def _touch_inflight_async(job_id: str) -> None:

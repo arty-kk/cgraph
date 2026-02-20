@@ -6,6 +6,7 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app import async_db
+from app.infra import fs_runtime
 from app.llm import client as llm_client
 
 
@@ -115,3 +116,10 @@ def test_openai_singleton_recreated_only_after_close(monkeypatch: pytest.MonkeyP
 
     assert third is not first
     assert len(created) == 2
+
+
+@pytest.mark.anyio
+async def test_close_fs_runtime_is_idempotent() -> None:
+    await fs_runtime.init_fs_runtime()
+    await fs_runtime.close_fs_runtime()
+    await fs_runtime.close_fs_runtime()
