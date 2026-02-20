@@ -4319,42 +4319,32 @@ async def _tool_compare_api_contract(
                 except Exception:
                     backend_contract = None
             if backend_contract is None:
-                try:
-                    abs_p, rel_norm = resolve_under_root(
-                        root, r_src, max_length=settings.max_rel_path_chars
-                    )
-                    txt = abs_p.read_text(encoding="utf-8", errors="replace")
-                )
-            ).scalar_one_or_none()
-        if row and isinstance(row.contract_json, str) and row.contract_json.strip():
-            try:
-                backend_contract = json.loads(row.contract_json)
-            except Exception:
-                backend_contract = None
-        if backend_contract is None:
-            # on the fly
-            read_result = await _read_text_under_root_async(root, r_src, meta=None)
-            if read_result:
-                _rel_norm, txt = read_result
-                try:
-                    backend_contract = build_backend_contract_for_route(
-                        txt,
-                        {
-                            "method": r_method,
-                            "path": r_local,
-                            "handler_name": r_handler,
-                            "source_path": r_src,
-                            "lineno": r_line,
-                        },
-                    )
-                except Exception as e:
-                    backend_contract = {"version": 1, "warnings": [f"contract_build_failed:{e}"]}
+                # on the fly
+                read_result = await _read_text_under_root_async(root, r_src, meta=None)
+                if read_result:
+                    _rel_norm, txt = read_result
+                    try:
+                        backend_contract = build_backend_contract_for_route(
+                            txt,
+                            {
+                                "method": r_method,
+                                "path": r_local,
+                                "handler_name": r_handler,
+                                "source_path": r_src,
+                                "lineno": r_line,
+                            },
+                        )
+                    except Exception as e:
+                        backend_contract = {
+                            "version": 1,
+                            "warnings": [f"contract_build_failed:{e}"],
+                        }
+                else:
+                    backend_contract = {
+                        "version": 1,
+                        "warnings": [f"contract_build_failed:source_not_readable:{r_src}"],
+                    }
             route_contract_cache[cache_key] = backend_contract
-            else:
-                backend_contract = {
-                    "version": 1,
-                    "warnings": [f"contract_build_failed:source_not_readable:{r_src}"],
-                }
 
         bp = backend_contract.get("path_params") if isinstance(backend_contract, dict) else []
         bb = backend_contract.get("body") if isinstance(backend_contract, dict) else None
@@ -4431,7 +4421,6 @@ async def _tool_compare_api_contract(
             type_names,
             cache=typedef_cache,
         )
-        type_defs = await _load_ts_typedefs_by_name(project_id, type_names)
 
         for meta in metas:
             mobj = meta.get("meta") if isinstance(meta.get("meta"), dict) else {}
