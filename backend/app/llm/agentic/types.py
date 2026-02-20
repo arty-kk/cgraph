@@ -20,3 +20,4 @@ class AgenticMeta:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     fs_ops_semaphore: asyncio.Semaphore | None = None
+    cpu_ops_semaphore: asyncio.Semaphore | None = None

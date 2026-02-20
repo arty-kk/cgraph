@@ -87,7 +87,14 @@ async def _agentic_json_call_async(
 
     tools = _tool_definitions(eff_file)
     fs_ops_limit = max(1, min(int(settings.llm_agentic_fs_ops_concurrency), 128))
-    meta = AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(fs_ops_limit))
+    cpu_ops_limit = max(
+        1,
+        min(int(getattr(settings, "llm_agentic_cpu_ops_concurrency", fs_ops_limit)), 128),
+    )
+    meta = AgenticMeta(
+        fs_ops_semaphore=asyncio.Semaphore(fs_ops_limit),
+        cpu_ops_semaphore=asyncio.Semaphore(cpu_ops_limit),
+    )
     tool_cache: dict[str, dict] = {}
 
     def _apply_usage_to_meta(usage: dict[str, int | None]) -> None:
