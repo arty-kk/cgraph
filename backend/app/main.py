@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 
@@ -28,7 +27,6 @@ from .logging import log_requests, setup_logging
 from .s3_runtime import close_s3_runtime, init_s3_runtime
 from .scan import close_scan_runtime
 from .services.auth_service import get_user_from_token_async
-from .services.task_queue import shutdown_celery_enqueue_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +48,7 @@ async def lifespan(_: FastAPI):
             await initializer()
         yield
     finally:
-        async def _shutdown_celery_enqueue_adapter() -> None:
-            await asyncio.to_thread(shutdown_celery_enqueue_adapter)
-
         cleanup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
-            ("shutdown_celery_enqueue_adapter", _shutdown_celery_enqueue_adapter),
             ("close_s3_runtime", close_s3_runtime),
             ("close_redis_pool_async", close_redis_pool_async),
             ("close_fs_runtime", close_fs_runtime),

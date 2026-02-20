@@ -5,8 +5,6 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor
-from threading import Condition, Lock
 from typing import Any
 from uuid import uuid4
 
@@ -17,6 +15,7 @@ from sqlalchemy.sql import func
 from sqlmodel import delete, select
 
 from ..async_db import AsyncSessionLocal
+from ..celery_app import celery_app
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
 from ..infra.redis_client import get_async_redis_client
@@ -40,90 +39,28 @@ _ENQUEUE_TIMEOUT_SECONDS = 10.0
 _ENQUEUE_REASON_KEY = "enqueue_reason"
 
 
-class _EnqueueBrokerError(Exception):
-    """Synchronous broker-side enqueue failure from Celery apply_async."""
+class _AsyncTaskProducerError(Exception):
+    """Transport-level async producer enqueue failure."""
 
 
-class _CeleryEnqueueAdapter:
-    def __init__(self) -> None:
-        self._lock = Lock()
-        self._pending_condition = Condition(self._lock)
-        self._executor: ThreadPoolExecutor | None = None
-        self._semaphore: asyncio.Semaphore | None = None
-        self._is_shutting_down = False
-        self._pending_submissions = 0
-
-    @staticmethod
-    def _apply_async_sync(task: Any, args: list[Any], queue: str) -> None:
+class _AsyncCeleryProducer:
+    async def enqueue_task_async(self, task: Any, *, args: list[Any], queue: str) -> None:
         try:
-            task.apply_async(args=args, queue=queue)
+            task_name = str(getattr(task, "name", "") or "")
+            if not task_name:
+                raise RuntimeError("Celery task name is required")
+            celery_app.send_task(task_name, args=args, queue=queue)
         except Exception as exc:  # noqa: BLE001
-            raise _EnqueueBrokerError(str(exc)) from exc
-
-    def _accept_submission(self) -> tuple[ThreadPoolExecutor, asyncio.Semaphore]:
-        with self._lock:
-            if self._is_shutting_down:
-                raise RuntimeError("Celery enqueue adapter is shutting down")
-            if self._executor is None:
-                self._executor = ThreadPoolExecutor(
-                    max_workers=settings.task_queue_enqueue_workers,
-                    thread_name_prefix="celery-enqueue",
-                )
-            if self._semaphore is None:
-                # Semaphore limit is intentionally synchronized with enqueue workers to keep
-                # executor queue pressure deterministic: at most N apply_async calls in-flight.
-                self._semaphore = asyncio.Semaphore(settings.task_queue_enqueue_workers)
-            self._pending_submissions += 1
-            return self._executor, self._semaphore
-
-    def _finish_submission(self) -> None:
-        with self._lock:
-            self._pending_submissions = max(0, self._pending_submissions - 1)
-            if self._pending_submissions == 0:
-                self._pending_condition.notify_all()
-
-    async def enqueue_async(self, task: Any, *, args: list[Any], queue: str) -> None:
-        loop = asyncio.get_running_loop()
-        executor, semaphore = self._accept_submission()
-        try:
-            async with semaphore:
-                await loop.run_in_executor(
-                    executor,
-                    self._apply_async_sync,
-                    task,
-                    args,
-                    queue,
-                )
-        finally:
-            self._finish_submission()
-
-    def shutdown(self) -> None:
-        with self._lock:
-            self._is_shutting_down = True
-            while self._pending_submissions > 0:
-                self._pending_condition.wait()
-            executor = self._executor
-            self._executor = None
-            self._semaphore = None
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=False)
+            raise _AsyncTaskProducerError(str(exc)) from exc
 
 
-_enqueue_adapter = _CeleryEnqueueAdapter()
-
-
-async def _enqueue_celery_task_async(task: Any, *, args: list[Any], queue: str) -> None:
-    await _enqueue_adapter.enqueue_async(task, args=args, queue=queue)
-
-
-def shutdown_celery_enqueue_adapter() -> None:
-    _enqueue_adapter.shutdown()
+_async_task_producer = _AsyncCeleryProducer()
 
 
 def _classify_enqueue_failure(exc: Exception) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
-    if isinstance(exc, _EnqueueBrokerError):
+    if isinstance(exc, _AsyncTaskProducerError):
         return "broker_error"
     return "internal_enqueue_failure"
 
@@ -156,7 +93,7 @@ async def _enqueue_with_error_mapping_async(
 ) -> None:
     try:
         await asyncio.wait_for(
-            _enqueue_celery_task_async(task, args=args, queue=queue),
+            _async_task_producer.enqueue_task_async(task, args=args, queue=queue),
             timeout=_ENQUEUE_TIMEOUT_SECONDS,
         )
     except Exception as exc:

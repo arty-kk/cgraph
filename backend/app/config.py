@@ -110,10 +110,6 @@ class Settings(BaseSettings):
     task_queue_inflight_heavy_limit: int | None = Field(
         default=None, alias="STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT"
     )
-    task_queue_enqueue_workers: int = Field(
-        default=4,
-        alias="STUBGRAPH_TASK_QUEUE_ENQUEUE_WORKERS",
-    )
 
     database_url: str = Field(
         default="postgresql+psycopg://stubgraph:stubgraph@localhost:5432/stubgraph",
@@ -380,8 +376,6 @@ class Settings(BaseSettings):
             and self.task_queue_inflight_heavy_limit <= 0
         ):
             raise ValueError("STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT должен быть положительным")
-        if self.task_queue_enqueue_workers <= 0:
-            raise ValueError("STUBGRAPH_TASK_QUEUE_ENQUEUE_WORKERS должен быть положительным")
         if self.default_depth < 0:
             raise ValueError("STUBGRAPH_DEFAULT_DEPTH должен быть неотрицательным")
         if (self.llm_routing_sla_profile or "balanced").strip().lower() not in {
