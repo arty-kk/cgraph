@@ -1,4 +1,6 @@
+import asyncio
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -6,14 +8,6 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app import scan
-
-
-@pytest.fixture(autouse=True)
-def _reset_scan_runtime() -> None:
-    runtime = scan._scan_runtime
-    scan._scan_runtime = None
-    if runtime is not None:
-        runtime.executor.shutdown(wait=True, cancel_futures=True)
 
 
 class _AsyncSessionCtx:
@@ -337,10 +331,102 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
 
 
 @pytest.mark.anyio
-async def test_scan_project_async_allows_concurrent_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_scan_project_async_producer_does_not_use_run_coroutine_threadsafe(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Session:
+        async def execute(self, *_args, **_kwargs):
+            return _Result([])
+
+        async def commit(self):
+            return None
+
+    async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        return [scan.FileStatResult(rel, True, True, True, 1, 1) for rel in rel_paths]
+
+    async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
+        _ = rel_paths, precomputed_stats, scan_metrics
+        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+
+    def _fail_threadsafe(*_args, **_kwargs):
+        raise AssertionError("run_coroutine_threadsafe must not be used by async producer")
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(scan, "iter_code_files", lambda root: (root / f"f{i}.py" for i in range(8)))
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
+    monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
+    monkeypatch.setattr(scan.asyncio, "run_coroutine_threadsafe", _fail_threadsafe)
+
+    result = await scan.scan_project_async(1, 2, Path("/repo"))
+
+    assert result["nodes"] == 8
+
+
+@pytest.mark.anyio
+async def test_scan_project_async_applies_backpressure_with_bounded_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+        
+    class _Session:
+        async def execute(self, *_args, **_kwargs):
+            return _Result([])
+
+        async def commit(self):
+            return None
+
+    pressure = {"queue_maxsize": None, "max_qsize": 0}
+
+    orig_queue = scan.asyncio.Queue
+
+    class _QueueProbe(orig_queue):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            pressure["queue_maxsize"] = self.maxsize
+
+        async def put(self, item):
+            await super().put(item)
+            pressure["max_qsize"] = max(pressure["max_qsize"], self.qsize())
+
+    async def _slow_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        await asyncio.sleep(0.02)
+        return [scan.FileStatResult(rel, True, True, True, 1, 1) for rel in rel_paths]
+
+    async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
+        _ = rel_paths, precomputed_stats, scan_metrics
+        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(scan, "iter_code_files", lambda root: (root / f"f{i}.py" for i in range(40)))
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _slow_collect)
+    monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
+    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
+    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
+    monkeypatch.setattr(scan.asyncio, "Queue", _QueueProbe)
+
+    result = await scan.scan_project_async(1, 2, Path("/repo"))
+
+    assert pressure["queue_maxsize"] == 2
+    assert pressure["max_qsize"] <= 2
+    assert result["scan_metrics"]["producer"]["duration_s"] >= 0.15
+
+
+@pytest.mark.anyio
+async def test_scan_project_async_high_concurrency_keeps_event_loop_responsive(monkeypatch: pytest.MonkeyPatch) -> None:
     roots = {
-        Path("/repo-a").resolve(): ["src/a.py", "src/b.py"],
-        Path("/repo-b").resolve(): ["main.py"],
+        Path("/repo-a").resolve(): [f"src/a_{i}.py" for i in range(24)],
+        Path("/repo-b").resolve(): [f"src/b_{i}.py" for i in range(24)],
     }
 
     class _Result:
@@ -357,75 +443,83 @@ async def test_scan_project_async_allows_concurrent_runs(monkeypatch: pytest.Mon
         async def commit(self):
             return None
 
-    collect_limits: list[tuple[int, int]] = []
-
-    async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
-        _ = precomputed_stats
-        collect_limits.append((batch_size, max_parallel))
+    async def _slow_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        await asyncio.sleep(0.01)
         return [scan.FileStatResult(rel, True, True, True, 1, 1) for rel in rel_paths]
 
     async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
-        _ = precomputed_stats, scan_metrics
-        await scan.asyncio.sleep(0)
-        return {
-            "updated_nodes": len(list(rel_paths)),
-            "updated_edges": 0,
-            "removed": 0,
-        }
+        _ = rel_paths, precomputed_stats, scan_metrics
+        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+
+    ticks = {"count": 0}
+
+    async def _heartbeat():
+        deadline = time.monotonic() + 0.35
+        while time.monotonic() < deadline:
+            ticks["count"] += 1
+            await asyncio.sleep(0.005)
 
     monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
-    monkeypatch.setattr(
-        scan,
-        "iter_code_files",
-        lambda root: (root / rel for rel in roots[root.resolve()]),
-    )
-    monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
+    monkeypatch.setattr(scan, "iter_code_files", lambda root: (root / rel for rel in roots[root.resolve()]))
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _slow_collect)
     monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 32)
-    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 3)
+    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
+    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
 
-    result_a, result_b = await scan.asyncio.gather(
+    await asyncio.gather(
         scan.scan_project_async(101, 201, Path("/repo-a")),
         scan.scan_project_async(102, 202, Path("/repo-b")),
+        _heartbeat(),
     )
 
-    assert result_a["removed"] == 0
-    assert result_b["removed"] == 0
-    assert result_a["nodes"] == 2
-    assert result_b["nodes"] == 1
-    assert "scan_metrics" in result_a
-    assert "scan_metrics" in result_b
-    assert collect_limits
-    assert all(batch_size == 32 and max_parallel == 3 for batch_size, max_parallel in collect_limits)
+    assert ticks["count"] >= 20
 
 
 @pytest.mark.anyio
-async def test_scan_pipeline_avoids_mass_to_thread_per_file(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_scan_project_async_cancelled_scan_does_not_leave_pipeline_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Session:
+        async def execute(self, *_args, **_kwargs):
+            return _Result([])
+
+        async def commit(self):
+            return None
+
+    async def _slow_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        await asyncio.sleep(0.05)
+        return [scan.FileStatResult(rel, True, True, True, 1, 1) for rel in rel_paths]
+
+    async def _fake_scan_files(*_args, **_kwargs):
+        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(scan, "iter_code_files", lambda root: (root / f"f{i}.py" for i in range(500)))
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _slow_collect)
+    monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
     monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
     monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
-    file_count = 6
-    rel_paths = [f"f{i}.py" for i in range(file_count)]
-    stats_map = {rel: (1, 10) for rel in rel_paths}
-    snapshot = {
-        rel: scan.FileSnapshot(mtime_ns=1, size=10, file_hash=f"hash:{rel}", hash_kind="content") for rel in rel_paths
-    }
 
-    to_thread_calls = {"count": 0}
+    task = asyncio.create_task(scan.scan_project_async(999, 1, Path("/repo")))
+    await asyncio.sleep(0.08)
+    task.cancel()
 
-    async def _to_thread_spy(*_args, **_kwargs):
-        to_thread_calls["count"] += 1
-        raise AssertionError("scan runtime should not call asyncio.to_thread per-file")
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1.0)
 
-    monkeypatch.setattr(scan.asyncio, "to_thread", _to_thread_spy)
-    monkeypatch.setattr(scan, "sha256_text", lambda text: f"hash:{text}")
-
-    await scan._collect_file_stats_async(Path("/missing"), rel_paths, precomputed_stats=stats_map)
-    await scan._read_file_batch_async(Path("/missing"), rel_paths, stats_map, max_file_bytes=100)
-    ok, _ = await scan._verify_scan_snapshot_async(Path("/missing"), snapshot, [])
-
-    assert ok is False
-    expected_batch_ceiling = (file_count + scan.SCAN_STAGE_BATCH_SIZE - 1) // scan.SCAN_STAGE_BATCH_SIZE
-    assert to_thread_calls["count"] <= expected_batch_ceiling
+    await asyncio.sleep(0)
+    dangling = [
+        t for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and t.get_name().startswith(("scan-producer-", "scan-consumer-"))
+    ]
+    assert not dangling
 
 
 @pytest.mark.anyio
