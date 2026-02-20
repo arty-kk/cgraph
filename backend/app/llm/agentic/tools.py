@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -804,6 +805,97 @@ def _file_read_failed(path: str, reason: str) -> _ToolFileReadError:
         "failed to read file",
         {"path": path, "reason": reason},
     )
+
+
+@dataclass(frozen=True)
+class SearchChunkResult:
+    matches: list[dict[str, Any]]
+    found_any: bool
+    matched_files: set[str]
+
+
+def _search_text_cpu(
+    *,
+    payload: str,
+    rel_path: str,
+    needle: str,
+    case_sensitive: bool,
+    truncated_file: bool,
+    context_chars: int,
+    max_matches: int,
+) -> SearchChunkResult:
+    needle_cmp = needle if case_sensitive else needle.lower()
+    haystack = payload if case_sensitive else payload.lower()
+    local_matches: list[dict[str, Any]] = []
+    matched_paths: set[str] = set()
+    start_idx = 0
+    found_any = False
+    while len(local_matches) < max_matches:
+        idx = haystack.find(needle_cmp, start_idx)
+        if idx == -1:
+            break
+        found_any = True
+        matched_paths.add(rel_path)
+        line = payload.count("\n", 0, idx) + 1
+        last_nl = payload.rfind("\n", 0, idx)
+        col = (idx - (last_nl + 1)) + 1 if last_nl != -1 else idx + 1
+        half = max(10, context_chars // 2)
+        s0 = max(0, idx - half)
+        e0 = min(len(payload), idx + len(needle) + half)
+        local_matches.append(
+            {
+                "path": rel_path,
+                "line": int(line),
+                "col": int(col),
+                "snippet": payload[s0:e0],
+                "truncated_file": bool(truncated_file),
+            }
+        )
+        start_idx = idx + max(1, len(needle_cmp))
+
+    return SearchChunkResult(
+        matches=local_matches,
+        found_any=found_any,
+        matched_files=matched_paths,
+    )
+
+
+async def _search_text_cpu_async(
+    *,
+    meta: AgenticMeta,
+    payload: str,
+    rel_path: str,
+    needle: str,
+    case_sensitive: bool,
+    truncated_file: bool,
+    context_chars: int,
+    max_matches: int,
+) -> SearchChunkResult:
+    semaphore = meta.cpu_ops_semaphore
+    if semaphore is None:
+        fallback_limit = max(
+            1,
+            int(
+                getattr(
+                    settings,
+                    "llm_agentic_cpu_ops_concurrency",
+                    settings.llm_agentic_fs_ops_concurrency,
+                )
+            ),
+        )
+        semaphore = asyncio.Semaphore(fallback_limit)
+        meta.cpu_ops_semaphore = semaphore
+    async with semaphore:
+        return await asyncio.to_thread(
+            _search_text_cpu,
+            payload=payload,
+            rel_path=rel_path,
+            needle=needle,
+            case_sensitive=case_sensitive,
+            truncated_file=truncated_file,
+            context_chars=context_chars,
+            max_matches=max_matches,
+        )
 
 
 async def _to_thread_fs_async(meta: AgenticMeta | None, fn: Any, *args: Any) -> Any:
@@ -2872,15 +2964,16 @@ async def _tool_search_text_async(
         rows = (await session.execute(q)).all()
         paths = [row[0] for row in rows if isinstance(row[0], str) and row[0]]
 
-    needle_cmp = needle if case_sensitive else needle.lower()
     matches: list[dict] = []
     scanned = 0
     matched_files: set[str] = set()
     truncated_files = 0
 
     for p in paths:
-        if len(matches) >= max_matches:
+        remaining_matches = max_matches - len(matches)
+        if remaining_matches <= 0:
             break
+
         def _read_capped(abs_path: Path) -> str:
             with abs_path.open("r", encoding="utf-8", errors="replace") as f:
                 return f.read(int(scan_max_chars) + 1)
@@ -2894,39 +2987,25 @@ async def _tool_search_text_async(
         if truncated_initial:
             text = text[:scan_max_chars]
 
-        def _search_text(payload: str, *, truncated_flag: bool) -> bool:
-            haystack = payload if case_sensitive else payload.lower()
-            start_idx = 0
-            found_any = False
-            while True:
-                if len(matches) >= max_matches:
-                    break
-                idx = haystack.find(needle_cmp, start_idx)
-                if idx == -1:
-                    break
-                found_any = True
-                matched_files.add(rel_norm)
-                line = payload.count("\n", 0, idx) + 1
-                last_nl = payload.rfind("\n", 0, idx)
-                col = (idx - (last_nl + 1)) + 1 if last_nl != -1 else idx + 1
-                half = max(10, context_chars // 2)
-                s0 = max(0, idx - half)
-                e0 = min(len(payload), idx + len(needle) + half)
-                matches.append(
-                    {
-                        "path": rel_norm,
-                        "line": int(line),
-                        "col": int(col),
-                        "snippet": payload[s0:e0],
-                        "truncated_file": bool(truncated_flag),
-                    }
-                )
-                start_idx = idx + max(1, len(needle_cmp))
-            return found_any
-
         truncated = truncated_initial
-        matched = _search_text(text, truncated_flag=truncated)
-        if truncated_initial and not matched and scan_max_chars < index_scan_max_chars:
+        cpu_result = await _search_text_cpu_async(
+            meta=runtime_meta,
+            payload=text,
+            rel_path=rel_norm,
+            needle=needle,
+            case_sensitive=case_sensitive,
+            truncated_file=truncated,
+            context_chars=context_chars,
+            max_matches=remaining_matches,
+        )
+        matches.extend(cpu_result.matches)
+        matched_files.update(cpu_result.matched_files)
+
+        if truncated_initial and not cpu_result.found_any and scan_max_chars < index_scan_max_chars:
+            remaining_matches = max_matches - len(matches)
+            if remaining_matches <= 0:
+                break
+
             def _read_capped_extended(abs_path: Path) -> str:
                 with abs_path.open("r", encoding="utf-8", errors="replace") as f:
                     return f.read(int(index_scan_max_chars) + 1)
@@ -2943,7 +3022,19 @@ async def _tool_search_text_async(
             truncated = len(text) > index_scan_max_chars
             if truncated:
                 text = text[:index_scan_max_chars]
-            _search_text(text, truncated_flag=truncated)
+            cpu_result = await _search_text_cpu_async(
+                meta=runtime_meta,
+                payload=text,
+                rel_path=rel_norm,
+                needle=needle,
+                case_sensitive=case_sensitive,
+                truncated_file=truncated,
+                context_chars=context_chars,
+                max_matches=remaining_matches,
+            )
+            matches.extend(cpu_result.matches)
+            matched_files.update(cpu_result.matched_files)
+
         if truncated:
             truncated_files += 1
 
