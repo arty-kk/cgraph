@@ -852,6 +852,23 @@ async def _read_file_under_root_async(
         return _tool_error(exc.code, exc.message, exc.details)
 
 
+async def _read_text_under_root_async(
+    root: Path,
+    rel_path: str,
+    *,
+    meta: AgenticMeta | None,
+) -> tuple[str, str] | None:
+    def _read_local(abs_path: Path) -> str:
+        with abs_path.open(encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    read_result = await _read_file_under_root_async(root, rel_path, _read_local, meta=meta)
+    if isinstance(read_result, dict):
+        return None
+    rel_norm, txt = read_result
+    return rel_norm, txt
+
+
 async def _check_indexed_async(session: AsyncSession, project_id: int) -> dict | None:
     row = (await session.execute(select(FileNode.id).where(FileNode.project_id == project_id).limit(1))).first()
     if not row:
@@ -3460,17 +3477,17 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
     notes: list[str] = []
     reasons: dict[str, list[str]] = {}
 
-    def ensure_loaded(rel_path: str) -> str | None:
+    async def ensure_loaded(rel_path: str) -> str | None:
         if not isinstance(rel_path, str) or not rel_path.strip():
             return None
         rp = rel_path.strip()
         if rp in cur:
             return rp
-        rr = _read_text_under_root(root, rp)
+        rr = await _read_text_under_root_async(root, rp, meta=meta)
         if not rr:
             notes.append(f"file_not_readable:{rp}")
             return None
-        rel_norm, _abs, txt = rr
+        rel_norm, txt = rr
         orig[rel_norm] = txt
         cur[rel_norm] = txt
         meta.full_file_paths.add(rel_norm)
@@ -3559,7 +3576,7 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
                     )
                     add_params.append({"name": nm, "type": ts_type})
 
-                fp = ensure_loaded(c_src)
+                fp = await ensure_loaded(c_src)
                 if fp:
                     new_txt, changed, warns = ts_patch_wrapper_function(
                         cur[fp],
@@ -3593,7 +3610,7 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
                             )
                         ).scalar_one_or_none()
                     if td and isinstance(td.source_path, str) and td.source_path:
-                        fp = ensure_loaded(td.source_path)
+                        fp = await ensure_loaded(td.source_path)
                         if fp:
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 cur[fp],
@@ -3632,7 +3649,7 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
                             )
                         ).scalar_one_or_none()
                     if td and isinstance(td.source_path, str) and td.source_path:
-                        fp = ensure_loaded(td.source_path)
+                        fp = await ensure_loaded(td.source_path)
                         if fp:
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 cur[fp],
@@ -3701,7 +3718,7 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
     # Apply backend patches
     if include_backend:
         for (src, handler), keys_map in backend_acc.items():
-            fp = ensure_loaded(src)
+            fp = await ensure_loaded(src)
             if not fp:
                 continue
             new_txt, changed, warns = py_add_keys_to_function_return_dicts(
@@ -3744,21 +3761,6 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
             "notes": notes[:200],
         }
     )
-
-
-def _read_text_under_root(root: Path, rel_path: str) -> tuple[str, str, str] | None:
-    try:
-        abs_p, rel_norm = resolve_under_root(root, rel_path, max_length=settings.max_rel_path_chars)
-    except Exception:
-        return None
-    if not abs_p.exists() or not abs_p.is_file():
-        return None
-    try:
-        txt = abs_p.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return None
-    return (rel_norm, str(abs_p), txt)
-
 
 async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
     # 1) Get compare report
@@ -3880,9 +3882,9 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
                     )
                     add_params.append({"name": nm, "type": ts_type})
 
-                rr = _read_text_under_root(root, c_src)
+                rr = await _read_text_under_root_async(root, c_src, meta=meta)
                 if rr:
-                    rel_norm, _abs, old_txt = rr
+                    rel_norm, old_txt = rr
                     meta.full_file_paths.add(rel_norm)
                     new_txt, changed, warns = ts_patch_wrapper_function(
                         old_txt,
@@ -3926,9 +3928,9 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
                             )
                         ).scalar_one_or_none()
                     if td and isinstance(td.source_path, str) and td.source_path:
-                        rr = _read_text_under_root(root, td.source_path)
+                        rr = await _read_text_under_root_async(root, td.source_path, meta=meta)
                         if rr:
-                            rel_norm, _abs, old_txt = rr
+                            rel_norm, old_txt = rr
                             meta.full_file_paths.add(rel_norm)
                             # add missing as REQUIRED for request (optional=False)
                             new_txt, changed, _status = ts_add_fields_to_typedef(
@@ -3971,9 +3973,9 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
                             )
                         ).scalar_one_or_none()
                     if td and isinstance(td.source_path, str) and td.source_path:
-                        rr = _read_text_under_root(root, td.source_path)
+                        rr = await _read_text_under_root_async(root, td.source_path, meta=meta)
                         if rr:
-                            rel_norm, _abs, old_txt = rr
+                            rel_norm, old_txt = rr
                             meta.full_file_paths.add(rel_norm)
                             # add missing as OPTIONAL for response (optional=True)
                             new_txt, changed, _status = ts_add_fields_to_typedef(
@@ -4122,23 +4124,27 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
                 backend_contract = None
         if backend_contract is None:
             # on the fly
-            try:
-                abs_p, rel_norm = resolve_under_root(
-                    root, r_src, max_length=settings.max_rel_path_chars
-                )
-                txt = abs_p.read_text(encoding="utf-8", errors="replace")
-                backend_contract = build_backend_contract_for_route(
-                    txt,
-                    {
-                        "method": r_method,
-                        "path": r_local,
-                        "handler_name": r_handler,
-                        "source_path": r_src,
-                        "lineno": r_line,
-                    },
-                )
-            except Exception as e:
-                backend_contract = {"version": 1, "warnings": [f"contract_build_failed:{e}"]}
+            read_result = await _read_text_under_root_async(root, r_src, meta=None)
+            if read_result:
+                _rel_norm, txt = read_result
+                try:
+                    backend_contract = build_backend_contract_for_route(
+                        txt,
+                        {
+                            "method": r_method,
+                            "path": r_local,
+                            "handler_name": r_handler,
+                            "source_path": r_src,
+                            "lineno": r_line,
+                        },
+                    )
+                except Exception as e:
+                    backend_contract = {"version": 1, "warnings": [f"contract_build_failed:{e}"]}
+            else:
+                backend_contract = {
+                    "version": 1,
+                    "warnings": [f"contract_build_failed:source_not_readable:{r_src}"],
+                }
 
         # Backend facets
         bp = backend_contract.get("path_params") if isinstance(backend_contract, dict) else []
@@ -4223,7 +4229,7 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
                 }
             metas.append(meta)
 
-        type_defs = _load_ts_typedefs_by_name(project_id, type_names)
+        type_defs = await _load_ts_typedefs_by_name(project_id, type_names)
 
         # Now compute comparisons per meta record
         for meta in metas:

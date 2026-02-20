@@ -27,6 +27,12 @@ RUNTIME_SEARCH_ASYNC_FUNCS = {
     "_tool_search_api_calls_async",
 }
 
+RUNTIME_CONTRACT_ASYNC_FUNCS = {
+    "_tool_compare_api_contract_async",
+    "_tool_suggest_contract_fix_async",
+    "_tool_suggest_api_fix_async",
+}
+
 
 def _load_ast(path: Path) -> ast.AST:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -197,3 +203,23 @@ def test_async_file_tools_have_no_sync_file_prechecks() -> None:
         for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
             if isinstance(call.func, ast.Attribute) and call.func.attr in {"exists", "is_file"}:
                 raise AssertionError(f"{fn_name} contains sync pre-check .{call.func.attr}()")
+
+
+def test_runtime_contract_async_wrappers_avoid_sync_file_io_calls() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+
+    banned_attrs = {"open", "read", "read_text", "read_bytes", "write_text", "write_bytes"}
+    for fn_name in RUNTIME_CONTRACT_ASYNC_FUNCS:
+        fn = fn_nodes[fn_name]
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            if isinstance(call.func, ast.Name) and call.func.id == "open":
+                raise AssertionError(f"{fn_name} has direct open() call in async runtime wrapper")
+            if isinstance(call.func, ast.Attribute) and call.func.attr in banned_attrs:
+                raise AssertionError(
+                    f"{fn_name} has direct .{call.func.attr}() call in async runtime wrapper"
+                )
