@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -3017,8 +3018,7 @@ async def _tool_compare_api_contract_async(
     root: Path,
     args: dict,
 ) -> dict:
-    del session
-    return await _tool_compare_api_contract(project_id, root, args)
+    return await _tool_compare_api_contract(session, project_id, root, args)
 
 
 async def _tool_suggest_contract_fix_async(
@@ -3028,8 +3028,7 @@ async def _tool_suggest_contract_fix_async(
     meta: AgenticMeta,
     args: dict,
 ) -> dict:
-    del session
-    return await _tool_suggest_contract_fix(project_id, root, meta, args)
+    return await _tool_suggest_contract_fix(session, project_id, root, meta, args)
 
 
 async def _tool_suggest_api_fix_async(
@@ -3039,8 +3038,7 @@ async def _tool_suggest_api_fix_async(
     meta: AgenticMeta,
     args: dict,
 ) -> dict:
-    del session
-    return await _tool_suggest_api_fix(project_id, root, meta, args)
+    return await _tool_suggest_api_fix(session, project_id, root, meta, args)
 
 
 async def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
@@ -3433,7 +3431,13 @@ def _ts_type_to_py_literal(ts_type: str) -> str:
     return "None"
 
 
-async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
+async def _tool_suggest_api_fix(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    meta: AgenticMeta,
+    args: dict,
+) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -3449,6 +3453,7 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
     max_files = _clamp_int(args.get("max_files"), 12, 1, 20)
 
     report_result = await _tool_compare_api_contract(
+        session,
         project_id,
         root,
         {
@@ -3502,6 +3507,31 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
 
     # For backend response patches: accumulate per (backend_file, handler) keys->literal
     backend_acc: dict[tuple[str, str], dict[str, str]] = {}
+
+    type_names: list[str] = []
+    for ritem in report["routes"]:
+        if not isinstance(ritem, dict):
+            continue
+        fcalls = ritem.get("frontend_calls")
+        if not isinstance(fcalls, list):
+            continue
+        for f in fcalls:
+            if not isinstance(f, dict):
+                continue
+            meta_obj = f.get("meta")
+            if not isinstance(meta_obj, dict):
+                continue
+            body_t = str(meta_obj.get("wrapper_body_type") or "")
+            resp_t = str(meta_obj.get("wrapper_response_type") or "")
+            if body_t:
+                type_names.append(body_t)
+            if resp_t:
+                type_names.append(resp_t)
+
+    typedef_cache = await _load_ts_typedefs_by_name(session, project_id, type_names)
+
+    def get_typedef(name: str) -> dict | None:
+        return typedef_cache.get(name) if name else None
 
     # Iterate compare report
     for ritem in report["routes"]:
@@ -3600,6 +3630,9 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
                     else []
                 )
                 if missing_body:
+                    td = get_typedef(wrapper_body_type)
+                    if td and isinstance(td.get("source_path"), str) and td.get("source_path"):
+                        fp = ensure_loaded(str(td.get("source_path") or ""))
                     async with AsyncSessionLocal() as s:
                         td = (
                             await s.execute(
@@ -3639,6 +3672,9 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
                     else []
                 )
                 if missing_resp:
+                    td = get_typedef(wrapper_resp_type)
+                    if td and isinstance(td.get("source_path"), str) and td.get("source_path"):
+                        fp = ensure_loaded(str(td.get("source_path") or ""))
                     async with AsyncSessionLocal() as s:
                         td = (
                             await s.execute(
@@ -3681,27 +3717,15 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
                     # get field types from TS response typedef if possible
                     field_types: dict[str, str] = {}
                     if wrapper_resp_type:
-                        async with AsyncSessionLocal() as s:
-                            td = (
-                                await s.execute(
-                                    select(TsTypeDef).where(
-                                        TsTypeDef.project_id == project_id,
-                                        TsTypeDef.name == wrapper_resp_type,
-                                    )
-                                )
-                            ).scalar_one_or_none()
-                        if td and isinstance(td.fields_json, str):
-                            try:
-                                flds = json.loads(td.fields_json or "[]")
-                            except Exception:
-                                flds = []
-                            if isinstance(flds, list):
-                                for fld in flds:
-                                    if isinstance(fld, dict):
-                                        nm = str(fld.get("name") or "")
-                                        tp = str(fld.get("type") or "")
-                                        if nm:
-                                            field_types[nm] = tp
+                        td = get_typedef(wrapper_resp_type)
+                        flds = td.get("fields") if isinstance(td, dict) else []
+                        if isinstance(flds, list):
+                            for fld in flds:
+                                if isinstance(fld, dict):
+                                    nm = str(fld.get("name") or "")
+                                    tp = str(fld.get("type") or "")
+                                    if nm:
+                                        field_types[nm] = tp
 
                     key = (r_src, r_handler)
                     acc = backend_acc.setdefault(key, {})
@@ -3762,7 +3786,28 @@ async def _tool_suggest_api_fix(project_id: int, root: Path, meta: AgenticMeta, 
         }
     )
 
-async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticMeta, args: dict) -> dict:
+
+def _read_text_under_root(root: Path, rel_path: str) -> tuple[str, str, str] | None:
+    try:
+        abs_p, rel_norm = resolve_under_root(root, rel_path, max_length=settings.max_rel_path_chars)
+    except Exception:
+        return None
+    if not abs_p.exists() or not abs_p.is_file():
+        return None
+    try:
+        txt = abs_p.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    return (rel_norm, str(abs_p), txt)
+
+
+async def _tool_suggest_contract_fix(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    meta: AgenticMeta,
+    args: dict,
+) -> dict:
     # 1) Get compare report
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
@@ -3774,6 +3819,7 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
     max_patches = _clamp_int(args.get("max_patches"), 10, 1, 20)
 
     report_result = await _tool_compare_api_contract(
+        session,
         project_id,
         root,
         {
@@ -3797,6 +3843,31 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
 
     patches: list[dict] = []
     notes: list[str] = []
+
+    type_names: list[str] = []
+    for ritem in report["routes"]:
+        if not isinstance(ritem, dict):
+            continue
+        fcalls = ritem.get("frontend_calls")
+        if not isinstance(fcalls, list):
+            continue
+        for f in fcalls:
+            if not isinstance(f, dict):
+                continue
+            meta_obj = f.get("meta")
+            if not isinstance(meta_obj, dict):
+                continue
+            body_t = str(meta_obj.get("wrapper_body_type") or "")
+            resp_t = str(meta_obj.get("wrapper_response_type") or "")
+            if body_t:
+                type_names.append(body_t)
+            if resp_t:
+                type_names.append(resp_t)
+
+    typedef_cache = await _load_ts_typedefs_by_name(session, project_id, type_names)
+
+    def get_typedef(name: str) -> dict | None:
+        return typedef_cache.get(name) if name else None
 
     # helper to add patch with dedupe
     seen_patch_paths: set[str] = set()
@@ -3918,6 +3989,10 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
                 )
                 if missing_body and backend_fields:
                     # locate typedef
+                    td = get_typedef(wrapper_body_type)
+                    source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
+                    if source_path:
+                        rr = _read_text_under_root(root, source_path)
                     async with AsyncSessionLocal() as s:
                         td = (
                             await s.execute(
@@ -3947,7 +4022,7 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
                                 diff = _unified_diff(rel_norm, old_txt, new_txt)
                                 add_patch(rel_norm, diff, "frontend_body_type_add_missing_fields")
                         else:
-                            notes.append(f"typedef_source_not_readable:{td.source_path}")
+                            notes.append(f"typedef_source_not_readable:{source_path}")
                     else:
                         notes.append(f"typedef_not_found_for_body_type:{wrapper_body_type}")
 
@@ -3963,6 +4038,10 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
                     else []
                 )
                 if missing_resp:
+                    td = get_typedef(wrapper_resp_type)
+                    source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
+                    if source_path:
+                        rr = _read_text_under_root(root, source_path)
                     async with AsyncSessionLocal() as s:
                         td = (
                             await s.execute(
@@ -3996,7 +4075,7 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
                                     "frontend_response_type_add_missing_keys_optional",
                                 )
                         else:
-                            notes.append(f"typedef_source_not_readable:{td.source_path}")
+                            notes.append(f"typedef_source_not_readable:{source_path}")
                     else:
                         notes.append(f"typedef_not_found_for_response_type:{wrapper_resp_type}")
 
@@ -4025,36 +4104,66 @@ async def _tool_suggest_contract_fix(project_id: int, root: Path, meta: AgenticM
     )
 
 
-async def _load_ts_typedefs_by_name(project_id: int, names: list[str]) -> dict[str, dict]:
-    wanted = [n for n in (names or []) if isinstance(n, str) and n.strip()]
+async def _load_ts_typedefs_by_name(
+    session: AsyncSession,
+    project_id: int,
+    names: list[str],
+    cache: dict[tuple[int, str], dict | None] | None = None,
+) -> dict[str, dict]:
+    wanted = [n.strip() for n in (names or []) if isinstance(n, str) and n.strip()]
     if not wanted:
         return {}
-    wanted = list(dict.fromkeys(wanted))[:200]
+
+    wanted = list(dict.fromkeys(wanted))[:2000]
+    scope_cache: dict[tuple[int, str], dict | None] = cache if cache is not None else {}
+    missing = [n for n in wanted if (project_id, n) not in scope_cache]
+
+    if missing:
+        chunk_size = 300
+        for idx in range(0, len(missing), chunk_size):
+            chunk = missing[idx : idx + chunk_size]
+            rows = (
+                await session.execute(
+                    select(TsTypeDef).where(
+                        TsTypeDef.project_id == project_id,
+                        TsTypeDef.name.in_(chunk),
+                    )
+                )
+            ).scalars().all()
+            found_names: set[str] = set()
+            for r in rows:
+                nm = str(r.name or "")
+                if not nm:
+                    continue
+                found_names.add(nm)
+                try:
+                    fields = json.loads(r.fields_json or "[]")
+                except Exception:
+                    fields = []
+                scope_cache[(project_id, nm)] = {
+                    "name": nm,
+                    "kind": str(r.kind or ""),
+                    "source_path": str(r.source_path or ""),
+                    "fields": fields if isinstance(fields, list) else [],
+                }
+            for name in chunk:
+                if name not in found_names:
+                    scope_cache[(project_id, name)] = None
+
     out: dict[str, dict] = {}
-    async with AsyncSessionLocal() as s:
-        rows = (
-            await s.execute(
-                select(TsTypeDef).where(TsTypeDef.project_id == project_id, TsTypeDef.name.in_(wanted))
-            )
-        ).scalars().all()
-    for r in rows:
-        nm = str(r.name or "")
-        if not nm:
-            continue
-        try:
-            fields = json.loads(r.fields_json or "[]")
-        except Exception:
-            fields = []
-        out[nm] = {
-            "name": nm,
-            "kind": str(r.kind or ""),
-            "source_path": str(r.source_path or ""),
-            "fields": fields if isinstance(fields, list) else [],
-        }
+    for name in wanted:
+        item = scope_cache.get((project_id, name))
+        if item:
+            out[name] = item
     return out
 
 
-async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_compare_api_contract(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    args: dict,
+) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -4064,7 +4173,6 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
     route_limit = _clamp_int(args.get("route_limit"), 3, 1, 10)
     call_limit = _clamp_int(args.get("call_limit"), 10, 1, 50)
 
-    # Reuse route_usages logic to find best matching routes + frontend calls
     ru_result = await _tool_route_usages(
         project_id,
         {
@@ -4087,7 +4195,105 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
             }
         )
 
+    route_keys: list[tuple[int, str, str, str, str, int]] = []
+    call_keys: list[tuple[int, str, str, str, int]] = []
+    for item in routes:
+        if not isinstance(item, dict):
+            continue
+        route_info = item.get("route")
+        if isinstance(route_info, dict):
+            route_keys.append(
+                (
+                    project_id,
+                    str(route_info.get("method") or ""),
+                    str(route_info.get("path") or ""),
+                    str(route_info.get("source_path") or ""),
+                    str(route_info.get("handler_name") or ""),
+                    int(route_info.get("lineno") or 0),
+                )
+            )
+        matches = item.get("matches")
+        if not isinstance(matches, list):
+            continue
+        for m in matches:
+            if not isinstance(m, dict):
+                continue
+            call_keys.append(
+                (
+                    project_id,
+                    str(m.get("method") or ""),
+                    str(m.get("path") or ""),
+                    str(m.get("source_path") or ""),
+                    int(m.get("lineno") or 0),
+                )
+            )
+
+    route_keys = list(dict.fromkeys(route_keys))
+    call_keys = list(dict.fromkeys(call_keys))
+
+    contracts_by_key: dict[tuple[int, str, str, str, str, int], ApiRouteContract] = {}
+    if route_keys:
+        chunk_size = 300
+        for idx in range(0, len(route_keys), chunk_size):
+            chunk = route_keys[idx : idx + chunk_size]
+            rows = (
+                await session.execute(
+                    select(ApiRouteContract).where(
+                        tuple_(
+                            ApiRouteContract.project_id,
+                            ApiRouteContract.method,
+                            ApiRouteContract.path,
+                            ApiRouteContract.source_path,
+                            ApiRouteContract.handler_name,
+                            ApiRouteContract.lineno,
+                        ).in_(chunk)
+                    )
+                )
+            ).scalars().all()
+            for row in rows:
+                contracts_by_key[
+                    (
+                        int(row.project_id),
+                        str(row.method or ""),
+                        str(row.path or ""),
+                        str(row.source_path or ""),
+                        str(row.handler_name or ""),
+                        int(row.lineno or 0),
+                    )
+                ] = row
+
+    call_meta_by_key: dict[tuple[int, str, str, str, int], ApiCallMeta] = {}
+    if call_keys:
+        chunk_size = 300
+        for idx in range(0, len(call_keys), chunk_size):
+            chunk = call_keys[idx : idx + chunk_size]
+            rows = (
+                await session.execute(
+                    select(ApiCallMeta).where(
+                        tuple_(
+                            ApiCallMeta.project_id,
+                            ApiCallMeta.method,
+                            ApiCallMeta.path,
+                            ApiCallMeta.source_path,
+                            ApiCallMeta.lineno,
+                        ).in_(chunk)
+                    )
+                )
+            ).scalars().all()
+            for row in rows:
+                call_meta_by_key[
+                    (
+                        int(row.project_id),
+                        str(row.method or ""),
+                        str(row.path or ""),
+                        str(row.source_path or ""),
+                        int(row.lineno or 0),
+                    )
+                ] = row
+
     result_routes: list[dict] = []
+    route_contract_cache: dict[tuple[str, str, str, str, int], dict | None] = {}
+    typedef_cache: dict[tuple[int, str], dict | None] = {}
 
     for item in routes:
         if not isinstance(item, dict):
@@ -4102,55 +4308,47 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
         r_handler = str(route_info.get("handler_name") or "")
         r_line = int(route_info.get("lineno") or 0)
 
-        # Load backend contract from DB; fallback to on-the-fly parse
-        backend_contract: dict | None = None
-        async with AsyncSessionLocal() as s:
-            row = (
-                await s.execute(
-                    select(ApiRouteContract).where(
-                        ApiRouteContract.project_id == project_id,
-                        ApiRouteContract.method == r_method,
-                        ApiRouteContract.path == r_local,
-                        ApiRouteContract.source_path == r_src,
-                        ApiRouteContract.handler_name == r_handler,
-                        ApiRouteContract.lineno == r_line,
-                    )
-                )
-            ).scalar_one_or_none()
-        if row and isinstance(row.contract_json, str) and row.contract_json.strip():
-            try:
-                backend_contract = json.loads(row.contract_json)
-            except Exception:
-                backend_contract = None
-        if backend_contract is None:
-            # on the fly
-            read_result = await _read_text_under_root_async(root, r_src, meta=None)
-            if read_result:
-                _rel_norm, txt = read_result
+        cache_key = (r_method, r_local, r_src, r_handler, r_line)
+        backend_contract = route_contract_cache.get(cache_key)
+        if cache_key not in route_contract_cache:
+            backend_contract = None
+            row = contracts_by_key.get((project_id, r_method, r_local, r_src, r_handler, r_line))
+            if row and isinstance(row.contract_json, str) and row.contract_json.strip():
                 try:
-                    backend_contract = build_backend_contract_for_route(
-                        txt,
-                        {
-                            "method": r_method,
-                            "path": r_local,
-                            "handler_name": r_handler,
-                            "source_path": r_src,
-                            "lineno": r_line,
-                        },
-                    )
-                except Exception as e:
-                    backend_contract = {"version": 1, "warnings": [f"contract_build_failed:{e}"]}
-            else:
-                backend_contract = {
-                    "version": 1,
-                    "warnings": [f"contract_build_failed:source_not_readable:{r_src}"],
-                }
+                    backend_contract = json.loads(row.contract_json)
+                except Exception:
+                    backend_contract = None
+            if backend_contract is None:
+                # on the fly
+                read_result = await _read_text_under_root_async(root, r_src, meta=None)
+                if read_result:
+                    _rel_norm, txt = read_result
+                    try:
+                        backend_contract = build_backend_contract_for_route(
+                            txt,
+                            {
+                                "method": r_method,
+                                "path": r_local,
+                                "handler_name": r_handler,
+                                "source_path": r_src,
+                                "lineno": r_line,
+                            },
+                        )
+                    except Exception as e:
+                        backend_contract = {
+                            "version": 1,
+                            "warnings": [f"contract_build_failed:{e}"],
+                        }
+                else:
+                    backend_contract = {
+                        "version": 1,
+                        "warnings": [f"contract_build_failed:source_not_readable:{r_src}"],
+                    }
+            route_contract_cache[cache_key] = backend_contract
 
-        # Backend facets
         bp = backend_contract.get("path_params") if isinstance(backend_contract, dict) else []
-        backend_contract.get("query_params") if isinstance(backend_contract, dict) else []
         bb = backend_contract.get("body") if isinstance(backend_contract, dict) else None
-        br = backend_contract.get("response") if isinstance(backend_contract, dict) else {}
+        br = backend_contract.get("response") if isinstance(backend_contract, dict) else None
 
         path_params = bp if isinstance(bp, list) else []
         body_fields = []
@@ -4165,7 +4363,6 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
         if isinstance(br, dict) and isinstance(br.get("keys"), list):
             resp_keys = [str(x) for x in br.get("keys") if isinstance(x, str)]
 
-        # frontend matches + call meta + comparisons
         matches = item.get("matches")
         if not isinstance(matches, list):
             matches = []
@@ -4180,18 +4377,7 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
             c_src = str(m.get("source_path") or "")
             c_line = int(m.get("lineno") or 0)
 
-            async with AsyncSessionLocal() as s:
-                cm = (
-                    await s.execute(
-                        select(ApiCallMeta).where(
-                            ApiCallMeta.project_id == project_id,
-                            ApiCallMeta.method == c_method,
-                            ApiCallMeta.path == c_path,
-                            ApiCallMeta.source_path == c_src,
-                            ApiCallMeta.lineno == c_line,
-                        )
-                    )
-                ).first()
+            cm = call_meta_by_key.get((project_id, c_method, c_path, c_src, c_line))
             meta = {
                 "call": {
                     "method": c_method,
@@ -4229,9 +4415,13 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
                 }
             metas.append(meta)
 
-        type_defs = await _load_ts_typedefs_by_name(project_id, type_names)
+        type_defs = await _load_ts_typedefs_by_name(
+            session,
+            project_id,
+            type_names,
+            cache=typedef_cache,
+        )
 
-        # Now compute comparisons per meta record
         for meta in metas:
             mobj = meta.get("meta") if isinstance(meta.get("meta"), dict) else {}
             wparams = (
@@ -4244,7 +4434,6 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
                     if nm and nm != "<destructured>":
                         wparam_names.add(nm)
 
-            # Path params
             missing_path_params = []
             for pp in path_params:
                 if not isinstance(pp, dict):
@@ -4252,9 +4441,7 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
                 nm = str(pp.get("name") or "")
                 if not nm:
                     continue
-                # frontend is camelCase in this repo; accept both
                 camel = nm
-                # simple snake_to_camel-ish
                 if "_" in nm:
                     parts = [x for x in nm.split("_") if x]
                     if parts:
@@ -4264,7 +4451,6 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
                 if camel not in wparam_names and nm not in wparam_names:
                     missing_path_params.append({"backend": nm, "frontend_expected": camel})
 
-            # Body compare
             backend_body_fields = [
                 str(f.get("name") or "") for f in body_fields if isinstance(f, dict)
             ]
@@ -4273,7 +4459,6 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
             frontend_body_keys = []
             if isinstance(mobj.get("body_keys"), list):
                 frontend_body_keys = [str(x) for x in mobj["body_keys"] if isinstance(x, str)]
-            # If no literal keys, use typedef fields if body type is known
             body_t = str(mobj.get("wrapper_body_type") or "")
             if (not frontend_body_keys) and body_t and body_t in type_defs:
                 flds = type_defs[body_t].get("fields") or []
@@ -4291,7 +4476,6 @@ async def _tool_compare_api_contract(project_id: int, root: Path, args: dict) ->
                 missing_body = sorted(bset - fset)
                 extra_body = sorted(fset - bset)
 
-            # Response compare
             resp_t = str(mobj.get("wrapper_response_type") or "")
             frontend_resp_keys = []
             if resp_t and resp_t in type_defs:
