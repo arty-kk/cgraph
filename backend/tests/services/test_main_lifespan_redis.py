@@ -23,9 +23,6 @@ def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
     async def _fake_close_redis():
         calls.append("close_redis")
 
-    def _fake_shutdown_enqueue_adapter():
-        calls.append("shutdown_enqueue")
-
     async def _fake_close_openai():
         calls.append("close_openai")
 
@@ -39,7 +36,6 @@ def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
     monkeypatch.setattr(main, "init_redis_pool_async", _fake_init_redis)
     monkeypatch.setattr(main, "init_fs_runtime", _fake_init_fs)
     monkeypatch.setattr(main, "close_redis_pool_async", _fake_close_redis)
-    monkeypatch.setattr(main, "shutdown_celery_enqueue_adapter", _fake_shutdown_enqueue_adapter)
     monkeypatch.setattr(main, "close_fs_runtime", _fake_close_fs)
     monkeypatch.setattr(main, "close_async_openai_client", _fake_close_openai)
     monkeypatch.setattr(main, "close_async_db", _fake_close_db)
@@ -55,7 +51,6 @@ def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
         "init_db",
         "init_redis",
         "init_fs",
-        "shutdown_enqueue",
         "close_redis",
         "close_fs",
         "close_openai",
@@ -79,9 +74,6 @@ def test_lifespan_closes_runtime_even_if_startup_fails(monkeypatch):
     async def _fake_close_s3():
         calls.append("close_s3")
 
-    def _fake_shutdown_enqueue_adapter():
-        calls.append("shutdown_enqueue")
-
     async def _fake_close_redis():
         calls.append("close_redis")
 
@@ -99,7 +91,6 @@ def test_lifespan_closes_runtime_even_if_startup_fails(monkeypatch):
     monkeypatch.setattr(main, "init_fs_runtime", _fake_init_fs)
     monkeypatch.setattr(main, "close_s3_runtime", _fake_close_s3)
     monkeypatch.setattr(main, "close_redis_pool_async", _fake_close_redis)
-    monkeypatch.setattr(main, "shutdown_celery_enqueue_adapter", _fake_shutdown_enqueue_adapter)
     monkeypatch.setattr(main, "close_fs_runtime", _fake_close_fs)
     monkeypatch.setattr(main, "close_async_openai_client", _fake_close_openai)
     monkeypatch.setattr(main, "close_async_db", _fake_close_db)
@@ -115,7 +106,6 @@ def test_lifespan_closes_runtime_even_if_startup_fails(monkeypatch):
 
     assert calls == [
         "init_db",
-        "shutdown_enqueue",
         "close_s3",
         "close_redis",
         "close_fs",
@@ -139,9 +129,6 @@ def test_lifespan_repeated_runs_do_not_leak_cleanup_calls(monkeypatch):
     async def _fake_close_redis():
         calls.append("close_redis")
 
-    def _fake_shutdown_enqueue_adapter():
-        calls.append("shutdown_enqueue")
-
     async def _fake_close_fs():
         calls.append("close_fs")
 
@@ -155,7 +142,6 @@ def test_lifespan_repeated_runs_do_not_leak_cleanup_calls(monkeypatch):
     monkeypatch.setattr(main, "init_redis_pool_async", _fake_init_redis)
     monkeypatch.setattr(main, "init_fs_runtime", _fake_init_fs)
     monkeypatch.setattr(main, "close_redis_pool_async", _fake_close_redis)
-    monkeypatch.setattr(main, "shutdown_celery_enqueue_adapter", _fake_shutdown_enqueue_adapter)
     monkeypatch.setattr(main, "close_fs_runtime", _fake_close_fs)
     monkeypatch.setattr(main, "close_async_openai_client", _fake_close_openai)
     monkeypatch.setattr(main, "close_async_db", _fake_close_db)
@@ -170,7 +156,6 @@ def test_lifespan_repeated_runs_do_not_leak_cleanup_calls(monkeypatch):
     assert calls.count("init_db") == 3
     assert calls.count("init_redis") == 3
     assert calls.count("init_fs") == 3
-    assert calls.count("shutdown_enqueue") == 3
     assert calls.count("close_redis") == 3
     assert calls.count("close_fs") == 3
     assert calls.count("close_openai") == 3

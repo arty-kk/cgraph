@@ -275,15 +275,15 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
     ]
 
 
-def test_task_entrypoints_use_unified_worker_loop_runner(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded: list[object] = []
+def test_task_entrypoints_use_native_async_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[str] = []
 
-    def _fake_run(awaitable):
+    def _fake_run_async(awaitable):
         recorded.append(awaitable.cr_code.co_name)
         awaitable.close()
         return {"updated": True}
 
-    monkeypatch.setattr(celery_tasks, "_run_in_worker_loop", _fake_run)
+    monkeypatch.setattr(celery_tasks, "_run_async", _fake_run_async)
 
     celery_tasks.scan_task("j", 1, 1)
     celery_tasks.docs_task("j", 1, 1)

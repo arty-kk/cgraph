@@ -33,9 +33,6 @@ async def test_lifespan_initializes_and_closes_s3_runtime_once(
     async def _fake_close_redis() -> None:
         calls.append("close_redis")
 
-    def _fake_shutdown_enqueue_adapter() -> None:
-        calls.append("shutdown_enqueue")
-
     async def _fake_close_openai() -> None:
         calls.append("close_openai")
 
@@ -47,7 +44,6 @@ async def test_lifespan_initializes_and_closes_s3_runtime_once(
     monkeypatch.setattr(main, "init_s3_runtime", _fake_init_s3)
     monkeypatch.setattr(main, "close_s3_runtime", _fake_close_s3)
     monkeypatch.setattr(main, "close_redis_pool_async", _fake_close_redis)
-    monkeypatch.setattr(main, "shutdown_celery_enqueue_adapter", _fake_shutdown_enqueue_adapter)
     monkeypatch.setattr(main, "close_async_openai_client", _fake_close_openai)
     monkeypatch.setattr(main, "close_async_db", _fake_close_db)
 
@@ -63,7 +59,6 @@ async def test_lifespan_initializes_and_closes_s3_runtime_once(
         "init_redis",
         "init_s3",
         "inside",
-        "shutdown_enqueue",
         "close_s3",
         "close_redis",
         "close_openai",
