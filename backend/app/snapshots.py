@@ -13,13 +13,13 @@ from uuid import uuid4
 
 from .config import settings
 from .errors import BadRequestError
+from .infra.fs_runtime import run_fs_io_async
 from .logging import get_logger
 from .s3_runtime import get_s3_client
 from .utils import sha256_file
 
 logger = get_logger("stubgraph.snapshots")
 
-_SNAPSHOT_DISK_IO_SEMAPHORE = asyncio.Semaphore(settings.snapshot_disk_concurrency)
 _SNAPSHOT_S3_IO_SEMAPHORE = asyncio.Semaphore(settings.snapshot_s3_concurrency)
 
 
@@ -233,13 +233,21 @@ async def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: P
             chunks.append(chunk)
             buffered += len(chunk)
             if buffered >= flush_threshold:
-                async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-                    await asyncio.to_thread(_append_file_chunks, archive_path, chunks)
+                await run_fs_io_async(
+                    _append_file_chunks,
+                    archive_path,
+                    chunks,
+                    operation="snapshots.archive.append_chunks",
+                )
                 chunks.clear()
                 buffered = 0
         if chunks:
-            async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-                await asyncio.to_thread(_append_file_chunks, archive_path, chunks)
+            await run_fs_io_async(
+                _append_file_chunks,
+                archive_path,
+                chunks,
+                operation="snapshots.archive.append_chunks",
+            )
     except Exception:
         await _cleanup_path_async(archive_path)
         raise
@@ -275,8 +283,7 @@ def _read_chunk_batch(stream, chunk_size: int, batch_size: int = 4) -> list[byte
 
 
 async def _cleanup_path_async(path: Path) -> None:
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        await asyncio.to_thread(path.unlink, missing_ok=True)
+    await run_fs_io_async(path.unlink, missing_ok=True, operation="snapshots.path.unlink")
 
 
 async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> None:
@@ -294,8 +301,12 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
 
         with archive_path.open("rb") as stream:
             while True:
-                async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-                    chunk_batch = await asyncio.to_thread(_read_chunk_batch, stream, chunk_size)
+                chunk_batch = await run_fs_io_async(
+                    _read_chunk_batch,
+                    stream,
+                    chunk_size,
+                    operation="snapshots.archive.read_chunks",
+                )
                 if not chunk_batch:
                     break
 
@@ -340,7 +351,10 @@ def _archive_needs_update(archive_path: Path, expected_size: int, expected_sha: 
 
 async def _ensure_local_snapshot_archive(meta: SnapshotMeta) -> Path:
     archive_path = _local_archive_path(meta.sha256, meta.archive_ext)
-    exists = await asyncio.to_thread(archive_path.exists)
+    exists = await run_fs_io_async(
+        archive_path.exists,
+        operation="snapshots.archive.exists",
+    )
     if not exists and meta.storage == "s3":
         await _download_snapshot_archive_from_s3(meta, archive_path)
     return archive_path
@@ -365,14 +379,14 @@ async def _ensure_archive_and_extract(
     marker_path: Path,
 ) -> None:
     archive_path = await _ensure_local_snapshot_archive(meta)
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        await asyncio.to_thread(
-            _extract_archive_to_root,
-            meta.archive_ext,
-            archive_path,
-            root_dir,
-            marker_path,
-        )
+    await run_fs_io_async(
+        _extract_archive_to_root,
+        meta.archive_ext,
+        archive_path,
+        root_dir,
+        marker_path,
+        operation="snapshots.extract.archive",
+    )
 
 
 def _finalize_local_archive(
@@ -408,8 +422,7 @@ def _path_exists_and_is_dir(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_dir_async(path: Path) -> tuple[bool, bool]:
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        return await asyncio.to_thread(_path_exists_and_is_dir, path)
+    return await run_fs_io_async(_path_exists_and_is_dir, path, operation="snapshots.path.exists_dir")
 
 
 async def _unlink_if_exists_async(path: Path) -> None:
@@ -417,16 +430,15 @@ async def _unlink_if_exists_async(path: Path) -> None:
 
 
 async def prepare_snapshot_root_async(meta: SnapshotMeta) -> Path:
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        root_dir, marker_path, has_any_files, marker_exists = await asyncio.to_thread(
-            _resolve_root_and_get_state,
-            settings.db_dir / meta.root_dir,
-        )
+    root_dir, marker_path, has_any_files, marker_exists = await run_fs_io_async(
+        _resolve_root_and_get_state,
+        settings.db_dir / meta.root_dir,
+        operation="snapshots.root.resolve_state",
+    )
     if has_any_files:
         if marker_exists:
             return root_dir
-        async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-            await asyncio.to_thread(_clear_dir_contents, root_dir)
+        await run_fs_io_async(_clear_dir_contents, root_dir, operation="snapshots.dir.clear")
 
     await _ensure_archive_and_extract(
         meta,
@@ -440,22 +452,25 @@ async def prepare_project_snapshot_root_async(meta: SnapshotMeta) -> Path:
     shared_root = await prepare_snapshot_root_async(meta)
     project_base = _snapshot_dir(meta.sha256) / "projects" / uuid4().hex
     project_root = project_base / "repo"
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        await asyncio.to_thread(_clone_shared_snapshot_to_project, shared_root, project_root)
+    await run_fs_io_async(
+        _clone_shared_snapshot_to_project,
+        shared_root,
+        project_root,
+        operation="snapshots.project.clone",
+    )
     return project_root
 
 
 async def delete_project_snapshot_root_async(root_path: str | Path) -> None:
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        root_dir, exists, is_dir = await asyncio.to_thread(
-            _resolve_path_and_dir_state,
-            Path(root_path),
-        )
+    root_dir, exists, is_dir = await run_fs_io_async(
+        _resolve_path_and_dir_state,
+        Path(root_path),
+        operation="snapshots.path.resolve_state",
+    )
     if not _is_project_snapshot_root(root_dir):
         return
     if exists and is_dir:
-        async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-            await asyncio.to_thread(_clear_dir_and_rmdir, root_dir)
+        await run_fs_io_async(_clear_dir_and_rmdir, root_dir, operation="snapshots.dir.clear_rmdir")
 
 
 async def delete_snapshot_async(meta: SnapshotMeta) -> None:
@@ -477,17 +492,16 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
         snapshot_exists, snapshot_is_dir = await _path_exists_and_is_dir_async(snapshot_dir)
 
         if snapshot_exists and snapshot_is_dir:
-            async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-                await asyncio.to_thread(_clear_dir_and_rmdir, snapshot_dir)
+            await run_fs_io_async(_clear_dir_and_rmdir, snapshot_dir, operation="snapshots.dir.clear_rmdir")
         else:
             archive_path = _local_archive_path(meta.sha256, meta.archive_ext)
             unlink_archive_task = asyncio.create_task(_unlink_if_exists_async(archive_path))
             try:
-                async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-                    await asyncio.to_thread(
-                        _resolve_and_clear_dir_if_exists,
-                        settings.db_dir / meta.root_dir,
-                    )
+                await run_fs_io_async(
+                    _resolve_and_clear_dir_if_exists,
+                    settings.db_dir / meta.root_dir,
+                    operation="snapshots.dir.resolve_clear_if_exists",
+                )
             finally:
                 await unlink_archive_task
     finally:
@@ -498,8 +512,12 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
 async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
     await upload_file.seek(0)
     tmp_dir = settings.db_dir / "snapshots" / "tmp"
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        await asyncio.to_thread(tmp_dir.mkdir, parents=True, exist_ok=True)
+    await run_fs_io_async(
+        tmp_dir.mkdir,
+        parents=True,
+        exist_ok=True,
+        operation="snapshots.tmp.mkdir",
+    )
 
     ext = _archive_ext(archive_name)
     tmp_path = tmp_dir / f"{uuid4().hex}{ext}"
@@ -524,14 +542,22 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
             chunks.append(chunk)
             buffered += len(chunk)
             if buffered >= flush_threshold:
-                async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-                    await asyncio.to_thread(_append_file_chunks, tmp_path, chunks)
+                await run_fs_io_async(
+                    _append_file_chunks,
+                    tmp_path,
+                    chunks,
+                    operation="snapshots.archive.append_chunks",
+                )
                 chunks.clear()
                 buffered = 0
 
         if chunks:
-            async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-                await asyncio.to_thread(_append_file_chunks, tmp_path, chunks)
+            await run_fs_io_async(
+                _append_file_chunks,
+                tmp_path,
+                chunks,
+                operation="snapshots.archive.append_chunks",
+            )
     except Exception:
         await _cleanup_path_async(tmp_path)
         raise
@@ -542,12 +568,22 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
 
     sha = hasher.hexdigest()
     root_dir = _snapshot_dir(sha)
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        await asyncio.to_thread(root_dir.mkdir, parents=True, exist_ok=True)
+    await run_fs_io_async(
+        root_dir.mkdir,
+        parents=True,
+        exist_ok=True,
+        operation="snapshots.root.mkdir",
+    )
     archive_path = _local_archive_path(sha, ext)
 
-    async with _SNAPSHOT_DISK_IO_SEMAPHORE:
-        await asyncio.to_thread(_finalize_local_archive, tmp_path, archive_path, total, sha)
+    await run_fs_io_async(
+        _finalize_local_archive,
+        tmp_path,
+        archive_path,
+        total,
+        sha,
+        operation="snapshots.archive.finalize",
+    )
 
     backend = _ensure_storage_backend()
     bucket = None
