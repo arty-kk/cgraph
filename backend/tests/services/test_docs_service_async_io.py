@@ -29,23 +29,23 @@ def test_read_text_with_limit_returns_full_when_short(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_collect_key_files_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_collect_key_files_async_uses_run_fs_io_async(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_fs_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return ([{"path": "README.md"}], {"makefiles": []})
 
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(docs_service, "run_fs_io_async", _fake_run_fs_io_async)
 
     result = await docs_service._collect_key_files_async(Path("/repo"), ["README.md"])
 
     assert result == ([{"path": "README.md"}], {"makefiles": []})
     assert calls["func"] is docs_service._collect_key_files
     assert calls["args"] == (Path("/repo"), ["README.md"])
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "docs_service.collect_key_files"}
 
 
 @pytest.mark.anyio
@@ -70,43 +70,17 @@ async def test_compute_project_summary_facts_async_uses_to_thread(
 
 
 @pytest.mark.anyio
-async def test_tree_outline_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: dict[str, object] = {}
-
-    async def _fake_to_thread(func, *args, **kwargs):
-        calls["func"] = func
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        return {"lines": ["- src"], "truncated": False, "max_lines": 1200}
-
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
-
+async def test_tree_outline_async_runs_inline() -> None:
     result = await docs_service._tree_outline_async(["src/main.py"], 1200)
 
-    assert result["lines"] == ["- src"]
-    assert calls["func"] is docs_service._tree_outline
-    assert calls["args"] == (["src/main.py"], 1200)
-    assert calls["kwargs"] == {}
+    assert result["lines"] == ["- src", "  - main.py"]
 
 
 @pytest.mark.anyio
-async def test_build_run_hints_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: dict[str, object] = {}
-
-    async def _fake_to_thread(func, *args, **kwargs):
-        calls["func"] = func
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        return ["pytest -q"]
-
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
-
+async def test_build_run_hints_async_runs_inline() -> None:
     result = await docs_service._build_run_hints_async([{"content": "make test"}], {"makefiles": []})
 
-    assert result == ["pytest -q"]
-    assert calls["func"] is docs_service._build_run_hints
-    assert calls["args"] == ([{"content": "make test"}], {"makefiles": []})
-    assert calls["kwargs"] == {}
+    assert isinstance(result, list)
 
 
 @pytest.mark.anyio
@@ -138,19 +112,7 @@ async def test_build_docs_markdown_parts_async_uses_to_thread(
 
 
 @pytest.mark.anyio
-async def test_select_contract_paths_async_uses_to_thread(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: dict[str, object] = {}
-
-    async def _fake_to_thread(func, *args, **kwargs):
-        calls["func"] = func
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        return ["a.py"]
-
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
-
+async def test_select_contract_paths_async_runs_inline() -> None:
     result = await docs_service._select_contract_paths_async(
         risks=[{"path": "a.py", "risk": 1.0, "fan_out": 1}],
         hotspots=[{"path": "a.py"}],
@@ -158,9 +120,7 @@ async def test_select_contract_paths_async_uses_to_thread(
         paths=["a.py", "b.py"],
     )
 
-    assert result == ["a.py"]
-    assert calls["func"] is docs_service._select_contract_paths
-    assert calls["kwargs"]["paths"] == ["a.py", "b.py"]
+    assert result == ["a.py", "b.py"]
 
 
 @pytest.mark.anyio
@@ -322,23 +282,26 @@ async def test_collect_outline_and_key_files_async_runs_helpers(
 
 
 @pytest.mark.anyio
-async def test_normalize_project_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_normalize_project_root_async_uses_run_fs_io_async(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_fs_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/repo")
 
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(docs_service, "run_fs_io_async", _fake_run_fs_io_async)
 
     result = await docs_service._normalize_project_root_async("/repo", max_length=321)
 
     assert result == Path("/repo")
     assert calls["func"] is docs_service.normalize_project_root
     assert calls["args"] == ("/repo",)
-    assert calls["kwargs"] == {"max_length": 321}
+    assert calls["kwargs"] == {
+        "max_length": 321,
+        "operation": "docs_service.normalize_project_root",
+    }
 
 
 @pytest.mark.anyio

@@ -103,3 +103,47 @@ async def test_run_fs_io_async_cancellation_releases_queue_depth(monkeypatch: py
     release.set()
     assert await holder == "done"
     await fs_runtime.close_fs_runtime()
+
+
+@pytest.mark.anyio
+async def test_run_fs_io_async_burst_keeps_event_loop_responsive_and_respects_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fs_runtime.settings, "fs_runtime_max_workers", 3)
+    monkeypatch.setattr(fs_runtime.settings, "fs_runtime_max_concurrency", 3)
+    await fs_runtime.close_fs_runtime()
+    await fs_runtime.init_fs_runtime()
+
+    heartbeat_ticks = 0
+    stop_heartbeat = asyncio.Event()
+
+    async def _heartbeat() -> None:
+        nonlocal heartbeat_ticks
+        while not stop_heartbeat.is_set():
+            heartbeat_ticks += 1
+            await asyncio.sleep(0.005)
+
+    def _slow_work(item: int) -> int:
+        time.sleep(0.03)
+        return item
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
+    try:
+        burst = [
+            fs_runtime.run_fs_io_async(_slow_work, i, operation="test.burst")
+            for i in range(30)
+        ]
+        results = await asyncio.gather(*burst)
+    finally:
+        stop_heartbeat.set()
+        await heartbeat_task
+
+    assert sorted(results) == list(range(30))
+    assert heartbeat_ticks > 1
+
+    runtime = fs_runtime._fs_runtime
+    assert runtime is not None
+    assert runtime.peak_in_flight <= fs_runtime.settings.fs_runtime_max_concurrency
+    assert runtime.peak_queue_depth >= 1
+
+    await fs_runtime.close_fs_runtime()

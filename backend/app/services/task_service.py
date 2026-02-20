@@ -30,6 +30,7 @@ from ..errors import (
     ServerError,
 )
 from ..graph import compute_graph_metrics_async, update_graph_metrics_incremental_async
+from ..infra.fs_runtime import run_fs_io_async
 from ..llm.agentic import (
     AgenticMeta,
     analyze_agentic_async,
@@ -105,7 +106,11 @@ def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
-    return await asyncio.to_thread(_path_exists_and_is_file, path)
+    return await run_fs_io_async(
+        _path_exists_and_is_file,
+        path,
+        operation="task_service.path_exists_and_is_file",
+    )
 
 
 async def _resolve_under_root_async(
@@ -114,11 +119,12 @@ async def _resolve_under_root_async(
     *,
     max_length: int,
 ) -> tuple[Path, str]:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         resolve_under_root,
         root,
         rel_path,
         max_length=max_length,
+        operation="task_service.resolve_under_root",
     )
 
 
@@ -133,12 +139,13 @@ async def _apply_unified_diff_async(
     allowed_rel_paths: set[str] | None,
     allow_new_files: bool,
 ) -> list[str]:
-    return await asyncio.to_thread(
+    return await run_fs_io_async(
         apply_unified_diff,
         root,
         patch_text,
         allowed_rel_paths=allowed_rel_paths,
         allow_new_files=allow_new_files,
+        operation="task_service.apply_unified_diff",
     )
 
 
@@ -181,7 +188,12 @@ async def _json_loads_or_async(raw: str | None, fallback):
 
 
 async def _normalize_project_root_async(root_path: str, *, max_length: int) -> Path:
-    return await asyncio.to_thread(normalize_project_root, root_path, max_length=max_length)
+    return await run_fs_io_async(
+        normalize_project_root,
+        root_path,
+        max_length=max_length,
+        operation="task_service.normalize_project_root",
+    )
 
 
 async def _get_project_async(session: AsyncSession, project_id: int, org_id: int) -> Project:

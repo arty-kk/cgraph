@@ -17,6 +17,7 @@ from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..contracts import get_or_build_contract_async
 from ..errors import BadRequestError, ExternalServiceError, NotFoundError
+from ..infra.fs_runtime import run_fs_io_async
 from ..llm.orchestrator import generate_docs_async
 from ..models import (
     ApiCall,
@@ -264,7 +265,7 @@ def _tree_outline(paths: list[str], max_lines: int = 1200) -> dict:
 
 
 async def _tree_outline_async(paths: list[str], max_lines: int = 1200) -> dict:
-    return await asyncio.to_thread(_tree_outline, paths, max_lines)
+    return _tree_outline(paths, max_lines)
 
 
 def _path_depth(p: str) -> int:
@@ -801,7 +802,12 @@ def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict]
 
 
 async def _collect_key_files_async(root: Path, project_paths: list[str]) -> tuple[list[dict], dict]:
-    return await asyncio.to_thread(_collect_key_files, root, project_paths)
+    return await run_fs_io_async(
+        _collect_key_files,
+        root,
+        project_paths,
+        operation="docs_service.collect_key_files",
+    )
 
 
 def _select_contract_paths(
@@ -877,8 +883,7 @@ async def _select_contract_paths_async(
     hubs: list[dict],
     paths: list[str],
 ) -> list[str]:
-    return await asyncio.to_thread(
-        _select_contract_paths,
+    return _select_contract_paths(
         risks=risks,
         hotspots=hotspots,
         hubs=hubs,
@@ -974,7 +979,7 @@ def _build_run_hints(key_files: list[dict], parsed: dict) -> list[str]:
 
 
 async def _build_run_hints_async(key_files: list[dict], parsed: dict) -> list[str]:
-    return await asyncio.to_thread(_build_run_hints, key_files, parsed)
+    return _build_run_hints(key_files, parsed)
 
 
 def _api_summary_md(api_summary: dict) -> str:
@@ -1186,7 +1191,12 @@ async def _collect_outline_and_key_files_async(
 
 
 async def _normalize_project_root_async(root_path: str, *, max_length: int) -> Path:
-    return await asyncio.to_thread(normalize_project_root, root_path, max_length=max_length)
+    return await run_fs_io_async(
+        normalize_project_root,
+        root_path,
+        max_length=max_length,
+        operation="docs_service.normalize_project_root",
+    )
 
 async def build_project_docs_async(project_id: int, org_id: int) -> dict:
     async with AsyncSessionLocal() as session:

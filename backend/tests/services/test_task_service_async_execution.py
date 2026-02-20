@@ -197,30 +197,30 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
 
 
 @pytest.mark.anyio
-async def test_path_exists_and_is_file_async_uses_to_thread(monkeypatch):
+async def test_path_exists_and_is_file_async_uses_run_fs_io_async(monkeypatch):
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_fs_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return True, True
 
-    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "run_fs_io_async", _fake_run_fs_io_async)
 
     result = await task_service._path_exists_and_is_file_async(Path("/tmp/a.py"))
 
     assert result == (True, True)
     assert calls["func"] is task_service._path_exists_and_is_file
     assert calls["args"] == (Path("/tmp/a.py"),)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "task_service.path_exists_and_is_file"}
 
 
 @pytest.mark.anyio
-async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
+async def test_task_service_async_wrappers_use_run_fs_io_async(monkeypatch):
     calls: list[tuple[object, tuple, dict]] = []
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_fs_io_async(func, *args, **kwargs):
         calls.append((func, args, kwargs))
         return "ok"
 
@@ -232,7 +232,7 @@ async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
         assert kwargs == {"removed_edge_neighbors": None}
         return None
 
-    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "run_fs_io_async", _fake_run_fs_io_async)
     monkeypatch.setattr(task_service, "scan_files_async", _fake_scan_files_async)
     monkeypatch.setattr(
         task_service,
@@ -259,6 +259,7 @@ async def test_task_service_async_wrappers_use_to_thread(monkeypatch):
     assert result_metrics is None
     assert len(calls) == 1
     assert calls[0][0] is task_service.apply_unified_diff
+    assert calls[0][2]["operation"] == "task_service.apply_unified_diff"
 
 
 @pytest.mark.anyio
@@ -282,16 +283,16 @@ async def test_store_patch_blob_async_helper_uses_async_storage_api(monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_resolve_under_root_async_uses_to_thread(monkeypatch):
+async def test_resolve_under_root_async_uses_run_fs_io_async(monkeypatch):
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_fs_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/tmp/a.py"), "a.py"
 
-    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "run_fs_io_async", _fake_run_fs_io_async)
 
     result = await task_service._resolve_under_root_async(
         Path("/tmp"),
@@ -302,7 +303,7 @@ async def test_resolve_under_root_async_uses_to_thread(monkeypatch):
     assert result == (Path("/tmp/a.py"), "a.py")
     assert calls["func"] is task_service.resolve_under_root
     assert calls["args"] == (Path("/tmp"), "a.py")
-    assert calls["kwargs"] == {"max_length": 120}
+    assert calls["kwargs"] == {"max_length": 120, "operation": "task_service.resolve_under_root"}
 
 
 @pytest.mark.anyio
