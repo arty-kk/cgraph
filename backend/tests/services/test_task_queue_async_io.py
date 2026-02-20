@@ -66,23 +66,10 @@ class _FakeDbSession:
 
 
 @pytest.mark.anyio
-async def test_idempotency_key_async_uses_to_thread(monkeypatch):
-    captured: dict[str, object] = {}
-
-    async def _fake_to_thread(func, *args, **kwargs):
-        captured["func"] = func
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return "idempotency-key"
-
-    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
-
+async def test_idempotency_key_async_runs_inline() -> None:
     key = await task_queue._idempotency_key_async("scan", 7, {"project_id": 42})
 
-    assert key == "idempotency-key"
-    assert captured["func"] is task_queue._idempotency_key
-    assert captured["args"] == ("scan", 7, {"project_id": 42})
-    assert captured["kwargs"] == {}
+    assert key == task_queue._idempotency_key("scan", 7, {"project_id": 42})
 
 
 @pytest.mark.anyio

@@ -141,7 +141,7 @@ def _idempotency_key(kind: str, org_id: int, payload: dict) -> str:
 
 
 async def _idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
-    return await asyncio.to_thread(_idempotency_key, kind, org_id, payload)
+    return _idempotency_key(kind, org_id, payload)
 
 
 async def get_scan_idempotency_key_async(org_id: int, project_id: int) -> str:
