@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,10 +11,62 @@ from sqlmodel import select
 
 from ...config import settings
 from ...contracts import get_or_build_contract_async
+from ...infra.fs_runtime import run_fs_io_async
 from ...models import ApiCall, ApiRoute, FileEdge, FileNode
 from ...utils import resolve_under_root
 
 _FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+_SEED_FS_SEMAPHORE: asyncio.Semaphore | None = None
+_SEED_FS_SEMAPHORE_LOCK = asyncio.Lock()
+
+
+def _seed_fs_limit() -> int:
+    llm_limit = max(1, int(settings.llm_agentic_fs_ops_concurrency))
+    runtime_limit = max(1, int(getattr(settings, "fs_runtime_max_concurrency", llm_limit)))
+    return min(llm_limit, runtime_limit)
+
+
+async def _seed_fs_semaphore_async() -> asyncio.Semaphore:
+    global _SEED_FS_SEMAPHORE
+    sem = _SEED_FS_SEMAPHORE
+    if sem is not None:
+        return sem
+    async with _SEED_FS_SEMAPHORE_LOCK:
+        if _SEED_FS_SEMAPHORE is None:
+            _SEED_FS_SEMAPHORE = asyncio.Semaphore(_seed_fs_limit())
+        return _SEED_FS_SEMAPHORE
+
+
+async def _run_seed_fs_io_async(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    semaphore = await _seed_fs_semaphore_async()
+    async with semaphore:
+        return await run_fs_io_async(fn, *args, operation="agentic.seed_context.fs", **kwargs)
+
+
+def _resolve_and_read_seed_file_sync(
+    root: Path,
+    target_rel: str,
+    *,
+    max_file_chars: int,
+) -> tuple[str, str]:
+    abs_target, target_norm = resolve_under_root(
+        root, target_rel, max_length=settings.max_rel_path_chars
+    )
+    try:
+        stat_result = abs_target.stat()
+    except Exception:
+        return target_norm, ""
+    if not stat_result or not abs_target.is_file():
+        return target_norm, ""
+    try:
+        target_text = abs_target.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return target_norm, ""
+    limit = max(1, min(int(max_file_chars), 200_000))
+    if len(target_text) > limit:
+        target_text = target_text[:limit]
+    return target_norm, target_text
 
 
 async def _neighbors_limited_async(
@@ -107,18 +160,13 @@ async def _seed_context_async(
     *,
     max_file_chars: int,
 ) -> dict:
-    abs_target, target_norm = resolve_under_root(
-        root, target_rel, max_length=settings.max_rel_path_chars
-    )
-    try:
-        target_text = await asyncio.to_thread(
-            abs_target.read_text, encoding="utf-8", errors="replace"
-        )
-    except Exception:
-        target_text = ""
     max_file_chars = max(1, min(int(max_file_chars), 200_000))
-    if len(target_text) > max_file_chars:
-        target_text = target_text[:max_file_chars]
+    target_norm, target_text = await _run_seed_fs_io_async(
+        _resolve_and_read_seed_file_sync,
+        root,
+        target_rel,
+        max_file_chars=max_file_chars,
+    )
 
     try:
         contract = await get_or_build_contract_async(session, project_id, root, target_norm)

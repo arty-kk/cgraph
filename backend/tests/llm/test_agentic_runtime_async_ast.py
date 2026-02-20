@@ -223,3 +223,33 @@ def test_runtime_contract_async_wrappers_avoid_sync_file_io_calls() -> None:
                 raise AssertionError(
                     f"{fn_name} has direct .{call.func.attr}() call in async runtime wrapper"
                 )
+
+
+def test_seed_context_async_avoids_direct_sync_fs_calls() -> None:
+    context_path = Path("backend/app/llm/agentic/context.py")
+    module = _load_ast(context_path)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+
+    fn = fn_nodes["_seed_context_async"]
+    banned_attrs = {"open", "read", "read_text", "read_bytes", "stat", "is_file", "exists"}
+
+    for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+        if isinstance(call.func, ast.Name) and call.func.id in {"open", "resolve_under_root"}:
+            raise AssertionError(f"_seed_context_async has direct sync fs call: {call.func.id}")
+        if isinstance(call.func, ast.Attribute) and call.func.attr in banned_attrs:
+            raise AssertionError(
+                f"_seed_context_async has direct sync fs call: .{call.func.attr}()"
+            )
+
+    call_names = set()
+    for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+        if isinstance(call.func, ast.Name):
+            call_names.add(call.func.id)
+        elif isinstance(call.func, ast.Attribute):
+            call_names.add(call.func.attr)
+    assert "run_fs_io_async" not in call_names
+    assert "_run_seed_fs_io_async" in call_names
