@@ -1,12 +1,14 @@
 # backend/app/llm/orchestrator.py
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 import openai
 
 from ..config import settings
+from ..infra.external_io_runtime import run_openai_io_async
 from .client import get_async_openai_client
 from .model_caps import supports_reasoning, supports_temperature
 from .policy import DEFAULT_POLICY, ModelPolicy
@@ -133,8 +135,15 @@ async def _json_call_with_usage_async(
     if reasoning_effort and supports_reasoning(model):
         kwargs["reasoning"] = {"effort": reasoning_effort}
 
+    async def _responses_create_async() -> Any:
+        async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+            return await run_openai_io_async(
+                lambda: client.responses.create(**kwargs),
+                kind="long",
+            )
+
     try:
-        resp = await client.responses.create(**kwargs)
+        resp = await _responses_create_async()
     except TypeError as e:
         msg = str(e)
         removed = False
@@ -151,9 +160,11 @@ async def _json_call_with_usage_async(
             kwargs.pop("temperature", None)
             removed = True
         if removed:
-            resp = await client.responses.create(**kwargs)
+            resp = await _responses_create_async()
         else:
             raise
+    except asyncio.CancelledError:
+        raise
     except openai.APIError as e:
         status = getattr(e, "status_code", None)
         if status is not None:

@@ -17,6 +17,7 @@ from ..errors import BadRequestError, ForbiddenError, LockedError, NotFoundError
 from ..graph import compute_graph_metrics_async
 from ..infra.cache import cache_get_json_async, cache_invalidate_prefix_async, cache_set_json_async
 from ..infra.fs_runtime import run_fs_io_async
+from ..infra.external_io_runtime import run_openai_io_async
 from ..llm.client import get_async_openai_client
 from ..logging import get_logger
 from ..models import (
@@ -1660,7 +1661,13 @@ async def search_project_semantic_async(
 
     try:
         client = get_async_openai_client()
-        resp = await client.embeddings.create(model=settings.embeddings_model, input=[q])
+        async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+            resp = await run_openai_io_async(
+                lambda: client.embeddings.create(model=settings.embeddings_model, input=[q]),
+                kind="short",
+            )
+    except asyncio.CancelledError:
+        raise
     except Exception as e:  # noqa: BLE001
         raise BadRequestError("Failed to get embedding", context={"reason": str(e)})
 

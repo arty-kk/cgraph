@@ -35,6 +35,7 @@ from .errors import LimitExceededError, LockedError
 from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
 from .llm.client import get_async_openai_client
+from .infra.external_io_runtime import run_openai_io_async
 from .logging import get_logger
 from .models import (
     ApiCall,
@@ -1245,10 +1246,16 @@ async def _prepare_scan_files_async(
                                     embedding_warned_limit = True
                                 continue
                             try:
-                                response = await client.embeddings.create(
-                                    model=settings.embeddings_model,
-                                    input=chunks,
-                                )
+                                async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+                                    response = await run_openai_io_async(
+                                        lambda: client.embeddings.create(
+                                            model=settings.embeddings_model,
+                                            input=chunks,
+                                        ),
+                                        kind="long",
+                                    )
+                            except asyncio.CancelledError:
+                                raise
                             except Exception as e:  # noqa: BLE001
                                 logger.warning(
                                     "Embeddings request failed for %s; skipping embeddings: %s",

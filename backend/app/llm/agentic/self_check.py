@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 import openai
 
 from ...config import settings
+from ...infra.external_io_runtime import run_openai_io_async
 from ..model_caps import supports_reasoning, supports_temperature
 from ..schemas import SELF_CHECK_SCHEMA
 from .schema import _normalize_responses_json_schema, _parse_model_json
@@ -116,8 +118,15 @@ async def _run_self_check_async(
             and settings.openai_prompt_cache_retention.strip()
         ):
             kwargs["prompt_cache_retention"] = settings.openai_prompt_cache_retention.strip()
+    async def _responses_create_async():
+        async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+            return await run_openai_io_async(
+                lambda: client.responses.create(**kwargs),
+                kind="long",
+            )
+
     try:
-        resp = await client.responses.create(**kwargs)
+        resp = await _responses_create_async()
     except TypeError as e:
         msg = str(e)
         for k in (
@@ -129,5 +138,7 @@ async def _run_self_check_async(
         ):
             if k in msg:
                 kwargs.pop(k, None)
-        resp = await client.responses.create(**kwargs)
+        resp = await _responses_create_async()
+    except asyncio.CancelledError:
+        raise
     return _parse_model_json(resp)

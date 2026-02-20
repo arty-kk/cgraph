@@ -17,6 +17,7 @@ from sqlmodel import select
 from .config import settings
 from .async_db import AsyncSessionLocal
 from .llm.client import get_async_openai_client
+from .infra.external_io_runtime import run_openai_io_async
 from .models import FileChunkEmbedding, FileEdge, FileNode
 from .utils import _chunk_text, resolve_under_root
 
@@ -614,7 +615,13 @@ async def search_semantic_async(
 
     try:
         client = get_async_openai_client()
-        resp = await client.embeddings.create(model=settings.embeddings_model, input=[q])
+        async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+            resp = await run_openai_io_async(
+                lambda: client.embeddings.create(model=settings.embeddings_model, input=[q]),
+                kind="short",
+            )
+    except asyncio.CancelledError:
+        raise
     except Exception as e:  # noqa: BLE001
         return {
             "error": "embedding_failed",
