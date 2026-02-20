@@ -13,6 +13,10 @@ from celery.signals import worker_process_init, worker_process_shutdown
 from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .celery_app import celery_app
 from .config import settings
+from .infra.celery_producer_runtime import (
+    close_celery_producer_runtime,
+    init_celery_producer_runtime,
+)
 from .infra.fs_runtime import close_fs_runtime, init_fs_runtime, run_fs_io_async
 from .infra.redis_client import (
     close_redis_pool_async,
@@ -54,6 +58,7 @@ async def _startup_worker_resources_async() -> None:
         ("init_redis_pool_async", init_redis_pool_async),
         ("init_async_db", init_async_db),
         ("init_fs_runtime", init_fs_runtime),
+        ("init_celery_producer_runtime", init_celery_producer_runtime),
     ]
     if (settings.storage_backend or "local").strip().lower() == "s3":
         startup_steps.append(("init_s3_runtime", init_s3_runtime))
@@ -72,6 +77,7 @@ async def _cleanup_worker_resources_async() -> None:
         ("close_redis_pool_async", close_redis_pool_async),
         ("close_async_openai_client", close_async_openai_client),
         ("close_fs_runtime", close_fs_runtime),
+        ("close_celery_producer_runtime", close_celery_producer_runtime),
         ("close_async_db", close_async_db),
     ]
     for name, cleanup in cleanup_steps:

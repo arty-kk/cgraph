@@ -18,6 +18,7 @@ from ..async_db import AsyncSessionLocal
 from ..celery_app import celery_app
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
+from ..infra.celery_producer_runtime import run_celery_producer_io_async
 from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
@@ -49,7 +50,7 @@ class _AsyncCeleryProducer:
             task_name = str(getattr(task, "name", "") or "")
             if not task_name:
                 raise RuntimeError("Celery task name is required")
-            celery_app.send_task(task_name, args=args, queue=queue)
+            await run_celery_producer_io_async(celery_app.send_task, task_name, args=args, queue=queue)
         except Exception as exc:  # noqa: BLE001
             raise _AsyncTaskProducerError(str(exc)) from exc
 
@@ -57,7 +58,7 @@ class _AsyncCeleryProducer:
 _async_task_producer = _AsyncCeleryProducer()
 
 
-def _classify_enqueue_failure(exc: Exception) -> str:
+def _classify_enqueue_failure(exc: BaseException) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
     if isinstance(exc, _AsyncTaskProducerError):
@@ -65,7 +66,7 @@ def _classify_enqueue_failure(exc: Exception) -> str:
     return "internal_enqueue_failure"
 
 
-async def _mark_enqueue_failure_async(session: AsyncSession, task_id: str, exc: Exception) -> None:
+async def _mark_enqueue_failure_async(session: AsyncSession, task_id: str, exc: BaseException) -> None:
     now = datetime.now(timezone.utc)
     try:
         job = await session.get(TaskJob, task_id)
@@ -96,6 +97,16 @@ async def _enqueue_with_error_mapping_async(
             _async_task_producer.enqueue_task_async(task, args=args, queue=queue),
             timeout=_ENQUEUE_TIMEOUT_SECONDS,
         )
+    except asyncio.CancelledError as exc:
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task.cancelling():
+            raise
+        reason = _classify_enqueue_failure(exc)
+        await _mark_enqueue_failure_async(session, task_id, exc)
+        raise ExternalServiceError(
+            "Не удалось отправить задачу в очередь",
+            context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
+        ) from exc
     except Exception as exc:
         reason = _classify_enqueue_failure(exc)
         await _mark_enqueue_failure_async(session, task_id, exc)

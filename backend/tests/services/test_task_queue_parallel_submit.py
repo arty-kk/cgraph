@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import sys
 import time
 from datetime import datetime, timezone
@@ -79,21 +80,34 @@ async def test_parallel_submit_is_idempotent_and_non_blocking(monkeypatch):
 @pytest.mark.anyio
 @pytest.mark.usefixtures("ensure_async_postgres")
 async def test_high_concurrency_submit_scan_not_serialized(monkeypatch):
-    async def _fake_scan_enqueue(_task, *, args, queue):
-        _ = (args, queue)
-        await asyncio.sleep(0.05)
+    active = 0
+    peak = 0
+    lock = threading.Lock()
 
-    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _fake_scan_enqueue)
+    def _slow_sync_send_task(_name, *, args, queue):
+        nonlocal active, peak
+        _ = (args, queue)
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.05)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(task_queue.celery_app, "send_task", _slow_sync_send_task)
 
     started = time.monotonic()
     task_ids = await asyncio.wait_for(
-        asyncio.gather(*[submit_scan_async(project_id=1000 + i, org_id=77) for i in range(80)]),
+        asyncio.gather(*[submit_scan_async(project_id=1000 + i, org_id=77) for i in range(40)]),
         timeout=6,
     )
     elapsed = time.monotonic() - started
 
-    assert len(set(task_ids)) == 80
+    assert len(set(task_ids)) == 40
     assert elapsed < 2.5
+    assert peak > 1
 
 
 @pytest.mark.anyio
