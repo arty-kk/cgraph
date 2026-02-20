@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     task_queue_inflight_heavy_limit: int | None = Field(
         default=None, alias="STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT"
     )
+    task_queue_producer_concurrency: int = Field(
+        default=16,
+        alias="STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY",
+    )
 
     database_url: str = Field(
         default="postgresql+psycopg://stubgraph:stubgraph@localhost:5432/stubgraph",
@@ -495,6 +499,8 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS должен быть положительным")
         if self.task_queue_max_completed is not None and self.task_queue_max_completed <= 0:
             raise ValueError("STUBGRAPH_TASK_QUEUE_MAX_COMPLETED должен быть положительным")
+        if self.task_queue_producer_concurrency <= 0:
+            raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY должен быть положительным")
         return self
 
 

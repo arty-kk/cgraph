@@ -7,6 +7,7 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.errors import BadRequestError, ExternalServiceError
+from app.infra import celery_producer_runtime
 from app.services import task_queue
 
 
@@ -163,15 +164,45 @@ async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_async_celery_producer_offloads_sync_send(monkeypatch):
+    events: list[str] = []
+
+    def _fake_send_task(name, *, args, queue):
+        events.append(f"send:{name}:{queue}:{args[0]}")
+
+    async def _fake_run(fn, *args, **kwargs):
+        events.append("offload_called")
+        assert fn is _fake_send_task
+        assert not any(evt.startswith("send:") for evt in events)
+        result = fn(*args, **kwargs)
+        events.append("offload_completed")
+        return result
+
+    monkeypatch.setattr(task_queue.celery_app, "send_task", _fake_send_task)
+    monkeypatch.setattr(celery_producer_runtime, "run_celery_producer_io_async", _fake_run)
+    monkeypatch.setattr(task_queue, "run_celery_producer_io_async", _fake_run)
+
+    producer = task_queue._AsyncCeleryProducer()
+    task = type("_Task", (), {"name": "stubgraph.scan"})()
+    await producer.enqueue_task_async(task, args=["job-99"], queue="medium")
+
+    assert events == [
+        "offload_called",
+        "send:stubgraph.scan:medium:job-99",
+        "offload_completed",
+    ]
+
+
+@pytest.mark.anyio
 async def test_enqueue_error_mapping_timeout(monkeypatch):
     session = _FakeDbSession()
 
-    async def _slow_enqueue(task, *, args, queue):
+    async def _offloaded_enqueue(task, *, args, queue):
         _ = (task, args, queue)
         await asyncio.sleep(0.05)
 
     monkeypatch.setattr(task_queue, "_ENQUEUE_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _slow_enqueue)
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _offloaded_enqueue)
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
@@ -183,6 +214,29 @@ async def test_enqueue_error_mapping_timeout(monkeypatch):
         )
 
     assert exc_ctx.value.context["enqueue_reason"] == "timeout"
+    assert session.commits == 1
+
+
+@pytest.mark.anyio
+async def test_enqueue_error_mapping_cancellation(monkeypatch):
+    session = _FakeDbSession()
+
+    async def _cancelled_enqueue(task, *, args, queue):
+        _ = (task, args, queue)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _cancelled_enqueue)
+
+    with pytest.raises(ExternalServiceError) as exc_ctx:
+        await task_queue._enqueue_with_error_mapping_async(
+            session,
+            task=object(),
+            args=["job-cancel"],
+            queue="medium",
+            task_id="job-cancel",
+        )
+
+    assert exc_ctx.value.context["enqueue_reason"] == "internal_enqueue_failure"
     assert session.commits == 1
 
 
