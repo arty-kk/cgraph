@@ -853,6 +853,23 @@ async def _read_file_under_root_async(
         return _tool_error(exc.code, exc.message, exc.details)
 
 
+async def _read_text_under_root_async(
+    root: Path,
+    rel_path: str,
+    *,
+    meta: AgenticMeta | None,
+) -> tuple[str, str] | None:
+    def _read_local(abs_path: Path) -> str:
+        with abs_path.open(encoding="utf-8", errors="replace") as f:
+            return f.read()
+
+    read_result = await _read_file_under_root_async(root, rel_path, _read_local, meta=meta)
+    if isinstance(read_result, dict):
+        return None
+    rel_norm, txt = read_result
+    return rel_norm, txt
+
+
 async def _check_indexed_async(session: AsyncSession, project_id: int) -> dict | None:
     row = (await session.execute(select(FileNode.id).where(FileNode.project_id == project_id).limit(1))).first()
     if not row:
@@ -3465,17 +3482,17 @@ async def _tool_suggest_api_fix(
     notes: list[str] = []
     reasons: dict[str, list[str]] = {}
 
-    def ensure_loaded(rel_path: str) -> str | None:
+    async def ensure_loaded(rel_path: str) -> str | None:
         if not isinstance(rel_path, str) or not rel_path.strip():
             return None
         rp = rel_path.strip()
         if rp in cur:
             return rp
-        rr = _read_text_under_root(root, rp)
+        rr = await _read_text_under_root_async(root, rp, meta=meta)
         if not rr:
             notes.append(f"file_not_readable:{rp}")
             return None
-        rel_norm, _abs, txt = rr
+        rel_norm, txt = rr
         orig[rel_norm] = txt
         cur[rel_norm] = txt
         meta.full_file_paths.add(rel_norm)
@@ -3589,7 +3606,7 @@ async def _tool_suggest_api_fix(
                     )
                     add_params.append({"name": nm, "type": ts_type})
 
-                fp = ensure_loaded(c_src)
+                fp = await ensure_loaded(c_src)
                 if fp:
                     new_txt, changed, warns = ts_patch_wrapper_function(
                         cur[fp],
@@ -3616,6 +3633,17 @@ async def _tool_suggest_api_fix(
                     td = get_typedef(wrapper_body_type)
                     if td and isinstance(td.get("source_path"), str) and td.get("source_path"):
                         fp = ensure_loaded(str(td.get("source_path") or ""))
+                    async with AsyncSessionLocal() as s:
+                        td = (
+                            await s.execute(
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_body_type,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                    if td and isinstance(td.source_path, str) and td.source_path:
+                        fp = await ensure_loaded(td.source_path)
                         if fp:
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 cur[fp],
@@ -3647,6 +3675,17 @@ async def _tool_suggest_api_fix(
                     td = get_typedef(wrapper_resp_type)
                     if td and isinstance(td.get("source_path"), str) and td.get("source_path"):
                         fp = ensure_loaded(str(td.get("source_path") or ""))
+                    async with AsyncSessionLocal() as s:
+                        td = (
+                            await s.execute(
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_resp_type,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                    if td and isinstance(td.source_path, str) and td.source_path:
+                        fp = await ensure_loaded(td.source_path)
                         if fp:
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 cur[fp],
@@ -3703,7 +3742,7 @@ async def _tool_suggest_api_fix(
     # Apply backend patches
     if include_backend:
         for (src, handler), keys_map in backend_acc.items():
-            fp = ensure_loaded(src)
+            fp = await ensure_loaded(src)
             if not fp:
                 continue
             new_txt, changed, warns = py_add_keys_to_function_return_dicts(
@@ -3914,9 +3953,9 @@ async def _tool_suggest_contract_fix(
                     )
                     add_params.append({"name": nm, "type": ts_type})
 
-                rr = _read_text_under_root(root, c_src)
+                rr = await _read_text_under_root_async(root, c_src, meta=meta)
                 if rr:
-                    rel_norm, _abs, old_txt = rr
+                    rel_norm, old_txt = rr
                     meta.full_file_paths.add(rel_norm)
                     new_txt, changed, warns = ts_patch_wrapper_function(
                         old_txt,
@@ -3954,8 +3993,19 @@ async def _tool_suggest_contract_fix(
                     source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
                     if source_path:
                         rr = _read_text_under_root(root, source_path)
+                    async with AsyncSessionLocal() as s:
+                        td = (
+                            await s.execute(
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_body_type,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                    if td and isinstance(td.source_path, str) and td.source_path:
+                        rr = await _read_text_under_root_async(root, td.source_path, meta=meta)
                         if rr:
-                            rel_norm, _abs, old_txt = rr
+                            rel_norm, old_txt = rr
                             meta.full_file_paths.add(rel_norm)
                             # add missing as REQUIRED for request (optional=False)
                             new_txt, changed, _status = ts_add_fields_to_typedef(
@@ -3992,8 +4042,19 @@ async def _tool_suggest_contract_fix(
                     source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
                     if source_path:
                         rr = _read_text_under_root(root, source_path)
+                    async with AsyncSessionLocal() as s:
+                        td = (
+                            await s.execute(
+                                select(TsTypeDef).where(
+                                    TsTypeDef.project_id == project_id,
+                                    TsTypeDef.name == wrapper_resp_type,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                    if td and isinstance(td.source_path, str) and td.source_path:
+                        rr = await _read_text_under_root_async(root, td.source_path, meta=meta)
                         if rr:
-                            rel_norm, _abs, old_txt = rr
+                            rel_norm, old_txt = rr
                             meta.full_file_paths.add(rel_norm)
                             # add missing as OPTIONAL for response (optional=True)
                             new_txt, changed, _status = ts_add_fields_to_typedef(
@@ -4263,6 +4324,19 @@ async def _tool_compare_api_contract(
                         root, r_src, max_length=settings.max_rel_path_chars
                     )
                     txt = abs_p.read_text(encoding="utf-8", errors="replace")
+                )
+            ).scalar_one_or_none()
+        if row and isinstance(row.contract_json, str) and row.contract_json.strip():
+            try:
+                backend_contract = json.loads(row.contract_json)
+            except Exception:
+                backend_contract = None
+        if backend_contract is None:
+            # on the fly
+            read_result = await _read_text_under_root_async(root, r_src, meta=None)
+            if read_result:
+                _rel_norm, txt = read_result
+                try:
                     backend_contract = build_backend_contract_for_route(
                         txt,
                         {
@@ -4276,6 +4350,11 @@ async def _tool_compare_api_contract(
                 except Exception as e:
                     backend_contract = {"version": 1, "warnings": [f"contract_build_failed:{e}"]}
             route_contract_cache[cache_key] = backend_contract
+            else:
+                backend_contract = {
+                    "version": 1,
+                    "warnings": [f"contract_build_failed:source_not_readable:{r_src}"],
+                }
 
         bp = backend_contract.get("path_params") if isinstance(backend_contract, dict) else []
         bb = backend_contract.get("body") if isinstance(backend_contract, dict) else None
@@ -4352,6 +4431,7 @@ async def _tool_compare_api_contract(
             type_names,
             cache=typedef_cache,
         )
+        type_defs = await _load_ts_typedefs_by_name(project_id, type_names)
 
         for meta in metas:
             mobj = meta.get("meta") if isinstance(meta.get("meta"), dict) else {}
