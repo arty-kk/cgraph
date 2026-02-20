@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import Iterable, Tuple
+from typing import Awaitable, Callable, Iterable, Tuple, TypeVar, cast
 
 from sqlalchemy import bindparam, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -244,6 +244,9 @@ TS_TYPEDEF_EXTS = (".ts", ".tsx", ".mts", ".cts")
 
 SEARCH_INDEX_MAX_CHARS = 200_000
 
+_TBatch = TypeVar("_TBatch")
+_TResult = TypeVar("_TResult")
+
 
 def _is_supported_file(path: Path) -> bool:
     return path.suffix.lower() in CODE_EXTS or is_infra_file(path)
@@ -265,6 +268,65 @@ def iter_code_files(root: Path) -> Iterable[Path]:
 
 def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
     return [seq[i : i + size] for i in range(0, len(seq), size)]
+
+
+async def _process_batches_bounded_async(
+    batches: list[_TBatch],
+    max_parallel: int,
+    process_batch: Callable[[_TBatch], Awaitable[_TResult]],
+) -> list[_TResult]:
+    if not batches:
+        return []
+
+    worker_count = max(1, int(max_parallel))
+    queue: asyncio.Queue[tuple[int, _TBatch] | object] = asyncio.Queue(maxsize=worker_count)
+    stop_item = object()
+    ordered_results: list[_TResult | None] = [None] * len(batches)
+
+    async def _producer() -> None:
+        for batch_index, batch in enumerate(batches):
+            await queue.put((batch_index, batch))
+        for _ in range(worker_count):
+            await queue.put(stop_item)
+
+    async def _worker() -> None:
+        while True:
+            queued_item = await queue.get()
+            try:
+                if queued_item is stop_item:
+                    return
+                batch_index, batch = cast(tuple[int, _TBatch], queued_item)
+                ordered_results[batch_index] = await process_batch(batch)
+            finally:
+                queue.task_done()
+
+    producer = asyncio.create_task(_producer())
+    workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+
+    try:
+        done, pending = await asyncio.wait(workers, return_when=asyncio.FIRST_EXCEPTION)
+
+        first_error: BaseException | None = None
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                first_error = exc
+                break
+
+        if first_error is not None:
+            raise first_error
+
+        await producer
+        if pending:
+            await asyncio.gather(*pending)
+
+        return [cast(_TResult, result) for result in ordered_results]
+    except BaseException:
+        producer.cancel()
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(producer, *workers, return_exceptions=True)
+        raise
 
 
 async def _collect_file_stats_async(
@@ -324,15 +386,12 @@ async def _collect_file_stats_async(
         return batch_results
 
     batches = [rel_paths[i : i + batch_size] for i in range(0, len(rel_paths), batch_size)]
-    semaphore = asyncio.Semaphore(max_parallel)
-
-    async def _run(index: int, batch: list[str]) -> tuple[int, list[FileStatResult]]:
-        async with semaphore:
-            return index, await _run_scan_batch(_sync_collect_batch, batch)
-
-    indexed = await asyncio.gather(*(_run(index, batch) for index, batch in enumerate(batches)))
-    indexed.sort(key=lambda item: item[0])
-    return [item for _, batch in indexed for item in batch]
+    batch_results = await _process_batches_bounded_async(
+        batches,
+        max_parallel=max_parallel,
+        process_batch=lambda batch: _run_scan_batch(_sync_collect_batch, batch),
+    )
+    return [item for batch in batch_results for item in batch]
 
 
 async def _read_file_batch_async(
@@ -371,15 +430,12 @@ async def _read_file_batch_async(
         return out
 
     batches = [batch_paths[i : i + batch_size] for i in range(0, len(batch_paths), batch_size)]
-    semaphore = asyncio.Semaphore(max_parallel)
-
-    async def _run(index: int, batch: list[str]) -> tuple[int, list[FileReadResult]]:
-        async with semaphore:
-            return index, await _run_scan_batch(_sync_read_batch, batch)
-
-    indexed = await asyncio.gather(*(_run(index, batch) for index, batch in enumerate(batches)))
-    indexed.sort(key=lambda item: item[0])
-    return [item for _, batch in indexed for item in batch]
+    batch_results = await _process_batches_bounded_async(
+        batches,
+        max_parallel=max_parallel,
+        process_batch=lambda batch: _run_scan_batch(_sync_read_batch, batch),
+    )
+    return [item for batch in batch_results for item in batch]
 
 
 async def _parse_index_batch_async(

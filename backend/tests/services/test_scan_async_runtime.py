@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -35,6 +36,143 @@ class _NoopLock:
     async def __aexit__(self, exc_type, exc, tb):
         _ = exc_type, exc, tb
         return False
+
+
+@pytest.mark.anyio
+async def test_collect_file_stats_async_keeps_input_order_across_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rel_paths = ["c.py", "a.py", "d.py", "b.py", "e.py"]
+    for rel in rel_paths:
+        (tmp_path / rel).write_text(rel, encoding="utf-8")
+
+    async def _run_scan_batch_out_of_order(sync_fn, batch):
+        if batch and batch[0] == "d.py":
+            await asyncio.sleep(0.03)
+        return sync_fn(batch)
+
+    monkeypatch.setattr(scan, "_run_scan_batch", _run_scan_batch_out_of_order)
+
+    results = await scan._collect_file_stats_async(tmp_path, rel_paths, batch_size=2, max_parallel=2)
+
+    assert [item.rel for item in results] == rel_paths
+
+
+@pytest.mark.anyio
+async def test_read_file_batch_async_keeps_input_order_across_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rel_paths = ["3.py", "1.py", "4.py", "2.py", "5.py"]
+    for rel in rel_paths:
+        (tmp_path / rel).write_text(f"text:{rel}", encoding="utf-8")
+
+    stats_map = {rel: (10 + idx, 20 + idx) for idx, rel in enumerate(rel_paths)}
+
+    async def _run_scan_batch_out_of_order(sync_fn, batch):
+        if batch and batch[0] == "4.py":
+            await asyncio.sleep(0.03)
+        return sync_fn(batch)
+
+    monkeypatch.setattr(scan, "_run_scan_batch", _run_scan_batch_out_of_order)
+
+    results = await scan._read_file_batch_async(
+        tmp_path,
+        rel_paths,
+        stats_map=stats_map,
+        max_file_bytes=1024,
+        max_parallel=2,
+    )
+
+    assert [item.rel for item in results] == rel_paths
+
+
+@pytest.mark.anyio
+async def test_bounded_batch_helper_uses_max_parallel_as_queue_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    queue_sizes: list[int] = []
+    original_queue = scan.asyncio.Queue
+
+    class _QueueProbe(original_queue):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            queue_sizes.append(self.maxsize)
+
+    async def _process(batch: list[int]) -> list[int]:
+        await asyncio.sleep(0)
+        return batch
+
+    monkeypatch.setattr(scan.asyncio, "Queue", _QueueProbe)
+
+    result = await scan._process_batches_bounded_async(
+        [[1], [2], [3], [4]],
+        max_parallel=3,
+        process_batch=_process,
+    )
+
+    assert result == [[1], [2], [3], [4]]
+    assert queue_sizes
+    assert queue_sizes[0] == 3
+
+
+@pytest.mark.anyio
+async def test_bounded_batch_helper_cleans_up_on_outer_cancellation() -> None:
+    blocker = asyncio.Event()
+
+    async def _process(batch: list[str]) -> str:
+        _ = batch
+        await blocker.wait()
+        return "ok"
+
+    task = asyncio.create_task(
+        scan._process_batches_bounded_async(
+            [["a"], ["b"], ["c"]],
+            max_parallel=2,
+            process_batch=_process,
+        )
+    )
+
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    other_tasks = [
+        t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()
+    ]
+    assert all(getattr(t.get_coro(), "__name__", "") != "_worker" for t in other_tasks)
+
+
+@pytest.mark.anyio
+async def test_bounded_batch_helper_cancels_workers_on_first_exception() -> None:
+    started: list[str] = []
+    cancelled: list[str] = []
+    blocker = asyncio.Event()
+
+    async def _process(batch: list[str]) -> str:
+        name = batch[0]
+        started.append(name)
+        if name == "fail":
+            raise RuntimeError("boom")
+        try:
+            await blocker.wait()
+        except asyncio.CancelledError:
+            cancelled.append(name)
+            raise
+        return name
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await asyncio.wait_for(
+            scan._process_batches_bounded_async(
+                [["fail"], ["slow-1"], ["slow-2"]],
+                max_parallel=3,
+                process_batch=_process,
+            ),
+            timeout=1,
+        )
+
+    assert "fail" in started
+    assert cancelled
+
 
 
 @pytest.mark.anyio
