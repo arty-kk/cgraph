@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -9,7 +10,9 @@ from app import celery_tasks
 
 
 @pytest.mark.anyio
-async def test_normalize_project_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_normalize_project_root_async_uses_fs_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: dict[str, object] = {}
 
     async def _fake_fs_runtime(func, *args, **kwargs):
@@ -173,6 +176,15 @@ def test_worker_process_init_runs_startup_steps_in_order(monkeypatch: pytest.Mon
     async def _fake_init_fs() -> None:
         calls.append("init_fs")
 
+    async def _fake_init_external_io() -> None:
+        calls.append("init_external_io")
+
+    async def _fake_init_producer() -> None:
+        calls.append("init_celery_producer")
+
+    async def _close_ok(name: str) -> None:
+        calls.append(name)
+
     def _fake_openai() -> object:
         calls.append("openai")
         return object()
@@ -181,14 +193,50 @@ def test_worker_process_init_runs_startup_steps_in_order(monkeypatch: pytest.Mon
     monkeypatch.setattr(celery_tasks, "init_async_db", _fake_init_db)
     monkeypatch.setattr(celery_tasks, "init_s3_runtime", _fake_init_s3)
     monkeypatch.setattr(celery_tasks, "init_fs_runtime", _fake_init_fs)
+    monkeypatch.setattr(celery_tasks, "init_external_io_runtime", _fake_init_external_io)
+    monkeypatch.setattr(celery_tasks, "init_celery_producer_runtime", _fake_init_producer)
     monkeypatch.setattr(celery_tasks, "get_async_openai_client", _fake_openai)
     monkeypatch.setattr(celery_tasks.settings, "storage_backend", "s3")
     monkeypatch.setattr(celery_tasks.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(celery_tasks, "close_s3_runtime", lambda: _close_ok("close_s3"))
+    monkeypatch.setattr(celery_tasks, "close_redis_pool_async", lambda: _close_ok("close_redis"))
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_async_openai_client",
+        lambda: _close_ok("close_openai"),
+    )
+    monkeypatch.setattr(celery_tasks, "close_fs_runtime", lambda: _close_ok("close_fs"))
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_external_io_runtime",
+        lambda: _close_ok("close_external_io"),
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_celery_producer_runtime",
+        lambda: _close_ok("close_celery_producer"),
+    )
+    monkeypatch.setattr(celery_tasks, "close_async_db", lambda: _close_ok("close_db"))
 
     celery_tasks._on_worker_process_init()
     celery_tasks._on_worker_process_shutdown()
 
-    assert calls == ["init_redis", "init_db", "init_fs", "init_s3", "openai"]
+    assert calls == [
+        "init_redis",
+        "init_db",
+        "init_fs",
+        "init_external_io",
+        "init_celery_producer",
+        "init_s3",
+        "openai",
+        "close_s3",
+        "close_redis",
+        "close_openai",
+        "close_fs",
+        "close_external_io",
+        "close_celery_producer",
+        "close_db",
+    ]
 
 
 def test_worker_process_shutdown_cleanup_is_idempotent_and_safe(
@@ -211,6 +259,12 @@ def test_worker_process_shutdown_cleanup_is_idempotent_and_safe(
     monkeypatch.setattr(celery_tasks, "close_redis_pool_async", _fail_redis)
     monkeypatch.setattr(celery_tasks, "close_async_openai_client", lambda: _ok("close_openai"))
     monkeypatch.setattr(celery_tasks, "close_fs_runtime", lambda: _ok("close_fs"))
+    monkeypatch.setattr(celery_tasks, "close_external_io_runtime", lambda: _ok("close_external_io"))
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_celery_producer_runtime",
+        lambda: _ok("close_celery_producer"),
+    )
     monkeypatch.setattr(celery_tasks, "close_async_db", lambda: _ok("close_db"))
 
     celery_tasks._on_worker_process_init()
@@ -221,6 +275,8 @@ def test_worker_process_shutdown_cleanup_is_idempotent_and_safe(
     assert calls.count("close_redis") == 1
     assert calls.count("close_openai") == 1
     assert calls.count("close_fs") == 1
+    assert calls.count("close_external_io") == 1
+    assert calls.count("close_celery_producer") == 1
     assert calls.count("close_db") == 1
 
 
@@ -248,6 +304,12 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
     async def _close_fs() -> None:
         calls.append("close_fs")
 
+    async def _close_external_io() -> None:
+        calls.append("close_external_io")
+
+    async def _close_celery_producer() -> None:
+        calls.append("close_celery_producer")
+
     async def _close_db() -> None:
         calls.append("close_db")
 
@@ -259,6 +321,8 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
     monkeypatch.setattr(celery_tasks, "close_redis_pool_async", _close_redis)
     monkeypatch.setattr(celery_tasks, "close_async_openai_client", _close_openai)
     monkeypatch.setattr(celery_tasks, "close_fs_runtime", _close_fs)
+    monkeypatch.setattr(celery_tasks, "close_external_io_runtime", _close_external_io)
+    monkeypatch.setattr(celery_tasks, "close_celery_producer_runtime", _close_celery_producer)
     monkeypatch.setattr(celery_tasks, "close_async_db", _close_db)
 
     with pytest.raises(RuntimeError, match="db boom"):
@@ -271,19 +335,21 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
         "close_redis",
         "close_openai",
         "close_fs",
+        "close_external_io",
+        "close_celery_producer",
         "close_db",
     ]
 
 
-def test_task_entrypoints_use_native_async_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_task_entrypoints_use_worker_loop_submitter(monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[str] = []
 
-    def _fake_run_async(awaitable):
+    def _fake_submit(awaitable):
         recorded.append(awaitable.cr_code.co_name)
         awaitable.close()
         return {"updated": True}
 
-    monkeypatch.setattr(celery_tasks, "_run_async", _fake_run_async)
+    monkeypatch.setattr(celery_tasks, "_submit_to_worker_loop", _fake_submit)
 
     celery_tasks.scan_task("j", 1, 1)
     celery_tasks.docs_task("j", 1, 1)
@@ -299,6 +365,131 @@ def test_task_entrypoints_use_native_async_runner(monkeypatch: pytest.MonkeyPatc
         "calibrate_routing_policy_thresholds_async",
     ]
     assert result == {"updated": True}
+
+
+def test_worker_loop_identity_reused_between_sync_task_entrypoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    async def _startup() -> None:
+        return None
+
+    async def _cleanup() -> None:
+        return None
+
+    async def _scan(*_args, **_kwargs) -> None:
+        calls.append(("scan", id(asyncio.get_running_loop())))
+
+    async def _docs(*_args, **_kwargs) -> None:
+        calls.append(("docs", id(asyncio.get_running_loop())))
+
+    monkeypatch.setattr(celery_tasks, "_startup_worker_resources_async", _startup)
+    monkeypatch.setattr(celery_tasks, "_cleanup_worker_resources_async", _cleanup)
+    monkeypatch.setattr(celery_tasks, "_scan_task_async", _scan)
+    monkeypatch.setattr(celery_tasks, "_docs_task_async", _docs)
+
+    celery_tasks._on_worker_process_init()
+    try:
+        celery_tasks.scan_task("job-1", 1, 1)
+        celery_tasks.docs_task("job-2", 1, 1)
+    finally:
+        celery_tasks._on_worker_process_shutdown()
+
+    assert len(calls) == 2
+    assert calls[0][1] == calls[1][1]
+
+
+def test_worker_runtime_lifecycle_init_once_close_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    async def _record(name: str) -> None:
+        calls.append(name)
+
+    monkeypatch.setattr(celery_tasks, "init_redis_pool_async", lambda: _record("init_redis"))
+    monkeypatch.setattr(celery_tasks, "init_async_db", lambda: _record("init_db"))
+    monkeypatch.setattr(celery_tasks, "init_fs_runtime", lambda: _record("init_fs"))
+    monkeypatch.setattr(
+        celery_tasks,
+        "init_external_io_runtime",
+        lambda: _record("init_external_io"),
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "init_celery_producer_runtime",
+        lambda: _record("init_celery_producer"),
+    )
+    monkeypatch.setattr(celery_tasks.settings, "storage_backend", "local")
+    monkeypatch.setattr(celery_tasks.settings, "openai_api_key", "")
+    monkeypatch.setattr(celery_tasks, "close_s3_runtime", lambda: _record("close_s3"))
+    monkeypatch.setattr(celery_tasks, "close_redis_pool_async", lambda: _record("close_redis"))
+    monkeypatch.setattr(celery_tasks, "close_async_openai_client", lambda: _record("close_openai"))
+    monkeypatch.setattr(celery_tasks, "close_fs_runtime", lambda: _record("close_fs"))
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_external_io_runtime",
+        lambda: _record("close_external_io"),
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_celery_producer_runtime",
+        lambda: _record("close_celery_producer"),
+    )
+    monkeypatch.setattr(celery_tasks, "close_async_db", lambda: _record("close_db"))
+    monkeypatch.setattr(celery_tasks, "_scan_task_async", lambda *_args, **_kwargs: _record("scan"))
+    monkeypatch.setattr(celery_tasks, "_docs_task_async", lambda *_args, **_kwargs: _record("docs"))
+
+    celery_tasks._on_worker_process_init()
+    try:
+        celery_tasks.scan_task("job-1", 1, 1)
+        celery_tasks.docs_task("job-2", 1, 1)
+    finally:
+        celery_tasks._on_worker_process_shutdown()
+
+    assert calls.count("init_redis") == 1
+    assert calls.count("init_db") == 1
+    assert calls.count("init_fs") == 1
+    assert calls.count("init_external_io") == 1
+    assert calls.count("init_celery_producer") == 1
+    assert calls.count("close_redis") == 1
+    assert calls.count("close_fs") == 1
+    assert calls.count("close_external_io") == 1
+    assert calls.count("close_celery_producer") == 1
+    assert calls.count("close_db") == 1
+
+
+def test_submitter_burst_parallel_calls_without_loop_affinity_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processed: list[int] = []
+
+    async def _startup() -> None:
+        return None
+
+    async def _cleanup() -> None:
+        processed.append(-1)
+
+    async def _job(idx: int) -> int:
+        await asyncio.sleep(0.01)
+        processed.append(idx)
+        return idx
+
+    monkeypatch.setattr(celery_tasks, "_startup_worker_resources_async", _startup)
+    monkeypatch.setattr(celery_tasks, "_cleanup_worker_resources_async", _cleanup)
+
+    celery_tasks._on_worker_process_init()
+    try:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(celery_tasks._submit_to_worker_loop, _job(i)) for i in range(12)]
+            results = [future.result(timeout=3) for future in futures]
+    finally:
+        celery_tasks._on_worker_process_shutdown()
+
+    assert sorted(results) == list(range(12))
+    assert sorted(i for i in processed if i >= 0) == list(range(12))
+    assert processed[-1] == -1
 
 
 @pytest.mark.anyio
