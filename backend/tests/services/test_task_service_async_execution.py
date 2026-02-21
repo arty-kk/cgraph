@@ -307,23 +307,23 @@ async def test_resolve_under_root_async_uses_run_fs_io_async(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_parse_diff_paths_async_uses_to_thread(monkeypatch):
+async def test_parse_diff_paths_async_uses_run_cpu_io_async(monkeypatch):
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return ["a.py"]
 
-    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     result = await task_service._parse_diff_paths_async(Path("/tmp"), "diff --git a/a.py b/a.py\n")
 
     assert result == ["a.py"]
     assert calls["func"] is task_service._parse_diff_paths
     assert calls["args"] == (Path("/tmp"), "diff --git a/a.py b/a.py\n")
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "task_service.parse_diff_paths"}
 
 
 @pytest.mark.anyio

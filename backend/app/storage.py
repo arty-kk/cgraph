@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import settings
+from .infra.cpu_runtime import run_cpu_io_async
 from .infra.fs_runtime import run_fs_io_async
 from .logging import get_logger
 from .s3_runtime import get_s3_client
@@ -83,7 +84,12 @@ def _s3_signed_url(bucket: str, key: str) -> str | None:
 async def _s3_signed_url_async(bucket: str, key: str) -> str | None:
     async with _S3_SIGNED_URL_SEMAPHORE:
         try:
-            return await asyncio.to_thread(_s3_signed_url, bucket, key)
+            return await run_cpu_io_async(
+                _s3_signed_url,
+                bucket,
+                key,
+                operation="storage.s3.signed_url",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to generate signed URL", extra={"reason": str(exc)})
             return None

@@ -18,6 +18,7 @@ from .infra.celery_producer_runtime import (
     close_celery_producer_runtime,
     init_celery_producer_runtime,
 )
+from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
 from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
 from .infra.fs_runtime import close_fs_runtime, init_fs_runtime, run_fs_io_async
 from .infra.redis_client import (
@@ -109,6 +110,7 @@ async def _startup_worker_resources_async() -> None:
         ("init_redis_pool_async", init_redis_pool_async),
         ("init_async_db", init_async_db),
         ("init_fs_runtime", init_fs_runtime),
+        ("init_cpu_runtime", init_cpu_runtime),
         ("init_external_io_runtime", init_external_io_runtime),
         ("init_celery_producer_runtime", init_celery_producer_runtime),
     ]
@@ -129,6 +131,7 @@ async def _cleanup_worker_resources_async() -> None:
         ("close_redis_pool_async", close_redis_pool_async),
         ("close_async_openai_client", close_async_openai_client),
         ("close_fs_runtime", close_fs_runtime),
+        ("close_cpu_runtime", close_cpu_runtime),
         ("close_external_io_runtime", close_external_io_runtime),
         ("close_celery_producer_runtime", close_celery_producer_runtime),
         ("close_async_db", close_async_db),

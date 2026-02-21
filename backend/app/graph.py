@@ -17,6 +17,7 @@ from sqlmodel import select
 from .config import settings
 from .async_db import AsyncSessionLocal
 from .llm.client import get_async_openai_client
+from .infra.cpu_runtime import run_cpu_io_async
 from .infra.external_io_runtime import run_openai_io_async
 from .infra.fs_runtime import run_fs_io_async
 from .models import FileChunkEmbedding, FileEdge, FileNode
@@ -211,7 +212,11 @@ async def compute_graph_metrics_async(
     if not graph_input["node_rows"]:
         return False
 
-    params = await asyncio.to_thread(_compute_graph_metrics_cpu, graph_input)
+    params = await run_cpu_io_async(
+        _compute_graph_metrics_cpu,
+        graph_input,
+        operation="graph.compute_graph_metrics",
+    )
     await _write_graph_metrics_async(session, params)
     return False
 
@@ -710,13 +715,14 @@ async def search_semantic_async(
         max_chars=int(settings.embeddings_max_file_chars),
     )
 
-    compared, scored = await asyncio.to_thread(
+    compared, scored = await run_cpu_io_async(
         _score_semantic_candidates_cpu,
         rows,
         query_embedding=query_embedding,
         file_cache=file_cache,
         chunk_size=int(settings.embeddings_chunk_size),
         overlap=int(settings.embeddings_chunk_overlap),
+        operation="graph.score_semantic_candidates",
     )
 
     scored.sort(key=lambda x: x["score"], reverse=True)

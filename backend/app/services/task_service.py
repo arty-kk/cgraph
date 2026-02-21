@@ -30,6 +30,7 @@ from ..errors import (
     ServerError,
 )
 from ..graph import compute_graph_metrics_async, update_graph_metrics_incremental_async
+from ..infra.cpu_runtime import run_cpu_io_async
 from ..infra.fs_runtime import run_fs_io_async
 from ..llm.agentic import (
     AgenticMeta,
@@ -129,7 +130,12 @@ async def _resolve_under_root_async(
 
 
 async def _parse_diff_paths_async(root: Path, diff_text: str) -> list[str]:
-    return await asyncio.to_thread(_parse_diff_paths, root, diff_text)
+    return await run_cpu_io_async(
+        _parse_diff_paths,
+        root,
+        diff_text,
+        operation="task_service.parse_diff_paths",
+    )
 
 
 async def _apply_unified_diff_async(
@@ -184,7 +190,12 @@ def _json_loads_or(raw: str | None, fallback):
 
 
 async def _json_loads_or_async(raw: str | None, fallback):
-    return await asyncio.to_thread(_json_loads_or, raw, fallback)
+    return await run_cpu_io_async(
+        _json_loads_or,
+        raw,
+        fallback,
+        operation="task_service.json_loads_or",
+    )
 
 
 async def _normalize_project_root_async(root_path: str, *, max_length: int) -> Path:

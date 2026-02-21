@@ -75,6 +75,22 @@ class Settings(BaseSettings):
         default=32,
         alias="STUBGRAPH_FS_RUNTIME_MAX_CONCURRENCY",
     )
+    cpu_runtime_max_workers: int = Field(
+        default=8,
+        alias="STUBGRAPH_CPU_RUNTIME_MAX_WORKERS",
+    )
+    cpu_runtime_max_concurrency: int = Field(
+        default=16,
+        alias="STUBGRAPH_CPU_RUNTIME_MAX_CONCURRENCY",
+    )
+    cpu_runtime_slow_wait_ms: float = Field(
+        default=200.0,
+        alias="STUBGRAPH_CPU_RUNTIME_SLOW_WAIT_MS",
+    )
+    cpu_runtime_slow_task_ms: float = Field(
+        default=750.0,
+        alias="STUBGRAPH_CPU_RUNTIME_SLOW_TASK_MS",
+    )
     allow_local_root_path: bool = Field(default=False, alias="STUBGRAPH_ALLOW_LOCAL_ROOT_PATH")
 
     celery_broker_url: str = Field(

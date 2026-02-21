@@ -17,6 +17,7 @@ from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..contracts import get_or_build_contract_async
 from ..errors import BadRequestError, ExternalServiceError, NotFoundError
+from ..infra.cpu_runtime import run_cpu_io_async
 from ..infra.fs_runtime import run_fs_io_async
 from ..llm.orchestrator import generate_docs_async
 from ..models import (
@@ -223,12 +224,13 @@ async def _compute_project_summary_facts_async(
     hubs_limit: int = 25,
     module_map_limit: int = 100,
 ) -> dict:
-    return await asyncio.to_thread(
+    return await run_cpu_io_async(
         _compute_project_summary_facts,
         nodes,
         hotspots_limit=hotspots_limit,
         hubs_limit=hubs_limit,
         module_map_limit=module_map_limit,
+        operation="docs_service.compute_project_summary_facts",
     )
 
 
@@ -609,7 +611,7 @@ async def _build_api_summary_async(session: AsyncSession, project_id: int) -> di
     except Exception as e:
         return {"error": "api_summary_failed", "message": str(e)}
 
-    return await asyncio.to_thread(
+    return await run_cpu_io_async(
         _build_api_summary_payload,
         routes_total=routes_total,
         calls_total=calls_total,
@@ -618,6 +620,7 @@ async def _build_api_summary_async(session: AsyncSession, project_id: int) -> di
         call_methods_rows=call_methods_rows,
         route_paths_rows=route_paths_rows,
         call_paths_rows=call_paths_rows,
+        operation="docs_service.build_api_summary",
     )
 
 
@@ -1155,7 +1158,7 @@ async def _build_docs_markdown_parts_async(
     key_files: list[dict],
     api_summary: dict,
 ) -> dict[str, str]:
-    return await asyncio.to_thread(
+    return await run_cpu_io_async(
         _build_docs_markdown_parts,
         module_rows=module_rows,
         hotspots=hotspots,
@@ -1163,6 +1166,7 @@ async def _build_docs_markdown_parts_async(
         run_hints=run_hints,
         key_files=key_files,
         api_summary=api_summary,
+        operation="docs_service.build_docs_markdown_parts",
     )
 
 
