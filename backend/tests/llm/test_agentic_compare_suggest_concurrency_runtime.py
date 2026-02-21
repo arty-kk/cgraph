@@ -61,7 +61,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                 encoding="utf-8",
             )
 
-            async def _fake_route_usages(_project_id: int, _args: dict) -> dict:
+            async def _fake_route_usages(_session, _project_id: int, _args: dict) -> dict:
                 await asyncio.sleep(0.01)
                 return agentic._tool_ok(
                     {
