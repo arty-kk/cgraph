@@ -49,24 +49,29 @@ async def test_collect_key_files_async_uses_run_fs_io_async(monkeypatch: pytest.
 
 
 @pytest.mark.anyio
-async def test_compute_project_summary_facts_async_uses_to_thread(
+async def test_compute_project_summary_facts_async_uses_run_cpu_io_async(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return {"counts": {"files": 1, "loc": 10}}
 
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(docs_service, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     result = await docs_service._compute_project_summary_facts_async([("a.py", "python", 10, 1, 1, 1, "ok")])
 
     assert result == {"counts": {"files": 1, "loc": 10}}
     assert calls["func"] is docs_service._compute_project_summary_facts
-    assert calls["kwargs"] == {"hotspots_limit": 25, "hubs_limit": 25, "module_map_limit": 100}
+    assert calls["kwargs"] == {
+        "hotspots_limit": 25,
+        "hubs_limit": 25,
+        "module_map_limit": 100,
+        "operation": "docs_service.compute_project_summary_facts",
+    }
 
 
 @pytest.mark.anyio
@@ -84,18 +89,18 @@ async def test_build_run_hints_async_runs_inline() -> None:
 
 
 @pytest.mark.anyio
-async def test_build_docs_markdown_parts_async_uses_to_thread(
+async def test_build_docs_markdown_parts_async_uses_run_cpu_io_async(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return {"module_map_table_md": "m", "hotspots_table_md": "h", "tree_md": "t", "api_md": "a", "run_md": "r", "key_files_md": "k"}
 
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(docs_service, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     result = await docs_service._build_docs_markdown_parts_async(
         module_rows=[{"module": "src", "files": 1, "loc": 10, "risk_max": 1.0, "top_hotspots": []}],
@@ -109,6 +114,7 @@ async def test_build_docs_markdown_parts_async_uses_to_thread(
     assert result["module_map_table_md"] == "m"
     assert calls["func"] is docs_service._build_docs_markdown_parts
     assert calls["kwargs"]["run_hints"] == ["pytest -q"]
+    assert calls["kwargs"]["operation"] == "docs_service.build_docs_markdown_parts"
 
 
 @pytest.mark.anyio
@@ -165,7 +171,7 @@ async def test_collect_compact_contracts_async_uses_single_session_and_keeps_for
 
 
 @pytest.mark.anyio
-async def test_build_api_summary_async_uses_to_thread(
+async def test_build_api_summary_async_uses_run_cpu_io_async(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
@@ -196,13 +202,13 @@ async def test_build_api_summary_async_uses_to_thread(
         async def execute(self, _query):
             return self._results.pop(0)
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return {"counts": {"routes": 2, "calls": 3, "includes": 1}}
 
-    monkeypatch.setattr(docs_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(docs_service, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     result = await docs_service._build_api_summary_async(_Session(), 42)
 
@@ -211,6 +217,7 @@ async def test_build_api_summary_async_uses_to_thread(
     assert calls["kwargs"]["routes_total"] == 2
     assert calls["kwargs"]["calls_total"] == 3
     assert calls["kwargs"]["includes_total"] == 1
+    assert calls["kwargs"]["operation"] == "docs_service.build_api_summary"
 
 
 @pytest.mark.anyio

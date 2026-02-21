@@ -1494,12 +1494,13 @@ async def test_compute_graph_metrics_async_runs_cpu_in_executor_and_keeps_db_asy
             calls.append("commit")
 
     async def _fake_fs_runtime(func, *args, **kwargs):
-        calls.append(f"to_thread:{func.__name__}")
+        calls.append(f"cpu:{func.__name__}")
+        kwargs.pop("operation", None)
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(graph.asyncio, "to_thread", _fake_fs_runtime)
+    monkeypatch.setattr(graph, "run_cpu_io_async", _fake_fs_runtime)
 
     pending = await graph.compute_graph_metrics_async(_Session(), project_id=1)
 
     assert pending is False
-    assert calls == ["to_thread:_compute_graph_metrics_cpu", "write", "commit"]
+    assert calls == ["cpu:_compute_graph_metrics_cpu", "write", "commit"]

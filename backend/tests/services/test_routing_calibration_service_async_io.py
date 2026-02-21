@@ -1,4 +1,3 @@
-import asyncio
 import sys
 from pathlib import Path
 
@@ -10,16 +9,16 @@ from app.services import routing_calibration_service
 
 
 @pytest.mark.anyio
-async def test_derive_thresholds_async_uses_to_thread(monkeypatch):
+async def test_derive_thresholds_async_uses_run_cpu_io_async(monkeypatch):
     captured: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         captured["func"] = func
         captured["args"] = args
         captured["kwargs"] = kwargs
         return (1.1, 1.3, 1.6)
 
-    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(routing_calibration_service, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     result = await routing_calibration_service._derive_thresholds_async(
         defaults=(1.2, 1.4, 1.7),
@@ -28,20 +27,24 @@ async def test_derive_thresholds_async_uses_to_thread(monkeypatch):
 
     assert result == (1.1, 1.3, 1.6)
     assert captured["func"] is routing_calibration_service._derive_thresholds
-    assert captured["kwargs"] == {"defaults": (1.2, 1.4, 1.7), "rows": []}
+    assert captured["kwargs"] == {
+        "defaults": (1.2, 1.4, 1.7),
+        "rows": [],
+        "operation": "routing_calibration.derive_thresholds",
+    }
 
 
 @pytest.mark.anyio
-async def test_derive_base_weights_async_uses_to_thread(monkeypatch):
+async def test_derive_base_weights_async_uses_run_cpu_io_async(monkeypatch):
     captured: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         captured["func"] = func
         captured["args"] = args
         captured["kwargs"] = kwargs
         return {"quality": 0.4, "latency": 0.3, "token_cost": 0.2, "fail_rate": 0.1}
 
-    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(routing_calibration_service, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     result = await routing_calibration_service._derive_base_weights_async(
         defaults={"quality": 0.5, "latency": 0.2, "token_cost": 0.2, "fail_rate": 0.1},
@@ -53,20 +56,21 @@ async def test_derive_base_weights_async_uses_to_thread(monkeypatch):
     assert captured["kwargs"] == {
         "defaults": {"quality": 0.5, "latency": 0.2, "token_cost": 0.2, "fail_rate": 0.1},
         "rows": [],
+        "operation": "routing_calibration.derive_base_weights",
     }
 
 
 @pytest.mark.anyio
-async def test_build_profile_weights_async_uses_to_thread(monkeypatch):
+async def test_build_profile_weights_async_uses_run_cpu_io_async(monkeypatch):
     captured: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         captured["func"] = func
         captured["args"] = args
         captured["kwargs"] = kwargs
         return {"balanced": {"quality": 0.4, "latency": 0.3, "token_cost": 0.2, "fail_rate": 0.1}}
 
-    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(routing_calibration_service, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     result = await routing_calibration_service._build_profile_weights_async(
         {"quality": 0.4, "latency": 0.3, "token_cost": 0.2, "fail_rate": 0.1}
@@ -79,7 +83,7 @@ async def test_build_profile_weights_async_uses_to_thread(monkeypatch):
     assert captured["args"] == (
         {"quality": 0.4, "latency": 0.3, "token_cost": 0.2, "fail_rate": 0.1},
     )
-    assert captured["kwargs"] == {}
+    assert captured["kwargs"] == {"operation": "routing_calibration.build_profile_weights"}
 
 
 @pytest.mark.anyio

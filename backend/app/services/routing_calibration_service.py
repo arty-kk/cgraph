@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 
 from sqlmodel import select
@@ -8,6 +7,7 @@ from sqlmodel import select
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..infra.cache import cache_set_json_async
+from ..infra.cpu_runtime import run_cpu_io_async
 from ..logging import get_logger
 from ..models import AnalysisStageTelemetry
 
@@ -168,13 +168,23 @@ def _derive_base_weights(
 async def _derive_thresholds_async(
     *, defaults: tuple[float, float, float], rows: list[AnalysisStageTelemetry]
 ) -> tuple[float, float, float]:
-    return await asyncio.to_thread(_derive_thresholds, defaults=defaults, rows=rows)
+    return await run_cpu_io_async(
+        _derive_thresholds,
+        defaults=defaults,
+        rows=rows,
+        operation="routing_calibration.derive_thresholds",
+    )
 
 
 async def _derive_base_weights_async(
     *, defaults: dict[str, float], rows: list[AnalysisStageTelemetry]
 ) -> dict[str, float]:
-    return await asyncio.to_thread(_derive_base_weights, defaults=defaults, rows=rows)
+    return await run_cpu_io_async(
+        _derive_base_weights,
+        defaults=defaults,
+        rows=rows,
+        operation="routing_calibration.derive_base_weights",
+    )
 
 
 def _build_profile_weights(base_weights: dict[str, float]) -> dict[str, dict[str, float]]:
@@ -191,7 +201,11 @@ def _build_profile_weights(base_weights: dict[str, float]) -> dict[str, dict[str
 async def _build_profile_weights_async(
     base_weights: dict[str, float],
 ) -> dict[str, dict[str, float]]:
-    return await asyncio.to_thread(_build_profile_weights, base_weights)
+    return await run_cpu_io_async(
+        _build_profile_weights,
+        base_weights,
+        operation="routing_calibration.build_profile_weights",
+    )
 
 
 
