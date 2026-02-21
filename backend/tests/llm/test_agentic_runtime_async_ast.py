@@ -115,7 +115,7 @@ def test_dispatch_passes_session_to_runtime_async_tools() -> None:
     assert '"unmatched_routes": ("_tool_unmatched_routes_async", (session, project_id, args), {})' in src
     assert '"unmatched_calls": ("_tool_unmatched_calls_async", (session, project_id, args), {})' in src
     assert (
-        '"compare_api_contract": (\n            "_tool_compare_api_contract_async",\n            (session, project_id, root, args),\n            {},\n        ),'
+        '"compare_api_contract": (\n            "_tool_compare_api_contract_async",\n            (session, project_id, root, args),\n            {"meta": meta},\n        ),'
         in src
     )
     assert (

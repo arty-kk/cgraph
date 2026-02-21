@@ -183,7 +183,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                 source_path = "types.ts"
                 fields_json = '[{"name": "id", "type": "number"}]'
 
-            async def _fake_compare(_session, _project_id: int, _root: Path, _args: dict) -> dict:
+            async def _fake_compare(_session, _project_id: int, _root: Path, _args: dict, *, meta=None) -> dict:
                 await asyncio.sleep(0.01)
                 return agentic._tool_ok(compare_report)
 
