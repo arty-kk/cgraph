@@ -258,7 +258,7 @@ async def _dispatch_tool_async(
         "compare_api_contract": (
             "_tool_compare_api_contract_async",
             (session, project_id, root, args),
-            {},
+            {"meta": meta},
         ),
         "suggest_contract_fix": (
             "_tool_suggest_contract_fix_async",

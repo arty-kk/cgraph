@@ -45,6 +45,12 @@ from .dispatch import _clamp_int, _tool_error, _tool_ok
 from .types import AgenticMeta
 
 
+_FS_OPS_FALLBACK_SEMAPHORE: asyncio.Semaphore | None = None
+_FS_OPS_FALLBACK_SEMAPHORE_LOOP: asyncio.AbstractEventLoop | None = None
+_FS_OPS_FALLBACK_LOCK: asyncio.Lock | None = None
+_FS_OPS_FALLBACK_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
 def _tool_definitions(max_file_chars: int) -> list[dict]:
     max_file_chars = max(1, min(int(max_file_chars), 200_000))
     tools = [
@@ -901,10 +907,36 @@ async def _search_text_cpu_async(
 async def _to_thread_fs_async(meta: AgenticMeta | None, fn: Any, *args: Any) -> Any:
     semaphore = meta.fs_ops_semaphore if isinstance(meta, AgenticMeta) else None
     if semaphore is None:
-        fallback_limit = max(1, int(settings.llm_agentic_fs_ops_concurrency))
-        semaphore = asyncio.Semaphore(fallback_limit)
+        semaphore = await _get_fs_ops_fallback_semaphore_async()
     async with semaphore:
         return await run_fs_io_async(fn, *args, operation="agentic.fs_tool")
+
+
+async def _get_fs_ops_fallback_lock_async() -> asyncio.Lock:
+    global _FS_OPS_FALLBACK_LOCK, _FS_OPS_FALLBACK_LOCK_LOOP
+    current_loop = asyncio.get_running_loop()
+    lock = _FS_OPS_FALLBACK_LOCK
+    if lock is None or _FS_OPS_FALLBACK_LOCK_LOOP is not current_loop:
+        lock = asyncio.Lock()
+        _FS_OPS_FALLBACK_LOCK = lock
+        _FS_OPS_FALLBACK_LOCK_LOOP = current_loop
+    return lock
+
+
+async def _get_fs_ops_fallback_semaphore_async() -> asyncio.Semaphore:
+    global _FS_OPS_FALLBACK_SEMAPHORE, _FS_OPS_FALLBACK_SEMAPHORE_LOOP
+    current_loop = asyncio.get_running_loop()
+    semaphore = _FS_OPS_FALLBACK_SEMAPHORE
+    if semaphore is None or _FS_OPS_FALLBACK_SEMAPHORE_LOOP is not current_loop:
+        lock = await _get_fs_ops_fallback_lock_async()
+        async with lock:
+            semaphore = _FS_OPS_FALLBACK_SEMAPHORE
+            if semaphore is None or _FS_OPS_FALLBACK_SEMAPHORE_LOOP is not current_loop:
+                fallback_limit = max(1, int(settings.llm_agentic_fs_ops_concurrency))
+                semaphore = asyncio.Semaphore(fallback_limit)
+                _FS_OPS_FALLBACK_SEMAPHORE = semaphore
+                _FS_OPS_FALLBACK_SEMAPHORE_LOOP = current_loop
+    return semaphore
 
 
 def _resolve_and_read_file_under_root(
@@ -3109,8 +3141,10 @@ async def _tool_compare_api_contract_async(
     project_id: int,
     root: Path,
     args: dict,
+    *,
+    meta: AgenticMeta | None = None,
 ) -> dict:
-    return await _tool_compare_api_contract(session, project_id, root, args)
+    return await _tool_compare_api_contract(session, project_id, root, args, meta=meta)
 
 
 async def _tool_suggest_contract_fix_async(
@@ -3554,6 +3588,7 @@ async def _tool_suggest_api_fix(
             "route_limit": route_limit,
             "call_limit": call_limit,
         },
+        meta=meta,
     )
     if not report_result.get("ok"):
         return report_result
@@ -3920,6 +3955,7 @@ async def _tool_suggest_contract_fix(
             "route_limit": route_limit,
             "call_limit": call_limit,
         },
+        meta=meta,
     )
     if not report_result.get("ok"):
         return report_result
@@ -4255,6 +4291,8 @@ async def _tool_compare_api_contract(
     project_id: int,
     root: Path,
     args: dict,
+    *,
+    meta: AgenticMeta | None = None,
 ) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
@@ -4412,7 +4450,7 @@ async def _tool_compare_api_contract(
                     backend_contract = None
             if backend_contract is None:
                 # on the fly
-                read_result = await _read_text_under_root_async(root, r_src, meta=None)
+                read_result = await _read_text_under_root_async(root, r_src, meta=meta)
                 if read_result:
                     _rel_norm, txt = read_result
                     try:
@@ -4470,7 +4508,7 @@ async def _tool_compare_api_contract(
             c_line = int(m.get("lineno") or 0)
 
             cm = call_meta_by_key.get((project_id, c_method, c_path, c_src, c_line))
-            meta = {
+            call_report = {
                 "call": {
                     "method": c_method,
                     "path": c_path,
@@ -4498,14 +4536,14 @@ async def _tool_compare_api_contract(
                 if body_t:
                     type_names.append(body_t)
 
-                meta["meta"] = {
+                call_report["meta"] = {
                     "wrapper_name": str(cm.wrapper_name or ""),
                     "wrapper_params": params if isinstance(params, list) else [],
                     "wrapper_response_type": resp_t,
                     "wrapper_body_type": body_t,
                     "body_keys": body_keys if isinstance(body_keys, list) else [],
                 }
-            metas.append(meta)
+            metas.append(call_report)
 
         type_defs = await _load_ts_typedefs_by_name(
             session,
