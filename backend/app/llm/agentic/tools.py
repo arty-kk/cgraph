@@ -1415,7 +1415,7 @@ async def _tool_search_semantic_impl(
     return _tool_ok(semantic)
 
 
-async def _tool_route_usages(project_id: int, args: dict) -> dict:
+async def _tool_route_usages(session: AsyncSession, project_id: int, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -1427,22 +1427,19 @@ async def _tool_route_usages(project_id: int, args: dict) -> dict:
 
     # 1) candidate routes
     try:
-        async with AsyncSessionLocal() as s:
-            q = select(ApiRoute).where(ApiRoute.project_id == project_id)
-            if method_norm:
-                q = q.where(ApiRoute.method == method_norm)
-            # exact first, then like
-            exact = (await s.execute(q.where(ApiRoute.path == path_q).limit(int(route_limit)))).scalars().all()
-            routes = list(exact)
-            if not routes:
-                like = f"%{path_q}%"
-                routes = (
-                    await s.execute(
-                        q.where(ApiRoute.path.like(like))
-                        .order_by(ApiRoute.path.asc())
-                        .limit(int(route_limit))
-                    )
-                ).scalars().all()
+        q = select(ApiRoute).where(ApiRoute.project_id == project_id)
+        if method_norm:
+            q = q.where(ApiRoute.method == method_norm)
+        # exact first, then like
+        exact = (await session.execute(q.where(ApiRoute.path == path_q).limit(int(route_limit)))).scalars().all()
+        routes = list(exact)
+        if not routes:
+            like = f"%{path_q}%"
+            routes = (
+                await session.execute(
+                    q.where(ApiRoute.path.like(like)).order_by(ApiRoute.path.asc()).limit(int(route_limit))
+                )
+            ).scalars().all()
     except Exception as e:
         return _tool_error("db_error", "failed to query routes", {"reason": str(e)})
 
@@ -1498,21 +1495,20 @@ async def _tool_route_usages(project_id: int, args: dict) -> dict:
 
         candidate_limit = min(2000, max(200, call_limit * 80))
         try:
-            async with AsyncSessionLocal() as s:
-                qc = select(ApiCall).where(ApiCall.project_id == project_id)
-                # Prefer method match for HTTP; do not force it for WEBSOCKET routes.
-                r_method = str(r.method or "").upper()
-                if r_method and r_method != "WEBSOCKET":
-                    qc = qc.where(ApiCall.method == r_method)
-                if prefix_str:
-                    qc = qc.where(ApiCall.path.like(prefix_str + "%"))
-                call_rows = (
-                    await s.execute(
-                        qc.order_by(
-                            ApiCall.path.asc(), ApiCall.source_path.asc(), ApiCall.lineno.asc()
-                        ).limit(int(candidate_limit))
+            qc = select(ApiCall).where(ApiCall.project_id == project_id)
+            # Prefer method match for HTTP; do not force it for WEBSOCKET routes.
+            r_method = str(r.method or "").upper()
+            if r_method and r_method != "WEBSOCKET":
+                qc = qc.where(ApiCall.method == r_method)
+            if prefix_str:
+                qc = qc.where(ApiCall.path.like(prefix_str + "%"))
+            call_rows = (
+                await session.execute(
+                    qc.order_by(ApiCall.path.asc(), ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(
+                        int(candidate_limit)
                     )
-                ).scalars().all()
+                )
+            ).scalars().all()
         except Exception as e:
             results.append(
                 {
@@ -3108,8 +3104,7 @@ async def _tool_get_symbol_async(
 
 
 async def _tool_route_usages_async(session: AsyncSession, project_id: int, args: dict) -> dict:
-    del session
-    return await _tool_route_usages(project_id, args)
+    return await _tool_route_usages(session, project_id, args)
 
 
 async def _tool_suggest_endpoint_location_async(
@@ -3117,8 +3112,7 @@ async def _tool_suggest_endpoint_location_async(
     project_id: int,
     args: dict,
 ) -> dict:
-    del session
-    return await _tool_suggest_endpoint_location(project_id, args)
+    return await _tool_suggest_endpoint_location(session, project_id, args)
 
 
 async def _tool_suggest_frontend_client_async(
@@ -3127,13 +3121,11 @@ async def _tool_suggest_frontend_client_async(
     root: Path,
     args: dict,
 ) -> dict:
-    del session
-    return await _tool_suggest_frontend_client(project_id, root, args)
+    return await _tool_suggest_frontend_client(session, project_id, root, args)
 
 
 async def _tool_impact_route_change_async(session: AsyncSession, project_id: int, args: dict) -> dict:
-    del session
-    return await _tool_impact_route_change(project_id, args)
+    return await _tool_impact_route_change(session, project_id, args)
 
 
 async def _tool_compare_api_contract_async(
@@ -3167,7 +3159,7 @@ async def _tool_suggest_api_fix_async(
     return await _tool_suggest_api_fix(session, project_id, root, meta, args)
 
 
-async def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
+async def _tool_suggest_endpoint_location(session: AsyncSession, project_id: int, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return _tool_error("bad_args", "path is required")
@@ -3186,22 +3178,21 @@ async def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
         else "%"
     )
 
-    async with AsyncSessionLocal() as s:
-        q = select(ApiRoute.source_path, ApiRoute.decorator, ApiRoute.path).where(
-            ApiRoute.project_id == project_id
-        )
-        if method_norm:
-            q = q.where(ApiRoute.method == method_norm)
-        # prefer exact prefix match when /api/<module>
-        if path.startswith("/api/"):
-            parts = [x for x in path.split("/") if x]
-            if len(parts) >= 2:
-                mod = parts[1]
-                pref = f"/api/{mod}"
-                q = q.where(ApiRoute.path.like(pref + "%"))
-        else:
-            q = q.where(ApiRoute.path.like(like))
-        rows = (await s.execute(q)).all()
+    q = select(ApiRoute.source_path, ApiRoute.decorator, ApiRoute.path).where(
+        ApiRoute.project_id == project_id
+    )
+    if method_norm:
+        q = q.where(ApiRoute.method == method_norm)
+    # prefer exact prefix match when /api/<module>
+    if path.startswith("/api/"):
+        parts = [x for x in path.split("/") if x]
+        if len(parts) >= 2:
+            mod = parts[1]
+            pref = f"/api/{mod}"
+            q = q.where(ApiRoute.path.like(pref + "%"))
+    else:
+        q = q.where(ApiRoute.path.like(like))
+    rows = (await session.execute(q)).all()
 
     counts: dict[str, int] = {}
     routers_by_file: dict[str, set[str]] = {}
@@ -3229,14 +3220,13 @@ async def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
     candidates: list[dict] = []
 
     # include coverage hint: is this router included anywhere?
-    async with AsyncSessionLocal() as s:
-        inc_rows = (
-            await s.execute(
-                select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
-                    ApiInclude.project_id == project_id
-                )
+    inc_rows = (
+        await session.execute(
+            select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
+                ApiInclude.project_id == project_id
             )
-        ).all()
+        )
+    ).all()
     included = set()
     for r in inc_rows:
         if isinstance(r, (tuple, list)) and len(r) >= 2:
@@ -3266,7 +3256,9 @@ async def _tool_suggest_endpoint_location(project_id: int, args: dict) -> dict:
     )
 
 
-async def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict) -> dict:
+async def _tool_suggest_frontend_client(
+    session: AsyncSession, project_id: int, root: Path, args: dict
+) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -3282,12 +3274,11 @@ async def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict)
     needle = tokens[-1] if tokens else path_q
     like = f"%{needle}%"
 
-    async with AsyncSessionLocal() as s:
-        q = select(ApiRoute).where(ApiRoute.project_id == project_id)
-        if method_norm:
-            q = q.where(ApiRoute.method == method_norm)
-        q = q.where(ApiRoute.path.like(like)).order_by(ApiRoute.path.asc()).limit(200)
-        routes = (await s.execute(q)).scalars().all()
+    q = select(ApiRoute).where(ApiRoute.project_id == project_id)
+    if method_norm:
+        q = q.where(ApiRoute.method == method_norm)
+    q = q.where(ApiRoute.path.like(like)).order_by(ApiRoute.path.asc()).limit(200)
+    routes = (await session.execute(q)).scalars().all()
 
     if not routes:
         return _tool_ok(
@@ -3371,7 +3362,7 @@ async def _tool_suggest_frontend_client(project_id: int, root: Path, args: dict)
     )
 
 
-async def _tool_impact_route_change(project_id: int, args: dict) -> dict:
+async def _tool_impact_route_change(session: AsyncSession, project_id: int, args: dict) -> dict:
     old_path = args.get("old_path")
     new_path = args.get("new_path")
     if not isinstance(old_path, str) or not old_path.strip():
@@ -3414,19 +3405,16 @@ async def _tool_impact_route_change(project_id: int, args: dict) -> dict:
 
     candidate_limit = 5000
     try:
-        async with AsyncSessionLocal() as s:
-            q = select(ApiCall).where(ApiCall.project_id == project_id)
-            if old_m:
-                q = q.where(ApiCall.method == old_m)
-            if prefix_str:
-                q = q.where(ApiCall.path.like(prefix_str + "%"))
-            calls = (
-                await s.execute(
-                    q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(
-                        int(candidate_limit)
-                    )
-                )
-            ).scalars().all()
+        q = select(ApiCall).where(ApiCall.project_id == project_id)
+        if old_m:
+            q = q.where(ApiCall.method == old_m)
+        if prefix_str:
+            q = q.where(ApiCall.path.like(prefix_str + "%"))
+        calls = (
+            await session.execute(
+                q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(candidate_limit))
+            )
+        ).scalars().all()
     except Exception as e:
         return _tool_error("db_error", "failed to query api calls", {"reason": str(e)})
 
@@ -4304,6 +4292,7 @@ async def _tool_compare_api_contract(
     call_limit = _clamp_int(args.get("call_limit"), 10, 1, 50)
 
     ru_result = await _tool_route_usages(
+        session,
         project_id,
         {
             "path": path_q,

@@ -33,6 +33,13 @@ RUNTIME_CONTRACT_ASYNC_FUNCS = {
     "_tool_suggest_api_fix_async",
 }
 
+LEGACY_WRAPPER_PAIRS = {
+    "_tool_route_usages_async": "_tool_route_usages",
+    "_tool_suggest_endpoint_location_async": "_tool_suggest_endpoint_location",
+    "_tool_suggest_frontend_client_async": "_tool_suggest_frontend_client",
+    "_tool_impact_route_change_async": "_tool_impact_route_change",
+}
+
 
 def _load_ast(path: Path) -> ast.AST:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -163,6 +170,39 @@ def test_get_neighbors_runtime_path_avoids_local_session_factory() -> None:
     assert marker in tools_src
     chunk = tools_src.split(marker, 1)[1].split("\n\n", 1)[0]
     assert "AsyncSessionLocal" not in chunk
+
+
+def test_legacy_runtime_wrappers_do_not_open_local_sessions_or_delete_session() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+
+    for fn_name, target_name in LEGACY_WRAPPER_PAIRS.items():
+        fn = fn_nodes[fn_name]
+        call_names = set()
+        has_del_session = False
+        target_calls_with_session = 0
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Delete):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name) and tgt.id == "session":
+                        has_del_session = True
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    call_names.add(node.func.id)
+                    if node.func.id == target_name:
+                        for arg in node.args:
+                            if isinstance(arg, ast.Name) and arg.id == "session":
+                                target_calls_with_session += 1
+                elif isinstance(node.func, ast.Attribute):
+                    call_names.add(node.func.attr)
+
+        assert "AsyncSessionLocal" not in call_names, f"{fn_name} must not call AsyncSessionLocal"
+        assert not has_del_session, f"{fn_name} must not contain del session"
+        assert target_calls_with_session >= 1, f"{fn_name} must pass session to {target_name}"
 
 
 def test_neighbors_helper_uses_passed_session_without_local_factory() -> None:

@@ -153,7 +153,7 @@ class TestAgenticFileToolsConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
                     }
                 )
 
-            async def _fake_route_usages(_project_id: int, _args: dict) -> dict:
+            async def _fake_route_usages(_session, _project_id: int, _args: dict) -> dict:
                 return agentic._tool_ok({"routes": routes})
 
             in_flight = 0
