@@ -233,6 +233,120 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertLess(elapsed, 1.5)
         self.assertEqual(sum(session.query_counts.values()), 12)
 
+    async def test_suggest_tools_use_single_typedef_batch_query_for_many_mismatches(self) -> None:
+        report = {
+            "ok": True,
+            "data": {
+                "routes": [
+                    {
+                        "route": {
+                            "method": "POST",
+                            "path": "/api/items",
+                            "source_path": "backend/app/api/items.py",
+                            "handler_name": "create_item",
+                            "lineno": 11,
+                        },
+                        "frontend_calls": [
+                            {
+                                "call": {
+                                    "source_path": "frontend/src/api/client_1.ts",
+                                    "lineno": 10,
+                                    "method": "POST",
+                                    "path": "/api/items",
+                                },
+                                "meta": {
+                                    "wrapper_name": "callApi",
+                                    "wrapper_body_type": "MissingReqDto",
+                                    "wrapper_response_type": "MissingRespDto",
+                                },
+                                "comparison": {
+                                    "body": {
+                                        "missing_in_frontend": ["name", "qty"],
+                                        "backend_fields": [{"name": "name"}, {"name": "qty"}],
+                                    },
+                                    "response": {
+                                        "missing_in_frontend": ["id", "status"],
+                                    },
+                                },
+                            },
+                            {
+                                "call": {
+                                    "source_path": "frontend/src/api/client_2.ts",
+                                    "lineno": 20,
+                                    "method": "POST",
+                                    "path": "/api/items",
+                                },
+                                "meta": {
+                                    "wrapper_name": "callApi",
+                                    "wrapper_body_type": "MissingReqDto",
+                                    "wrapper_response_type": "MissingRespDto",
+                                },
+                                "comparison": {
+                                    "body": {
+                                        "missing_in_frontend": ["price"],
+                                        "backend_fields": [{"name": "price"}],
+                                    },
+                                    "response": {
+                                        "missing_in_frontend": ["createdAt"],
+                                    },
+                                },
+                            },
+                        ],
+                    }
+                ]
+            },
+        }
+
+        class _TypedefOnlySession:
+            def __init__(self) -> None:
+                self.typedef_queries = 0
+
+            async def execute(self, query):
+                sql = str(query)
+                if "FROM tstypedef" not in sql:
+                    raise AssertionError(f"Unexpected query: {sql}")
+                self.typedef_queries += 1
+                return _ScalarRows([])
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend/src/api").mkdir(parents=True, exist_ok=True)
+            (root / "frontend/src/api/client_1.ts").write_text("export const a = 1\n", encoding="utf-8")
+            (root / "frontend/src/api/client_2.ts").write_text("export const b = 2\n", encoding="utf-8")
+
+            for suggest_tool in (
+                agentic_tools._tool_suggest_api_fix,
+                agentic_tools._tool_suggest_contract_fix,
+            ):
+                session = _TypedefOnlySession()
+                meta = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
+                with patch("app.llm.agentic.tools._tool_compare_api_contract", return_value=report):
+                    result = await suggest_tool(
+                        session,
+                        1,
+                        root,
+                        meta,
+                        {
+                            "path": "/api/items",
+                            "method": "POST",
+                            "route_limit": 3,
+                            "call_limit": 5,
+                            "include_backend_response": False,
+                        },
+                    )
+
+                self.assertTrue(result["ok"])
+                notes = result["data"].get("notes") or []
+                self.assertGreaterEqual(
+                    notes.count("typedef_not_found_for_body_type:MissingReqDto"),
+                    2,
+                )
+                self.assertGreaterEqual(
+                    notes.count("typedef_not_found_for_response_type:MissingRespDto"),
+                    2,
+                )
+                self.assertEqual(session.typedef_queries, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
