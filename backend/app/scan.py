@@ -69,6 +69,7 @@ logger = get_logger("stubgraph.scan")
 EMBEDDING_CHUNKS_KIND = "embedding_chunks"
 SCAN_STAGE_BATCH_SIZE = 128
 SCAN_STAGE_MAX_PARALLEL = 8
+SCAN_EMBEDDINGS_MAX_PARALLEL = 4
 
 
 @dataclass
@@ -147,6 +148,22 @@ class FileReadResult:
     mtime_ns: int
     size: int
     oversized: bool
+
+
+@dataclass(frozen=True)
+class EmbeddingTaskCandidate:
+    rel_path: str
+    file_hash: str
+    chunks: tuple[str, ...]
+    symbol_meta: tuple[dict[str, int | str], ...]
+    existing_hashes: frozenset[str]
+
+
+@dataclass(frozen=True)
+class EmbeddingTaskResult:
+    rows: tuple[dict, ...]
+    paths_to_delete: tuple[str, ...]
+    status: str
 
 
 def _get_cached_parse(lang: str, file_hash: str, file_suffix: str) -> tuple[int, list[dict]] | None:
@@ -1186,6 +1203,8 @@ async def _prepare_scan_files_async(
             scan_metrics["parse"]["batches"] += 1
             scan_metrics["parse"]["files"] += len(parsed_batch)
 
+        embedding_candidates: list[EmbeddingTaskCandidate] = []
+
         for parsed in parsed_batch:
             rel = str(parsed["rel"])
             snapshot[rel] = FileSnapshot(
@@ -1228,66 +1247,15 @@ async def _prepare_scan_files_async(
                             symbol_meta = await asyncio.to_thread(
                                 lambda: _symbol_chunks(text, idx.parse_symbols(project_root / rel, text) or [])
                             )
-                            client = get_async_openai_client()
-                            try:
-                                chunk_limit = await get_entitlement_int_async(
-                                    session,
-                                    org_id,
-                                    "embeddings_daily_chunk_limit",
+                            embedding_candidates.append(
+                                EmbeddingTaskCandidate(
+                                    rel_path=rel,
+                                    file_hash=file_hash,
+                                    chunks=tuple(chunks),
+                                    symbol_meta=tuple(symbol_meta),
+                                    existing_hashes=frozenset(existing_hashes),
                                 )
-                                await check_and_increment_async(
-                                    session,
-                                    org_id,
-                                    EMBEDDING_CHUNKS_KIND,
-                                    len(chunks),
-                                    int(chunk_limit)
-                                    if chunk_limit is not None
-                                    else settings.embeddings_daily_chunk_limit,
-                                )
-                                can_generate_embeddings = True
-                            except LimitExceededError:
-                                if not embedding_warned_limit:
-                                    logger.warning("Embeddings daily chunk limit exceeded; skipping embeddings.")
-                                    embedding_warned_limit = True
-                                continue
-                            try:
-                                async with asyncio.timeout(float(settings.openai_timeout_seconds)):
-                                    response = await run_openai_io_async(
-                                        lambda: client.embeddings.create(
-                                            model=settings.embeddings_model,
-                                            input=chunks,
-                                        ),
-                                        kind="long",
-                                    )
-                            except asyncio.CancelledError:
-                                raise
-                            except Exception as e:  # noqa: BLE001
-                                logger.warning(
-                                    "Embeddings request failed for %s; skipping embeddings: %s",
-                                    rel,
-                                    e,
-                                    exc_info=True,
-                                )
-                                continue
-                            if can_generate_embeddings and existing_hashes:
-                                embedding_paths_to_delete.append(rel)
-                            for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
-                                embedding = getattr(item, "embedding", None)
-                                if embedding is None:
-                                    continue
-                                meta = symbol_meta[idx_chunk] if idx_chunk < len(symbol_meta) else {}
-                                embedding_rows.append(
-                                    {
-                                        "project_id": project_id,
-                                        "path": rel,
-                                        "chunk_index": idx_chunk,
-                                        "file_hash": file_hash,
-                                        "embedding_json": json.dumps(embedding),
-                                        "symbol_name": str(meta.get("symbol_name", "")),
-                                        "symbol_start_line": int(meta.get("symbol_start_line", 0) or 0),
-                                        "symbol_end_line": int(meta.get("symbol_end_line", 0) or 0),
-                                    }
-                                )
+                            )
 
             for imp in parsed.get("cached_imports") or []:
                 if not isinstance(imp, dict):
@@ -1320,6 +1288,86 @@ async def _prepare_scan_files_async(
                         kind=kind,
                         raw=raw,
                     )
+
+        if embedding_candidates:
+            client = get_async_openai_client()
+            semaphore = asyncio.Semaphore(max(1, int(SCAN_EMBEDDINGS_MAX_PARALLEL)))
+            quota_lock = asyncio.Lock()
+            chunk_limit = await get_entitlement_int_async(
+                session,
+                org_id,
+                "embeddings_daily_chunk_limit",
+            )
+            effective_chunk_limit = (
+                int(chunk_limit) if chunk_limit is not None else settings.embeddings_daily_chunk_limit
+            )
+
+            async def _run_embedding_candidate(candidate: EmbeddingTaskCandidate) -> EmbeddingTaskResult:
+                async with semaphore:
+                    try:
+                        async with quota_lock:
+                            await check_and_increment_async(
+                                session,
+                                org_id,
+                                EMBEDDING_CHUNKS_KIND,
+                                len(candidate.chunks),
+                                effective_chunk_limit,
+                            )
+                    except LimitExceededError:
+                        return EmbeddingTaskResult(rows=(), paths_to_delete=(), status="skipped_limit")
+
+                    try:
+                        async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+                            response = await run_openai_io_async(
+                                lambda: client.embeddings.create(
+                                    model=settings.embeddings_model,
+                                    input=list(candidate.chunks),
+                                ),
+                                kind="long",
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "Embeddings request failed for %s; skipping embeddings: %s",
+                            candidate.rel_path,
+                            e,
+                            exc_info=True,
+                        )
+                        return EmbeddingTaskResult(rows=(), paths_to_delete=(), status="error")
+
+                    rows: list[dict] = []
+                    for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
+                        embedding = getattr(item, "embedding", None)
+                        if embedding is None:
+                            continue
+                        meta = candidate.symbol_meta[idx_chunk] if idx_chunk < len(candidate.symbol_meta) else {}
+                        rows.append(
+                            {
+                                "project_id": project_id,
+                                "path": candidate.rel_path,
+                                "chunk_index": idx_chunk,
+                                "file_hash": candidate.file_hash,
+                                "embedding_json": json.dumps(embedding),
+                                "symbol_name": str(meta.get("symbol_name", "")),
+                                "symbol_start_line": int(meta.get("symbol_start_line", 0) or 0),
+                                "symbol_end_line": int(meta.get("symbol_end_line", 0) or 0),
+                            }
+                        )
+
+                    paths_to_delete = (candidate.rel_path,) if candidate.existing_hashes else ()
+                    return EmbeddingTaskResult(rows=tuple(rows), paths_to_delete=paths_to_delete, status="ok")
+
+            embedding_tasks = [
+                asyncio.create_task(_run_embedding_candidate(candidate)) for candidate in embedding_candidates
+            ]
+            task_results = await asyncio.gather(*embedding_tasks, return_exceptions=False)
+            for task_result in task_results:
+                if task_result.status == "skipped_limit" and not embedding_warned_limit:
+                    logger.warning("Embeddings daily chunk limit exceeded; skipping embeddings.")
+                    embedding_warned_limit = True
+                embedding_rows.extend(task_result.rows)
+                embedding_paths_to_delete.extend(task_result.paths_to_delete)
 
         await asyncio.sleep(0)
 
