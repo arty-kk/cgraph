@@ -265,6 +265,29 @@ def test_runtime_contract_async_wrappers_avoid_sync_file_io_calls() -> None:
                 )
 
 
+def test_suggest_fix_helpers_with_session_do_not_call_local_async_session_factory() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    for fn_name in {"_tool_suggest_api_fix", "_tool_suggest_contract_fix"}:
+        fn = fn_nodes[fn_name]
+        arg_names = [a.arg for a in fn.args.args]
+        assert "session" in arg_names, f"{fn_name} must receive session argument"
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            call_name = ""
+            if isinstance(call.func, ast.Name):
+                call_name = call.func.id
+            elif isinstance(call.func, ast.Attribute):
+                call_name = call.func.attr
+            assert call_name != "AsyncSessionLocal", (
+                f"{fn_name} must not call AsyncSessionLocal when session is provided"
+            )
+
+
 def test_suggest_contract_fix_functions_have_no_direct_fs_reads() -> None:
     module = _load_ast(TOOLS_PATH)
     fn_nodes = {

@@ -3746,19 +3746,9 @@ async def _tool_suggest_api_fix(
                 )
                 if missing_body:
                     td = get_typedef(wrapper_body_type)
-                    if td and isinstance(td.get("source_path"), str) and td.get("source_path"):
-                        fp = ensure_loaded(str(td.get("source_path") or ""))
-                    async with AsyncSessionLocal() as s:
-                        td = (
-                            await s.execute(
-                                select(TsTypeDef).where(
-                                    TsTypeDef.project_id == project_id,
-                                    TsTypeDef.name == wrapper_body_type,
-                                )
-                            )
-                        ).scalar_one_or_none()
-                    if td and isinstance(td.source_path, str) and td.source_path:
-                        fp = await ensure_loaded(td.source_path)
+                    source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
+                    if source_path:
+                        fp = await ensure_loaded(source_path)
                         if fp:
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 cur[fp],
@@ -3788,19 +3778,9 @@ async def _tool_suggest_api_fix(
                 )
                 if missing_resp:
                     td = get_typedef(wrapper_resp_type)
-                    if td and isinstance(td.get("source_path"), str) and td.get("source_path"):
-                        fp = ensure_loaded(str(td.get("source_path") or ""))
-                    async with AsyncSessionLocal() as s:
-                        td = (
-                            await s.execute(
-                                select(TsTypeDef).where(
-                                    TsTypeDef.project_id == project_id,
-                                    TsTypeDef.name == wrapper_resp_type,
-                                )
-                            )
-                        ).scalar_one_or_none()
-                    if td and isinstance(td.source_path, str) and td.source_path:
-                        fp = await ensure_loaded(td.source_path)
+                    source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
+                    if source_path:
+                        fp = await ensure_loaded(source_path)
                         if fp:
                             new_txt, changed, _status = ts_add_fields_to_typedef(
                                 cur[fp],
@@ -4093,17 +4073,8 @@ async def _tool_suggest_contract_fix(
                     # locate typedef
                     td = get_typedef(wrapper_body_type)
                     source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
-                    async with AsyncSessionLocal() as s:
-                        td = (
-                            await s.execute(
-                                select(TsTypeDef).where(
-                                    TsTypeDef.project_id == project_id,
-                                    TsTypeDef.name == wrapper_body_type,
-                                )
-                            )
-                        ).scalar_one_or_none()
-                    if td and isinstance(td.source_path, str) and td.source_path:
-                        rr = await _read_text_under_root_async(root, td.source_path, meta=meta)
+                    if source_path:
+                        rr = await _read_text_under_root_async(root, source_path, meta=meta)
                         if rr:
                             rel_norm, old_txt = rr
                             meta.full_file_paths.add(rel_norm)
@@ -4140,17 +4111,8 @@ async def _tool_suggest_contract_fix(
                 if missing_resp:
                     td = get_typedef(wrapper_resp_type)
                     source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
-                    async with AsyncSessionLocal() as s:
-                        td = (
-                            await s.execute(
-                                select(TsTypeDef).where(
-                                    TsTypeDef.project_id == project_id,
-                                    TsTypeDef.name == wrapper_resp_type,
-                                )
-                            )
-                        ).scalar_one_or_none()
-                    if td and isinstance(td.source_path, str) and td.source_path:
-                        rr = await _read_text_under_root_async(root, td.source_path, meta=meta)
+                    if source_path:
+                        rr = await _read_text_under_root_async(root, source_path, meta=meta)
                         if rr:
                             rel_norm, old_txt = rr
                             meta.full_file_paths.add(rel_norm)
