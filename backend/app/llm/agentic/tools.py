@@ -3902,20 +3902,6 @@ async def _tool_suggest_api_fix(
     )
 
 
-def _read_text_under_root(root: Path, rel_path: str) -> tuple[str, str, str] | None:
-    try:
-        abs_p, rel_norm = resolve_under_root(root, rel_path, max_length=settings.max_rel_path_chars)
-    except Exception:
-        return None
-    if not abs_p.exists() or not abs_p.is_file():
-        return None
-    try:
-        txt = abs_p.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return None
-    return (rel_norm, str(abs_p), txt)
-
-
 async def _tool_suggest_contract_fix(
     session: AsyncSession,
     project_id: int,
@@ -4107,8 +4093,6 @@ async def _tool_suggest_contract_fix(
                     # locate typedef
                     td = get_typedef(wrapper_body_type)
                     source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
-                    if source_path:
-                        rr = _read_text_under_root(root, source_path)
                     async with AsyncSessionLocal() as s:
                         td = (
                             await s.execute(
@@ -4156,8 +4140,6 @@ async def _tool_suggest_contract_fix(
                 if missing_resp:
                     td = get_typedef(wrapper_resp_type)
                     source_path = str(td.get("source_path") or "") if isinstance(td, dict) else ""
-                    if source_path:
-                        rr = _read_text_under_root(root, source_path)
                     async with AsyncSessionLocal() as s:
                         td = (
                             await s.execute(

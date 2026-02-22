@@ -265,6 +265,24 @@ def test_runtime_contract_async_wrappers_avoid_sync_file_io_calls() -> None:
                 )
 
 
+def test_suggest_contract_fix_functions_have_no_direct_fs_reads() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    banned_attrs = {"open", "read_text", "read", "read_bytes"}
+    for fn_name in {"_tool_suggest_contract_fix_async", "_tool_suggest_contract_fix"}:
+        fn = fn_nodes[fn_name]
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            if isinstance(call.func, ast.Name) and call.func.id == "open":
+                raise AssertionError(f"{fn_name} has direct open() call")
+            if isinstance(call.func, ast.Attribute) and call.func.attr in banned_attrs:
+                raise AssertionError(f"{fn_name} has direct .{call.func.attr}() call")
+
+
 def test_seed_context_async_avoids_direct_sync_fs_calls() -> None:
     context_path = Path("backend/app/llm/agentic/context.py")
     module = _load_ast(context_path)
