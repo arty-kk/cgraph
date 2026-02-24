@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlmodel import select
@@ -82,62 +83,59 @@ async def _neighbors_limited_async(
         return []
     depth = max(0, min(depth, 6))
     limit = max(1, min(limit, 2000))
-    visited: set[str] = {start}
-    ordered: list[str] = []
-    frontier: list[str] = [start]
+    from_col = "dst_path" if direction == "in" else "src_path"
+    to_col = "src_path" if direction == "in" else "dst_path"
 
-    def _chunks(seq: list[str], size: int) -> list[list[str]]:
-        return [seq[i : i + size] for i in range(0, len(seq), size)]
-
-    SQLITE_IN_CHUNK = 400
-
-    for _ in range(depth):
-        if not frontier or len(ordered) >= limit:
-            break
-        frontier = list(dict.fromkeys(frontier))
-        nxt: list[str] = []
-        for chunk in _chunks(frontier, SQLITE_IN_CHUNK):
-            if direction == "in":
-                rows = (
-                    (
-                        await session.execute(
-                            select(FileEdge.src_path)
-                            .where(
-                                FileEdge.project_id == project_id,
-                                FileEdge.dst_path.in_(chunk),
-                            )
-                            .order_by(FileEdge.src_path)
-                        )
-                    )
-                    .all()
-                )
-            else:
-                rows = (
-                    (
-                        await session.execute(
-                            select(FileEdge.dst_path)
-                            .where(
-                                FileEdge.project_id == project_id,
-                                FileEdge.src_path.in_(chunk),
-                            )
-                            .order_by(FileEdge.dst_path)
-                        )
-                    )
-                    .all()
-                )
-            for row in rows:
-                val = row[0] if isinstance(row, (tuple, list)) else row
-                if not isinstance(val, str) or not val or val in visited:
-                    continue
-                visited.add(val)
-                ordered.append(val)
-                nxt.append(val)
-                if len(ordered) >= limit:
-                    break
-            if len(ordered) >= limit:
-                break
-        frontier = nxt
-    return ordered[:limit]
+    query = text(
+        f"""
+        WITH RECURSIVE walk(node, depth, path) AS (
+            SELECT CAST(:start AS TEXT), 0, ARRAY[CAST(:start AS TEXT)]::TEXT[]
+            UNION ALL
+            SELECT edge.{to_col}, walk.depth + 1, walk.path || edge.{to_col}
+            FROM walk
+            JOIN fileedge AS edge
+              ON edge.project_id = :project_id
+             AND edge.{from_col} = walk.node
+            WHERE walk.depth < :depth
+              AND NOT (edge.{to_col} = ANY(walk.path))
+        ),
+        ranked AS (
+            SELECT
+                node,
+                depth,
+                ARRAY_TO_STRING(path, E'\\x1F') AS path_sort,
+                ROW_NUMBER() OVER (
+                    PARTITION BY node
+                    ORDER BY depth ASC, ARRAY_TO_STRING(path, E'\\x1F') ASC
+                ) AS rn
+            FROM walk
+            WHERE depth > 0
+              AND node <> :start
+        )
+        SELECT node
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY depth ASC, path_sort ASC, node ASC
+        LIMIT :limit
+        """
+    )
+    rows = (
+        await session.execute(
+            query,
+            {
+                "project_id": project_id,
+                "start": start,
+                "depth": depth,
+                "limit": limit,
+            },
+        )
+    ).all()
+    out: list[str] = []
+    for row in rows:
+        val = row[0] if isinstance(row, (tuple, list)) else row
+        if isinstance(val, str) and val:
+            out.append(val)
+    return out[:limit]
 
 
 def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:

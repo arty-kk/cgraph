@@ -26,7 +26,7 @@ class _EmptyResult:
 
 
 class _SessionStub:
-    async def execute(self, _query):
+    async def execute(self, _query, _params=None):
         return _EmptyResult()
 
 
