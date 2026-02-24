@@ -897,3 +897,74 @@ async def test_write_scan_files_async_rolls_back_on_execute_error() -> None:
 
     assert session.commits == 0
     assert session.rollbacks == 1
+
+
+@pytest.mark.anyio
+async def test_collect_file_stats_async_uses_bounded_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = []
+    for i in range(24):
+        rel = f"f{i}.py"
+        (tmp_path / rel).write_text("print('ok')", encoding="utf-8")
+        paths.append(rel)
+
+    active = {"value": 0, "peak": 0}
+
+    async def _fake_run(sync_fn, *args):
+        active["value"] += 1
+        active["peak"] = max(active["peak"], active["value"])
+        await asyncio.sleep(0.01)
+        try:
+            return sync_fn(*args)
+        finally:
+            active["value"] -= 1
+
+    monkeypatch.setattr(scan, "_run_scan_batch", _fake_run)
+
+    result = await scan._collect_file_stats_async(
+        tmp_path,
+        paths,
+        batch_size=2,
+        max_parallel=3,
+    )
+
+    assert len(result) == len(paths)
+    assert [item.rel for item in result] == paths
+    assert active["peak"] <= 3
+
+
+@pytest.mark.anyio
+async def test_read_file_batch_async_uses_bounded_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = []
+    stats: dict[str, tuple[int, int]] = {}
+    for i in range(20):
+        rel = f"r{i}.py"
+        content = f"x={i}"
+        pth = tmp_path / rel
+        pth.write_text(content, encoding="utf-8")
+        st = pth.stat()
+        stats[rel] = (int(st.st_mtime_ns), int(st.st_size))
+        paths.append(rel)
+
+    active = {"value": 0, "peak": 0}
+
+    async def _fake_run(sync_fn, *args):
+        active["value"] += 1
+        active["peak"] = max(active["peak"], active["value"])
+        await asyncio.sleep(0.01)
+        try:
+            return sync_fn(*args)
+        finally:
+            active["value"] -= 1
+
+    monkeypatch.setattr(scan, "_run_scan_batch", _fake_run)
+
+    result = await scan._read_file_batch_async(
+        tmp_path,
+        paths,
+        stats,
+        max_file_bytes=1024,
+        max_parallel=4,
+    )
+
+    assert [item.rel for item in result] == paths
+    assert active["peak"] <= 4

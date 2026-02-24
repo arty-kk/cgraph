@@ -36,6 +36,14 @@ from .services.auth_service import get_user_from_token_async
 logger = logging.getLogger(__name__)
 
 
+
+
+def _should_attach_db_session(path: str) -> bool:
+    if path == "/health":
+        return False
+    return path.startswith("/api") or path.startswith("/api/v1")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     startup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
@@ -123,6 +131,9 @@ async def auth_guard(request: Request, call_next):
 # is available in every middleware/endpoint and remains exactly one per request.
 @app.middleware("http")
 async def db_session_middleware(request: Request, call_next):
+    if not _should_attach_db_session(request.url.path):
+        return await call_next(request)
+
     async with AsyncSessionLocal() as session:
         request.state.db_session = session
         return await call_next(request)

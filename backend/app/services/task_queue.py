@@ -84,8 +84,12 @@ async def _mark_enqueue_failure_async(session: AsyncSession, task_id: str, exc: 
         )
 
 
+async def _mark_enqueue_failure_for_task_id_async(task_id: str, exc: BaseException) -> None:
+    async with AsyncSessionLocal() as session:
+        await _mark_enqueue_failure_async(session, task_id, exc)
+
+
 async def _enqueue_with_error_mapping_async(
-    session: AsyncSession,
     *,
     task: Any,
     args: list[Any],
@@ -102,14 +106,14 @@ async def _enqueue_with_error_mapping_async(
         if current_task is not None and current_task.cancelling():
             raise
         reason = _classify_enqueue_failure(exc)
-        await _mark_enqueue_failure_async(session, task_id, exc)
+        await _mark_enqueue_failure_for_task_id_async(task_id, exc)
         raise ExternalServiceError(
             "Не удалось отправить задачу в очередь",
             context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
         ) from exc
     except Exception as exc:
         reason = _classify_enqueue_failure(exc)
-        await _mark_enqueue_failure_async(session, task_id, exc)
+        await _mark_enqueue_failure_for_task_id_async(task_id, exc)
         raise ExternalServiceError(
             "Не удалось отправить задачу в очередь",
             context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
@@ -357,19 +361,18 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
             await _release_inflight_async("heavy", task_id)
             return task_id
 
-        from ..celery_tasks import run_task_job
+    from ..celery_tasks import run_task_job
 
-        try:
-            await _enqueue_with_error_mapping_async(
-                session,
-                task=run_task_job,
-                args=[task_id, project_id, org_id, payload],
-                queue="heavy",
-                task_id=task_id,
-            )
-        except ExternalServiceError:
-            await _release_inflight_async("heavy", task_id)
-            raise
+    try:
+        await _enqueue_with_error_mapping_async(
+            task=run_task_job,
+            args=[task_id, project_id, org_id, payload],
+            queue="heavy",
+            task_id=task_id,
+        )
+    except ExternalServiceError:
+        await _release_inflight_async("heavy", task_id)
+        raise
     return task_id
 
 
@@ -387,16 +390,16 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
             queue="medium",
             idempotency_key=idempotency_key,
         )
-        if created:
-            from ..celery_tasks import scan_task
-            await _enqueue_with_error_mapping_async(
-                session,
-                task=scan_task,
-                args=[task_id, project_id, org_id],
-                queue="medium",
-                task_id=task_id,
-            )
+    if not created:
         return task_id
+    from ..celery_tasks import scan_task
+    await _enqueue_with_error_mapping_async(
+        task=scan_task,
+        args=[task_id, project_id, org_id],
+        queue="medium",
+        task_id=task_id,
+    )
+    return task_id
 
 
 async def submit_docs_async(project_id: int, org_id: int) -> str:
@@ -414,16 +417,16 @@ async def submit_docs_async(project_id: int, org_id: int) -> str:
             queue="light",
             idempotency_key=idempotency_key,
         )
-        if created:
-            from ..celery_tasks import docs_task
-            await _enqueue_with_error_mapping_async(
-                session,
-                task=docs_task,
-                args=[task_id, project_id, org_id],
-                queue="light",
-                task_id=task_id,
-            )
+    if not created:
         return task_id
+    from ..celery_tasks import docs_task
+    await _enqueue_with_error_mapping_async(
+        task=docs_task,
+        args=[task_id, project_id, org_id],
+        queue="light",
+        task_id=task_id,
+    )
+    return task_id
 
 
 async def submit_mutation_indexing_async(
@@ -451,15 +454,14 @@ async def submit_mutation_indexing_async(
             queue="medium",
             idempotency_key=idempotency_key,
         )
-        if created:
-            from ..celery_tasks import mutation_indexing_task
-            await _enqueue_with_error_mapping_async(
-                session,
-                task=mutation_indexing_task,
-                args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
-                queue="medium",
-                task_id=task_id,
-            )
+    if created:
+        from ..celery_tasks import mutation_indexing_task
+        await _enqueue_with_error_mapping_async(
+            task=mutation_indexing_task,
+            args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
+            queue="medium",
+            task_id=task_id,
+        )
     return task_id, "pending"
 
 
