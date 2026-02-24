@@ -332,6 +332,59 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_scan_project_async_streams_batches_before_full_fs_walk_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Session:
+        async def execute(self, *_args, **_kwargs):
+            return _Result([])
+
+        async def commit(self):
+            return None
+
+    walk_can_finish = asyncio.Event()
+    first_batch_started = asyncio.Event()
+
+    def _iter_stream(root: Path):
+        yield root / "f0.py"
+        yield root / "f1.py"
+        while not first_batch_started.is_set():
+            time.sleep(0.001)
+        for i in range(2, 6):
+            yield root / f"f{i}.py"
+        while not walk_can_finish.is_set():
+            time.sleep(0.001)
+
+    async def _collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        first_batch_started.set()
+        walk_can_finish.set()
+        return [scan.FileStatResult(rel, True, True, True, 1, 1) for rel in rel_paths]
+
+    async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
+        _ = rel_paths, precomputed_stats, scan_metrics
+        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(scan, "iter_code_files", _iter_stream)
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _collect)
+    monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
+    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
+    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
+
+    result = await asyncio.wait_for(scan.scan_project_async(1, 2, Path("/repo")), timeout=1.0)
+
+    assert first_batch_started.is_set()
+    assert result["nodes"] == 6
+
+
+
+@pytest.mark.anyio
 async def test_scan_project_async_producer_does_not_use_run_coroutine_threadsafe(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Result:
         def __init__(self, rows):
