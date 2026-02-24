@@ -24,6 +24,7 @@ from .infra.celery_producer_runtime import (
     init_celery_producer_runtime,
 )
 from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
+from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
 from .infra.fs_runtime import close_fs_runtime, init_fs_runtime
 from .infra.rate_limit import allow_request_async, rate_limit_response
 from .infra.redis_client import close_redis_pool_async, init_redis_pool_async
@@ -47,10 +48,11 @@ def _should_attach_db_session(path: str) -> bool:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     startup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
-        ("init_async_db", init_async_db),
         ("init_redis_pool_async", init_redis_pool_async),
+        ("init_async_db", init_async_db),
         ("init_fs_runtime", init_fs_runtime),
         ("init_cpu_runtime", init_cpu_runtime),
+        ("init_external_io_runtime", init_external_io_runtime),
         ("init_celery_producer_runtime", init_celery_producer_runtime),
     ]
 
@@ -66,10 +68,11 @@ async def lifespan(_: FastAPI):
         cleanup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
             ("close_s3_runtime", close_s3_runtime),
             ("close_redis_pool_async", close_redis_pool_async),
+            ("close_async_openai_client", close_async_openai_client),
             ("close_fs_runtime", close_fs_runtime),
             ("close_cpu_runtime", close_cpu_runtime),
+            ("close_external_io_runtime", close_external_io_runtime),
             ("close_celery_producer_runtime", close_celery_producer_runtime),
-            ("close_async_openai_client", close_async_openai_client),
             ("close_scan_runtime", close_scan_runtime),
             ("close_async_db", close_async_db),
         ]
