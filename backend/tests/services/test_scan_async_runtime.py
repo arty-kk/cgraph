@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import sys
 import time
 from pathlib import Path
@@ -909,7 +910,8 @@ async def test_collect_file_stats_async_uses_bounded_workers(tmp_path: Path, mon
 
     active = {"value": 0, "peak": 0}
 
-    async def _fake_run(sync_fn, *args):
+    async def _fake_run(sync_fn, *args, operation: str):
+        _ = operation
         active["value"] += 1
         active["peak"] = max(active["peak"], active["value"])
         await asyncio.sleep(0.01)
@@ -918,7 +920,7 @@ async def test_collect_file_stats_async_uses_bounded_workers(tmp_path: Path, mon
         finally:
             active["value"] -= 1
 
-    monkeypatch.setattr(scan, "_run_scan_batch", _fake_run)
+    monkeypatch.setattr(scan, "_run_scan_fs_batch", _fake_run)
 
     result = await scan._collect_file_stats_async(
         tmp_path,
@@ -947,7 +949,8 @@ async def test_read_file_batch_async_uses_bounded_workers(tmp_path: Path, monkey
 
     active = {"value": 0, "peak": 0}
 
-    async def _fake_run(sync_fn, *args):
+    async def _fake_run(sync_fn, *args, operation: str):
+        _ = operation
         active["value"] += 1
         active["peak"] = max(active["peak"], active["value"])
         await asyncio.sleep(0.01)
@@ -956,7 +959,7 @@ async def test_read_file_batch_async_uses_bounded_workers(tmp_path: Path, monkey
         finally:
             active["value"] -= 1
 
-    monkeypatch.setattr(scan, "_run_scan_batch", _fake_run)
+    monkeypatch.setattr(scan, "_run_scan_fs_batch", _fake_run)
 
     result = await scan._read_file_batch_async(
         tmp_path,
@@ -968,3 +971,101 @@ async def test_read_file_batch_async_uses_bounded_workers(tmp_path: Path, monkey
 
     assert [item.rel for item in result] == paths
     assert active["peak"] <= 4
+
+
+def test_scan_module_does_not_use_asyncio_to_thread_in_scan_paths() -> None:
+    scan_path = Path(__file__).resolve().parents[2] / "app" / "scan.py"
+    tree = ast.parse(scan_path.read_text(encoding="utf-8"), filename=str(scan_path))
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "asyncio"
+                and node.func.attr == "to_thread"
+            ):
+                offenders.append(f"{scan_path}:{node.lineno}")
+    assert not offenders, "scan module must not use asyncio.to_thread in async scan paths"
+
+
+@pytest.mark.anyio
+async def test_scan_runtime_routes_fs_and_cpu_operations(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_fs(sync_fn, *args, operation=None, **kwargs):
+        _ = kwargs
+        calls.append(("fs", str(operation)))
+        return sync_fn(*args)
+
+    async def _fake_cpu(sync_fn, *args, operation=None, **kwargs):
+        _ = kwargs
+        calls.append(("cpu", str(operation)))
+        return sync_fn(*args)
+
+    monkeypatch.setattr(scan, "run_fs_io_async", _fake_fs)
+    monkeypatch.setattr(scan, "run_cpu_io_async", _fake_cpu)
+
+    file_path = tmp_path / "a.py"
+    file_path.write_text("x = 1\n", encoding="utf-8")
+    stat = file_path.stat()
+
+    await scan._collect_file_stats_async(tmp_path, ["a.py"])
+    await scan._read_file_batch_async(tmp_path, ["a.py"], {"a.py": (int(stat.st_mtime_ns), int(stat.st_size))}, 1024)
+    await scan._parse_index_batch_async(
+        1,
+        tmp_path,
+        [scan.FileReadResult(rel="a.py", text="x=1", mtime_ns=int(stat.st_mtime_ns), size=int(stat.st_size), oversized=False)],
+    )
+    await scan._verify_scan_snapshot_async(
+        tmp_path,
+        {
+            "a.py": scan.FileSnapshot(
+                mtime_ns=int(stat.st_mtime_ns),
+                size=int(stat.st_size),
+                file_hash=scan.sha256_text("x = 1\n"),
+                hash_kind="content",
+            )
+        },
+        ["missing.py"],
+    )
+
+    assert ("fs", "scan.fs.collect_batch") in calls
+    assert ("fs", "scan.fs.read_batch") in calls
+    assert ("fs", "scan.fs.verify_removed_batch") in calls
+    assert ("cpu", "scan.cpu.parse_batch") in calls
+    assert ("cpu", "scan.cpu.verify_snapshot_batch") in calls
+
+
+@pytest.mark.anyio
+async def test_scan_cpu_heavy_batch_does_not_block_fs_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: dict[str, float] = {}
+
+    async def _fake_fs(sync_fn, *args, operation=None, **kwargs):
+        _ = kwargs, operation
+        events["fs_started"] = time.monotonic()
+        result = sync_fn(*args)
+        events["fs_finished"] = time.monotonic()
+        return result
+
+    async def _fake_cpu(sync_fn, *args, operation=None, **kwargs):
+        _ = kwargs, operation
+        events["cpu_started"] = time.monotonic()
+        await asyncio.sleep(0.15)
+        result = sync_fn(*args)
+        events["cpu_finished"] = time.monotonic()
+        return result
+
+    monkeypatch.setattr(scan, "run_fs_io_async", _fake_fs)
+    monkeypatch.setattr(scan, "run_cpu_io_async", _fake_cpu)
+
+    async def _cpu_task():
+        return await scan._run_scan_cpu_batch(lambda: "cpu", operation="scan.cpu.test")
+
+    async def _fs_task():
+        return await scan._run_scan_fs_batch(lambda: "fs", operation="scan.fs.test")
+
+    cpu_result, fs_result = await asyncio.gather(_cpu_task(), _fs_task())
+
+    assert cpu_result == "cpu"
+    assert fs_result == "fs"
+    assert events["fs_finished"] < events["cpu_finished"]

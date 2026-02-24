@@ -34,6 +34,7 @@ from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
 from .llm.client import get_async_openai_client
 from .infra.external_io_runtime import run_openai_io_async
+from .infra.cpu_runtime import run_cpu_io_async
 from .infra.fs_runtime import run_fs_io_async
 from .logging import get_logger
 from .models import (
@@ -94,8 +95,12 @@ async def close_scan_runtime() -> None:
     return
 
 
-async def _run_scan_batch(sync_fn, *args):
-    return await run_fs_io_async(sync_fn, *args, operation="scan_batch")
+async def _run_scan_fs_batch(sync_fn, *args, operation: str):
+    return await run_fs_io_async(sync_fn, *args, operation=operation)
+
+
+async def _run_scan_cpu_batch(sync_fn, *args, operation: str):
+    return await run_cpu_io_async(sync_fn, *args, operation=operation)
 
 
 def _today_utc():
@@ -343,7 +348,7 @@ async def _collect_file_stats_async(
                 if item is None:
                     return
                 index, batch = item
-                indexed[index] = await _run_scan_batch(_sync_collect_batch, batch)
+                indexed[index] = await _run_scan_fs_batch(_sync_collect_batch, batch, operation="scan.fs.collect_batch")
             finally:
                 work_queue.task_done()
 
@@ -412,7 +417,7 @@ async def _read_file_batch_async(
                 if item is None:
                     return
                 index, batch = item
-                indexed[index] = await _run_scan_batch(_sync_read_batch, batch)
+                indexed[index] = await _run_scan_fs_batch(_sync_read_batch, batch, operation="scan.fs.read_batch")
             finally:
                 work_queue.task_done()
 
@@ -635,7 +640,7 @@ async def _parse_index_batch_async(
             )
         return parsed
 
-    return await _run_scan_batch(_sync_parse)
+    return await _run_scan_cpu_batch(_sync_parse, operation="scan.cpu.parse_batch")
 
 
 def _is_missing_table_error(e: Exception, table: str) -> bool:
@@ -742,18 +747,22 @@ async def _verify_scan_snapshot_async(
                 return False, f"unknown_hash_kind:{rel}"
         return True, ""
 
-    async def _run(sync_fn, batch):
+    async def _run_fs(sync_fn, batch):
         async with semaphore:
-            return await _run_scan_batch(sync_fn, batch)
+            return await _run_scan_fs_batch(sync_fn, batch, operation="scan.fs.verify_removed_batch")
+
+    async def _run_cpu(sync_fn, batch):
+        async with semaphore:
+            return await _run_scan_cpu_batch(sync_fn, batch, operation="scan.cpu.verify_snapshot_batch")
 
     for i in range(0, len(removed), batch_size):
-        ok, reason = await _run(_check_removed_batch, removed[i : i + batch_size])
+        ok, reason = await _run_fs(_check_removed_batch, removed[i : i + batch_size])
         if not ok:
             return ok, reason
 
     snapshot_items = list(snapshot.items())
     for i in range(0, len(snapshot_items), batch_size):
-        ok, reason = await _run(_check_snapshot_batch, snapshot_items[i : i + batch_size])
+        ok, reason = await _run_cpu(_check_snapshot_batch, snapshot_items[i : i + batch_size])
         if not ok:
             return ok, reason
 
@@ -942,7 +951,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         async def _produce_paths_async() -> None:
             producer_started = time.monotonic()
             try:
-                rel_paths = await run_fs_io_async(_collect_all_paths, project_root, operation="scan_paths")
+                rel_paths = await run_fs_io_async(_collect_all_paths, project_root, operation="scan.fs.collect_paths")
                 for i in range(0, len(rel_paths), runtime.batch_size):
                     rel_batch = rel_paths[i : i + runtime.batch_size]
                     await limiter.acquire()
@@ -1288,8 +1297,9 @@ async def _prepare_scan_files_async(
                             int(settings.embeddings_chunk_overlap),
                         )
                         if chunks:
-                            symbol_meta = await asyncio.to_thread(
-                                lambda: _symbol_chunks(text, idx.parse_symbols(project_root / rel, text) or [])
+                            symbol_meta = await _run_scan_cpu_batch(
+                                lambda: _symbol_chunks(text, idx.parse_symbols(project_root / rel, text) or []),
+                                operation="scan.cpu.symbol_meta",
                             )
                             embedding_candidates.append(
                                 EmbeddingTaskCandidate(
