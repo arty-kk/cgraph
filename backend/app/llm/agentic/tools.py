@@ -23,6 +23,7 @@ from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ...contracts import get_or_build_contract_async
 from ...graph import search_semantic_async
+from ...infra.cpu_runtime import run_cpu_io_async
 from ...infra.fs_runtime import run_fs_io_async
 from ...models import (
     ApiCall,
@@ -879,20 +880,7 @@ async def _search_text_cpu_async(
 ) -> SearchChunkResult:
     semaphore = meta.cpu_ops_semaphore
     if semaphore is None:
-        fallback_limit = max(
-            1,
-            int(
-                getattr(
-                    settings,
-                    "llm_agentic_cpu_ops_concurrency",
-                    settings.llm_agentic_fs_ops_concurrency,
-                )
-            ),
-        )
-        semaphore = asyncio.Semaphore(fallback_limit)
-        meta.cpu_ops_semaphore = semaphore
-    async with semaphore:
-        return await asyncio.to_thread(
+        return await run_cpu_io_async(
             _search_text_cpu,
             payload=payload,
             rel_path=rel_path,
@@ -901,6 +889,20 @@ async def _search_text_cpu_async(
             truncated_file=truncated_file,
             context_chars=context_chars,
             max_matches=max_matches,
+            operation="agentic.search_text_cpu",
+        )
+
+    async with semaphore:
+        return await run_cpu_io_async(
+            _search_text_cpu,
+            payload=payload,
+            rel_path=rel_path,
+            needle=needle,
+            case_sensitive=case_sensitive,
+            truncated_file=truncated_file,
+            context_chars=context_chars,
+            max_matches=max_matches,
+            operation="agentic.search_text_cpu",
         )
 
 

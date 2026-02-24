@@ -29,7 +29,6 @@ class TestAgenticSearchTextLimitsRuntime(unittest.IsolatedAsyncioTestCase):
             session = _IndexedSession()
             meta = agentic.AgenticMeta(
                 fs_ops_semaphore=asyncio.Semaphore(2),
-                cpu_ops_semaphore=asyncio.Semaphore(2),
             )
 
             with patch("app.llm.agentic.tools.search_text_paths_async", return_value=["many.txt"]):
@@ -55,7 +54,6 @@ class TestAgenticSearchTextLimitsRuntime(unittest.IsolatedAsyncioTestCase):
             session = _IndexedSession()
             meta = agentic.AgenticMeta(
                 fs_ops_semaphore=asyncio.Semaphore(2),
-                cpu_ops_semaphore=asyncio.Semaphore(2),
             )
 
             with patch("app.llm.agentic.tools.search_text_paths_async", return_value=["truncate.txt"]):
