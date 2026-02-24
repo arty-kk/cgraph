@@ -5,11 +5,12 @@ import json
 import os
 import asyncio
 import time
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Iterable, Tuple
+from typing import Callable, Iterable, Tuple
 
 from sqlalchemy import bindparam, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -268,6 +269,24 @@ def iter_code_files(root: Path) -> Iterable[Path]:
 
 def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
     return [seq[i : i + size] for i in range(0, len(seq), size)]
+
+
+def _stream_code_file_batches(
+    root: Path,
+    batch_size: int,
+    publish_batch: Callable[[list[str]], None],
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
+    batch: list[str] = []
+    for path in iter_code_files(root):
+        if should_stop and should_stop():
+            return
+        batch.append(path.relative_to(root).as_posix())
+        if len(batch) >= batch_size:
+            publish_batch(batch)
+            batch = []
+    if batch:
+        publish_batch(batch)
 
 
 async def _collect_file_stats_async(
@@ -943,26 +962,48 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         queue_size = runtime.queue_size
         sentinel = object()
         path_queue: asyncio.Queue[list[str] | object] = asyncio.Queue(maxsize=queue_size)
-        limiter = asyncio.Semaphore(queue_size)
-
-        def _collect_all_paths(root: Path) -> list[str]:
-            return [path.relative_to(root).as_posix() for path in iter_code_files(root)]
+        limiter = threading.BoundedSemaphore(queue_size)
+        producer_stop = threading.Event()
 
         async def _produce_paths_async() -> None:
             producer_started = time.monotonic()
-            try:
-                rel_paths = await run_fs_io_async(_collect_all_paths, project_root, operation="scan.fs.collect_paths")
-                for i in range(0, len(rel_paths), runtime.batch_size):
-                    rel_batch = rel_paths[i : i + runtime.batch_size]
-                    await limiter.acquire()
+            loop = asyncio.get_running_loop()
+
+            def _publish_batch(rel_batch: list[str]) -> None:
+                if producer_stop.is_set():
+                    return
+                while not producer_stop.is_set():
+                    if limiter.acquire(timeout=0.05):
+                        break
+                else:
+                    return
+
+                def _enqueue() -> None:
                     try:
-                        await path_queue.put(rel_batch)
+                        path_queue.put_nowait(list(rel_batch))
                     except BaseException:
                         limiter.release()
                         raise
                     scan_metrics["producer"]["batches"] += 1
                     scan_metrics["producer"]["paths"] += len(rel_batch)
+
+                try:
+                    loop.call_soon_threadsafe(_enqueue)
+                except RuntimeError:
+                    limiter.release()
+                    raise
+
+            try:
+                await run_fs_io_async(
+                    _stream_code_file_batches,
+                    project_root,
+                    runtime.batch_size,
+                    _publish_batch,
+                    producer_stop.is_set,
+                    operation="scan.fs.stream_paths",
+                )
             finally:
+                producer_stop.set()
                 while True:
                     try:
                         await asyncio.shield(path_queue.put(sentinel))
