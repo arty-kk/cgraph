@@ -19,6 +19,19 @@ class _FakeSessionContext:
         return False
 
 
+
+
+class _AsyncSessionCtx:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        _ = (exc_type, exc, tb)
+        return False
+
 class _FakeRedisClient:
     def __init__(self, *, eval_result=(1, 1)):
         self.eval_result = eval_result
@@ -128,7 +141,6 @@ async def test_submit_docs_async_uses_async_idempotency_key(monkeypatch):
 
 @pytest.mark.anyio
 async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
-    session = _FakeDbSession()
     calls: list[dict[str, object]] = []
 
     class _Producer:
@@ -139,7 +151,6 @@ async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
 
     marker = object()
     await task_queue._enqueue_with_error_mapping_async(
-        session,
         task=marker,
         args=["job-0", 1],
         queue="heavy",
@@ -147,7 +158,6 @@ async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
     )
 
     assert calls == [{"task": marker, "args": ["job-0", 1], "queue": "heavy"}]
-    assert session.commits == 0
 
 
 @pytest.mark.anyio
@@ -190,10 +200,10 @@ async def test_enqueue_error_mapping_timeout(monkeypatch):
 
     monkeypatch.setattr(task_queue, "_ENQUEUE_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _offloaded_enqueue)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
-            session,
             task=object(),
             args=["job-1"],
             queue="medium",
@@ -213,10 +223,10 @@ async def test_enqueue_error_mapping_cancellation(monkeypatch):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _cancelled_enqueue)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
-            session,
             task=object(),
             args=["job-cancel"],
             queue="medium",
@@ -236,10 +246,10 @@ async def test_enqueue_error_mapping_broker_error(monkeypatch):
         raise task_queue._AsyncTaskProducerError("broker down")
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _broken_enqueue)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
-            session,
             task=object(),
             args=["job-2"],
             queue="medium",
@@ -343,3 +353,42 @@ async def test_guard_inflight_async_uses_shared_client_concurrently(monkeypatch)
 
     assert get_client_calls == 2
     assert [call[4] for call in client.eval_calls] == ["job-1", "job-2"]
+
+
+@pytest.mark.anyio
+async def test_submit_scan_async_releases_db_session_before_enqueue(monkeypatch):
+    events: list[str] = []
+
+    class _Session:
+        pass
+
+    class _Ctx:
+        async def __aenter__(self):
+            events.append("db_enter")
+            return _Session()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            events.append("db_exit")
+            return False
+
+    async def _fake_find_existing(*_args, **_kwargs):
+        return None
+
+    async def _fake_create_job(*_args, **_kwargs):
+        return "scan-job", True
+
+    async def _fake_enqueue(_task, *, args, queue):
+        _ = (args, queue)
+        events.append("enqueue")
+
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _Ctx())
+    monkeypatch.setattr(task_queue, "get_scan_idempotency_key_async", lambda *_args, **_kwargs: asyncio.sleep(0, result="scan-key"))
+    monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing)
+    monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job)
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _fake_enqueue)
+
+    task_id = await task_queue.submit_scan_async(project_id=1, org_id=2)
+
+    assert task_id == "scan-job"
+    assert events == ["db_enter", "db_exit", "enqueue"]

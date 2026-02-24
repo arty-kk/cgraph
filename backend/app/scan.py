@@ -321,16 +321,38 @@ async def _collect_file_stats_async(
                 )
         return batch_results
 
-    batches = [rel_paths[i : i + batch_size] for i in range(0, len(rel_paths), batch_size)]
-    semaphore = asyncio.Semaphore(max_parallel)
+    batch_count = (len(rel_paths) + batch_size - 1) // batch_size
+    if batch_count == 0:
+        return []
 
-    async def _run(index: int, batch: list[str]) -> tuple[int, list[FileStatResult]]:
-        async with semaphore:
-            return index, await _run_scan_batch(_sync_collect_batch, batch)
+    workers_count = min(max_parallel, batch_count)
+    work_queue: asyncio.Queue[tuple[int, list[str]] | None] = asyncio.Queue(maxsize=max_parallel)
+    indexed: list[list[FileStatResult] | None] = [None] * batch_count
 
-    indexed = await asyncio.gather(*(_run(index, batch) for index, batch in enumerate(batches)))
-    indexed.sort(key=lambda item: item[0])
-    return [item for _, batch in indexed for item in batch]
+    async def _producer() -> None:
+        for index in range(batch_count):
+            start = index * batch_size
+            await work_queue.put((index, rel_paths[start : start + batch_size]))
+        for _ in range(workers_count):
+            await work_queue.put(None)
+
+    async def _worker() -> None:
+        while True:
+            item = await work_queue.get()
+            try:
+                if item is None:
+                    return
+                index, batch = item
+                indexed[index] = await _run_scan_batch(_sync_collect_batch, batch)
+            finally:
+                work_queue.task_done()
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(_producer())
+        for _ in range(workers_count):
+            tg.create_task(_worker())
+
+    return [item for batch in indexed if batch is not None for item in batch]
 
 
 async def _read_file_batch_async(
@@ -368,16 +390,38 @@ async def _read_file_batch_async(
             )
         return out
 
-    batches = [batch_paths[i : i + batch_size] for i in range(0, len(batch_paths), batch_size)]
-    semaphore = asyncio.Semaphore(max_parallel)
+    batch_count = (len(batch_paths) + batch_size - 1) // batch_size
+    if batch_count == 0:
+        return []
 
-    async def _run(index: int, batch: list[str]) -> tuple[int, list[FileReadResult]]:
-        async with semaphore:
-            return index, await _run_scan_batch(_sync_read_batch, batch)
+    workers_count = min(max_parallel, batch_count)
+    work_queue: asyncio.Queue[tuple[int, list[str]] | None] = asyncio.Queue(maxsize=max_parallel)
+    indexed: list[list[FileReadResult] | None] = [None] * batch_count
 
-    indexed = await asyncio.gather(*(_run(index, batch) for index, batch in enumerate(batches)))
-    indexed.sort(key=lambda item: item[0])
-    return [item for _, batch in indexed for item in batch]
+    async def _producer() -> None:
+        for index in range(batch_count):
+            start = index * batch_size
+            await work_queue.put((index, batch_paths[start : start + batch_size]))
+        for _ in range(workers_count):
+            await work_queue.put(None)
+
+    async def _worker() -> None:
+        while True:
+            item = await work_queue.get()
+            try:
+                if item is None:
+                    return
+                index, batch = item
+                indexed[index] = await _run_scan_batch(_sync_read_batch, batch)
+            finally:
+                work_queue.task_done()
+
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(_producer())
+        for _ in range(workers_count):
+            tg.create_task(_worker())
+
+    return [item for batch in indexed if batch is not None for item in batch]
 
 
 async def _parse_index_batch_async(
