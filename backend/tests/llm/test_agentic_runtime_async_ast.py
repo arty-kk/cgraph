@@ -334,3 +334,26 @@ def test_seed_context_async_avoids_direct_sync_fs_calls() -> None:
             call_names.add(call.func.attr)
     assert "run_fs_io_async" not in call_names
     assert "_run_seed_fs_io_async" in call_names
+
+
+def test_search_text_cpu_async_uses_cpu_runtime_not_asyncio_to_thread() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    fn = fn_nodes["_search_text_cpu_async"]
+
+    has_asyncio_to_thread = False
+    has_run_cpu_io_async = False
+
+    for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+        if isinstance(call.func, ast.Attribute):
+            if isinstance(call.func.value, ast.Name) and call.func.value.id == "asyncio" and call.func.attr == "to_thread":
+                has_asyncio_to_thread = True
+        elif isinstance(call.func, ast.Name) and call.func.id == "run_cpu_io_async":
+            has_run_cpu_io_async = True
+
+    assert not has_asyncio_to_thread, "_search_text_cpu_async must not call asyncio.to_thread"
+    assert has_run_cpu_io_async, "_search_text_cpu_async must call run_cpu_io_async"

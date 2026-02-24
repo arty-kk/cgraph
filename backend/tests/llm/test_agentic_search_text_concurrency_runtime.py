@@ -33,7 +33,6 @@ class TestAgenticSearchTextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
             session = _IndexedSession()
             meta = agentic.AgenticMeta(
                 fs_ops_semaphore=asyncio.Semaphore(6),
-                cpu_ops_semaphore=asyncio.Semaphore(2),
             )
             stop = asyncio.Event()
             ticks = 0
