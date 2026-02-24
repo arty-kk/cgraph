@@ -1,7 +1,6 @@
 # backend/app/services/auth_service.py
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import hmac
@@ -15,6 +14,7 @@ from sqlmodel import select
 
 from ..config import settings
 from ..errors import BadRequestError, NotFoundError, UnauthorizedError
+from ..infra.cpu_runtime import run_cpu_io_async
 from ..models import ApiKey, BootstrapSentinel, Organization, OrgMembership, User, UserSession
 
 _BOOTSTRAP_LOCK_KEY = 104729
@@ -35,7 +35,12 @@ def _hash_password(password: str, *, salt: bytes | None = None) -> str:
 
 
 async def _hash_password_async(password: str, *, salt: bytes | None = None) -> str:
-    return await asyncio.to_thread(_hash_password, password, salt=salt)
+    return await run_cpu_io_async(
+        _hash_password,
+        password,
+        salt=salt,
+        operation="auth_service.hash_password",
+    )
 
 
 def _verify_password(password: str, stored: str) -> bool:
@@ -66,7 +71,12 @@ def _verify_password(password: str, stored: str) -> bool:
 
 
 async def _verify_password_async(password: str, stored: str) -> bool:
-    return await asyncio.to_thread(_verify_password, password, stored)
+    return await run_cpu_io_async(
+        _verify_password,
+        password,
+        stored,
+        operation="auth_service.verify_password",
+    )
 
 
 def _hash_token(token: str) -> str:
