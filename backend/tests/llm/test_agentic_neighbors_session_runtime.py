@@ -28,16 +28,25 @@ class _SessionOk:
     def __init__(self):
         self.execute_calls = 0
 
-    async def execute(self, _query):
+    async def execute(self, _query, _params=None):
         self.execute_calls += 1
         return _Rows([("deps/a.py",), ("deps/b.py",)])
+
+
+class _SessionDeep:
+    def __init__(self):
+        self.execute_calls = 0
+
+    async def execute(self, _query, _params=None):
+        self.execute_calls += 1
+        return _Rows([("deps/l1.py",), ("deps/l2.py",), ("deps/l3.py",)])
 
 
 class _SessionError:
     def __init__(self):
         self.execute_calls = 0
 
-    async def execute(self, _query):
+    async def execute(self, _query, _params=None):
         self.execute_calls += 1
         raise RuntimeError("db failed")
 
@@ -64,7 +73,7 @@ class _ConcurrencySession:
         self.max_in_flight = 0
         self._lock = asyncio.Lock()
 
-    async def execute(self, _query):
+    async def execute(self, _query, _params=None):
         async with self._lock:
             self.execute_calls += 1
             self.in_flight += 1
@@ -155,6 +164,28 @@ class TestAgenticNeighborsSessionRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(local_factory_calls, 0)
         self.assertEqual(session.execute_calls, 25)
         self.assertGreaterEqual(session.max_in_flight, 2)
+
+    async def test_dispatch_get_neighbors_deep_traversal_keeps_single_execute_per_call(self) -> None:
+        meta = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
+        session = _SessionDeep()
+
+        def _forbidden_local_session_factory(*_args, **_kwargs):
+            raise AssertionError("AsyncSessionLocal must not be used with external session")
+
+        with patch("app.llm.agentic.tools.AsyncSessionLocal", side_effect=_forbidden_local_session_factory):
+            result = await agentic._dispatch_tool_async(
+                session,
+                1,
+                Path("."),
+                meta,
+                "get_neighbors",
+                {"path": "backend/app", "direction": "out", "depth": 6, "limit": 2000},
+                max_file_chars=200,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["neighbors"], ["deps/l1.py", "deps/l2.py", "deps/l3.py"])
+        self.assertEqual(session.execute_calls, 1)
 
     async def test_check_indexed_async_uses_explicit_session_only(self) -> None:
         session = _SessionOk()
