@@ -50,6 +50,52 @@ async def cache_set_json_async(
         raise ExternalServiceError("Не удалось записать кэш", context={"key": key}) from exc
 
 
+async def cache_mget_json_async(parts_list: list[list[str]]) -> list[dict | list | None]:
+    if not parts_list:
+        return []
+    if not settings.cache_enabled:
+        return [None for _ in parts_list]
+    keys = [_cache_key(parts) for parts in parts_list]
+    try:
+        client = get_async_redis_client()
+        payloads = await client.mget(keys)
+    except RedisError as exc:
+        logger.warning("Cache read failed", extra={"reason": str(exc)})
+        raise ExternalServiceError("Не удалось прочитать кэш", context={"keys": keys}) from exc
+
+    decoded: list[dict | list | None] = []
+    for payload in payloads:
+        if not payload:
+            decoded.append(None)
+            continue
+        try:
+            decoded.append(json.loads(payload))
+        except json.JSONDecodeError:
+            decoded.append(None)
+    return decoded
+
+
+async def cache_mset_json_async(
+    entries: list[tuple[list[str], Any]],
+    *,
+    ttl_seconds: int | None = None,
+) -> None:
+    if not entries or not settings.cache_enabled:
+        return
+
+    ttl = int(ttl_seconds or settings.cache_default_ttl_seconds)
+    try:
+        client = get_async_redis_client()
+        pipeline = client.pipeline(transaction=False)
+        for parts, payload in entries:
+            key = _cache_key(parts)
+            pipeline.setex(key, ttl, json.dumps(payload, ensure_ascii=False))
+        await pipeline.execute()
+    except RedisError as exc:
+        logger.warning("Cache write failed", extra={"reason": str(exc)})
+        raise ExternalServiceError("Не удалось записать кэш", context={"entries": len(entries)}) from exc
+
+
 async def cache_invalidate_prefix_async(parts: list[str]) -> None:
     if not settings.cache_enabled:
         return
