@@ -2737,7 +2737,11 @@ async def _tool_project_summary_async(
     ).all()
     if not nodes:
         return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
-    summary = await asyncio.to_thread(_compute_project_summary_facts, nodes)
+    summary = await run_cpu_io_async(
+        _compute_project_summary_facts,
+        nodes,
+        operation="agentic.project_summary.compute_facts",
+    )
     return _tool_ok(
         {
             "counts": summary["counts"],
