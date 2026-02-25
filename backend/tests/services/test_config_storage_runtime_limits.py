@@ -60,3 +60,21 @@ def test_presign_limit_explicit_default_value_does_not_fallback(
 
     assert cfg.s3_signed_url_concurrency_limit == 3
     assert cfg.s3_presign_concurrency_limit == 8
+
+
+def test_scan_runtime_limits_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STUBGRAPH_SCAN_STAGE_BATCH_SIZE", "0")
+    with pytest.raises(ValueError, match="STUBGRAPH_SCAN_STAGE_BATCH_SIZE"):
+        Settings()
+
+
+def test_scan_runtime_limits_loaded_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STUBGRAPH_SCAN_STAGE_BATCH_SIZE", "12")
+    monkeypatch.setenv("STUBGRAPH_SCAN_STAGE_MAX_PARALLEL", "5")
+    monkeypatch.setenv("STUBGRAPH_SCAN_EMBEDDINGS_MAX_PARALLEL", "3")
+
+    cfg = Settings()
+
+    assert cfg.scan_stage_batch_size == 12
+    assert cfg.scan_stage_max_parallel == 5
+    assert cfg.scan_embeddings_max_parallel == 3

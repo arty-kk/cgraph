@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Query, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from ..llm.policy import ProfileName
@@ -102,11 +102,6 @@ async def run_task(
     request: Request,
     project_id: int,
     body: RunTask,
-    background_tasks: BackgroundTasks,
-    background: bool = Query(
-        default=False,
-        description="Deprecated compatibility flag; ignored and task is always queued",
-    ),
 ):
     project = await require_project_access_async(request, project_id, min_role="member")
     provided_fields = set(getattr(body, "model_fields_set", set()))
@@ -137,11 +132,9 @@ async def run_task(
         project.id,
         project.org_id,
         task_request,
-        background,
+        False,
         None,
     )
-    if background_tasks is not None:
-        background_tasks.add_task(lambda: None)
     return response
 
 

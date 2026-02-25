@@ -296,8 +296,6 @@ export type TaskStatus = {
 }
 
 export type TaskPollOptions = {
-  /** @deprecated background mode is always enabled by backend and ignored by client */
-  background?: boolean
   pollIntervalMs?: number
   timeoutMs?: number
   maxAttempts?: number

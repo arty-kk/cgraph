@@ -3,27 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any, Callable, Coroutine, TypeVar
 
 from celery.signals import worker_process_init, worker_process_shutdown
 
-from .async_db import AsyncSessionLocal, close_async_db, init_async_db
+from .async_db import AsyncSessionLocal
 from .celery_app import celery_app
-from .config import settings
-from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
-from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
-from .infra.fs_runtime import close_fs_runtime, init_fs_runtime, run_fs_io_async
-from .infra.redis_client import (
-    close_redis_pool_async,
-    get_async_redis_client,
-    init_redis_pool_async,
-)
-from .llm.client import close_async_openai_client, init_async_openai_client
+from .infra.fs_runtime import run_fs_io_async
+from .infra.runtime_lifecycle import build_cleanup_steps, build_startup_steps
+from .infra.redis_client import get_async_redis_client, init_redis_pool_async
 from .logging import get_logger
 from .models import Project, TaskJob
-from .s3_runtime import close_s3_runtime, init_s3_runtime
 from .services.docs_service import build_project_docs_async
 from .services.file_mutation_service import run_mutation_indexing_async
 from .services.project_service import _scan_and_update_graph_async
@@ -35,7 +29,51 @@ from .utils import normalize_project_root
 logger = get_logger("stubgraph.celery")
 
 _worker_runtime_started = False
+_worker_loop: asyncio.AbstractEventLoop | None = None
+_worker_loop_thread: Thread | None = None
+_worker_loop_ready = Event()
 T = TypeVar("T")
+
+
+def _start_worker_event_loop() -> None:
+    global _worker_loop, _worker_loop_thread
+    if _worker_loop is not None and _worker_loop_thread is not None and _worker_loop_thread.is_alive():
+        return
+    _worker_loop_ready.clear()
+
+    def _loop_runner() -> None:
+        global _worker_loop
+        loop = asyncio.new_event_loop()
+        _worker_loop = loop
+        asyncio.set_event_loop(loop)
+        _worker_loop_ready.set()
+        loop.run_forever()
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
+
+    _worker_loop_thread = Thread(target=_loop_runner, name="stubgraph-celery-loop", daemon=True)
+    _worker_loop_thread.start()
+    _worker_loop_ready.wait(timeout=5)
+    if _worker_loop is None:
+        raise RuntimeError("Celery worker loop failed to start")
+
+
+def _stop_worker_event_loop() -> None:
+    global _worker_loop, _worker_loop_thread
+    loop = _worker_loop
+    thread = _worker_loop_thread
+    if loop is None:
+        return
+    loop.call_soon_threadsafe(loop.stop)
+    if thread is not None:
+        thread.join(timeout=5)
+    _worker_loop = None
+    _worker_loop_thread = None
+    _worker_loop_ready.clear()
 
 
 def _run_async_entrypoint(
@@ -44,46 +82,25 @@ def _run_async_entrypoint(
     log_context: str,
 ) -> T:
     try:
-        return asyncio.run(coro(*args))
+        _start_worker_event_loop()
+        loop = _worker_loop
+        if loop is None:
+            raise RuntimeError("Worker loop is not initialized")
+        future: Future[T] = asyncio.run_coroutine_threadsafe(coro(*args), loop)
+        return future.result()
     except Exception:  # noqa: BLE001
         logger.exception("Celery async entrypoint failed", extra={"entrypoint": log_context})
         raise
 
 
 async def _startup_worker_resources_async() -> None:
-    startup_steps: list[tuple[str, Any]] = [
-        ("init_redis_pool_async", init_redis_pool_async),
-        ("init_async_db", init_async_db),
-        ("init_fs_runtime", init_fs_runtime),
-        ("init_cpu_runtime", init_cpu_runtime),
-        ("init_external_io_runtime", init_external_io_runtime),
-    ]
-    if (settings.storage_backend or "local").strip().lower() == "s3":
-        startup_steps.append(("init_s3_runtime", init_s3_runtime))
-
-    for name, startup in startup_steps:
+    for name, startup in build_startup_steps(role="worker"):
         await startup()
         logger.info("Celery worker startup step completed", extra={"step": name})
 
-    if settings.openai_api_key:
-        await init_async_openai_client()
-        logger.info(
-            "Celery worker startup step completed",
-            extra={"step": "init_async_openai_client"},
-        )
-
 
 async def _cleanup_worker_resources_async() -> None:
-    cleanup_steps: list[tuple[str, Any]] = [
-        ("close_s3_runtime", close_s3_runtime),
-        ("close_redis_pool_async", close_redis_pool_async),
-        ("close_async_openai_client", close_async_openai_client),
-        ("close_fs_runtime", close_fs_runtime),
-        ("close_cpu_runtime", close_cpu_runtime),
-        ("close_external_io_runtime", close_external_io_runtime),
-        ("close_async_db", close_async_db),
-    ]
-    for name, cleanup in cleanup_steps:
+    for name, cleanup in build_cleanup_steps(role="worker"):
         try:
             await cleanup()
         except Exception:  # noqa: BLE001
@@ -112,6 +129,7 @@ def _on_worker_process_init(**_kwargs: Any) -> None:
             logger.exception("Celery worker cleanup after startup failure failed")
         finally:
             _worker_runtime_started = False
+            _stop_worker_event_loop()
         raise
 
 
@@ -129,6 +147,7 @@ def _on_worker_process_shutdown(**_kwargs: Any) -> None:
         logger.exception("Celery worker cleanup failed")
     finally:
         _worker_runtime_started = False
+        _stop_worker_event_loop()
 
 
 async def _set_job_status_async(

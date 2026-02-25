@@ -140,7 +140,7 @@ async def test_runs_contract(api_client_context) -> None:
 
 
 @pytest.mark.anyio
-async def test_run_scan_docs_endpoints_return_task_envelope_ignoring_background(api_client_context) -> None:
+async def test_run_scan_docs_endpoints_return_task_envelope(api_client_context) -> None:
     client, headers, project_id = api_client_context
     run_payload = {
         "target_path": "repo/README.md",
@@ -148,28 +148,24 @@ async def test_run_scan_docs_endpoints_return_task_envelope_ignoring_background(
         "agentic": False,
     }
 
-    for background in (False, True):
-        run_response = client.post(
-            f"/api/tasks/{project_id}/run",
-            params={"background": str(background).lower()},
-            json=run_payload,
-            headers=headers,
-        )
-        assert run_response.status_code == 200
-        _assert_task_envelope(run_response.json())
+    run_response = client.post(
+        f"/api/tasks/{project_id}/run",
+        json=run_payload,
+        headers=headers,
+    )
+    assert run_response.status_code == 200
+    _assert_task_envelope(run_response.json())
 
-        scan_response = client.post(
-            f"/api/projects/{project_id}/scan",
-            params={"background": str(background).lower()},
-            headers=headers,
-        )
-        assert scan_response.status_code == 200
-        _assert_task_envelope(scan_response.json())
+    scan_response = client.post(
+        f"/api/projects/{project_id}/scan",
+        headers=headers,
+    )
+    assert scan_response.status_code == 200
+    _assert_task_envelope(scan_response.json())
 
-        docs_response = client.post(
-            f"/api/projects/{project_id}/docs/build",
-            params={"background": str(background).lower()},
-            headers=headers,
-        )
-        assert docs_response.status_code == 200
-        _assert_task_envelope(docs_response.json())
+    docs_response = client.post(
+        f"/api/projects/{project_id}/docs/build",
+        headers=headers,
+    )
+    assert docs_response.status_code == 200
+    _assert_task_envelope(docs_response.json())

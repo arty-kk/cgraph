@@ -69,9 +69,6 @@ _parse_cache_lock = Lock()
 logger = get_logger("stubgraph.scan")
 
 EMBEDDING_CHUNKS_KIND = "embedding_chunks"
-SCAN_STAGE_BATCH_SIZE = 128
-SCAN_STAGE_MAX_PARALLEL = 8
-SCAN_EMBEDDINGS_MAX_PARALLEL = 4
 
 
 @dataclass
@@ -85,10 +82,9 @@ class ScanRuntime:
 
 
 def get_scan_runtime() -> ScanRuntime:
-    max_parallel = max(1, int(SCAN_STAGE_MAX_PARALLEL))
     return ScanRuntime(
-        batch_size=max(1, int(SCAN_STAGE_BATCH_SIZE)),
-        max_parallel=max_parallel,
+        batch_size=max(1, int(settings.scan_stage_batch_size)),
+        max_parallel=max(1, int(settings.scan_stage_max_parallel)),
     )
 
 
@@ -380,8 +376,8 @@ async def _collect_file_stats_async(
     project_root: Path,
     rel_paths: list[str],
     precomputed_stats: dict[str, tuple[int, int]] | None = None,
-    batch_size: int = SCAN_STAGE_BATCH_SIZE,
-    max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
+    batch_size: int | None = None,
+    max_parallel: int | None = None,
 ) -> list[FileStatResult]:
     runtime = get_scan_runtime()
     batch_size = max(1, int(batch_size or runtime.batch_size))
@@ -450,7 +446,7 @@ async def _read_file_batch_async(
     batch_paths: list[str],
     stats_map: dict[str, tuple[int, int]],
     max_file_bytes: int,
-    max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
+    max_parallel: int | None = None,
 ) -> list[FileReadResult]:
     runtime = get_scan_runtime()
     batch_size = runtime.batch_size
@@ -789,8 +785,8 @@ async def _verify_scan_snapshot_async(
     snapshot: dict[str, FileSnapshot],
     removed: list[str],
     *,
-    batch_size: int = SCAN_STAGE_BATCH_SIZE,
-    max_parallel: int = SCAN_STAGE_MAX_PARALLEL,
+    batch_size: int | None = None,
+    max_parallel: int | None = None,
 ) -> tuple[bool, str]:
     runtime = get_scan_runtime()
     batch_size = max(1, int(batch_size or runtime.batch_size))
@@ -1511,7 +1507,7 @@ async def _prepare_scan_files_async(
 
         if embedding_candidates:
             client = get_async_openai_client()
-            semaphore = asyncio.Semaphore(max(1, int(SCAN_EMBEDDINGS_MAX_PARALLEL)))
+            semaphore = asyncio.Semaphore(max(1, int(settings.scan_embeddings_max_parallel)))
             quota_lock = asyncio.Lock()
             chunk_limit = await get_entitlement_int_async(
                 session,
