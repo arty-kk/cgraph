@@ -341,8 +341,19 @@ async def _guard_inflight_async(
             count = redis.call("SCARD", set_key)
             return {1, count}
             """
-        added, count = await client.eval(lua, 1, _HEAVY_INFLIGHT_KEY, int(limit), job_id)
-        if int(added) != 1 and int(count) > int(limit):
+
+        async def _try_add_inflight() -> tuple[int, int]:
+            added_raw, count_raw = await client.eval(
+                lua,
+                1,
+                _HEAVY_INFLIGHT_KEY,
+                int(limit),
+                job_id,
+            )
+            return int(added_raw), int(count_raw)
+
+        added, _ = await _try_add_inflight()
+        if added != 1:
             try:
                 await _reconcile_heavy_inflight_async()
             except Exception as exc:  # noqa: BLE001
@@ -350,7 +361,9 @@ async def _guard_inflight_async(
                     "Heavy inflight reconciliation failed",
                     extra={"reason": str(exc)},
                 )
-        if int(added) != 1:
+            added, _ = await _try_add_inflight()
+
+        if added != 1:
             raise BadRequestError("Превышен лимит одновременных heavy задач")
     except RedisError as exc:
         logger.warning(
