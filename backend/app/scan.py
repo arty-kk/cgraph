@@ -10,7 +10,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Iterable, Tuple
+from typing import Awaitable, Callable, Iterable, Tuple, TypeVar, cast
 
 from sqlalchemy import bindparam, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -266,6 +266,9 @@ TS_TYPEDEF_EXTS = (".ts", ".tsx", ".mts", ".cts")
 
 SEARCH_INDEX_MAX_CHARS = 200_000
 
+_TBatch = TypeVar("_TBatch")
+_TResult = TypeVar("_TResult")
+
 
 def _is_supported_file(path: Path) -> bool:
     return path.suffix.lower() in CODE_EXTS or is_infra_file(path)
@@ -289,22 +292,63 @@ def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
     return [seq[i : i + size] for i in range(0, len(seq), size)]
 
 
-def _stream_code_file_batches(
-    root: Path,
-    batch_size: int,
-    publish_batch: Callable[[list[str]], None],
-    should_stop: Callable[[], bool] | None = None,
-) -> None:
-    batch: list[str] = []
-    for path in iter_code_files(root):
-        if should_stop and should_stop():
-            return
-        batch.append(path.relative_to(root).as_posix())
-        if len(batch) >= batch_size:
-            publish_batch(batch)
-            batch = []
-    if batch:
-        publish_batch(batch)
+async def _process_batches_bounded_async(
+    batches: list[_TBatch],
+    max_parallel: int,
+    process_batch: Callable[[_TBatch], Awaitable[_TResult]],
+) -> list[_TResult]:
+    if not batches:
+        return []
+
+    worker_count = max(1, int(max_parallel))
+    queue: asyncio.Queue[tuple[int, _TBatch] | object] = asyncio.Queue(maxsize=worker_count)
+    stop_item = object()
+    ordered_results: list[_TResult | None] = [None] * len(batches)
+
+    async def _producer() -> None:
+        for batch_index, batch in enumerate(batches):
+            await queue.put((batch_index, batch))
+        for _ in range(worker_count):
+            await queue.put(stop_item)
+
+    async def _worker() -> None:
+        while True:
+            queued_item = await queue.get()
+            try:
+                if queued_item is stop_item:
+                    return
+                batch_index, batch = cast(tuple[int, _TBatch], queued_item)
+                ordered_results[batch_index] = await process_batch(batch)
+            finally:
+                queue.task_done()
+
+    producer = asyncio.create_task(_producer())
+    workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+
+    try:
+        done, pending = await asyncio.wait(workers, return_when=asyncio.FIRST_EXCEPTION)
+
+        first_error: BaseException | None = None
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                first_error = exc
+                break
+
+        if first_error is not None:
+            raise first_error
+
+        await producer
+        if pending:
+            await asyncio.gather(*pending)
+
+        return [cast(_TResult, result) for result in ordered_results]
+    except BaseException:
+        producer.cancel()
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(producer, *workers, return_exceptions=True)
+        raise
 
 
 async def _collect_file_stats_async(
@@ -363,38 +407,13 @@ async def _collect_file_stats_async(
                 )
         return batch_results
 
-    batch_count = (len(rel_paths) + batch_size - 1) // batch_size
-    if batch_count == 0:
-        return []
-
-    workers_count = min(max_parallel, batch_count)
-    work_queue: asyncio.Queue[tuple[int, list[str]] | None] = asyncio.Queue(maxsize=max_parallel)
-    indexed: list[list[FileStatResult] | None] = [None] * batch_count
-
-    async def _producer() -> None:
-        for index in range(batch_count):
-            start = index * batch_size
-            await work_queue.put((index, rel_paths[start : start + batch_size]))
-        for _ in range(workers_count):
-            await work_queue.put(None)
-
-    async def _worker() -> None:
-        while True:
-            item = await work_queue.get()
-            try:
-                if item is None:
-                    return
-                index, batch = item
-                indexed[index] = await _run_scan_fs_batch(_sync_collect_batch, batch, operation="scan.fs.collect_batch")
-            finally:
-                work_queue.task_done()
-
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(_producer())
-        for _ in range(workers_count):
-            tg.create_task(_worker())
-
-    return [item for batch in indexed if batch is not None for item in batch]
+    batches = [rel_paths[i : i + batch_size] for i in range(0, len(rel_paths), batch_size)]
+    batch_results = await _process_batches_bounded_async(
+        batches,
+        max_parallel=max_parallel,
+        process_batch=lambda batch: _run_scan_batch(_sync_collect_batch, batch),
+    )
+    return [item for batch in batch_results for item in batch]
 
 
 async def _read_file_batch_async(
@@ -432,38 +451,13 @@ async def _read_file_batch_async(
             )
         return out
 
-    batch_count = (len(batch_paths) + batch_size - 1) // batch_size
-    if batch_count == 0:
-        return []
-
-    workers_count = min(max_parallel, batch_count)
-    work_queue: asyncio.Queue[tuple[int, list[str]] | None] = asyncio.Queue(maxsize=max_parallel)
-    indexed: list[list[FileReadResult] | None] = [None] * batch_count
-
-    async def _producer() -> None:
-        for index in range(batch_count):
-            start = index * batch_size
-            await work_queue.put((index, batch_paths[start : start + batch_size]))
-        for _ in range(workers_count):
-            await work_queue.put(None)
-
-    async def _worker() -> None:
-        while True:
-            item = await work_queue.get()
-            try:
-                if item is None:
-                    return
-                index, batch = item
-                indexed[index] = await _run_scan_fs_batch(_sync_read_batch, batch, operation="scan.fs.read_batch")
-            finally:
-                work_queue.task_done()
-
-    async with asyncio.TaskGroup() as tg:
-        tg.create_task(_producer())
-        for _ in range(workers_count):
-            tg.create_task(_worker())
-
-    return [item for batch in indexed if batch is not None for item in batch]
+    batches = [batch_paths[i : i + batch_size] for i in range(0, len(batch_paths), batch_size)]
+    batch_results = await _process_batches_bounded_async(
+        batches,
+        max_parallel=max_parallel,
+        process_batch=lambda batch: _run_scan_batch(_sync_read_batch, batch),
+    )
+    return [item for batch in batch_results for item in batch]
 
 
 async def _parse_index_batch_async(
