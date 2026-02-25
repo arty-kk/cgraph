@@ -278,8 +278,8 @@ async def build_docs(
     project_id: int,
 ):
     project = await require_project_access_async(request, project_id, min_role="member")
-    task_id = await submit_docs_async(project.id, project.org_id)
-    return {"task_id": task_id, "status": "pending"}
+    task_id, task_status = await submit_docs_async(project.id, project.org_id)
+    return {"task_id": task_id, "status": task_status}
 
 
 @router.get("/{project_id}/docs")

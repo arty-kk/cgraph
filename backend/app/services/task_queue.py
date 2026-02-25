@@ -497,11 +497,11 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
     return task_id
 
 
-async def submit_docs_async(project_id: int, org_id: int) -> str:
+async def submit_docs_async(project_id: int, org_id: int) -> tuple[str, str]:
     payload = {"project_id": project_id}
     idempotency_key = await _idempotency_key_async("docs", org_id, payload)
     async with AsyncSessionLocal() as session:
-        existing = await _find_existing_job_id_async(session, org_id, idempotency_key)
+        existing = await _find_existing_job_async(session, org_id, idempotency_key)
         if existing:
             return existing
 
@@ -512,15 +512,20 @@ async def submit_docs_async(project_id: int, org_id: int) -> str:
             queue="light",
             idempotency_key=idempotency_key,
         )
-    if not created:
-        return task_id
-    await _enqueue_with_error_mapping_async(
-        task_name="stubgraph.docs",
-        args=[task_id, project_id, org_id],
-        queue="light",
-        task_id=task_id,
-    )
-    return task_id
+    if created:
+        await _enqueue_with_error_mapping_async(
+            task_name="stubgraph.docs",
+            args=[task_id, project_id, org_id],
+            queue="light",
+            task_id=task_id,
+        )
+        return task_id, "pending"
+
+    async with AsyncSessionLocal() as session:
+        existing = await _find_existing_job_async(session, org_id, idempotency_key)
+        if existing:
+            return existing
+    return task_id, "pending"
 
 
 async def submit_mutation_indexing_async(
