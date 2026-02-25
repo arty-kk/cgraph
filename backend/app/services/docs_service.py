@@ -611,15 +611,20 @@ async def _build_api_summary_async(session: AsyncSession, project_id: int) -> di
     except Exception as e:
         return {"error": "api_summary_failed", "message": str(e)}
 
+    route_methods_payload = [(str(row[0] or ""), int(row[1] or 0)) for row in route_methods_rows]
+    call_methods_payload = [(str(row[0] or ""), int(row[1] or 0)) for row in call_methods_rows]
+    route_paths_payload = [str(row[0] or "") for row in route_paths_rows]
+    call_paths_payload = [str(row[0] or "") for row in call_paths_rows]
+
     return await run_cpu_io_async(
         _build_api_summary_payload,
         routes_total=routes_total,
         calls_total=calls_total,
         includes_total=includes_total,
-        route_methods_rows=route_methods_rows,
-        call_methods_rows=call_methods_rows,
-        route_paths_rows=route_paths_rows,
-        call_paths_rows=call_paths_rows,
+        route_methods_rows=route_methods_payload,
+        call_methods_rows=call_methods_payload,
+        route_paths_rows=route_paths_payload,
+        call_paths_rows=call_paths_payload,
         operation="docs_service.build_api_summary",
     )
 
@@ -1240,7 +1245,20 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
         if not nodes:
             raise BadRequestError("Проект не проиндексирован. Сначала сделай Scan.")
 
-        summary = await _compute_project_summary_facts_async(nodes)
+        nodes_payload = [
+            (
+                str(row[0] or ""),
+                str(row[1] or ""),
+                int(row[2] or 0),
+                int(row[3] or 0),
+                int(row[4] or 0),
+                int(row[5] or 0),
+                str(row[6] or ""),
+            )
+            for row in nodes
+        ]
+
+        summary = await _compute_project_summary_facts_async(nodes_payload)
         risks = summary["risks"]
         paths = summary["paths"]
         lang_count = summary["languages"]

@@ -731,9 +731,21 @@ async def search_semantic_async(
         max_chars=int(settings.embeddings_max_file_chars),
     )
 
+    rows_payload = [
+        (
+            str(row[0] or ""),
+            int(row[1] or 0),
+            str(row[2] or ""),
+            str(row[3] or ""),
+            int(row[4] or 0),
+            int(row[5] or 0),
+        )
+        for row in rows
+    ]
+
     compared, scored = await run_cpu_io_async(
         _score_semantic_candidates_cpu,
-        rows,
+        rows_payload,
         query_embedding=query_embedding,
         file_cache=file_cache,
         chunk_size=int(settings.embeddings_chunk_size),
