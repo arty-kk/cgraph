@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from ..errors import BadRequestError
@@ -24,7 +24,7 @@ from ..services.project_service import (
     list_project_tree_entries_async,
     load_graph_async,
     load_local_graph_async,
-    scan_with_background_async,
+    enqueue_scan_task_async,
     search_project_nodes_async,
     search_project_semantic_async,
     search_project_text_async,
@@ -120,22 +120,13 @@ async def list_projects(request: Request):
 async def scan(
     request: Request,
     project_id: int,
-    background_tasks: BackgroundTasks,
-    background: bool = Query(
-        default=False,
-        description="Deprecated compatibility flag; ignored and scan always runs in queue",
-    ),
 ):
     project = await require_project_access_async(request, project_id, min_role="member")
-    response = await scan_with_background_async(
+    response = await enqueue_scan_task_async(
         request.state.db_session,
         project.id,
         project.org_id,
-        background,
-        None,
     )
-    if background_tasks is not None:
-        background_tasks.add_task(lambda: None)
     return response
 
 
@@ -285,17 +276,9 @@ async def file_dependencies(
 async def build_docs(
     request: Request,
     project_id: int,
-    background_tasks: BackgroundTasks,
-    background: bool = Query(
-        default=False,
-        description="Deprecated compatibility flag; ignored and docs build always runs in queue",
-    ),
 ):
-    _ = background
     project = await require_project_access_async(request, project_id, min_role="member")
     task_id = await submit_docs_async(project.id, project.org_id)
-    if background_tasks is not None:
-        background_tasks.add_task(lambda: None)
     return {"task_id": task_id, "status": "pending"}
 
 

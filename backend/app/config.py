@@ -143,6 +143,19 @@ class Settings(BaseSettings):
         alias="STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS",
     )
 
+    scan_stage_batch_size: int = Field(
+        default=128,
+        alias="STUBGRAPH_SCAN_STAGE_BATCH_SIZE",
+    )
+    scan_stage_max_parallel: int = Field(
+        default=8,
+        alias="STUBGRAPH_SCAN_STAGE_MAX_PARALLEL",
+    )
+    scan_embeddings_max_parallel: int = Field(
+        default=4,
+        alias="STUBGRAPH_SCAN_EMBEDDINGS_MAX_PARALLEL",
+    )
+
     database_url: str = Field(
         default="postgresql+psycopg://stubgraph:stubgraph@localhost:5432/stubgraph",
         alias="STUBGRAPH_DATABASE_URL",
@@ -539,6 +552,12 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY должен быть положительным")
         if self.task_queue_producer_workers <= 0:
             raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS должен быть положительным")
+        if self.scan_stage_batch_size < 1:
+            raise ValueError("STUBGRAPH_SCAN_STAGE_BATCH_SIZE должен быть >= 1")
+        if self.scan_stage_max_parallel < 1:
+            raise ValueError("STUBGRAPH_SCAN_STAGE_MAX_PARALLEL должен быть >= 1")
+        if self.scan_embeddings_max_parallel < 1:
+            raise ValueError("STUBGRAPH_SCAN_EMBEDDINGS_MAX_PARALLEL должен быть >= 1")
         return self
 
 

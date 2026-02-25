@@ -1396,7 +1396,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setDocsBuildError(null)
     setErrorMessage(null)
     try {
-      const initial = await buildProjectDocsStatus(activeProject.id, { background: true })
+      const initial = await buildProjectDocsStatus(activeProject.id)
       if (isTaskStatus(initial)) {
         trackTaskStatus(initial, 'docs', `Docs ${activeProject.name}`)
       }
@@ -1949,7 +1949,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const onScan = useCallback(async () => {
     if (!activeProject) return
     await runOp(async () => {
-      const initial = await scanProjectStatus(activeProject.id, { background: true })
+      const initial = await scanProjectStatus(activeProject.id)
       if (isTaskStatus(initial)) {
         trackTaskStatus(initial, 'scan', `Scan ${activeProject.name}`)
       }
@@ -2277,7 +2277,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
   const runTaskTracked = useCallback(
     async (projectId: number, body: RunTaskBody, label: string) => {
-      const initial = await runTask(projectId, body, { background: true })
+      const initial = await runTask(projectId, body)
       if (isTaskStatus(initial)) {
         trackTaskStatus(initial, 'run', label)
       }
