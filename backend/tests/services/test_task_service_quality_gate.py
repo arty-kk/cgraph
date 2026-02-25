@@ -80,7 +80,7 @@ def _patch_common(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
     monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
     monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
-    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enqueue_graph_scan_task_async", _noop)
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     async def _policy_async(**kwargs):
         _ = kwargs
