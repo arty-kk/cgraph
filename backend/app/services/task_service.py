@@ -132,7 +132,7 @@ async def _resolve_under_root_async(
 async def _parse_diff_paths_async(root: Path, diff_text: str) -> list[str]:
     return await run_cpu_io_async(
         _parse_diff_paths,
-        root,
+        str(root),
         diff_text,
         operation="task_service.parse_diff_paths",
     )
@@ -504,7 +504,8 @@ async def _store_patch_blob_async(patch_text: str) -> dict:
     return meta
 
 
-def _parse_diff_paths(root: Path, diff_text: str) -> list[str]:
+def _parse_diff_paths(root_path: str, diff_text: str) -> list[str]:
+    root = Path(root_path)
     try:
         patch = PatchSet(diff_text.splitlines(keepends=True))
     except Exception as error:

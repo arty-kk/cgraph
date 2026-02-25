@@ -322,7 +322,7 @@ async def test_parse_diff_paths_async_uses_run_cpu_io_async(monkeypatch):
 
     assert result == ["a.py"]
     assert calls["func"] is task_service._parse_diff_paths
-    assert calls["args"] == (Path("/tmp"), "diff --git a/a.py b/a.py\n")
+    assert calls["args"] == ("/tmp", "diff --git a/a.py b/a.py\n")
     assert calls["kwargs"] == {"operation": "task_service.parse_diff_paths"}
 
 

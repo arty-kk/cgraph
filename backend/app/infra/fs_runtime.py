@@ -1,4 +1,11 @@
-"""Shared runtime for bounded async execution of synchronous FS-oriented operations."""
+"""Shared runtime for bounded async execution of synchronous FS/context-bound operations.
+
+FS runtime contract:
+- accepts Path/descriptor and other thread-affine/non-pickle-safe context;
+- use this runtime for direct filesystem/object-handle operations.
+
+CPU-pure and pickle-safe workloads must use CPU process runtime.
+"""
 
 from __future__ import annotations
 

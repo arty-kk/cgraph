@@ -104,6 +104,17 @@ async def _run_scan_cpu_batch(sync_fn, *args, operation: str):
     return await run_cpu_io_async(sync_fn, *args, operation=operation)
 
 
+def _compute_symbol_meta_for_embedding(
+    project_root_str: str,
+    rel_path: str,
+    text: str,
+) -> tuple[dict[str, int | str], ...]:
+    project_root = Path(project_root_str)
+    indexer = pick_indexer(rel_path)
+    symbols = indexer.parse_symbols(project_root / rel_path, text) or []
+    return tuple(_symbol_chunks(text, symbols))
+
+
 def _today_utc():
     from datetime import datetime, timezone
 
@@ -1331,7 +1342,6 @@ async def _prepare_scan_files_async(
                             logger.warning("Embeddings enabled but OPENAI_API_KEY is not set; skipping embeddings.")
                             embedding_warned_missing_key = True
                     else:
-                        idx = pick_indexer(rel)
                         chunks = _chunk_text(
                             text,
                             int(settings.embeddings_chunk_size),
@@ -1339,7 +1349,10 @@ async def _prepare_scan_files_async(
                         )
                         if chunks:
                             symbol_meta = await _run_scan_cpu_batch(
-                                lambda: _symbol_chunks(text, idx.parse_symbols(project_root / rel, text) or []),
+                                _compute_symbol_meta_for_embedding,
+                                str(project_root),
+                                rel,
+                                text,
                                 operation="scan.cpu.symbol_meta",
                             )
                             embedding_candidates.append(

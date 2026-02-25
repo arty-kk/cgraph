@@ -19,8 +19,14 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+def _row_value(row: object, key: str, default: object = None) -> object:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
 def _derive_thresholds(
-    *, defaults: tuple[float, float, float], rows: list[AnalysisStageTelemetry]
+    *, defaults: tuple[float, float, float], rows: list[object]
 ) -> tuple[float, float, float]:
     low_default, mid_default, high_default = defaults
     if not rows:
@@ -33,14 +39,16 @@ def _derive_thresholds(
     latency_values: list[int] = []
 
     for row in rows:
-        if isinstance(row.failure_class, str) and row.failure_class:
+        failure_class = _row_value(row, "failure_class")
+        if isinstance(failure_class, str) and failure_class:
             failure_count += 1
-        if int(row.retry_index or 0) > 0:
+        if int(_row_value(row, "retry_index", 0) or 0) > 0:
             retry_count += 1
-        if row.self_check_result == "failed":
+        if _row_value(row, "self_check_result") == "failed":
             self_check_failed += 1
-        if isinstance(row.latency_ms, int) and row.latency_ms >= 0:
-            latency_values.append(row.latency_ms)
+        latency_ms = _row_value(row, "latency_ms")
+        if isinstance(latency_ms, int) and latency_ms >= 0:
+            latency_values.append(latency_ms)
 
     quality_pressure = (failure_count + retry_count + self_check_failed) / max(1, samples)
     p95_latency = 0
@@ -93,7 +101,7 @@ def _profile_transform(base_weights: dict[str, float], *, sla_profile: str) -> d
 
 
 def _derive_base_weights(
-    *, defaults: dict[str, float], rows: list[AnalysisStageTelemetry]
+    *, defaults: dict[str, float], rows: list[object]
 ) -> dict[str, float]:
     default_weights = _validate_and_normalize_weights(defaults)
     if default_weights is None:
@@ -109,19 +117,20 @@ def _derive_base_weights(
     token_values: list[int] = []
 
     for row in rows:
-        failure_class = str(row.failure_class or "").strip().lower()
+        failure_class = str(_row_value(row, "failure_class") or "").strip().lower()
         if failure_class:
             if any(tag in failure_class for tag in ("timeout", "overload", "rate", "unavailable")):
                 failure_score += 1.0
             else:
                 failure_score += 0.8
-        retry_score += min(2.0, max(0.0, float(int(row.retry_index or 0)) * 0.5))
-        if row.self_check_result == "failed":
+        retry_score += min(2.0, max(0.0, float(int(_row_value(row, "retry_index", 0) or 0)) * 0.5))
+        if _row_value(row, "self_check_result") == "failed":
             self_check_failed += 1
-        if isinstance(row.latency_ms, int) and row.latency_ms >= 0:
-            latency_values.append(row.latency_ms)
-        prompt_tokens = max(0, int(row.prompt_tokens or 0))
-        completion_tokens = max(0, int(row.completion_tokens or 0))
+        latency_ms = _row_value(row, "latency_ms")
+        if isinstance(latency_ms, int) and latency_ms >= 0:
+            latency_values.append(latency_ms)
+        prompt_tokens = max(0, int(_row_value(row, "prompt_tokens", 0) or 0))
+        completion_tokens = max(0, int(_row_value(row, "completion_tokens", 0) or 0))
         token_values.append(prompt_tokens + completion_tokens)
 
     latency_values.sort()
@@ -166,7 +175,7 @@ def _derive_base_weights(
 
 
 async def _derive_thresholds_async(
-    *, defaults: tuple[float, float, float], rows: list[AnalysisStageTelemetry]
+    *, defaults: tuple[float, float, float], rows: list[dict[str, object]]
 ) -> tuple[float, float, float]:
     return await run_cpu_io_async(
         _derive_thresholds,
@@ -177,7 +186,7 @@ async def _derive_thresholds_async(
 
 
 async def _derive_base_weights_async(
-    *, defaults: dict[str, float], rows: list[AnalysisStageTelemetry]
+    *, defaults: dict[str, float], rows: list[dict[str, object]]
 ) -> dict[str, float]:
     return await run_cpu_io_async(
         _derive_base_weights,
@@ -278,6 +287,18 @@ async def calibrate_routing_policy_thresholds_async() -> dict[str, object]:
             .all()
         )
 
+    rows_payload = [
+        {
+            "failure_class": row.failure_class,
+            "retry_index": row.retry_index,
+            "self_check_result": row.self_check_result,
+            "latency_ms": row.latency_ms,
+            "prompt_tokens": row.prompt_tokens,
+            "completion_tokens": row.completion_tokens,
+        }
+        for row in rows
+    ]
+
     if len(rows) < int(settings.llm_routing_calibration_min_samples):
         return {
             "updated": False,
@@ -287,8 +308,8 @@ async def calibrate_routing_policy_thresholds_async() -> dict[str, object]:
         }
 
     (low, mid, high), base_weights = await asyncio.gather(
-        _derive_thresholds_async(defaults=defaults, rows=rows),
-        _derive_base_weights_async(defaults=default_weights, rows=rows),
+        _derive_thresholds_async(defaults=defaults, rows=rows_payload),
+        _derive_base_weights_async(defaults=default_weights, rows=rows_payload),
     )
     calibrated_weights_by_profile = await _build_profile_weights_async(base_weights)
     thresholds_payload = {
