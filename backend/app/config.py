@@ -44,6 +44,14 @@ class Settings(BaseSettings):
         default=8,
         alias="STUBGRAPH_S3_SIGNED_URL_CONCURRENCY_LIMIT",
     )
+    s3_presign_concurrency_limit: int | None = Field(
+        default=None,
+        alias="STUBGRAPH_S3_PRESIGN_CONCURRENCY_LIMIT",
+    )
+    storage_sdk_io_concurrency: int = Field(
+        default=8,
+        alias="STUBGRAPH_STORAGE_SDK_IO_CONCURRENCY",
+    )
     patch_retention_days: int = Field(default=7, alias="STUBGRAPH_PATCH_RETENTION_DAYS")
     snapshot_max_bytes: int = Field(default=200_000_000, alias="STUBGRAPH_SNAPSHOT_MAX_BYTES")
     snapshot_max_files: int = Field(default=200_000, alias="STUBGRAPH_SNAPSHOT_MAX_FILES")
@@ -351,6 +359,14 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_S3_SIGNED_URL_TTL_SECONDS должен быть положительным")
         if self.s3_signed_url_concurrency_limit < 1:
             raise ValueError("STUBGRAPH_S3_SIGNED_URL_CONCURRENCY_LIMIT должен быть >= 1")
+        # Backward compatibility: when the new presign knob is unset,
+        # inherit the legacy signed-url concurrency value.
+        if self.s3_presign_concurrency_limit is None:
+            self.s3_presign_concurrency_limit = self.s3_signed_url_concurrency_limit
+        if self.s3_presign_concurrency_limit < 1:
+            raise ValueError("STUBGRAPH_S3_PRESIGN_CONCURRENCY_LIMIT должен быть >= 1")
+        if self.storage_sdk_io_concurrency < 1:
+            raise ValueError("STUBGRAPH_STORAGE_SDK_IO_CONCURRENCY должен быть >= 1")
         if self.patch_retention_days < 0:
             raise ValueError("STUBGRAPH_PATCH_RETENTION_DAYS должен быть неотрицательным")
         if self.snapshot_max_bytes <= 0:

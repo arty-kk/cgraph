@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Literal, TypeVar
+from functools import partial
+from typing import Any, Awaitable, Callable, Literal, TypeVar
 
 from ..config import settings
 
@@ -13,14 +14,17 @@ OpenAIIOKind = Literal["short", "long"]
 
 _OPENAI_IO_SHORT_CONCURRENCY = 16
 _OPENAI_IO_LONG_CONCURRENCY = 4
+_STORAGE_SDK_IO_CONCURRENCY = 8
 
 
 @dataclass
 class ExternalIORuntime:
     short_semaphore: asyncio.Semaphore
     long_semaphore: asyncio.Semaphore
+    storage_sdk_semaphore: asyncio.Semaphore
     short_limit: int
     long_limit: int
+    storage_sdk_limit: int
 
 
 _external_io_runtime: ExternalIORuntime | None = None
@@ -37,6 +41,11 @@ def _openai_long_limit() -> int:
     return max(1, int(raw))
 
 
+def _storage_sdk_limit() -> int:
+    raw = getattr(settings, "storage_sdk_io_concurrency", _STORAGE_SDK_IO_CONCURRENCY)
+    return max(1, int(raw))
+
+
 async def init_external_io_runtime() -> None:
     global _external_io_runtime
     async with _external_io_runtime_lock:
@@ -44,11 +53,14 @@ async def init_external_io_runtime() -> None:
             return
         short_limit = _openai_short_limit()
         long_limit = _openai_long_limit()
+        storage_sdk_limit = _storage_sdk_limit()
         _external_io_runtime = ExternalIORuntime(
             short_semaphore=asyncio.Semaphore(short_limit),
             long_semaphore=asyncio.Semaphore(long_limit),
+            storage_sdk_semaphore=asyncio.Semaphore(storage_sdk_limit),
             short_limit=short_limit,
             long_limit=long_limit,
+            storage_sdk_limit=storage_sdk_limit,
         )
 
 
@@ -88,3 +100,20 @@ async def run_openai_io_async(
     finally:
         if acquired:
             semaphore.release()
+
+
+async def run_storage_sdk_io_async(
+    fn: Callable[..., T],
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    runtime = await _get_external_io_runtime()
+    acquired = False
+    try:
+        await runtime.storage_sdk_semaphore.acquire()
+        acquired = True
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
+    finally:
+        if acquired:
+            runtime.storage_sdk_semaphore.release()

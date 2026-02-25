@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import settings
+from .infra.external_io_runtime import run_storage_sdk_io_async
 from .infra.fs_runtime import run_fs_io_async
 from .logging import get_logger
 from .s3_runtime import get_s3_client
@@ -23,7 +24,7 @@ from .utils import sha256_text
 
 logger = get_logger("stubgraph.storage")
 
-_S3_SIGNED_URL_SEMAPHORE = asyncio.Semaphore(settings.s3_signed_url_concurrency_limit)
+_S3_SIGNED_URL_SEMAPHORE = asyncio.Semaphore(settings.s3_presign_concurrency_limit)
 
 
 class StorageError(RuntimeError):
@@ -83,12 +84,7 @@ def _s3_signed_url(bucket: str, key: str) -> str | None:
 async def _s3_signed_url_async(bucket: str, key: str) -> str | None:
     async with _S3_SIGNED_URL_SEMAPHORE:
         try:
-            return await run_fs_io_async(
-                _s3_signed_url,
-                bucket,
-                key,
-                operation="storage.s3.signed_url",
-            )
+            return await run_storage_sdk_io_async(_s3_signed_url, bucket, key)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to generate signed URL", extra={"reason": str(exc)})
             return None
