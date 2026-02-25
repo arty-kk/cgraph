@@ -176,6 +176,39 @@ async def test_async_task_producer_uses_async_transport_client(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_transport_client_passes_sync_dispatch_to_producer_runtime(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _sync_dispatch(*, task_name: str, args: list[object], queue: str) -> str:
+        captured["dispatch_called_with"] = (task_name, args, queue)
+        return "ok"
+
+    async def _fake_run(fn, *args, **kwargs):
+        captured["fn"] = fn
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(task_queue, "run_celery_producer_io_async", _fake_run)
+
+    from app import celery_tasks
+
+    monkeypatch.setattr(celery_tasks, "dispatch_task", _sync_dispatch)
+
+    client = task_queue._AsyncTaskTransportClient()
+    await client.publish_async(task_name="stubgraph.scan", args=["job-7"], queue="medium")
+
+    assert captured["fn"] is _sync_dispatch
+    assert captured["args"] == ()
+    assert captured["kwargs"] == {
+        "task_name": "stubgraph.scan",
+        "args": ["job-7"],
+        "queue": "medium",
+    }
+    assert captured["dispatch_called_with"] == ("stubgraph.scan", ["job-7"], "medium")
+
+
+@pytest.mark.anyio
 async def test_enqueue_error_mapping_timeout(monkeypatch):
     session = _FakeDbSession()
 

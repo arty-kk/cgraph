@@ -1,21 +1,29 @@
 # backend/app/celery_tasks.py
 from __future__ import annotations
 
-import anyio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import anyio
 from celery.signals import worker_process_init, worker_process_shutdown
 
 from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .celery_app import celery_app
 from .config import settings
+from .infra.celery_producer_runtime import (
+    close_celery_producer_runtime,
+    init_celery_producer_runtime,
+)
 from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
 from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
 from .infra.fs_runtime import close_fs_runtime, init_fs_runtime, run_fs_io_async
-from .infra.redis_client import close_redis_pool_async, get_async_redis_client, init_redis_pool_async
+from .infra.redis_client import (
+    close_redis_pool_async,
+    get_async_redis_client,
+    init_redis_pool_async,
+)
 from .llm.client import close_async_openai_client, get_async_openai_client
 from .logging import get_logger
 from .models import Project, TaskJob
@@ -39,6 +47,7 @@ async def _startup_worker_resources_async() -> None:
         ("init_async_db", init_async_db),
         ("init_fs_runtime", init_fs_runtime),
         ("init_cpu_runtime", init_cpu_runtime),
+        ("init_celery_producer_runtime", init_celery_producer_runtime),
         ("init_external_io_runtime", init_external_io_runtime),
     ]
     if (settings.storage_backend or "local").strip().lower() == "s3":
@@ -60,6 +69,7 @@ async def _cleanup_worker_resources_async() -> None:
         ("close_async_openai_client", close_async_openai_client),
         ("close_fs_runtime", close_fs_runtime),
         ("close_cpu_runtime", close_cpu_runtime),
+        ("close_celery_producer_runtime", close_celery_producer_runtime),
         ("close_external_io_runtime", close_external_io_runtime),
         ("close_async_db", close_async_db),
     ]
@@ -245,7 +255,7 @@ def routing_calibration_task() -> dict:
         return {"updated": False, "reason": "error", "error": str(exc)}
 
 
-async def dispatch_task_async(*, task_name: str, args: list[Any], queue: str) -> None:
+def dispatch_task(*, task_name: str, args: list[Any], queue: str) -> None:
     task = celery_app.tasks.get(task_name)
     if task is None:
         raise RuntimeError(f"Celery task is not registered: {task_name}")
