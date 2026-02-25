@@ -49,7 +49,7 @@ async def test_collect_file_stats_async_keeps_input_order_across_batches(
         return sync_fn(batch)
 
     monkeypatch.setattr(scan, "_run_scan_fs_batch", _run_scan_fs_batch_out_of_order)
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
 
     try:
         results = await scan._collect_file_stats_async(tmp_path, rel_paths, batch_size=2, max_parallel=2)
@@ -80,7 +80,7 @@ async def test_read_file_batch_async_keeps_input_order_across_batches(
         return sync_fn(batch)
 
     monkeypatch.setattr(scan, "_run_scan_fs_batch", _run_scan_fs_batch_out_of_order)
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
 
     try:
         results = await scan._read_file_batch_async(
@@ -458,8 +458,8 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
     monkeypatch.setattr(scan, "sha256_text", lambda text: f"hash:{text}")
     monkeypatch.setattr(scan.settings, "scan_hash_verify_max_file_bytes", 1024)
     monkeypatch.setattr(scan.settings, "snapshot_max_file_bytes", 1024)
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 64)
-    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 4)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 64)
+    monkeypatch.setattr(scan.settings, "scan_stage_max_parallel", 4)
 
     orig_queue = scan.asyncio.Queue
 
@@ -529,8 +529,8 @@ async def test_scan_project_async_streams_batches_before_full_fs_walk_finishes(m
     monkeypatch.setattr(scan, "iter_code_files", _iter_stream)
     monkeypatch.setattr(scan, "_collect_file_stats_async", _collect)
     monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
-    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_max_parallel", 2)
 
     result = await asyncio.wait_for(scan.scan_project_async(1, 2, Path("/repo")), timeout=1.0)
 
@@ -620,8 +620,8 @@ async def test_scan_project_async_applies_backpressure_with_bounded_queue(monkey
     monkeypatch.setattr(scan, "iter_code_files", lambda root: (root / f"f{i}.py" for i in range(40)))
     monkeypatch.setattr(scan, "_collect_file_stats_async", _slow_collect)
     monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
-    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_max_parallel", 2)
     monkeypatch.setattr(scan.asyncio, "Queue", _QueueProbe)
 
     result = await scan.scan_project_async(1, 2, Path("/repo"))
@@ -673,8 +673,8 @@ async def test_scan_project_async_high_concurrency_keeps_event_loop_responsive(m
     monkeypatch.setattr(scan, "iter_code_files", lambda root: (root / rel for rel in roots[root.resolve()]))
     monkeypatch.setattr(scan, "_collect_file_stats_async", _slow_collect)
     monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
-    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_max_parallel", 2)
 
     await asyncio.gather(
         scan.scan_project_async(101, 201, Path("/repo-a")),
@@ -713,8 +713,8 @@ async def test_scan_project_async_cancelled_scan_does_not_leave_pipeline_tasks(m
     monkeypatch.setattr(scan, "iter_code_files", lambda root: (root / f"f{i}.py" for i in range(500)))
     monkeypatch.setattr(scan, "_collect_file_stats_async", _slow_collect)
     monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
-    monkeypatch.setattr(scan, "SCAN_STAGE_MAX_PARALLEL", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_max_parallel", 2)
 
     task = asyncio.create_task(scan.scan_project_async(999, 1, Path("/repo")))
     await asyncio.sleep(0.08)
@@ -957,7 +957,7 @@ async def test_prepare_scan_files_async_uses_chunked_async_stages(monkeypatch: p
             )
         return rows
 
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
     monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
     monkeypatch.setattr(scan, "_read_file_batch_async", _fake_read)
     monkeypatch.setattr(scan, "_parse_index_batch_async", _fake_parse)
@@ -1086,8 +1086,8 @@ async def test_prepare_scan_files_async_embeddings_dispatcher_is_bounded(monkeyp
         assert kind == "long"
         return await fn()
 
-    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 3)
-    monkeypatch.setattr(scan, "SCAN_EMBEDDINGS_MAX_PARALLEL", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 3)
+    monkeypatch.setattr(scan.settings, "scan_embeddings_max_parallel", 2)
     monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
     monkeypatch.setattr(scan, "_read_file_batch_async", _fake_read)
     monkeypatch.setattr(scan, "_parse_index_batch_async", _fake_parse)

@@ -53,7 +53,7 @@ describe('tasks api polling', () => {
       return { data: next }
     })
 
-    const initial = await runTask(7, body, { background: true })
+    const initial = await runTask(7, body)
     const result = await waitForTaskResult<RunTaskResult>(initial, { pollIntervalMs: 200, maxAttempts: 5 })
 
     expect(result).toEqual(finalResult)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Query, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from ..llm.policy import ProfileName
@@ -16,7 +16,7 @@ from ..services.task_service import (
     get_run_async,
     get_run_patch_async,
     list_runs_async,
-    run_task_with_background_async,
+    enqueue_run_task_async,
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -102,11 +102,6 @@ async def run_task(
     request: Request,
     project_id: int,
     body: RunTask,
-    background_tasks: BackgroundTasks,
-    background: bool = Query(
-        default=False,
-        description="Deprecated compatibility flag; ignored and task is always queued",
-    ),
 ):
     project = await require_project_access_async(request, project_id, min_role="member")
     provided_fields = set(getattr(body, "model_fields_set", set()))
@@ -133,15 +128,11 @@ async def run_task(
         agentic_reasoning_effort=body.agentic_reasoning_effort,
         provided_fields=provided_fields,
     )
-    response = await run_task_with_background_async(
+    response = await enqueue_run_task_async(
         project.id,
         project.org_id,
         task_request,
-        background,
-        None,
     )
-    if background_tasks is not None:
-        background_tasks.add_task(lambda: None)
     return response
 
 

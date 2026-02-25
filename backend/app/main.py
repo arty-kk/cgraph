@@ -15,24 +15,16 @@ from .api.nodes import router as nodes_router
 from .api.orgs import router as orgs_router
 from .api.projects import router as projects_router
 from .api.tasks import router as tasks_router
-from .async_db import AsyncSessionLocal, close_async_db, init_async_db
+from .async_db import AsyncSessionLocal
 from .auth import extract_token
 from .config import settings
 from .errors import install_exception_handlers
-from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
-from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
-from .infra.fs_runtime import close_fs_runtime, init_fs_runtime
 from .infra.rate_limit import allow_request_async, rate_limit_response
-from .infra.redis_client import close_redis_pool_async, init_redis_pool_async
-from .llm.client import close_async_openai_client, init_async_openai_client
+from .infra.runtime_lifecycle import build_cleanup_steps, build_startup_steps
 from .logging import log_requests, setup_logging
-from .s3_runtime import close_s3_runtime, init_s3_runtime
-from .scan import close_scan_runtime
 from .services.auth_service import get_user_from_token_async
 
 logger = logging.getLogger(__name__)
-
-
 
 
 def _should_attach_db_session(path: str) -> bool:
@@ -43,36 +35,14 @@ def _should_attach_db_session(path: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    startup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
-        ("init_redis_pool_async", init_redis_pool_async),
-        ("init_async_db", init_async_db),
-        ("init_fs_runtime", init_fs_runtime),
-        ("init_cpu_runtime", init_cpu_runtime),
-        ("init_external_io_runtime", init_external_io_runtime),
-    ]
-
-    if settings.openai_api_key:
-        startup_steps.append(("init_async_openai_client", init_async_openai_client))
-
-    use_s3 = (settings.storage_backend or "local").strip().lower() == "s3"
-    if use_s3:
-        startup_steps.append(("init_s3_runtime", init_s3_runtime))
+    startup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = build_startup_steps(role="api")
 
     try:
         for _, initializer in startup_steps:
             await initializer()
         yield
     finally:
-        cleanup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
-            ("close_s3_runtime", close_s3_runtime),
-            ("close_redis_pool_async", close_redis_pool_async),
-            ("close_async_openai_client", close_async_openai_client),
-            ("close_fs_runtime", close_fs_runtime),
-            ("close_cpu_runtime", close_cpu_runtime),
-            ("close_external_io_runtime", close_external_io_runtime),
-            ("close_scan_runtime", close_scan_runtime),
-            ("close_async_db", close_async_db),
-        ]
+        cleanup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = build_cleanup_steps(role="api")
         for name, cleanup in cleanup_steps:
             try:
                 await cleanup()
