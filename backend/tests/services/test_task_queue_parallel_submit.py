@@ -11,7 +11,6 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from app import celery_tasks
 from app.async_db import AsyncSessionLocal
 from app.errors import ExternalServiceError
-from app.infra import celery_producer_runtime
 from app.models import TaskJob
 from app.services import task_queue
 from app.services.task_queue import submit_run_async, submit_scan_async
@@ -145,21 +144,17 @@ async def test_submit_run_async_rolls_back_status_and_inflight_on_enqueue_error(
 
 @pytest.mark.anyio
 @pytest.mark.usefixtures("ensure_async_postgres")
-async def test_parallel_submit_scan_with_real_producer_runtime_keeps_loop_latency(
+async def test_parallel_submit_scan_burst_keeps_loop_latency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(celery_producer_runtime.settings, "task_queue_producer_workers", 2)
-    monkeypatch.setattr(celery_producer_runtime.settings, "task_queue_producer_concurrency", 2)
-    await celery_producer_runtime.close_celery_producer_runtime()
-
-    def _slow_sync_dispatch(*, task_name: str, args: list[object], queue: str) -> None:
-        _ = (task_name, args, queue)
-        time.sleep(0.05)
-
-    monkeypatch.setattr(celery_tasks, "dispatch_task", _slow_sync_dispatch)
-
     ticks = 0
     stop = asyncio.Event()
+
+    async def _slow_async_publish(_task_name, *, args, queue):
+        _ = (args, queue)
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _slow_async_publish)
 
     async def _ticker() -> None:
         nonlocal ticks
@@ -177,9 +172,33 @@ async def test_parallel_submit_scan_with_real_producer_runtime_keeps_loop_latenc
     finally:
         stop.set()
         await ticker_task
-        await celery_producer_runtime.close_celery_producer_runtime()
 
     elapsed = time.monotonic() - started
     assert len(set(task_ids)) == 20
     assert ticks > 10
     assert elapsed < 2
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("ensure_async_postgres")
+async def test_submit_run_to_execute_updates_job_status(monkeypatch):
+    async def _immediate_enqueue(task_name, *, args, queue):
+        _ = queue
+        if task_name == "stubgraph.run_task":
+            celery_tasks.run_task_job(*args)
+
+    async def _fake_run_task_async(_project_id, _org_id, _request):
+        return {"ok": True}
+
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _immediate_enqueue)
+    monkeypatch.setattr(celery_tasks, "run_task_async", _fake_run_task_async)
+    monkeypatch.setattr(celery_tasks, "_touch_inflight_async", lambda _job_id: asyncio.sleep(0))
+    monkeypatch.setattr(celery_tasks, "_decrement_inflight_async", lambda _job_id: asyncio.sleep(0))
+
+    task_id = await submit_run_async(project_id=1, org_id=42, payload={"query": "x"})
+
+    async with AsyncSessionLocal() as session:
+        job = await session.get(TaskJob, task_id)
+
+    assert job is not None
+    assert job.status == "succeeded"

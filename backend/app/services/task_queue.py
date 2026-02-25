@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
+import redis.asyncio as redis_async
+from kombu.serialization import dumps
 from redis import RedisError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +21,6 @@ from sqlmodel import delete, select
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
-from ..infra.celery_producer_runtime import run_celery_producer_io_async
 from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
@@ -45,23 +48,57 @@ class _AsyncTaskProducerError(Exception):
 
 class _AsyncTaskTransportClient:
     async def publish_async(self, *, task_name: str, args: list[Any], queue: str) -> None:
-        from ..celery_tasks import dispatch_task
+        from ..celery_app import celery_app
 
-        await run_celery_producer_io_async(
-            dispatch_task,
-            task_name=task_name,
+        broker_url = str(settings.celery_broker_url or "").strip()
+        parsed_broker = urlparse(broker_url)
+        scheme = parsed_broker.scheme.lower()
+
+        if scheme and not scheme.startswith("redis"):
+            celery_app.send_task(task_name, args=args, queue=queue)
+            return
+
+        message = celery_app.amqp.as_task_v2(
+            task_id=str(args[0]) if args else uuid4().hex,
+            name=task_name,
             args=args,
-            queue=queue,
+            kwargs={},
+            root_id=str(args[0]) if args else None,
+            ignore_result=True,
+            argsrepr=repr(args),
+            kwargsrepr="{}",
+            origin="stubgraph.task_queue",
         )
+        content_type, content_encoding, body = dumps(message.body, serializer="json")
+        body_encoded = (
+            base64.b64encode(body).decode("ascii") if isinstance(body, bytes) else str(body)
+        )
+        payload = {
+            "body": body_encoded,
+            "content-type": content_type,
+            "content-encoding": content_encoding,
+            "headers": message.headers,
+            "properties": {
+                **message.properties,
+                "body_encoding": "base64" if isinstance(body, bytes) else "utf-8",
+                "delivery_info": {"exchange": "", "routing_key": queue},
+                "delivery_mode": 2,
+                "priority": 0,
+            },
+        }
+        broker_client = redis_async.Redis.from_url(broker_url, decode_responses=True)
+        try:
+            await broker_client.lpush(queue, json.dumps(payload, ensure_ascii=False))
+        finally:
+            await broker_client.aclose()
 
 
 class _AsyncTaskProducer:
     def __init__(self, client: _AsyncTaskTransportClient | None = None) -> None:
         self._client = client or _AsyncTaskTransportClient()
 
-    async def enqueue_task_async(self, task: Any, *, args: list[Any], queue: str) -> None:
+    async def enqueue_task_async(self, task_name: str, *, args: list[Any], queue: str) -> None:
         try:
-            task_name = str(getattr(task, "name", "") or "")
             if not task_name:
                 raise RuntimeError("Celery task name is required")
             await self._client.publish_async(task_name=task_name, args=args, queue=queue)
@@ -80,7 +117,11 @@ def _classify_enqueue_failure(exc: BaseException) -> str:
     return "internal_enqueue_failure"
 
 
-async def _mark_enqueue_failure_async(session: AsyncSession, task_id: str, exc: BaseException) -> None:
+async def _mark_enqueue_failure_async(
+    session: AsyncSession,
+    task_id: str,
+    exc: BaseException,
+) -> None:
     now = datetime.now(timezone.utc)
     try:
         job = await session.get(TaskJob, task_id)
@@ -105,14 +146,14 @@ async def _mark_enqueue_failure_for_task_id_async(task_id: str, exc: BaseExcepti
 
 async def _enqueue_with_error_mapping_async(
     *,
-    task: Any,
+    task_name: str,
     args: list[Any],
     queue: str,
     task_id: str,
 ) -> None:
     try:
         await asyncio.wait_for(
-            _async_task_producer.enqueue_task_async(task, args=args, queue=queue),
+            _async_task_producer.enqueue_task_async(task_name, args=args, queue=queue),
             timeout=_ENQUEUE_TIMEOUT_SECONDS,
         )
     except asyncio.CancelledError as exc:
@@ -375,11 +416,10 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
             await _release_inflight_async("heavy", task_id)
             return task_id
 
-    from ..celery_tasks import run_task_job
 
     try:
         await _enqueue_with_error_mapping_async(
-            task=run_task_job,
+            task_name="stubgraph.run_task",
             args=[task_id, project_id, org_id, payload],
             queue="heavy",
             task_id=task_id,
@@ -406,9 +446,8 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
         )
     if not created:
         return task_id
-    from ..celery_tasks import scan_task
     await _enqueue_with_error_mapping_async(
-        task=scan_task,
+        task_name="stubgraph.scan",
         args=[task_id, project_id, org_id],
         queue="medium",
         task_id=task_id,
@@ -433,9 +472,8 @@ async def submit_docs_async(project_id: int, org_id: int) -> str:
         )
     if not created:
         return task_id
-    from ..celery_tasks import docs_task
     await _enqueue_with_error_mapping_async(
-        task=docs_task,
+        task_name="stubgraph.docs",
         args=[task_id, project_id, org_id],
         queue="light",
         task_id=task_id,
@@ -469,9 +507,8 @@ async def submit_mutation_indexing_async(
             idempotency_key=idempotency_key,
         )
     if created:
-        from ..celery_tasks import mutation_indexing_task
         await _enqueue_with_error_mapping_async(
-            task=mutation_indexing_task,
+            task_name="stubgraph.mutation_indexing",
             args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
             queue="medium",
             task_id=task_id,

@@ -143,20 +143,19 @@ async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
     calls: list[dict[str, object]] = []
 
     class _Producer:
-        async def enqueue_task_async(self, task, *, args, queue):
-            calls.append({"task": task, "args": args, "queue": queue})
+        async def enqueue_task_async(self, task_name, *, args, queue):
+            calls.append({"task_name": task_name, "args": args, "queue": queue})
 
     monkeypatch.setattr(task_queue, "_async_task_producer", _Producer())
 
-    marker = object()
     await task_queue._enqueue_with_error_mapping_async(
-        task=marker,
+        task_name="stubgraph.scan",
         args=["job-0", 1],
         queue="heavy",
         task_id="job-0",
     )
 
-    assert calls == [{"task": marker, "args": ["job-0", 1], "queue": "heavy"}]
+    assert calls == [{"task_name": "stubgraph.scan", "args": ["job-0", 1], "queue": "heavy"}]
 
 
 @pytest.mark.anyio
@@ -168,44 +167,73 @@ async def test_async_task_producer_uses_async_transport_client(monkeypatch):
             calls.append((task_name, args, queue))
 
     producer = task_queue._AsyncTaskProducer(client=_Client())
-    task = type("_Task", (), {"name": "stubgraph.scan"})()
-
-    await producer.enqueue_task_async(task, args=["job-99"], queue="medium")
+    await producer.enqueue_task_async("stubgraph.scan", args=["job-99"], queue="medium")
 
     assert calls == [("stubgraph.scan", ["job-99"], "medium")]
 
 
 @pytest.mark.anyio
-async def test_transport_client_passes_sync_dispatch_to_producer_runtime(monkeypatch):
-    captured: dict[str, object] = {}
+async def test_transport_client_publishes_celery_payload_to_async_broker(monkeypatch):
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+            self.closed = False
 
-    def _sync_dispatch(*, task_name: str, args: list[object], queue: str) -> str:
-        captured["dispatch_called_with"] = (task_name, args, queue)
-        return "ok"
+        async def lpush(self, key: str, payload: str) -> None:
+            self.calls.append((key, payload))
 
-    async def _fake_run(fn, *args, **kwargs):
-        captured["fn"] = fn
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return fn(*args, **kwargs)
+        async def aclose(self) -> None:
+            self.closed = True
 
-    monkeypatch.setattr(task_queue, "run_celery_producer_io_async", _fake_run)
+    fake_redis = _FakeRedis()
+    from_url_calls: list[tuple[str, bool]] = []
 
-    from app import celery_tasks
+    class _RedisClientFactory:
+        @staticmethod
+        def from_url(url: str, decode_responses: bool):
+            from_url_calls.append((url, decode_responses))
+            return fake_redis
 
-    monkeypatch.setattr(celery_tasks, "dispatch_task", _sync_dispatch)
+    class _RedisModule:
+        Redis = _RedisClientFactory
+
+    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "redis://localhost:6379/5")
+    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
 
     client = task_queue._AsyncTaskTransportClient()
-    await client.publish_async(task_name="stubgraph.scan", args=["job-7"], queue="medium")
+    await client.publish_async(task_name="stubgraph.scan", args=["job-7", 1, 2], queue="medium")
 
-    assert captured["fn"] is _sync_dispatch
-    assert captured["args"] == ()
-    assert captured["kwargs"] == {
-        "task_name": "stubgraph.scan",
-        "args": ["job-7"],
+    assert len(fake_redis.calls) == 1
+    assert from_url_calls == [("redis://localhost:6379/5", True)]
+    assert fake_redis.closed is True
+    queue, payload_raw = fake_redis.calls[0]
+    payload = __import__("json").loads(payload_raw)
+    assert queue == "medium"
+    assert payload["headers"]["task"] == "stubgraph.scan"
+    assert payload["headers"]["id"] == "job-7"
+
+
+@pytest.mark.anyio
+async def test_transport_client_falls_back_to_celery_send_task_for_non_redis_broker(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _CeleryApp:
+        def send_task(self, name: str, args: list[object], queue: str) -> None:
+            captured["name"] = name
+            captured["args"] = args
+            captured["queue"] = queue
+
+    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "amqp://guest:guest@localhost:5672//")
+    monkeypatch.setattr("app.celery_app.celery_app", _CeleryApp())
+
+    client = task_queue._AsyncTaskTransportClient()
+    await client.publish_async(task_name="stubgraph.scan", args=["job-8", 1, 2], queue="medium")
+
+    assert captured == {
+        "name": "stubgraph.scan",
+        "args": ["job-8", 1, 2],
         "queue": "medium",
     }
-    assert captured["dispatch_called_with"] == ("stubgraph.scan", ["job-7"], "medium")
 
 
 @pytest.mark.anyio
@@ -222,7 +250,7 @@ async def test_enqueue_error_mapping_timeout(monkeypatch):
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
-            task=object(),
+            task_name="stubgraph.scan",
             args=["job-1"],
             queue="medium",
             task_id="job-1",
@@ -245,7 +273,7 @@ async def test_enqueue_error_mapping_cancellation(monkeypatch):
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
-            task=object(),
+            task_name="stubgraph.scan",
             args=["job-cancel"],
             queue="medium",
             task_id="job-cancel",
@@ -268,13 +296,44 @@ async def test_enqueue_error_mapping_broker_error(monkeypatch):
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
-            task=object(),
+            task_name="stubgraph.scan",
             args=["job-2"],
             queue="medium",
             task_id="job-2",
         )
 
     assert exc_ctx.value.context["enqueue_reason"] == "broker_error"
+
+
+@pytest.mark.anyio
+async def test_enqueue_retry_succeeds_after_transient_broker_error(monkeypatch):
+    attempts = 0
+
+    async def _flaky_enqueue(task_name, *, args, queue):
+        nonlocal attempts
+        _ = (task_name, args, queue)
+        attempts += 1
+        if attempts == 1:
+            raise task_queue._AsyncTaskProducerError("temporary")
+
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _flaky_enqueue)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_FakeDbSession()))
+
+    with pytest.raises(ExternalServiceError):
+        await task_queue._enqueue_with_error_mapping_async(
+            task_name="stubgraph.scan",
+            args=["job-r"],
+            queue="medium",
+            task_id="job-r",
+        )
+
+    await task_queue._enqueue_with_error_mapping_async(
+        task_name="stubgraph.scan",
+        args=["job-r"],
+        queue="medium",
+        task_id="job-r",
+    )
+    assert attempts == 2
 
 
 @pytest.mark.anyio
@@ -401,7 +460,11 @@ async def test_submit_scan_async_releases_db_session_before_enqueue(monkeypatch)
         events.append("enqueue")
 
     monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _Ctx())
-    monkeypatch.setattr(task_queue, "get_scan_idempotency_key_async", lambda *_args, **_kwargs: asyncio.sleep(0, result="scan-key"))
+    monkeypatch.setattr(
+        task_queue,
+        "get_scan_idempotency_key_async",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result="scan-key"),
+    )
     monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing)
     monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job)
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _fake_enqueue)

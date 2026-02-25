@@ -19,10 +19,6 @@ from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .auth import extract_token
 from .config import settings
 from .errors import install_exception_handlers
-from .infra.celery_producer_runtime import (
-    close_celery_producer_runtime,
-    init_celery_producer_runtime,
-)
 from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
 from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
 from .infra.fs_runtime import close_fs_runtime, init_fs_runtime
@@ -52,7 +48,6 @@ async def lifespan(_: FastAPI):
         ("init_async_db", init_async_db),
         ("init_fs_runtime", init_fs_runtime),
         ("init_cpu_runtime", init_cpu_runtime),
-        ("init_celery_producer_runtime", init_celery_producer_runtime),
         ("init_external_io_runtime", init_external_io_runtime),
     ]
 
@@ -74,7 +69,6 @@ async def lifespan(_: FastAPI):
             ("close_async_openai_client", close_async_openai_client),
             ("close_fs_runtime", close_fs_runtime),
             ("close_cpu_runtime", close_cpu_runtime),
-            ("close_celery_producer_runtime", close_celery_producer_runtime),
             ("close_external_io_runtime", close_external_io_runtime),
             ("close_scan_runtime", close_scan_runtime),
             ("close_async_db", close_async_db),
