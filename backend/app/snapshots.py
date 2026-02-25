@@ -290,8 +290,55 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
     client = get_s3_client()
     upload_id = None
     parts: list[dict[str, str | int]] = []
-    part_number = 1
     chunk_size = 8 * 1024 * 1024
+    concurrency = max(1, int(settings.snapshot_s3_concurrency))
+    queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue(maxsize=concurrency)
+    pipeline_error: BaseException | None = None
+
+    def _set_pipeline_error(exc: BaseException) -> None:
+        nonlocal pipeline_error
+        if pipeline_error is None:
+            pipeline_error = exc
+
+    async def _upload_worker() -> None:
+        while True:
+            item = await queue.get()
+            try:
+                if item is None:
+                    return
+                part_number, chunk = item
+                if pipeline_error is not None:
+                    continue
+                async with _SNAPSHOT_S3_IO_SEMAPHORE:
+                    resp = await client.upload_part(
+                        Bucket=bucket,
+                        Key=key,
+                        UploadId=upload_id,
+                        PartNumber=part_number,
+                        Body=chunk,
+                    )
+                etag = resp.get("ETag")
+                if not isinstance(etag, str) or not etag:
+                    raise SnapshotError("S3 upload part missing ETag")
+                parts.append({"ETag": etag, "PartNumber": part_number})
+            except BaseException as exc:  # noqa: BLE001
+                _set_pipeline_error(exc)
+            finally:
+                queue.task_done()
+
+    def _validated_sorted_parts(upload_parts: list[dict[str, str | int]]) -> list[dict[str, str | int]]:
+        if not upload_parts:
+            raise SnapshotError("Multipart upload produced no parts")
+        sorted_parts = sorted(upload_parts, key=lambda item: int(item["PartNumber"]))
+        for expected_part, part in enumerate(sorted_parts, start=1):
+            part_number = int(part.get("PartNumber") or 0)
+            etag = part.get("ETag")
+            if part_number != expected_part:
+                raise SnapshotError("Multipart upload parts are incomplete or out of sequence")
+            if not isinstance(etag, str) or not etag:
+                raise SnapshotError("Multipart upload part has invalid ETag")
+        return sorted_parts
+
     try:
         async with _SNAPSHOT_S3_IO_SEMAPHORE:
             create_resp = await client.create_multipart_upload(Bucket=bucket, Key=key)
@@ -299,43 +346,61 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
             if not upload_id:
                 raise SnapshotError("Failed to start multipart upload")
 
-        with archive_path.open("rb") as stream:
-            while True:
-                chunk_batch = await run_fs_io_async(
-                    _read_chunk_batch,
-                    stream,
-                    chunk_size,
-                    operation="snapshots.archive.read_chunks",
-                )
-                if not chunk_batch:
-                    break
+        async def _shutdown_workers(workers: list[asyncio.Task[None]]) -> None:
+            for _ in workers:
+                await queue.put(None)
+            await queue.join()
+            await asyncio.gather(*workers, return_exceptions=True)
 
-                for chunk in chunk_batch:
-                    async with _SNAPSHOT_S3_IO_SEMAPHORE:
-                        resp = await client.upload_part(
-                            Bucket=bucket,
-                            Key=key,
-                            UploadId=upload_id,
-                            PartNumber=part_number,
-                            Body=chunk,
-                        )
-                    etag = resp.get("ETag")
-                    if not isinstance(etag, str) or not etag:
-                        raise SnapshotError("S3 upload part missing ETag")
-                    parts.append({"ETag": etag, "PartNumber": part_number})
-                    part_number += 1
+        workers = [asyncio.create_task(_upload_worker()) for _ in range(concurrency)]
+        producer_part_number = 1
+        try:
+            with archive_path.open("rb") as stream:
+                while True:
+                    if pipeline_error is not None:
+                        raise pipeline_error
+
+                    chunk_batch = await run_fs_io_async(
+                        _read_chunk_batch,
+                        stream,
+                        chunk_size,
+                        operation="snapshots.archive.read_chunks",
+                    )
+                    if not chunk_batch:
+                        break
+
+                    for chunk in chunk_batch:
+                        if pipeline_error is not None:
+                            raise pipeline_error
+                        await queue.put((producer_part_number, chunk))
+                        producer_part_number += 1
+        finally:
+            shutdown_task = asyncio.create_task(_shutdown_workers(workers))
+            try:
+                await asyncio.shield(shutdown_task)
+            except asyncio.CancelledError:
+                await shutdown_task
+                raise
+
+        if pipeline_error is not None:
+            raise pipeline_error
+
+        validated_parts = _validated_sorted_parts(parts)
 
         async with _SNAPSHOT_S3_IO_SEMAPHORE:
             await client.complete_multipart_upload(
                 Bucket=bucket,
                 Key=key,
                 UploadId=upload_id,
-                MultipartUpload={"Parts": parts},
+                MultipartUpload={"Parts": validated_parts},
             )
-    except Exception:
+    except BaseException:
         if upload_id:
-            async with _SNAPSHOT_S3_IO_SEMAPHORE:
-                await client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+            try:
+                async with _SNAPSHOT_S3_IO_SEMAPHORE:
+                    await client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to abort multipart upload", extra={"reason": str(exc)})
         raise
 
 
