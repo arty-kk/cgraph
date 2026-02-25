@@ -358,6 +358,31 @@ async def test_guard_inflight_async_raises_bad_request_when_limit_exhausted(monk
 
 
 @pytest.mark.anyio
+async def test_guard_inflight_async_retries_after_reconcile(monkeypatch):
+    eval_results = [(0, 2), (1, 2)]
+    eval_calls: list[tuple[object, ...]] = []
+    reconcile_calls = 0
+
+    class _RedisClient:
+        async def eval(self, script, numkeys, key, limit, job_id):
+            eval_calls.append((script, numkeys, key, limit, job_id))
+            return eval_results.pop(0)
+
+    async def _fake_reconcile():
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+
+    monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 2)
+    monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: _RedisClient())
+    monkeypatch.setattr(task_queue, "_reconcile_heavy_inflight_async", _fake_reconcile)
+
+    await task_queue._guard_inflight_async(object(), "heavy", "job-1")
+
+    assert len(eval_calls) == 2
+    assert reconcile_calls == 1
+
+
+@pytest.mark.anyio
 async def test_submit_run_async_enqueues_when_quota_available(monkeypatch):
     client = _FakeRedisClient(eval_result=(1, 1))
     enqueue_calls: list[dict[str, object]] = []
