@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app import storage
 from app.config import settings
+from app.infra import fs_runtime
 
 
 class _Body:
@@ -69,14 +70,20 @@ async def test_patch_blob_s3_concurrent_roundtrip(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.anyio
-async def test_s3_signed_url_async_uses_run_fs_io_async(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_s3_signed_url_async_uses_storage_sdk_runtime_not_fs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake = _FakeS3()
     fs_called = {"value": False}
+    storage_runtime_called = {"value": False}
     cpu_called = {"value": False}
 
-    async def _fake_run_fs_io_async(func, *args, **kwargs):
+    async def _fake_run_fs_io_async(*_args, **_kwargs):
         fs_called["value"] = True
-        kwargs.pop("operation", None)
+        raise AssertionError("run_fs_io_async must not be used for signed URL generation")
+
+    async def _fake_run_storage_sdk_io_async(func, *args, **kwargs):
+        storage_runtime_called["value"] = True
         return func(*args, **kwargs)
 
     async def _fake_run_cpu_io_async(*_args, **_kwargs):
@@ -85,11 +92,13 @@ async def test_s3_signed_url_async_uses_run_fs_io_async(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(storage, "get_s3_client", lambda: fake)
     monkeypatch.setattr(storage, "run_fs_io_async", _fake_run_fs_io_async)
+    monkeypatch.setattr(storage, "run_storage_sdk_io_async", _fake_run_storage_sdk_io_async)
     monkeypatch.setattr(storage, "run_cpu_io_async", _fake_run_cpu_io_async, raising=False)
 
     url = await storage._s3_signed_url_async("bucket", "patches/a.diff")
 
-    assert fs_called["value"] is True
+    assert fs_called["value"] is False
+    assert storage_runtime_called["value"] is True
     assert cpu_called["value"] is False
     assert url == "https://signed/bucket/patches/a.diff"
 
@@ -177,3 +186,42 @@ async def test_s3_signed_url_async_respects_semaphore_limit(
 
     assert all(url == "https://signed/bucket/key" for url in urls)
     assert max_seen <= limit
+
+
+@pytest.mark.anyio
+async def test_presign_load_does_not_increase_fs_runtime_queue_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeS3()
+    original_workers = settings.fs_runtime_max_workers
+    original_concurrency = settings.fs_runtime_max_concurrency
+
+    monkeypatch.setattr(storage, "get_s3_client", lambda: fake)
+    settings.fs_runtime_max_workers = 1
+    settings.fs_runtime_max_concurrency = 1
+
+    await fs_runtime.close_fs_runtime()
+    await fs_runtime.init_fs_runtime()
+
+    fs_tasks = 4
+    presign_tasks = 16
+
+    try:
+        await asyncio.gather(
+            *[
+                storage._s3_signed_url_async("bucket", f"patches/{idx}.diff")
+                for idx in range(presign_tasks)
+            ],
+            *[
+                fs_runtime.run_fs_io_async(time.sleep, 0.03, operation="test.fs_load")
+                for _ in range(fs_tasks)
+            ],
+        )
+
+        runtime = fs_runtime._fs_runtime
+        assert runtime is not None
+        assert runtime.peak_queue_depth <= fs_tasks
+    finally:
+        await fs_runtime.close_fs_runtime()
+        settings.fs_runtime_max_workers = original_workers
+        settings.fs_runtime_max_concurrency = original_concurrency

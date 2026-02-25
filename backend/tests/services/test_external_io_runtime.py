@@ -81,3 +81,36 @@ async def test_openai_runtime_releases_permit_on_error_and_cancellation(
     ) == "after-cancel"
 
     await external_io_runtime.close_external_io_runtime()
+
+
+@pytest.mark.anyio
+async def test_storage_sdk_runtime_limit_burst(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(external_io_runtime.settings, "storage_sdk_io_concurrency", 2)
+    await external_io_runtime.close_external_io_runtime()
+    await external_io_runtime.init_external_io_runtime()
+
+    import threading
+    import time
+
+    current = 0
+    max_seen = 0
+    lock = threading.Lock()
+
+    def _work() -> int:
+        nonlocal current, max_seen
+        with lock:
+            current += 1
+            max_seen = max(max_seen, current)
+        time.sleep(0.04)
+        with lock:
+            current -= 1
+        return 1
+
+    results = await asyncio.gather(
+        *[external_io_runtime.run_storage_sdk_io_async(_work) for _ in range(8)]
+    )
+
+    assert len(results) == 8
+    assert max_seen <= 2
+
+    await external_io_runtime.close_external_io_runtime()
