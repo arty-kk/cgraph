@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -75,17 +76,50 @@ async def test_compute_project_summary_facts_async_uses_run_cpu_io_async(
 
 
 @pytest.mark.anyio
-async def test_tree_outline_async_runs_inline() -> None:
+async def test_tree_outline_async_uses_run_cpu_io_async(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return {"lines": ["- src", "  - main.py"], "truncated": False, "max_lines": 1200}
+
+    monkeypatch.setattr(docs_service, "run_cpu_io_async", _fake_run_cpu_io_async)
+
     result = await docs_service._tree_outline_async(["src/main.py"], 1200)
 
     assert result["lines"] == ["- src", "  - main.py"]
+    assert calls["func"] is docs_service._tree_outline
+    assert calls["args"] == (["src/main.py"],)
+    assert calls["kwargs"] == {
+        "max_lines": 1200,
+        "operation": "docs_service.tree_outline",
+    }
 
 
 @pytest.mark.anyio
-async def test_build_run_hints_async_runs_inline() -> None:
+async def test_build_run_hints_async_uses_run_cpu_io_async(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return ["make test"]
+
+    monkeypatch.setattr(docs_service, "run_cpu_io_async", _fake_run_cpu_io_async)
+
     result = await docs_service._build_run_hints_async([{"content": "make test"}], {"makefiles": []})
 
-    assert isinstance(result, list)
+    assert result == ["make test"]
+    assert calls["func"] is docs_service._build_run_hints
+    assert calls["args"] == ([{"content": "make test"}], {"makefiles": []})
+    assert calls["kwargs"] == {"operation": "docs_service.build_run_hints"}
 
 
 @pytest.mark.anyio
@@ -118,7 +152,19 @@ async def test_build_docs_markdown_parts_async_uses_run_cpu_io_async(
 
 
 @pytest.mark.anyio
-async def test_select_contract_paths_async_runs_inline() -> None:
+async def test_select_contract_paths_async_uses_run_cpu_io_async(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return ["a.py", "b.py"]
+
+    monkeypatch.setattr(docs_service, "run_cpu_io_async", _fake_run_cpu_io_async)
+
     result = await docs_service._select_contract_paths_async(
         risks=[{"path": "a.py", "risk": 1.0, "fan_out": 1}],
         hotspots=[{"path": "a.py"}],
@@ -127,6 +173,14 @@ async def test_select_contract_paths_async_runs_inline() -> None:
     )
 
     assert result == ["a.py", "b.py"]
+    assert calls["func"] is docs_service._select_contract_paths
+    assert calls["kwargs"] == {
+        "risks": [{"path": "a.py", "risk": 1.0, "fan_out": 1}],
+        "hotspots": [{"path": "a.py"}],
+        "hubs": [{"path": "b.py"}],
+        "paths": ["a.py", "b.py"],
+        "operation": "docs_service.select_contract_paths",
+    }
 
 
 @pytest.mark.anyio
@@ -286,6 +340,64 @@ async def test_collect_outline_and_key_files_async_runs_helpers(
     assert outline == {"lines": ["- src"], "truncated": False}
     assert key_files_data == ([{"path": "README.md"}], {"makefiles": []})
     assert calls == ["outline", "key_files"]
+
+
+@pytest.mark.anyio
+async def test_collect_outline_and_key_files_async_is_cooperative_for_large_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    large_paths = [f"src/pkg/file_{idx}.py" for idx in range(50_000)]
+    ticker_ticks = 0
+    ticker_stop = False
+    outline_started = asyncio.Event()
+    key_files_started = asyncio.Event()
+    release_workers = asyncio.Event()
+
+    async def _ticker() -> None:
+        nonlocal ticker_ticks
+        while not ticker_stop:
+            ticker_ticks += 1
+            await asyncio.sleep(0.005)
+
+    async def _fake_tree_outline_async(paths: list[str], max_lines: int = 1200):
+        assert len(paths) == 50_000
+        assert max_lines == 1200
+        outline_started.set()
+        await release_workers.wait()
+        return {"lines": ["- src"], "truncated": True, "max_lines": 1200}
+
+    async def _fake_collect_key_files_async(root: Path, paths: list[str]):
+        assert root == Path("/repo")
+        assert len(paths) == 50_000
+        key_files_started.set()
+        await release_workers.wait()
+        return ([{"path": "README.md"}], {"makefiles": []})
+
+    monkeypatch.setattr(docs_service, "_tree_outline_async", _fake_tree_outline_async)
+    monkeypatch.setattr(docs_service, "_collect_key_files_async", _fake_collect_key_files_async)
+
+    ticker_task = asyncio.create_task(_ticker())
+    collect_task = asyncio.create_task(
+        docs_service._collect_outline_and_key_files_async(
+            Path("/repo"),
+            large_paths,
+        )
+    )
+    try:
+        await asyncio.wait_for(asyncio.gather(outline_started.wait(), key_files_started.wait()), timeout=0.5)
+        await asyncio.sleep(0.03)
+        assert ticker_ticks >= 2
+        assert collect_task.done() is False
+
+        release_workers.set()
+        outline, key_files_data = await asyncio.wait_for(collect_task, timeout=0.5)
+    finally:
+        ticker_stop = True
+        await ticker_task
+
+    assert outline["truncated"] is True
+    assert key_files_data == ([{"path": "README.md"}], {"makefiles": []})
+    assert ticker_ticks >= 2
 
 
 @pytest.mark.anyio

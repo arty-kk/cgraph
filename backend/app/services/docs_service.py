@@ -267,7 +267,12 @@ def _tree_outline(paths: list[str], max_lines: int = 1200) -> dict:
 
 
 async def _tree_outline_async(paths: list[str], max_lines: int = 1200) -> dict:
-    return _tree_outline(paths, max_lines)
+    return await run_cpu_io_async(
+        _tree_outline,
+        paths,
+        max_lines=max_lines,
+        operation="docs_service.tree_outline",
+    )
 
 
 def _path_depth(p: str) -> int:
@@ -891,11 +896,13 @@ async def _select_contract_paths_async(
     hubs: list[dict],
     paths: list[str],
 ) -> list[str]:
-    return _select_contract_paths(
+    return await run_cpu_io_async(
+        _select_contract_paths,
         risks=risks,
         hotspots=hotspots,
         hubs=hubs,
         paths=paths,
+        operation="docs_service.select_contract_paths",
     )
 
 
@@ -987,7 +994,12 @@ def _build_run_hints(key_files: list[dict], parsed: dict) -> list[str]:
 
 
 async def _build_run_hints_async(key_files: list[dict], parsed: dict) -> list[str]:
-    return _build_run_hints(key_files, parsed)
+    return await run_cpu_io_async(
+        _build_run_hints,
+        key_files,
+        parsed,
+        operation="docs_service.build_run_hints",
+    )
 
 
 def _api_summary_md(api_summary: dict) -> str:
