@@ -55,8 +55,8 @@ async def test_lifespan_initializes_and_closes_s3_runtime_once(
         settings.storage_backend = original_backend
 
     assert calls == [
-        "init_db",
         "init_redis",
+        "init_db",
         "init_s3",
         "inside",
         "close_s3",

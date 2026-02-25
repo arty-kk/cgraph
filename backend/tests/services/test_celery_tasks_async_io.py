@@ -57,8 +57,8 @@ def test_worker_process_init_and_shutdown_use_async_resource_lifecycle(
     monkeypatch.setattr(celery_tasks, "init_s3_runtime", lambda: _record("init_s3"))
     monkeypatch.setattr(
         celery_tasks,
-        "get_async_openai_client",
-        lambda: calls.append("openai") or object(),
+        "init_async_openai_client",
+        lambda: _record("init_openai"),
     )
 
     monkeypatch.setattr(celery_tasks, "close_s3_runtime", lambda: _record("close_s3"))
@@ -93,7 +93,7 @@ def test_worker_process_init_and_shutdown_use_async_resource_lifecycle(
         "init_celery_producer",
         "init_external_io",
         "init_s3",
-        "openai",
+        "init_openai",
         "close_s3",
         "close_redis",
         "close_openai",

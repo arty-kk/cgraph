@@ -15,6 +15,7 @@ async def _noop_async():
 
 def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
     calls: list[str] = []
+    original_openai_api_key = main.settings.openai_api_key
 
     async def _record(name: str):
         calls.append(name)
@@ -29,6 +30,7 @@ def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
         lambda: _record("init_celery_producer"),
     )
     monkeypatch.setattr(main, "init_external_io_runtime", lambda: _record("init_external_io"))
+    monkeypatch.setattr(main, "init_async_openai_client", lambda: _record("init_openai"))
 
     monkeypatch.setattr(main, "close_redis_pool_async", lambda: _record("close_redis"))
     monkeypatch.setattr(main, "close_async_openai_client", lambda: _record("close_openai"))
@@ -44,11 +46,15 @@ def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
     monkeypatch.setattr(main, "close_async_db", lambda: _record("close_db"))
 
     monkeypatch.setattr(main.settings, "storage_backend", "local")
+    monkeypatch.setattr(main.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(main.settings, "rate_limit_enabled", False)
 
-    with TestClient(main.app) as client:
-        response = client.get("/health")
-        assert response.status_code == 200
+    try:
+        with TestClient(main.app) as client:
+            response = client.get("/health")
+            assert response.status_code == 200
+    finally:
+        main.settings.openai_api_key = original_openai_api_key
 
     assert calls == [
         "init_redis",
@@ -57,6 +63,7 @@ def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
         "init_cpu",
         "init_celery_producer",
         "init_external_io",
+        "init_openai",
         "close_redis",
         "close_openai",
         "close_fs",
@@ -98,6 +105,7 @@ def test_lifespan_closes_runtime_even_if_startup_fails(monkeypatch):
     monkeypatch.setattr(main, "close_async_db", lambda: _record("close_db"))
 
     monkeypatch.setattr(main.settings, "storage_backend", "s3")
+    monkeypatch.setattr(main.settings, "openai_api_key", "")
     monkeypatch.setattr(main.settings, "rate_limit_enabled", False)
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -121,6 +129,7 @@ def test_lifespan_closes_runtime_even_if_startup_fails(monkeypatch):
 
 def test_lifespan_repeated_shutdown_remains_stable(monkeypatch):
     calls: list[str] = []
+    original_openai_api_key = main.settings.openai_api_key
 
     async def _record(name: str):
         calls.append(name)
@@ -135,6 +144,7 @@ def test_lifespan_repeated_shutdown_remains_stable(monkeypatch):
         lambda: _record("init_celery_producer"),
     )
     monkeypatch.setattr(main, "init_external_io_runtime", lambda: _record("init_external_io"))
+    monkeypatch.setattr(main, "init_async_openai_client", lambda: _record("init_openai"))
 
     monkeypatch.setattr(main, "close_s3_runtime", lambda: _record("close_s3"))
     monkeypatch.setattr(main, "close_redis_pool_async", lambda: _record("close_redis"))
@@ -151,11 +161,15 @@ def test_lifespan_repeated_shutdown_remains_stable(monkeypatch):
     monkeypatch.setattr(main, "close_async_db", lambda: _record("close_db"))
 
     monkeypatch.setattr(main.settings, "storage_backend", "local")
+    monkeypatch.setattr(main.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(main.settings, "rate_limit_enabled", False)
 
-    for _ in range(2):
-        with TestClient(main.app) as client:
-            assert client.get("/health").status_code == 200
+    try:
+        for _ in range(2):
+            with TestClient(main.app) as client:
+                assert client.get("/health").status_code == 200
+    finally:
+        main.settings.openai_api_key = original_openai_api_key
 
     assert calls.count("init_db") == 2
     assert calls.count("close_db") == 2
@@ -181,6 +195,7 @@ def test_db_session_middleware_skips_health(monkeypatch):
     monkeypatch.setattr(main, "init_cpu_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "init_celery_producer_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "init_external_io_runtime", lambda: _noop_async())
+    monkeypatch.setattr(main, "init_async_openai_client", lambda: _noop_async())
     monkeypatch.setattr(main, "close_s3_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "close_redis_pool_async", lambda: _noop_async())
     monkeypatch.setattr(main, "close_fs_runtime", lambda: _noop_async())
@@ -191,6 +206,7 @@ def test_db_session_middleware_skips_health(monkeypatch):
     monkeypatch.setattr(main, "close_scan_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "close_async_db", lambda: _noop_async())
     monkeypatch.setattr(main.settings, "auth_enabled", False)
+    monkeypatch.setattr(main.settings, "openai_api_key", "")
     monkeypatch.setattr(main.settings, "rate_limit_enabled", False)
 
     with TestClient(main.app) as client:
