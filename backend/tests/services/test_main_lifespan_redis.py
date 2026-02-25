@@ -1,8 +1,8 @@
 import sys
 from pathlib import Path
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
@@ -23,12 +23,22 @@ def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
     monkeypatch.setattr(main, "init_redis_pool_async", lambda: _record("init_redis"))
     monkeypatch.setattr(main, "init_fs_runtime", lambda: _record("init_fs"))
     monkeypatch.setattr(main, "init_cpu_runtime", lambda: _record("init_cpu"))
+    monkeypatch.setattr(
+        main,
+        "init_celery_producer_runtime",
+        lambda: _record("init_celery_producer"),
+    )
     monkeypatch.setattr(main, "init_external_io_runtime", lambda: _record("init_external_io"))
 
     monkeypatch.setattr(main, "close_redis_pool_async", lambda: _record("close_redis"))
     monkeypatch.setattr(main, "close_async_openai_client", lambda: _record("close_openai"))
     monkeypatch.setattr(main, "close_fs_runtime", lambda: _record("close_fs"))
     monkeypatch.setattr(main, "close_cpu_runtime", lambda: _record("close_cpu"))
+    monkeypatch.setattr(
+        main,
+        "close_celery_producer_runtime",
+        lambda: _record("close_celery_producer"),
+    )
     monkeypatch.setattr(main, "close_external_io_runtime", lambda: _record("close_external_io"))
     monkeypatch.setattr(main, "close_scan_runtime", lambda: _record("close_scan"))
     monkeypatch.setattr(main, "close_async_db", lambda: _record("close_db"))
@@ -45,11 +55,13 @@ def test_lifespan_initializes_and_closes_runtime_in_order(monkeypatch):
         "init_db",
         "init_fs",
         "init_cpu",
+        "init_celery_producer",
         "init_external_io",
         "close_redis",
         "close_openai",
         "close_fs",
         "close_cpu",
+        "close_celery_producer",
         "close_external_io",
         "close_scan",
         "close_db",
@@ -76,6 +88,11 @@ def test_lifespan_closes_runtime_even_if_startup_fails(monkeypatch):
     monkeypatch.setattr(main, "close_async_openai_client", lambda: _record("close_openai"))
     monkeypatch.setattr(main, "close_fs_runtime", lambda: _record("close_fs"))
     monkeypatch.setattr(main, "close_cpu_runtime", lambda: _record("close_cpu"))
+    monkeypatch.setattr(
+        main,
+        "close_celery_producer_runtime",
+        lambda: _record("close_celery_producer"),
+    )
     monkeypatch.setattr(main, "close_external_io_runtime", lambda: _record("close_external_io"))
     monkeypatch.setattr(main, "close_scan_runtime", lambda: _record("close_scan"))
     monkeypatch.setattr(main, "close_async_db", lambda: _record("close_db"))
@@ -95,6 +112,7 @@ def test_lifespan_closes_runtime_even_if_startup_fails(monkeypatch):
         "close_openai",
         "close_fs",
         "close_cpu",
+        "close_celery_producer",
         "close_external_io",
         "close_scan",
         "close_db",
@@ -111,6 +129,11 @@ def test_lifespan_repeated_shutdown_remains_stable(monkeypatch):
     monkeypatch.setattr(main, "init_redis_pool_async", lambda: _record("init_redis"))
     monkeypatch.setattr(main, "init_fs_runtime", lambda: _record("init_fs"))
     monkeypatch.setattr(main, "init_cpu_runtime", lambda: _record("init_cpu"))
+    monkeypatch.setattr(
+        main,
+        "init_celery_producer_runtime",
+        lambda: _record("init_celery_producer"),
+    )
     monkeypatch.setattr(main, "init_external_io_runtime", lambda: _record("init_external_io"))
 
     monkeypatch.setattr(main, "close_s3_runtime", lambda: _record("close_s3"))
@@ -118,6 +141,11 @@ def test_lifespan_repeated_shutdown_remains_stable(monkeypatch):
     monkeypatch.setattr(main, "close_async_openai_client", lambda: _record("close_openai"))
     monkeypatch.setattr(main, "close_fs_runtime", lambda: _record("close_fs"))
     monkeypatch.setattr(main, "close_cpu_runtime", lambda: _record("close_cpu"))
+    monkeypatch.setattr(
+        main,
+        "close_celery_producer_runtime",
+        lambda: _record("close_celery_producer"),
+    )
     monkeypatch.setattr(main, "close_external_io_runtime", lambda: _record("close_external_io"))
     monkeypatch.setattr(main, "close_scan_runtime", lambda: _record("close_scan"))
     monkeypatch.setattr(main, "close_async_db", lambda: _record("close_db"))
@@ -151,11 +179,13 @@ def test_db_session_middleware_skips_health(monkeypatch):
     monkeypatch.setattr(main, "init_redis_pool_async", lambda: _noop_async())
     monkeypatch.setattr(main, "init_fs_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "init_cpu_runtime", lambda: _noop_async())
+    monkeypatch.setattr(main, "init_celery_producer_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "init_external_io_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "close_s3_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "close_redis_pool_async", lambda: _noop_async())
     monkeypatch.setattr(main, "close_fs_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "close_cpu_runtime", lambda: _noop_async())
+    monkeypatch.setattr(main, "close_celery_producer_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "close_external_io_runtime", lambda: _noop_async())
     monkeypatch.setattr(main, "close_async_openai_client", lambda: _noop_async())
     monkeypatch.setattr(main, "close_scan_runtime", lambda: _noop_async())

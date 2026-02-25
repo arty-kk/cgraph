@@ -130,6 +130,10 @@ class Settings(BaseSettings):
         default=16,
         alias="STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY",
     )
+    task_queue_producer_workers: int = Field(
+        default=4,
+        alias="STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS",
+    )
 
     database_url: str = Field(
         default="postgresql+psycopg://stubgraph:stubgraph@localhost:5432/stubgraph",
@@ -517,6 +521,8 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_TASK_QUEUE_MAX_COMPLETED должен быть положительным")
         if self.task_queue_producer_concurrency <= 0:
             raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY должен быть положительным")
+        if self.task_queue_producer_workers <= 0:
+            raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS должен быть положительным")
         return self
 
 

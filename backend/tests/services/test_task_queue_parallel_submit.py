@@ -8,8 +8,10 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from app import celery_tasks
 from app.async_db import AsyncSessionLocal
 from app.errors import ExternalServiceError
+from app.infra import celery_producer_runtime
 from app.models import TaskJob
 from app.services import task_queue
 from app.services.task_queue import submit_run_async, submit_scan_async
@@ -139,3 +141,45 @@ async def test_submit_run_async_rolls_back_status_and_inflight_on_enqueue_error(
     assert isinstance(job.completed_at, datetime)
     assert job.completed_at.tzinfo == timezone.utc
     assert task_id not in redis_client.members
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("ensure_async_postgres")
+async def test_parallel_submit_scan_with_real_producer_runtime_keeps_loop_latency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(celery_producer_runtime.settings, "task_queue_producer_workers", 2)
+    monkeypatch.setattr(celery_producer_runtime.settings, "task_queue_producer_concurrency", 2)
+    await celery_producer_runtime.close_celery_producer_runtime()
+
+    def _slow_sync_dispatch(*, task_name: str, args: list[object], queue: str) -> None:
+        _ = (task_name, args, queue)
+        time.sleep(0.05)
+
+    monkeypatch.setattr(celery_tasks, "dispatch_task", _slow_sync_dispatch)
+
+    ticks = 0
+    stop = asyncio.Event()
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while not stop.is_set():
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    ticker_task = asyncio.create_task(_ticker())
+    started = time.monotonic()
+    try:
+        task_ids = await asyncio.wait_for(
+            asyncio.gather(*[submit_scan_async(project_id=3000 + i, org_id=88) for i in range(20)]),
+            timeout=5,
+        )
+    finally:
+        stop.set()
+        await ticker_task
+        await celery_producer_runtime.close_celery_producer_runtime()
+
+    elapsed = time.monotonic() - started
+    assert len(set(task_ids)) == 20
+    assert ticks > 10
+    assert elapsed < 2

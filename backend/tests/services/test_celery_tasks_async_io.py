@@ -1,4 +1,3 @@
-import asyncio
 import sys
 from pathlib import Path
 
@@ -10,7 +9,9 @@ from app import celery_tasks
 
 
 @pytest.mark.anyio
-async def test_normalize_project_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_normalize_project_root_async_uses_fs_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: dict[str, object] = {}
 
     async def _fake_fs_runtime(func, *args, **kwargs):
@@ -43,17 +44,31 @@ def test_worker_process_init_and_shutdown_use_async_resource_lifecycle(
     monkeypatch.setattr(celery_tasks, "init_cpu_runtime", lambda: _record("init_cpu"))
     monkeypatch.setattr(
         celery_tasks,
+        "init_celery_producer_runtime",
+        lambda: _record("init_celery_producer"),
+    )
+    monkeypatch.setattr(
+        celery_tasks,
         "init_external_io_runtime",
         lambda: _record("init_external_io"),
     )
     monkeypatch.setattr(celery_tasks, "init_s3_runtime", lambda: _record("init_s3"))
-    monkeypatch.setattr(celery_tasks, "get_async_openai_client", lambda: calls.append("openai") or object())
+    monkeypatch.setattr(
+        celery_tasks,
+        "get_async_openai_client",
+        lambda: calls.append("openai") or object(),
+    )
 
     monkeypatch.setattr(celery_tasks, "close_s3_runtime", lambda: _record("close_s3"))
     monkeypatch.setattr(celery_tasks, "close_redis_pool_async", lambda: _record("close_redis"))
     monkeypatch.setattr(celery_tasks, "close_async_openai_client", lambda: _record("close_openai"))
     monkeypatch.setattr(celery_tasks, "close_fs_runtime", lambda: _record("close_fs"))
     monkeypatch.setattr(celery_tasks, "close_cpu_runtime", lambda: _record("close_cpu"))
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_celery_producer_runtime",
+        lambda: _record("close_celery_producer"),
+    )
     monkeypatch.setattr(
         celery_tasks,
         "close_external_io_runtime",
@@ -73,6 +88,7 @@ def test_worker_process_init_and_shutdown_use_async_resource_lifecycle(
         "init_db",
         "init_fs",
         "init_cpu",
+        "init_celery_producer",
         "init_external_io",
         "init_s3",
         "openai",
@@ -81,6 +97,7 @@ def test_worker_process_init_and_shutdown_use_async_resource_lifecycle(
         "close_openai",
         "close_fs",
         "close_cpu",
+        "close_celery_producer",
         "close_external_io",
         "close_db",
     ]
@@ -105,7 +122,16 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
     monkeypatch.setattr(celery_tasks, "init_async_db", _init_db)
     monkeypatch.setattr(celery_tasks, "init_fs_runtime", lambda: _record("init_fs"))
     monkeypatch.setattr(celery_tasks, "init_cpu_runtime", lambda: _record("init_cpu"))
-    monkeypatch.setattr(celery_tasks, "init_external_io_runtime", lambda: _record("init_external_io"))
+    monkeypatch.setattr(
+        celery_tasks,
+        "init_celery_producer_runtime",
+        lambda: _record("init_celery_producer"),
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "init_external_io_runtime",
+        lambda: _record("init_external_io"),
+    )
     monkeypatch.setattr(celery_tasks.settings, "storage_backend", "local")
     monkeypatch.setattr(celery_tasks.settings, "openai_api_key", "")
 
@@ -114,7 +140,16 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
     monkeypatch.setattr(celery_tasks, "close_async_openai_client", lambda: _record("close_openai"))
     monkeypatch.setattr(celery_tasks, "close_fs_runtime", lambda: _record("close_fs"))
     monkeypatch.setattr(celery_tasks, "close_cpu_runtime", lambda: _record("close_cpu"))
-    monkeypatch.setattr(celery_tasks, "close_external_io_runtime", lambda: _record("close_external_io"))
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_celery_producer_runtime",
+        lambda: _record("close_celery_producer"),
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "close_external_io_runtime",
+        lambda: _record("close_external_io"),
+    )
     monkeypatch.setattr(celery_tasks, "close_async_db", lambda: _record("close_db"))
     monkeypatch.setattr(celery_tasks, "_worker_runtime_started", False)
 
@@ -129,6 +164,7 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
         "close_openai",
         "close_fs",
         "close_cpu",
+        "close_celery_producer",
         "close_external_io",
         "close_db",
     ]
@@ -169,8 +205,7 @@ def test_task_entrypoints_execute_via_asyncio_run(monkeypatch: pytest.MonkeyPatc
     assert result == {"updated": True}
 
 
-@pytest.mark.anyio
-async def test_dispatch_task_async_uses_registered_celery_task(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dispatch_task_uses_registered_celery_task(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     class _Task:
@@ -180,7 +215,7 @@ async def test_dispatch_task_async_uses_registered_celery_task(monkeypatch: pyte
 
     monkeypatch.setitem(celery_tasks.celery_app.tasks, "stubgraph.scan", _Task())
 
-    await celery_tasks.dispatch_task_async(task_name="stubgraph.scan", args=["job-1", 1, 2], queue="medium")
+    celery_tasks.dispatch_task(task_name="stubgraph.scan", args=["job-1", 1, 2], queue="medium")
 
     assert captured == {"args": ["job-1", 1, 2], "queue": "medium"}
 

@@ -45,10 +45,13 @@ class _AsyncTaskProducerError(Exception):
 
 class _AsyncTaskTransportClient:
     async def publish_async(self, *, task_name: str, args: list[Any], queue: str) -> None:
-        from ..celery_tasks import dispatch_task_async
+        from ..celery_tasks import dispatch_task
 
         await run_celery_producer_io_async(
-            lambda: dispatch_task_async(task_name=task_name, args=args, queue=queue)
+            dispatch_task,
+            task_name=task_name,
+            args=args,
+            queue=queue,
         )
 
 
