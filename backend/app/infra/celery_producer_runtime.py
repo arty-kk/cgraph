@@ -1,9 +1,10 @@
-"""Shared runtime for bounded async execution of synchronous Celery producer I/O."""
+"""Shared runtime for bounded async execution of producer transport operations."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 from ..config import settings
 
@@ -47,14 +48,7 @@ async def close_celery_producer_runtime() -> None:
         _producer_semaphore = None
 
 
-async def run_celery_producer_io_async(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+async def run_celery_producer_io_async(operation: Callable[[], Awaitable[T]]) -> T:
     semaphore = await _get_celery_producer_runtime()
-    acquired = False
-    try:
-        await semaphore.acquire()
-        acquired = True
-        return await asyncio.to_thread(fn, *args, **kwargs)
-    finally:
-        if acquired:
-            semaphore.release()
-
+    async with semaphore:
+        return await operation()

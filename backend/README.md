@@ -27,8 +27,9 @@ Patch storage в `app.storage` также работает только в async
 
 Публикация задач выполняется через awaitable producer API транспорта:
 - сервисный слой остаётся полностью async;
+- enqueue выполняется без `asyncio.to_thread`, `run_coroutine_threadsafe`, loop-thread глобалей и bridge-timeout логики;
 - `submit_*_async` вызывают только async producer-клиент и маппят transport-ошибки в `ExternalServiceError` с `task_id`/`queue`/`enqueue_reason`.
 
-Требования к lifecycle transport/producer:
-- producer должен предоставлять нативный async enqueue-контракт;
-- shutdown в lifespan выполняется только для реальных async-ресурсов (DB/Redis/FS/S3/OpenAI), без отдельного adapter-shutdown шага.
+Lifecycle соответствует единому async-паттерну:
+- `app.main.lifespan` инициализирует/закрывает только реальные async-ресурсы (Redis/DB/FS/CPU/external I/O/S3/OpenAI/scan runtime);
+- worker startup/shutdown в `app.celery_tasks` использует тот же набор async-ресурсов, без loop-thread bridge и adapter-specific producer runtime shutdown.

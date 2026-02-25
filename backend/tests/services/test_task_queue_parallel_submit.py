@@ -1,5 +1,4 @@
 import asyncio
-import threading
 import sys
 import time
 from datetime import datetime, timezone
@@ -82,21 +81,21 @@ async def test_parallel_submit_is_idempotent_and_non_blocking(monkeypatch):
 async def test_high_concurrency_submit_scan_not_serialized(monkeypatch):
     active = 0
     peak = 0
-    lock = threading.Lock()
+    lock = asyncio.Lock()
 
-    def _slow_sync_send_task(_name, *, args, queue):
+    async def _slow_async_enqueue(_task, *, args, queue):
         nonlocal active, peak
         _ = (args, queue)
-        with lock:
+        async with lock:
             active += 1
             peak = max(peak, active)
         try:
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
         finally:
-            with lock:
+            async with lock:
                 active -= 1
 
-    monkeypatch.setattr(task_queue.celery_app, "send_task", _slow_sync_send_task)
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _slow_async_enqueue)
 
     started = time.monotonic()
     task_ids = await asyncio.wait_for(

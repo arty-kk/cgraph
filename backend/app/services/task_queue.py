@@ -15,7 +15,6 @@ from sqlalchemy.sql import func
 from sqlmodel import delete, select
 
 from ..async_db import AsyncSessionLocal
-from ..celery_app import celery_app
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
 from ..infra.celery_producer_runtime import run_celery_producer_io_async
@@ -44,18 +43,30 @@ class _AsyncTaskProducerError(Exception):
     """Transport-level async producer enqueue failure."""
 
 
-class _AsyncCeleryProducer:
+class _AsyncTaskTransportClient:
+    async def publish_async(self, *, task_name: str, args: list[Any], queue: str) -> None:
+        from ..celery_tasks import dispatch_task_async
+
+        await run_celery_producer_io_async(
+            lambda: dispatch_task_async(task_name=task_name, args=args, queue=queue)
+        )
+
+
+class _AsyncTaskProducer:
+    def __init__(self, client: _AsyncTaskTransportClient | None = None) -> None:
+        self._client = client or _AsyncTaskTransportClient()
+
     async def enqueue_task_async(self, task: Any, *, args: list[Any], queue: str) -> None:
         try:
             task_name = str(getattr(task, "name", "") or "")
             if not task_name:
                 raise RuntimeError("Celery task name is required")
-            await run_celery_producer_io_async(celery_app.send_task, task_name, args=args, queue=queue)
+            await self._client.publish_async(task_name=task_name, args=args, queue=queue)
         except Exception as exc:  # noqa: BLE001
             raise _AsyncTaskProducerError(str(exc)) from exc
 
 
-_async_task_producer = _AsyncCeleryProducer()
+_async_task_producer = _AsyncTaskProducer()
 
 
 def _classify_enqueue_failure(exc: BaseException) -> str:
