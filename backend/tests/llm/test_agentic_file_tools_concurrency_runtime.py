@@ -176,13 +176,13 @@ class TestAgenticFileToolsConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
             agentic_tools._FS_OPS_FALLBACK_SEMAPHORE = None
             with (
                 patch.object(agentic_tools.settings, "llm_agentic_fs_ops_concurrency", 4),
-                patch("app.llm.agentic.tools._tool_route_usages", side_effect=_fake_route_usages),
+                patch("app.llm.agentic.tools._tool_route_usages_async", side_effect=_fake_route_usages),
                 patch("app.llm.agentic.tools.run_fs_io_async", side_effect=_tracked_runner),
                 patch("app.llm.agentic.tools._load_ts_typedefs_by_name", return_value={}),
             ):
                 results = await asyncio.gather(
                     *[
-                        agentic_tools._tool_compare_api_contract(
+                        agentic_tools._tool_compare_api_contract_async(
                             _FakeSession(),
                             1,
                             root,

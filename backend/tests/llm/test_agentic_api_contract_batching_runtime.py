@@ -136,8 +136,8 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
         payload = _build_route_usages_payload(route_count=30, calls_per_route=15)
         session = _BatchSession(payload)
 
-        with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
-            result = await agentic_tools._tool_compare_api_contract(
+        with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
+            result = await agentic_tools._tool_compare_api_contract_async(
                 session,
                 1,
                 Path("."),
@@ -155,8 +155,8 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
         payload = _build_route_usages_payload(route_count=10, calls_per_route=5)
         session = _BatchSession(payload, include_typedefs=False)
 
-        with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
-            result = await agentic_tools._tool_compare_api_contract(
+        with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
+            result = await agentic_tools._tool_compare_api_contract_async(
                 session,
                 1,
                 Path("."),
@@ -176,8 +176,8 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
 
             session_api = _BatchSession(payload)
             meta_api = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
-            with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
-                out_api = await agentic_tools._tool_suggest_api_fix(
+            with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
+                out_api = await agentic_tools._tool_suggest_api_fix_async(
                     session_api,
                     1,
                     root,
@@ -195,8 +195,8 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
 
             session_contract = _BatchSession(payload)
             meta_contract = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
-            with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
-                out_contract = await agentic_tools._tool_suggest_contract_fix(
+            with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
+                out_contract = await agentic_tools._tool_suggest_contract_fix_async(
                     session_contract,
                     1,
                     root,
@@ -217,7 +217,7 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
         meta = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
 
         started = time.perf_counter()
-        with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
+        with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
             result = await agentic._dispatch_tool_async(
                 session,
                 1,
@@ -315,12 +315,12 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
             (root / "frontend/src/api/client_2.ts").write_text("export const b = 2\n", encoding="utf-8")
 
             for suggest_tool in (
-                agentic_tools._tool_suggest_api_fix,
-                agentic_tools._tool_suggest_contract_fix,
+                agentic_tools._tool_suggest_api_fix_async,
+                agentic_tools._tool_suggest_contract_fix_async,
             ):
                 session = _TypedefOnlySession()
                 meta = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
-                with patch("app.llm.agentic.tools._tool_compare_api_contract", return_value=report):
+                with patch("app.llm.agentic.tools._tool_compare_api_contract_async", return_value=report):
                     result = await suggest_tool(
                         session,
                         1,
