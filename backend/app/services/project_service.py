@@ -1283,7 +1283,7 @@ async def _scan_and_update_graph_async(
     return {"ok": True, "stats": stats, "metrics_pending": bool(metrics_pending)}
 
 
-async def scan_with_background_async(
+async def enqueue_scan_task_async(
     session: AsyncSession,
     project_id: int,
     org_id: int,

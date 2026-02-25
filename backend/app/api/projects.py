@@ -24,7 +24,7 @@ from ..services.project_service import (
     list_project_tree_entries_async,
     load_graph_async,
     load_local_graph_async,
-    scan_with_background_async,
+    enqueue_scan_task_async,
     search_project_nodes_async,
     search_project_semantic_async,
     search_project_text_async,
@@ -122,7 +122,7 @@ async def scan(
     project_id: int,
 ):
     project = await require_project_access_async(request, project_id, min_role="member")
-    response = await scan_with_background_async(
+    response = await enqueue_scan_task_async(
         request.state.db_session,
         project.id,
         project.org_id,

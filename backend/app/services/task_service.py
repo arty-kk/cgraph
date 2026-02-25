@@ -236,7 +236,7 @@ async def _get_active_scan_task_async(
     return job.id, job.status
 
 
-async def _scan_with_background_async(
+async def _enqueue_graph_scan_task_async(
     project_id: int,
     org_id: int,
 ) -> dict:
@@ -954,7 +954,7 @@ async def _run_task_impl_async(
     warning = await _graph_warning_async(session, project_id)
     graph_scan_task: dict | None = None
     if warning == GRAPH_NOT_READY_WARNING:
-        graph_scan_task = await _scan_with_background_async(project_id, org_id)
+        graph_scan_task = await _enqueue_graph_scan_task_async(project_id, org_id)
     graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
     graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 
@@ -2166,7 +2166,7 @@ async def run_task_async(project_id: int, org_id: int, request: TaskRequest) -> 
         return await _run_task_impl_async(session, project_id, org_id, request)
 
 
-async def run_task_with_background_async(
+async def enqueue_run_task_async(
     project_id: int,
     org_id: int,
     request: TaskRequest,

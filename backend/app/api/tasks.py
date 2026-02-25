@@ -16,7 +16,7 @@ from ..services.task_service import (
     get_run_async,
     get_run_patch_async,
     list_runs_async,
-    run_task_with_background_async,
+    enqueue_run_task_async,
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -128,7 +128,7 @@ async def run_task(
         agentic_reasoning_effort=body.agentic_reasoning_effort,
         provided_fields=provided_fields,
     )
-    response = await run_task_with_background_async(
+    response = await enqueue_run_task_async(
         project.id,
         project.org_id,
         task_request,

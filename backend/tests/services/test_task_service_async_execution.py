@@ -90,7 +90,7 @@ async def test_run_task_async_passes_through_impact_mode(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_scan_with_background_async_uses_async_submit(monkeypatch):
+async def test_enqueue_graph_scan_task_uses_async_submit(monkeypatch):
     async def _fake_get_active(project_id: int, org_id: int):
         return None, None
 
@@ -101,7 +101,7 @@ async def test_scan_with_background_async_uses_async_submit(monkeypatch):
     monkeypatch.setattr(task_service, "_get_active_scan_task_async", _fake_get_active)
     monkeypatch.setattr(task_service, "submit_scan_async", _fake_submit_scan)
 
-    result = await task_service._scan_with_background_async(5, 9)
+    result = await task_service._enqueue_graph_scan_task_async(5, 9)
 
     assert result == {"task_id": "scan-123", "status": "pending"}
 
@@ -443,7 +443,7 @@ async def test_run_task_impl_async_uses_async_orchestrator_calls(monkeypatch, tm
     monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
     monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
     monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
-    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enqueue_graph_scan_task_async", _noop)
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "cache_enabled", False)
@@ -557,7 +557,7 @@ async def test_run_task_impl_async_uses_async_agentic_calls(monkeypatch, tmp_pat
     monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
     monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
     monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
-    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enqueue_graph_scan_task_async", _noop)
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "cache_enabled", False)
@@ -692,7 +692,7 @@ async def test_run_task_impl_async_non_agentic_does_not_touch_sync_get_session(
     monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
     monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
     monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
-    monkeypatch.setattr(task_service, "_scan_with_background_async", _noop)
+    monkeypatch.setattr(task_service, "_enqueue_graph_scan_task_async", _noop)
     monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
     monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
     monkeypatch.setattr(task_service.settings, "cache_enabled", False)
