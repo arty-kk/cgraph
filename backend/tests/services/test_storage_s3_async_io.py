@@ -53,7 +53,9 @@ async def test_patch_blob_s3_concurrent_roundtrip(monkeypatch: pytest.MonkeyPatc
         settings.s3_bucket = "bucket"
 
         payloads = [f"patch-{idx}" for idx in range(6)]
-        metas = await asyncio.gather(*[storage.store_patch_blob_async(payload) for payload in payloads])
+        metas = await asyncio.gather(
+            *[storage.store_patch_blob_async(payload) for payload in payloads]
+        )
         read_back = await asyncio.gather(*[storage.read_patch_blob_async(meta) for meta in metas])
         urls = await asyncio.gather(*[storage.get_patch_download_url_async(meta) for meta in metas])
         await asyncio.gather(*[storage.delete_patch_blob_async(meta) for meta in metas])
@@ -67,21 +69,28 @@ async def test_patch_blob_s3_concurrent_roundtrip(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.anyio
-async def test_s3_signed_url_async_uses_run_cpu_io_async(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_s3_signed_url_async_uses_run_fs_io_async(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeS3()
-    called = {"value": False}
+    fs_called = {"value": False}
+    cpu_called = {"value": False}
 
-    async def _fake_run_cpu_io_async(func, *args, **kwargs):
-        called["value"] = True
+    async def _fake_run_fs_io_async(func, *args, **kwargs):
+        fs_called["value"] = True
         kwargs.pop("operation", None)
         return func(*args, **kwargs)
 
+    async def _fake_run_cpu_io_async(*_args, **_kwargs):
+        cpu_called["value"] = True
+        raise AssertionError("run_cpu_io_async must not be used for signed URL generation")
+
     monkeypatch.setattr(storage, "get_s3_client", lambda: fake)
-    monkeypatch.setattr(storage, "run_cpu_io_async", _fake_run_cpu_io_async)
+    monkeypatch.setattr(storage, "run_fs_io_async", _fake_run_fs_io_async)
+    monkeypatch.setattr(storage, "run_cpu_io_async", _fake_run_cpu_io_async, raising=False)
 
     url = await storage._s3_signed_url_async("bucket", "patches/a.diff")
 
-    assert called["value"] is True
+    assert fs_called["value"] is True
+    assert cpu_called["value"] is False
     assert url == "https://signed/bucket/patches/a.diff"
 
 
@@ -111,7 +120,36 @@ async def test_s3_signed_url_async_sdk_error_returns_none(monkeypatch: pytest.Mo
 
 
 @pytest.mark.anyio
-async def test_s3_signed_url_async_respects_semaphore_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_get_patch_download_url_async_does_not_use_cpu_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_backend = settings.storage_backend
+    original_bucket = settings.s3_bucket
+    fake = _FakeS3()
+
+    async def _raise_cpu_runtime(*_args, **_kwargs):
+        raise AssertionError("CPU runtime must not be used for download URL generation")
+
+    monkeypatch.setattr(storage, "get_s3_client", lambda: fake)
+    monkeypatch.setattr(storage, "run_cpu_io_async", _raise_cpu_runtime, raising=False)
+
+    try:
+        settings.storage_backend = "s3"
+        settings.s3_bucket = "bucket"
+        meta = await storage.store_patch_blob_async("patch")
+
+        url = await storage.get_patch_download_url_async(meta)
+
+        assert url == f"https://signed/{meta['bucket']}/{meta['key']}"
+    finally:
+        settings.storage_backend = original_backend
+        settings.s3_bucket = original_bucket
+
+
+@pytest.mark.anyio
+async def test_s3_signed_url_async_respects_semaphore_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     limit = 2
     current = 0
     max_seen = 0
