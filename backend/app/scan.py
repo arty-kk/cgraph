@@ -288,6 +288,31 @@ def iter_code_files(root: Path) -> Iterable[Path]:
                 yield p
 
 
+def _stream_code_file_batches(
+    project_root: Path,
+    batch_size: int,
+    publish_batch: Callable[[list[str]], None],
+    should_stop: Callable[[], bool],
+) -> None:
+    effective_batch_size = max(1, int(batch_size))
+    batch: list[str] = []
+
+    for file_path in iter_code_files(project_root):
+        if should_stop():
+            return
+        try:
+            rel_path = file_path.relative_to(project_root).as_posix()
+        except ValueError:
+            continue
+        batch.append(rel_path)
+        if len(batch) >= effective_batch_size:
+            publish_batch(batch)
+            batch = []
+
+    if batch and not should_stop():
+        publish_batch(batch)
+
+
 def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
     return [seq[i : i + size] for i in range(0, len(seq), size)]
 
@@ -411,7 +436,11 @@ async def _collect_file_stats_async(
     batch_results = await _process_batches_bounded_async(
         batches,
         max_parallel=max_parallel,
-        process_batch=lambda batch: _run_scan_batch(_sync_collect_batch, batch),
+        process_batch=lambda batch: _run_scan_fs_batch(
+            _sync_collect_batch,
+            batch,
+            operation="scan.fs.collect_batch",
+        ),
     )
     return [item for batch in batch_results for item in batch]
 
@@ -455,7 +484,11 @@ async def _read_file_batch_async(
     batch_results = await _process_batches_bounded_async(
         batches,
         max_parallel=max_parallel,
-        process_batch=lambda batch: _run_scan_batch(_sync_read_batch, batch),
+        process_batch=lambda batch: _run_scan_fs_batch(
+            _sync_read_batch,
+            batch,
+            operation="scan.fs.read_batch",
+        ),
     )
     return [item for batch in batch_results for item in batch]
 
@@ -1066,6 +1099,11 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                 def _enqueue() -> None:
                     try:
                         path_queue.put_nowait(list(rel_batch))
+                    except asyncio.QueueFull:
+                        limiter.release()
+                        if producer_stop.is_set():
+                            return
+                        raise
                     except BaseException:
                         limiter.release()
                         raise

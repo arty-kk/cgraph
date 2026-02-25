@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import sys
 import time
@@ -39,16 +40,25 @@ async def test_collect_file_stats_async_keeps_input_order_across_batches(
     for rel in rel_paths:
         (tmp_path / rel).write_text(rel, encoding="utf-8")
 
-    async def _run_scan_batch_out_of_order(sync_fn, batch):
+    seen_operations: list[str] = []
+
+    async def _run_scan_fs_batch_out_of_order(sync_fn, batch, *, operation: str):
+        seen_operations.append(operation)
         if batch and batch[0] == "d.py":
             await asyncio.sleep(0.03)
         return sync_fn(batch)
 
-    monkeypatch.setattr(scan, "_run_scan_batch", _run_scan_batch_out_of_order)
+    monkeypatch.setattr(scan, "_run_scan_fs_batch", _run_scan_fs_batch_out_of_order)
+    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
 
-    results = await scan._collect_file_stats_async(tmp_path, rel_paths, batch_size=2, max_parallel=2)
+    try:
+        results = await scan._collect_file_stats_async(tmp_path, rel_paths, batch_size=2, max_parallel=2)
+    except NameError as exc:
+        pytest.fail(f"NameError must not be raised: {exc}")
 
     assert [item.rel for item in results] == rel_paths
+    assert all(item.exists and item.is_file for item in results)
+    assert seen_operations == ["scan.fs.collect_batch", "scan.fs.collect_batch", "scan.fs.collect_batch"]
 
 
 @pytest.mark.anyio
@@ -61,22 +71,31 @@ async def test_read_file_batch_async_keeps_input_order_across_batches(
 
     stats_map = {rel: (10 + idx, 20 + idx) for idx, rel in enumerate(rel_paths)}
 
-    async def _run_scan_batch_out_of_order(sync_fn, batch):
+    seen_operations: list[str] = []
+
+    async def _run_scan_fs_batch_out_of_order(sync_fn, batch, *, operation: str):
+        seen_operations.append(operation)
         if batch and batch[0] == "4.py":
             await asyncio.sleep(0.03)
         return sync_fn(batch)
 
-    monkeypatch.setattr(scan, "_run_scan_batch", _run_scan_batch_out_of_order)
+    monkeypatch.setattr(scan, "_run_scan_fs_batch", _run_scan_fs_batch_out_of_order)
+    monkeypatch.setattr(scan, "SCAN_STAGE_BATCH_SIZE", 2)
 
-    results = await scan._read_file_batch_async(
-        tmp_path,
-        rel_paths,
-        stats_map=stats_map,
-        max_file_bytes=1024,
-        max_parallel=2,
-    )
+    try:
+        results = await scan._read_file_batch_async(
+            tmp_path,
+            rel_paths,
+            stats_map=stats_map,
+            max_file_bytes=1024,
+            max_parallel=2,
+        )
+    except NameError as exc:
+        pytest.fail(f"NameError must not be raised: {exc}")
 
     assert [item.rel for item in results] == rel_paths
+    assert [item.text for item in results] == [f"text:{rel}" for rel in rel_paths]
+    assert seen_operations == ["scan.fs.read_batch", "scan.fs.read_batch", "scan.fs.read_batch"]
 
 
 @pytest.mark.anyio
