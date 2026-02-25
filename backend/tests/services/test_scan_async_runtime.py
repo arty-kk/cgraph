@@ -640,6 +640,94 @@ async def test_verify_scan_snapshot_async_keeps_unknown_hash_kind_reason(tmp_pat
     assert reason == "unknown_hash_kind:a.py"
 
 
+@pytest.mark.anyio
+async def test_verify_scan_snapshot_async_uses_bounded_parallel_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = {}
+    for i in range(12):
+        rel = f"f{i}.py"
+        p = tmp_path / rel
+        p.write_text(f"x={i}\n", encoding="utf-8")
+        st = p.stat()
+        text = p.read_text(encoding="utf-8", errors="replace")
+        snapshot[rel] = scan.FileSnapshot(
+            mtime_ns=int(st.st_mtime_ns),
+            size=int(st.st_size),
+            file_hash=scan.sha256_text(text),
+            hash_kind="content",
+        )
+
+    active = {"value": 0, "peak": 0}
+
+    async def _fake_run(sync_fn, *args, operation: str):
+        if operation == "scan.fs.verify_snapshot_fs_batch":
+            active["value"] += 1
+            active["peak"] = max(active["peak"], active["value"])
+            await asyncio.sleep(0.02)
+            try:
+                return sync_fn(*args)
+            finally:
+                active["value"] -= 1
+        return sync_fn(*args)
+
+    monkeypatch.setattr(scan, "_run_scan_fs_batch", _fake_run)
+
+    ok, reason = await scan._verify_scan_snapshot_async(
+        tmp_path,
+        snapshot,
+        [],
+        batch_size=1,
+        max_parallel=3,
+    )
+
+    assert ok is True
+    assert reason == ""
+    assert active["peak"] <= 3
+    assert active["peak"] > 1
+
+
+@pytest.mark.anyio
+async def test_verify_scan_snapshot_async_stops_early_on_first_failed_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = {}
+    for i in range(6):
+        rel = f"f{i}.py"
+        p = tmp_path / rel
+        p.write_text("x=1\n", encoding="utf-8")
+        st = p.stat()
+        snapshot[rel] = scan.FileSnapshot(
+            mtime_ns=int(st.st_mtime_ns),
+            size=int(st.st_size),
+            file_hash="bad-hash",
+            hash_kind="content",
+        )
+
+    call_counter = {"cpu": 0}
+
+    async def _fake_cpu(sync_fn, *args, operation: str):
+        call_counter["cpu"] += 1
+        await asyncio.sleep(0.05)
+        return sync_fn(*args)
+
+    monkeypatch.setattr(scan, "_run_scan_cpu_batch", _fake_cpu)
+
+    ok, reason = await scan._verify_scan_snapshot_async(
+        tmp_path,
+        snapshot,
+        [],
+        batch_size=1,
+        max_parallel=3,
+    )
+
+    assert ok is False
+    assert reason.startswith("hash_changed:")
+    assert call_counter["cpu"] < len(snapshot)
+
+
 
 
 @pytest.mark.anyio
@@ -1085,8 +1173,9 @@ async def test_scan_runtime_routes_fs_and_cpu_operations(monkeypatch: pytest.Mon
     assert ("fs", "scan.fs.collect_batch") in calls
     assert ("fs", "scan.fs.read_batch") in calls
     assert ("fs", "scan.fs.verify_removed_batch") in calls
+    assert ("fs", "scan.fs.verify_snapshot_fs_batch") in calls
     assert ("cpu", "scan.cpu.parse_batch") in calls
-    assert ("cpu", "scan.cpu.verify_snapshot_batch") in calls
+    assert ("cpu", "scan.cpu.verify_snapshot_hash_batch") in calls
 
 
 @pytest.mark.anyio

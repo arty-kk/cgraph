@@ -183,6 +183,13 @@ class EmbeddingTaskResult:
     status: str
 
 
+@dataclass(frozen=True)
+class VerifySnapshotFsItem:
+    rel: str
+    snap: FileSnapshot
+    text: str | None
+
+
 def _get_cached_parse(lang: str, file_hash: str, file_suffix: str) -> tuple[int, list[dict]] | None:
     key = (lang, file_hash, file_suffix)
     with _parse_cache_lock:
@@ -733,6 +740,23 @@ def _verify_scan_snapshot(
     return True, ""
 
 
+def _verify_snapshot_hash_batch(batch: list[VerifySnapshotFsItem]) -> tuple[bool, str]:
+    for item in batch:
+        rel, snap = item.rel, item.snap
+        if snap.hash_kind == "content":
+            text = item.text or ""
+            if sha256_text(text) != snap.file_hash:
+                return False, f"hash_changed:{rel}"
+        elif snap.hash_kind == "oversized":
+            if sha256_text(f"oversized:{snap.size}:{snap.mtime_ns}") != snap.file_hash:
+                return False, f"hash_changed:{rel}"
+        elif snap.hash_kind == "stat_only":
+            continue
+        else:
+            return False, f"unknown_hash_kind:{rel}"
+    return True, ""
+
+
 async def _verify_scan_snapshot_async(
     project_root: Path,
     snapshot: dict[str, FileSnapshot],
@@ -744,7 +768,12 @@ async def _verify_scan_snapshot_async(
     runtime = get_scan_runtime()
     batch_size = max(1, int(batch_size or runtime.batch_size))
     max_parallel = max(1, int(max_parallel or runtime.max_parallel))
-    semaphore = asyncio.Semaphore(max_parallel)
+
+    class _VerifyBatchFailed(Exception):
+        def __init__(self, index: int, reason: str):
+            super().__init__(reason)
+            self.index = index
+            self.reason = reason
 
     def _check_removed_batch(batch: list[str]) -> tuple[bool, str]:
         for rel in batch:
@@ -752,49 +781,100 @@ async def _verify_scan_snapshot_async(
                 return False, f"removed_path_exists:{rel}"
         return True, ""
 
-    def _check_snapshot_batch(batch: list[tuple[str, FileSnapshot]]) -> tuple[bool, str]:
+    def _check_snapshot_fs_batch(batch: list[tuple[str, FileSnapshot]]) -> tuple[bool, str, list[VerifySnapshotFsItem]]:
+        out: list[VerifySnapshotFsItem] = []
         for rel, snap in batch:
             p = project_root / rel
             try:
                 st = p.stat()
             except OSError:
-                return False, f"missing:{rel}"
+                return False, f"missing:{rel}", []
             if int(st.st_mtime_ns) != int(snap.mtime_ns) or int(st.st_size) != int(snap.size):
-                return False, f"stat_changed:{rel}"
+                return False, f"stat_changed:{rel}", []
             if snap.hash_kind == "content":
                 try:
                     text = p.read_text(encoding="utf-8", errors="replace")
                 except Exception:
-                    return False, f"read_failed:{rel}"
-                if sha256_text(text) != snap.file_hash:
-                    return False, f"hash_changed:{rel}"
-            elif snap.hash_kind == "oversized":
-                if sha256_text(f"oversized:{snap.size}:{snap.mtime_ns}") != snap.file_hash:
-                    return False, f"hash_changed:{rel}"
-            elif snap.hash_kind == "stat_only":
-                continue
+                    return False, f"read_failed:{rel}", []
+                out.append(VerifySnapshotFsItem(rel=rel, snap=snap, text=text))
             else:
-                return False, f"unknown_hash_kind:{rel}"
-        return True, ""
+                out.append(VerifySnapshotFsItem(rel=rel, snap=snap, text=None))
+        return True, "", out
 
-    async def _run_fs(sync_fn, batch):
-        async with semaphore:
-            return await _run_scan_fs_batch(sync_fn, batch, operation="scan.fs.verify_removed_batch")
+    async def _run_stage(
+        items: list,
+        worker_count: int,
+        run_batch,
+    ) -> tuple[bool, str, list]:
+        batch_count = (len(items) + batch_size - 1) // batch_size
+        if batch_count == 0:
+            return True, "", []
 
-    async def _run_cpu(sync_fn, batch):
-        async with semaphore:
-            return await _run_scan_cpu_batch(sync_fn, batch, operation="scan.cpu.verify_snapshot_batch")
+        workers = min(worker_count, batch_count)
+        work_queue: asyncio.Queue[tuple[int, list] | None] = asyncio.Queue(maxsize=max_parallel)
+        indexed: list[list | None] = [None] * batch_count
 
-    for i in range(0, len(removed), batch_size):
-        ok, reason = await _run_fs(_check_removed_batch, removed[i : i + batch_size])
-        if not ok:
-            return ok, reason
+        async def _producer() -> None:
+            for index in range(batch_count):
+                start = index * batch_size
+                await work_queue.put((index, items[start : start + batch_size]))
+            for _ in range(workers):
+                await work_queue.put(None)
+
+        async def _worker() -> None:
+            while True:
+                item = await work_queue.get()
+                try:
+                    if item is None:
+                        return
+                    index, batch = item
+                    ok, reason, payload = await run_batch(batch)
+                    if not ok:
+                        raise _VerifyBatchFailed(index, reason)
+                    indexed[index] = payload
+                finally:
+                    work_queue.task_done()
+
+        failure_reason = ""
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(_producer())
+                for _ in range(workers):
+                    tg.create_task(_worker())
+        except* _VerifyBatchFailed as eg:
+            if eg.exceptions:
+                first = min(eg.exceptions, key=lambda exc: exc.index)
+                failure_reason = first.reason
+            else:
+                failure_reason = "snapshot_verify_failed"
+
+        if failure_reason:
+            return False, failure_reason, []
+        return True, "", [entry for batch in indexed if batch is not None for entry in batch]
+
+    async def _run_removed_batch(batch: list[str]) -> tuple[bool, str, list]:
+        ok, reason = await _run_scan_fs_batch(_check_removed_batch, batch, operation="scan.fs.verify_removed_batch")
+        return ok, reason, []
+
+    async def _run_snapshot_fs_batch(batch: list[tuple[str, FileSnapshot]]) -> tuple[bool, str, list[VerifySnapshotFsItem]]:
+        return await _run_scan_fs_batch(_check_snapshot_fs_batch, batch, operation="scan.fs.verify_snapshot_fs_batch")
+
+    async def _run_snapshot_cpu_batch(batch: list[VerifySnapshotFsItem]) -> tuple[bool, str, list]:
+        ok, reason = await _run_scan_cpu_batch(_verify_snapshot_hash_batch, batch, operation="scan.cpu.verify_snapshot_hash_batch")
+        return ok, reason, []
+
+    ok, reason, _ = await _run_stage(removed, max_parallel, _run_removed_batch)
+    if not ok:
+        return False, reason
 
     snapshot_items = list(snapshot.items())
-    for i in range(0, len(snapshot_items), batch_size):
-        ok, reason = await _run_cpu(_check_snapshot_batch, snapshot_items[i : i + batch_size])
-        if not ok:
-            return ok, reason
+    ok, reason, snapshot_fs_items = await _run_stage(snapshot_items, max_parallel, _run_snapshot_fs_batch)
+    if not ok:
+        return False, reason
+
+    ok, reason, _ = await _run_stage(snapshot_fs_items, max_parallel, _run_snapshot_cpu_batch)
+    if not ok:
+        return False, reason
 
     return True, ""
 
