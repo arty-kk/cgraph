@@ -10,6 +10,7 @@ import openai
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import settings
+from ...infra.external_io_runtime import run_openai_io_async
 from ..client import get_async_openai_client
 from ..model_caps import supports_reasoning, supports_temperature
 from ..orchestrator import SYSTEM_INSTRUCTIONS
@@ -86,7 +87,9 @@ async def _agentic_json_call_async(
 
     tools = _tool_definitions(eff_file)
     fs_ops_limit = max(1, min(int(settings.llm_agentic_fs_ops_concurrency), 128))
-    meta = AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(fs_ops_limit))
+    meta = AgenticMeta(
+        fs_ops_semaphore=asyncio.Semaphore(fs_ops_limit),
+    )
     tool_cache: dict[str, dict] = {}
 
     def _apply_usage_to_meta(usage: dict[str, int | None]) -> None:
@@ -249,8 +252,15 @@ async def _agentic_json_call_async(
         if reasoning_effort and supports_reasoning(model):
             kwargs["reasoning"] = {"effort": reasoning_effort}
 
+        async def _responses_create_async() -> Any:
+            async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+                return await run_openai_io_async(
+                    lambda: client.responses.create(**kwargs),
+                    kind="long",
+                )
+
         try:
-            resp = await client.responses.create(**kwargs)
+            resp = await _responses_create_async()
         except TypeError as e:
             msg = str(e)
             for k in (
@@ -262,7 +272,9 @@ async def _agentic_json_call_async(
             ):
                 if k in msg:
                     kwargs.pop(k, None)
-            resp = await client.responses.create(**kwargs)
+            resp = await _responses_create_async()
+        except asyncio.CancelledError:
+            raise
         except openai.APIError as e:
             status = getattr(e, "status_code", None)
             if status is not None:

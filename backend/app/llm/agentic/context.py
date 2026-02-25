@@ -3,17 +3,71 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
+from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlmodel import select
 
 from ...config import settings
 from ...contracts import get_or_build_contract_async
+from ...infra.fs_runtime import run_fs_io_async
 from ...models import ApiCall, ApiRoute, FileEdge, FileNode
 from ...utils import resolve_under_root
 
 _FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+_SEED_FS_SEMAPHORE: asyncio.Semaphore | None = None
+_SEED_FS_SEMAPHORE_LOCK = asyncio.Lock()
+
+
+def _seed_fs_limit() -> int:
+    llm_limit = max(1, int(settings.llm_agentic_fs_ops_concurrency))
+    runtime_limit = max(1, int(getattr(settings, "fs_runtime_max_concurrency", llm_limit)))
+    return min(llm_limit, runtime_limit)
+
+
+async def _seed_fs_semaphore_async() -> asyncio.Semaphore:
+    global _SEED_FS_SEMAPHORE
+    sem = _SEED_FS_SEMAPHORE
+    if sem is not None:
+        return sem
+    async with _SEED_FS_SEMAPHORE_LOCK:
+        if _SEED_FS_SEMAPHORE is None:
+            _SEED_FS_SEMAPHORE = asyncio.Semaphore(_seed_fs_limit())
+        return _SEED_FS_SEMAPHORE
+
+
+async def _run_seed_fs_io_async(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    semaphore = await _seed_fs_semaphore_async()
+    async with semaphore:
+        return await run_fs_io_async(fn, *args, operation="agentic.seed_context.fs", **kwargs)
+
+
+def _resolve_and_read_seed_file_sync(
+    root: Path,
+    target_rel: str,
+    *,
+    max_file_chars: int,
+) -> tuple[str, str]:
+    abs_target, target_norm = resolve_under_root(
+        root, target_rel, max_length=settings.max_rel_path_chars
+    )
+    try:
+        stat_result = abs_target.stat()
+    except Exception:
+        return target_norm, ""
+    if not stat_result or not abs_target.is_file():
+        return target_norm, ""
+    try:
+        target_text = abs_target.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return target_norm, ""
+    limit = max(1, min(int(max_file_chars), 200_000))
+    if len(target_text) > limit:
+        target_text = target_text[:limit]
+    return target_norm, target_text
 
 
 async def _neighbors_limited_async(
@@ -29,62 +83,59 @@ async def _neighbors_limited_async(
         return []
     depth = max(0, min(depth, 6))
     limit = max(1, min(limit, 2000))
-    visited: set[str] = {start}
-    ordered: list[str] = []
-    frontier: list[str] = [start]
+    from_col = "dst_path" if direction == "in" else "src_path"
+    to_col = "src_path" if direction == "in" else "dst_path"
 
-    def _chunks(seq: list[str], size: int) -> list[list[str]]:
-        return [seq[i : i + size] for i in range(0, len(seq), size)]
-
-    SQLITE_IN_CHUNK = 400
-
-    for _ in range(depth):
-        if not frontier or len(ordered) >= limit:
-            break
-        frontier = list(dict.fromkeys(frontier))
-        nxt: list[str] = []
-        for chunk in _chunks(frontier, SQLITE_IN_CHUNK):
-            if direction == "in":
-                rows = (
-                    (
-                        await session.execute(
-                            select(FileEdge.src_path)
-                            .where(
-                                FileEdge.project_id == project_id,
-                                FileEdge.dst_path.in_(chunk),
-                            )
-                            .order_by(FileEdge.src_path)
-                        )
-                    )
-                    .all()
-                )
-            else:
-                rows = (
-                    (
-                        await session.execute(
-                            select(FileEdge.dst_path)
-                            .where(
-                                FileEdge.project_id == project_id,
-                                FileEdge.src_path.in_(chunk),
-                            )
-                            .order_by(FileEdge.dst_path)
-                        )
-                    )
-                    .all()
-                )
-            for row in rows:
-                val = row[0] if isinstance(row, (tuple, list)) else row
-                if not isinstance(val, str) or not val or val in visited:
-                    continue
-                visited.add(val)
-                ordered.append(val)
-                nxt.append(val)
-                if len(ordered) >= limit:
-                    break
-            if len(ordered) >= limit:
-                break
-        frontier = nxt
-    return ordered[:limit]
+    query = text(
+        f"""
+        WITH RECURSIVE walk(node, depth, path) AS (
+            SELECT CAST(:start AS TEXT), 0, ARRAY[CAST(:start AS TEXT)]::TEXT[]
+            UNION ALL
+            SELECT edge.{to_col}, walk.depth + 1, walk.path || edge.{to_col}
+            FROM walk
+            JOIN fileedge AS edge
+              ON edge.project_id = :project_id
+             AND edge.{from_col} = walk.node
+            WHERE walk.depth < :depth
+              AND NOT (edge.{to_col} = ANY(walk.path))
+        ),
+        ranked AS (
+            SELECT
+                node,
+                depth,
+                ARRAY_TO_STRING(path, E'\\x1F') AS path_sort,
+                ROW_NUMBER() OVER (
+                    PARTITION BY node
+                    ORDER BY depth ASC, ARRAY_TO_STRING(path, E'\\x1F') ASC
+                ) AS rn
+            FROM walk
+            WHERE depth > 0
+              AND node <> :start
+        )
+        SELECT node
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY depth ASC, path_sort ASC, node ASC
+        LIMIT :limit
+        """
+    )
+    rows = (
+        await session.execute(
+            query,
+            {
+                "project_id": project_id,
+                "start": start,
+                "depth": depth,
+                "limit": limit,
+            },
+        )
+    ).all()
+    out: list[str] = []
+    for row in rows:
+        val = row[0] if isinstance(row, (tuple, list)) else row
+        if isinstance(val, str) and val:
+            out.append(val)
+    return out[:limit]
 
 
 def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
@@ -107,18 +158,13 @@ async def _seed_context_async(
     *,
     max_file_chars: int,
 ) -> dict:
-    abs_target, target_norm = resolve_under_root(
-        root, target_rel, max_length=settings.max_rel_path_chars
-    )
-    try:
-        target_text = await asyncio.to_thread(
-            abs_target.read_text, encoding="utf-8", errors="replace"
-        )
-    except Exception:
-        target_text = ""
     max_file_chars = max(1, min(int(max_file_chars), 200_000))
-    if len(target_text) > max_file_chars:
-        target_text = target_text[:max_file_chars]
+    target_norm, target_text = await _run_seed_fs_io_async(
+        _resolve_and_read_seed_file_sync,
+        root,
+        target_rel,
+        max_file_chars=max_file_chars,
+    )
 
     try:
         contract = await get_or_build_contract_async(session, project_id, root, target_norm)

@@ -67,16 +67,17 @@ async def test_patch_blob_s3_concurrent_roundtrip(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.anyio
-async def test_s3_signed_url_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_s3_signed_url_async_uses_run_cpu_io_async(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeS3()
     called = {"value": False}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         called["value"] = True
+        kwargs.pop("operation", None)
         return func(*args, **kwargs)
 
     monkeypatch.setattr(storage, "get_s3_client", lambda: fake)
-    monkeypatch.setattr(storage.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(storage, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     url = await storage._s3_signed_url_async("bucket", "patches/a.diff")
 

@@ -123,23 +123,23 @@ async def test_delete_run_async_deletes_blob_via_async_helper(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_json_loads_or_async_uses_to_thread(monkeypatch):
+async def test_json_loads_or_async_uses_run_cpu_io_async(monkeypatch):
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_cpu_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return {"ok": True}
 
-    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "run_cpu_io_async", _fake_run_cpu_io_async)
 
     result = await task_service._json_loads_or_async('{"ok":true}', {})
 
     assert result == {"ok": True}
     assert calls["func"] is task_service._json_loads_or
     assert calls["args"] == ('{"ok":true}', {})
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "task_service.json_loads_or"}
 
 
 @pytest.mark.anyio
@@ -235,23 +235,26 @@ async def test_apply_run_patch_async_does_not_call_get_run_patch_async(monkeypat
 
 
 @pytest.mark.anyio
-async def test_normalize_project_root_async_uses_to_thread(monkeypatch):
+async def test_normalize_project_root_async_uses_run_fs_io_async(monkeypatch):
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_run_fs_io_async(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/repo")
 
-    monkeypatch.setattr(task_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(task_service, "run_fs_io_async", _fake_run_fs_io_async)
 
     result = await task_service._normalize_project_root_async("/repo", max_length=111)
 
     assert result == Path("/repo")
     assert calls["func"] is task_service.normalize_project_root
     assert calls["args"] == ("/repo",)
-    assert calls["kwargs"] == {"max_length": 111}
+    assert calls["kwargs"] == {
+        "max_length": 111,
+        "operation": "task_service.normalize_project_root",
+    }
 
 
 @pytest.mark.anyio

@@ -136,8 +136,8 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
         payload = _build_route_usages_payload(route_count=30, calls_per_route=15)
         session = _BatchSession(payload)
 
-        with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
-            result = await agentic_tools._tool_compare_api_contract(
+        with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
+            result = await agentic_tools._tool_compare_api_contract_async(
                 session,
                 1,
                 Path("."),
@@ -155,8 +155,8 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
         payload = _build_route_usages_payload(route_count=10, calls_per_route=5)
         session = _BatchSession(payload, include_typedefs=False)
 
-        with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
-            result = await agentic_tools._tool_compare_api_contract(
+        with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
+            result = await agentic_tools._tool_compare_api_contract_async(
                 session,
                 1,
                 Path("."),
@@ -176,8 +176,8 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
 
             session_api = _BatchSession(payload)
             meta_api = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
-            with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
-                out_api = await agentic_tools._tool_suggest_api_fix(
+            with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
+                out_api = await agentic_tools._tool_suggest_api_fix_async(
                     session_api,
                     1,
                     root,
@@ -195,8 +195,8 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
 
             session_contract = _BatchSession(payload)
             meta_contract = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
-            with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
-                out_contract = await agentic_tools._tool_suggest_contract_fix(
+            with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
+                out_contract = await agentic_tools._tool_suggest_contract_fix_async(
                     session_contract,
                     1,
                     root,
@@ -217,7 +217,7 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
         meta = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
 
         started = time.perf_counter()
-        with patch("app.llm.agentic.tools._tool_route_usages", return_value=payload):
+        with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
             result = await agentic._dispatch_tool_async(
                 session,
                 1,
@@ -232,6 +232,120 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertLess(elapsed, 1.5)
         self.assertEqual(sum(session.query_counts.values()), 12)
+
+    async def test_suggest_tools_use_single_typedef_batch_query_for_many_mismatches(self) -> None:
+        report = {
+            "ok": True,
+            "data": {
+                "routes": [
+                    {
+                        "route": {
+                            "method": "POST",
+                            "path": "/api/items",
+                            "source_path": "backend/app/api/items.py",
+                            "handler_name": "create_item",
+                            "lineno": 11,
+                        },
+                        "frontend_calls": [
+                            {
+                                "call": {
+                                    "source_path": "frontend/src/api/client_1.ts",
+                                    "lineno": 10,
+                                    "method": "POST",
+                                    "path": "/api/items",
+                                },
+                                "meta": {
+                                    "wrapper_name": "callApi",
+                                    "wrapper_body_type": "MissingReqDto",
+                                    "wrapper_response_type": "MissingRespDto",
+                                },
+                                "comparison": {
+                                    "body": {
+                                        "missing_in_frontend": ["name", "qty"],
+                                        "backend_fields": [{"name": "name"}, {"name": "qty"}],
+                                    },
+                                    "response": {
+                                        "missing_in_frontend": ["id", "status"],
+                                    },
+                                },
+                            },
+                            {
+                                "call": {
+                                    "source_path": "frontend/src/api/client_2.ts",
+                                    "lineno": 20,
+                                    "method": "POST",
+                                    "path": "/api/items",
+                                },
+                                "meta": {
+                                    "wrapper_name": "callApi",
+                                    "wrapper_body_type": "MissingReqDto",
+                                    "wrapper_response_type": "MissingRespDto",
+                                },
+                                "comparison": {
+                                    "body": {
+                                        "missing_in_frontend": ["price"],
+                                        "backend_fields": [{"name": "price"}],
+                                    },
+                                    "response": {
+                                        "missing_in_frontend": ["createdAt"],
+                                    },
+                                },
+                            },
+                        ],
+                    }
+                ]
+            },
+        }
+
+        class _TypedefOnlySession:
+            def __init__(self) -> None:
+                self.typedef_queries = 0
+
+            async def execute(self, query):
+                sql = str(query)
+                if "FROM tstypedef" not in sql:
+                    raise AssertionError(f"Unexpected query: {sql}")
+                self.typedef_queries += 1
+                return _ScalarRows([])
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend/src/api").mkdir(parents=True, exist_ok=True)
+            (root / "frontend/src/api/client_1.ts").write_text("export const a = 1\n", encoding="utf-8")
+            (root / "frontend/src/api/client_2.ts").write_text("export const b = 2\n", encoding="utf-8")
+
+            for suggest_tool in (
+                agentic_tools._tool_suggest_api_fix_async,
+                agentic_tools._tool_suggest_contract_fix_async,
+            ):
+                session = _TypedefOnlySession()
+                meta = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
+                with patch("app.llm.agentic.tools._tool_compare_api_contract_async", return_value=report):
+                    result = await suggest_tool(
+                        session,
+                        1,
+                        root,
+                        meta,
+                        {
+                            "path": "/api/items",
+                            "method": "POST",
+                            "route_limit": 3,
+                            "call_limit": 5,
+                            "include_backend_response": False,
+                        },
+                    )
+
+                self.assertTrue(result["ok"])
+                notes = result["data"].get("notes") or []
+                self.assertGreaterEqual(
+                    notes.count("typedef_not_found_for_body_type:MissingReqDto"),
+                    2,
+                )
+                self.assertGreaterEqual(
+                    notes.count("typedef_not_found_for_response_type:MissingRespDto"),
+                    2,
+                )
+                self.assertEqual(session.typedef_queries, 1)
 
 
 if __name__ == "__main__":

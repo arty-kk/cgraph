@@ -9,36 +9,36 @@ from app.services import project_service
 
 
 @pytest.mark.anyio
-async def test_read_text_if_file_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_read_text_if_file_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         called["func"] = func
         called["args"] = args
         called["kwargs"] = kwargs
         return "payload"
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     result = await project_service._read_text_if_file_async(Path("/tmp/test.txt"), 123)
 
     assert result == "payload"
     assert called["func"] is project_service._read_text_if_file
     assert called["args"] == (Path("/tmp/test.txt"), 123)
-    assert called["kwargs"] == {}
+    assert called["kwargs"] == {"operation": "project.read_text_if_file"}
 
 
 @pytest.mark.anyio
-async def test_resolve_under_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_under_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         called["func"] = func
         called["args"] = args
         called["kwargs"] = kwargs
         return (Path("/repo/a.py"), "a.py")
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     result = await project_service._resolve_under_root_async(
         Path("/repo"),
@@ -49,7 +49,7 @@ async def test_resolve_under_root_async_uses_to_thread(monkeypatch: pytest.Monke
     assert result == (Path("/repo/a.py"), "a.py")
     assert called["func"] is project_service.resolve_under_root
     assert called["args"] == (Path("/repo"), "a.py")
-    assert called["kwargs"] == {"max_length": 120}
+    assert called["kwargs"] == {"max_length": 120, "operation": "project.resolve_under_root"}
 
 
 @pytest.mark.anyio
@@ -93,16 +93,16 @@ async def test_read_project_files_async_collects_and_normalizes(monkeypatch: pyt
 
 
 @pytest.mark.anyio
-async def test_resolve_and_read_text_under_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_and_read_text_under_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return ("a.py", "payload")
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     result = await project_service._resolve_and_read_text_under_root_async(
         Path("/repo"),
@@ -117,20 +117,21 @@ async def test_resolve_and_read_text_under_root_async_uses_to_thread(monkeypatch
     assert calls["kwargs"] == {
         "max_rel_path_length": 111,
         "max_chars": 222,
+        "operation": "project.resolve_and_read",
     }
 
 
 @pytest.mark.anyio
-async def test_score_semantic_rows_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_score_semantic_rows_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return 1, [{"path": "a.py", "score": 1.0}]
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     result = await project_service._score_semantic_rows_async(
         [("a.py", 0, "[0.1, 0.2]", "sym", 1, 1)],
@@ -148,20 +149,21 @@ async def test_score_semantic_rows_async_uses_to_thread(monkeypatch: pytest.Monk
         "file_cache": {"a.py": "line1\nline2"},
         "chunk_size": 100,
         "step": 80,
+        "operation": "project.score_semantic_rows",
     }
 
 
 @pytest.mark.anyio
-async def test_find_text_matches_in_payload_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_find_text_matches_in_payload_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return ([{"line": 1, "col": 1, "snippet": "abc", "truncated_file": False}], True)
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     result = await project_service._find_text_matches_in_payload_async(
         "abc",
@@ -185,20 +187,21 @@ async def test_find_text_matches_in_payload_async_uses_to_thread(monkeypatch: py
         "limit_matches": 10,
         "start_count": 0,
         "truncated_flag": False,
+        "operation": "project.find_text_matches",
     }
 
 
 @pytest.mark.anyio
-async def test_build_graph_node_payload_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_build_graph_node_payload_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return ([{"id": "a.py"}], ["a.py"])
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     node_row = object()
     result = await project_service._build_graph_node_payload_async([node_row])
@@ -206,20 +209,20 @@ async def test_build_graph_node_payload_async_uses_to_thread(monkeypatch: pytest
     assert result == ([{"id": "a.py"}], ["a.py"])
     assert calls["func"] is project_service._build_graph_node_payload
     assert calls["args"] == ([node_row],)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "project.build_graph_nodes"}
 
 
 @pytest.mark.anyio
-async def test_build_graph_edge_payload_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_build_graph_edge_payload_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return [{"source": "a.py", "target": "b.py", "kind": "import"}]
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     edge_row = object()
     result = await project_service._build_graph_edge_payload_async(
@@ -231,20 +234,20 @@ async def test_build_graph_edge_payload_async_uses_to_thread(monkeypatch: pytest
     assert result == [{"source": "a.py", "target": "b.py", "kind": "import"}]
     assert calls["func"] is project_service._build_graph_edge_payload
     assert calls["args"] == ([edge_row],)
-    assert calls["kwargs"] == {"effective_limit": 10, "node_set": {"a.py", "b.py"}}
+    assert calls["kwargs"] == {"effective_limit": 10, "node_set": {"a.py", "b.py"}, "operation": "project.build_graph_edges"}
 
 
 @pytest.mark.anyio
-async def test_build_local_graph_payload_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_build_local_graph_payload_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return ([{"id": "center.py"}], [{"source": "a.py", "target": "b.py", "kind": "import"}])
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     node_rows = [object()]
     edge_set = {("a.py", "b.py", "import")}
@@ -254,7 +257,7 @@ async def test_build_local_graph_payload_async_uses_to_thread(monkeypatch: pytes
     assert result == ([{"id": "center.py"}], [{"source": "a.py", "target": "b.py", "kind": "import"}])
     assert calls["func"] is project_service._build_local_graph_payload
     assert calls["args"] == (node_rows, edge_set, nodes_set)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "project.build_local_graph"}
 
 
 @pytest.mark.anyio
@@ -362,18 +365,18 @@ async def test_delete_snapshots_async_collects_failures(monkeypatch: pytest.Monk
 
 
 @pytest.mark.anyio
-async def test_build_project_files_payload_async_uses_to_thread(
+async def test_build_project_files_payload_async_uses_fs_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return ([{"path": "a.py"}], True, "a.py")
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     rows = [object()]
     result = await project_service._build_project_files_payload_async(rows, limit=100)
@@ -381,22 +384,22 @@ async def test_build_project_files_payload_async_uses_to_thread(
     assert result == ([{"path": "a.py"}], True, "a.py")
     assert calls["func"] is project_service._build_project_files_payload
     assert calls["args"] == (rows,)
-    assert calls["kwargs"] == {"limit": 100}
+    assert calls["kwargs"] == {"limit": 100, "operation": "project.build_project_files"}
 
 
 @pytest.mark.anyio
-async def test_build_project_tree_payload_async_uses_to_thread(
+async def test_build_project_tree_payload_async_uses_fs_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return ([{"type": "dir", "path": "src", "name": "src", "has_children": True}], "src", True)
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     rows = [object()]
     result = await project_service._build_project_tree_payload_async(
@@ -415,22 +418,23 @@ async def test_build_project_tree_payload_async_uses_to_thread(
         "limit": 200,
         "scan_limit": 400,
         "has_more_rows": True,
+        "operation": "project.build_project_tree",
     }
 
 
 @pytest.mark.anyio
-async def test_extract_patch_blob_shas_async_uses_to_thread(
+async def test_extract_patch_blob_shas_async_uses_fs_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return {"sha1"}
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     runs = [object()]
     result = await project_service._extract_patch_blob_shas_async(runs)
@@ -438,22 +442,22 @@ async def test_extract_patch_blob_shas_async_uses_to_thread(
     assert result == {"sha1"}
     assert calls["func"] is project_service._extract_patch_blob_shas
     assert calls["args"] == (runs,)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "project.extract_patch_blob_shas"}
 
 
 @pytest.mark.anyio
-async def test_parse_snapshot_storage_payloads_async_uses_to_thread(
+async def test_parse_snapshot_storage_payloads_async_uses_fs_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return [("snap", {"storage": "local"})]
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     snapshots = [object()]
     result = await project_service._parse_snapshot_storage_payloads_async(snapshots)
@@ -461,7 +465,7 @@ async def test_parse_snapshot_storage_payloads_async_uses_to_thread(
     assert result == [("snap", {"storage": "local"})]
     assert calls["func"] is project_service._parse_snapshot_storage_payloads
     assert calls["args"] == (snapshots,)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "project.parse_snapshot_payloads"}
 
 
 @pytest.mark.anyio
@@ -1158,23 +1162,23 @@ async def test_load_local_graph_async_uses_async_resolve(monkeypatch: pytest.Mon
 
 
 @pytest.mark.anyio
-async def test_normalize_project_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_normalize_project_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/repo")
 
-    monkeypatch.setattr(project_service.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(project_service, "run_fs_io_async", _fake_fs_runtime)
 
     result = await project_service._normalize_project_root_async("/repo")
 
     assert result == Path("/repo")
     assert calls["func"] is project_service.normalize_project_root
     assert calls["args"] == ("/repo",)
-    assert calls["kwargs"] == {"max_length": project_service.settings.max_root_path_chars}
+    assert calls["kwargs"] == {"max_length": project_service.settings.max_root_path_chars, "operation": "project.normalize_root"}
 
 
 @pytest.mark.anyio
@@ -1341,7 +1345,7 @@ async def test_scan_and_update_graph_async_does_not_call_sync_graph_metrics(monk
             calls.append("lock-exit")
             return False
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         if getattr(func, "__name__", "") == "compute_graph_metrics_with_threshold":
             raise AssertionError("sync graph metrics path must not be used")
         return func(*args, **kwargs)
@@ -1489,13 +1493,14 @@ async def test_compute_graph_metrics_async_runs_cpu_in_executor_and_keeps_db_asy
         async def commit(self):
             calls.append("commit")
 
-    async def _fake_to_thread(func, *args, **kwargs):
-        calls.append(f"to_thread:{func.__name__}")
+    async def _fake_fs_runtime(func, *args, **kwargs):
+        calls.append(f"cpu:{func.__name__}")
+        kwargs.pop("operation", None)
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(graph.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(graph, "run_cpu_io_async", _fake_fs_runtime)
 
     pending = await graph.compute_graph_metrics_async(_Session(), project_id=1)
 
     assert pending is False
-    assert calls == ["to_thread:_compute_graph_metrics_cpu", "write", "commit"]
+    assert calls == ["cpu:_compute_graph_metrics_cpu", "write", "commit"]

@@ -67,6 +67,30 @@ class Settings(BaseSettings):
         default=4,
         alias="STUBGRAPH_SNAPSHOT_S3_CONCURRENCY",
     )
+    fs_runtime_max_workers: int = Field(
+        default=8,
+        alias="STUBGRAPH_FS_RUNTIME_MAX_WORKERS",
+    )
+    fs_runtime_max_concurrency: int = Field(
+        default=32,
+        alias="STUBGRAPH_FS_RUNTIME_MAX_CONCURRENCY",
+    )
+    cpu_runtime_max_workers: int = Field(
+        default=8,
+        alias="STUBGRAPH_CPU_RUNTIME_MAX_WORKERS",
+    )
+    cpu_runtime_max_concurrency: int = Field(
+        default=16,
+        alias="STUBGRAPH_CPU_RUNTIME_MAX_CONCURRENCY",
+    )
+    cpu_runtime_slow_wait_ms: float = Field(
+        default=200.0,
+        alias="STUBGRAPH_CPU_RUNTIME_SLOW_WAIT_MS",
+    )
+    cpu_runtime_slow_task_ms: float = Field(
+        default=750.0,
+        alias="STUBGRAPH_CPU_RUNTIME_SLOW_TASK_MS",
+    )
     allow_local_root_path: bool = Field(default=False, alias="STUBGRAPH_ALLOW_LOCAL_ROOT_PATH")
 
     celery_broker_url: str = Field(
@@ -102,9 +126,9 @@ class Settings(BaseSettings):
     task_queue_inflight_heavy_limit: int | None = Field(
         default=None, alias="STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT"
     )
-    task_queue_enqueue_workers: int = Field(
-        default=4,
-        alias="STUBGRAPH_TASK_QUEUE_ENQUEUE_WORKERS",
+    task_queue_producer_concurrency: int = Field(
+        default=16,
+        alias="STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY",
     )
 
     database_url: str = Field(
@@ -178,6 +202,14 @@ class Settings(BaseSettings):
         alias="STUBGRAPH_OPENAI_TIMEOUT_SECONDS",
     )
     openai_max_retries: int = Field(default=3, alias="STUBGRAPH_OPENAI_MAX_RETRIES")
+    openai_io_short_concurrency: int = Field(
+        default=16,
+        alias="STUBGRAPH_OPENAI_IO_SHORT_CONCURRENCY",
+    )
+    openai_io_long_concurrency: int = Field(
+        default=4,
+        alias="STUBGRAPH_OPENAI_IO_LONG_CONCURRENCY",
+    )
 
     embeddings_enabled: bool = Field(default=False, alias="STUBGRAPH_EMBEDDINGS_ENABLED")
     embeddings_model: str = Field(
@@ -364,8 +396,6 @@ class Settings(BaseSettings):
             and self.task_queue_inflight_heavy_limit <= 0
         ):
             raise ValueError("STUBGRAPH_TASK_QUEUE_INFLIGHT_HEAVY_LIMIT должен быть положительным")
-        if self.task_queue_enqueue_workers <= 0:
-            raise ValueError("STUBGRAPH_TASK_QUEUE_ENQUEUE_WORKERS должен быть положительным")
         if self.default_depth < 0:
             raise ValueError("STUBGRAPH_DEFAULT_DEPTH должен быть неотрицательным")
         if (self.llm_routing_sla_profile or "balanced").strip().lower() not in {
@@ -423,6 +453,10 @@ class Settings(BaseSettings):
             raise ValueError("Таймаут OpenAI должен быть положительным")
         if self.openai_max_retries < 0:
             raise ValueError("Количество ретраев OpenAI не может быть отрицательным")
+        if self.openai_io_short_concurrency < 1:
+            raise ValueError("STUBGRAPH_OPENAI_IO_SHORT_CONCURRENCY должен быть >= 1")
+        if self.openai_io_long_concurrency < 1:
+            raise ValueError("STUBGRAPH_OPENAI_IO_LONG_CONCURRENCY должен быть >= 1")
         if self.embeddings_chunk_size <= 0:
             raise ValueError("STUBGRAPH_EMBEDDINGS_CHUNK_SIZE должен быть положительным")
         if self.embeddings_chunk_overlap < 0:
@@ -481,6 +515,8 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_TASK_QUEUE_COMPLETED_TTL_SECONDS должен быть положительным")
         if self.task_queue_max_completed is not None and self.task_queue_max_completed <= 0:
             raise ValueError("STUBGRAPH_TASK_QUEUE_MAX_COMPLETED должен быть положительным")
+        if self.task_queue_producer_concurrency <= 0:
+            raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY должен быть положительным")
         return self
 
 

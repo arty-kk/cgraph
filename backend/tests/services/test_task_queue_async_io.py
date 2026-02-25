@@ -1,8 +1,6 @@
 import asyncio
 import sys
-import time
 from pathlib import Path
-from threading import Event
 
 import pytest
 
@@ -19,6 +17,19 @@ class _FakeSessionContext:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
+
+
+
+class _AsyncSessionCtx:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        _ = (exc_type, exc, tb)
+        return False
 
 class _FakeRedisClient:
     def __init__(self, *, eval_result=(1, 1)):
@@ -67,23 +78,10 @@ class _FakeDbSession:
 
 
 @pytest.mark.anyio
-async def test_idempotency_key_async_uses_to_thread(monkeypatch):
-    captured: dict[str, object] = {}
-
-    async def _fake_to_thread(func, *args, **kwargs):
-        captured["func"] = func
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return "idempotency-key"
-
-    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
-
+async def test_idempotency_key_async_runs_inline() -> None:
     key = await task_queue._idempotency_key_async("scan", 7, {"project_id": 42})
 
-    assert key == "idempotency-key"
-    assert captured["func"] is task_queue._idempotency_key
-    assert captured["args"] == ("scan", 7, {"project_id": 42})
-    assert captured["kwargs"] == {}
+    assert key == task_queue._idempotency_key("scan", 7, {"project_id": 42})
 
 
 @pytest.mark.anyio
@@ -141,98 +139,56 @@ async def test_submit_docs_async_uses_async_idempotency_key(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_enqueue_celery_task_async_uses_shared_adapter(monkeypatch):
+async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
     calls: list[dict[str, object]] = []
 
-    class _Adapter:
-        async def enqueue_async(self, task, *, args, queue):
+    class _Producer:
+        async def enqueue_task_async(self, task, *, args, queue):
             calls.append({"task": task, "args": args, "queue": queue})
 
-    class _Task:
-        def apply_async(self, *, args, queue):
-            _ = (args, queue)
-            return None
+    monkeypatch.setattr(task_queue, "_async_task_producer", _Producer())
 
-    monkeypatch.setattr(task_queue, "_enqueue_adapter", _Adapter())
+    marker = object()
+    await task_queue._enqueue_with_error_mapping_async(
+        task=marker,
+        args=["job-0", 1],
+        queue="heavy",
+        task_id="job-0",
+    )
 
-    task = _Task()
-    await task_queue._enqueue_celery_task_async(task, args=["a", "b"], queue="heavy")
-
-    assert len(calls) == 1
-    assert calls[0]["task"] == task
-    assert calls[0]["args"] == ["a", "b"]
-    assert calls[0]["queue"] == "heavy"
+    assert calls == [{"task": marker, "args": ["job-0", 1], "queue": "heavy"}]
 
 
 @pytest.mark.anyio
-async def test_celery_enqueue_adapter_limits_concurrency_with_workers(monkeypatch):
-    monkeypatch.setattr(task_queue.settings, "task_queue_enqueue_workers", 2)
-    adapter = task_queue._CeleryEnqueueAdapter()
+async def test_async_task_producer_uses_async_transport_client(monkeypatch):
+    calls: list[tuple[str, list[object], str]] = []
 
-    active = 0
-    max_active = 0
+    class _Client:
+        async def publish_async(self, *, task_name: str, args: list[object], queue: str) -> None:
+            calls.append((task_name, args, queue))
 
-    class _Task:
-        def apply_async(self, *, args, queue):
-            _ = (args, queue)
-            nonlocal active, max_active
-            time.sleep(0.005)
-            active += 1
-            max_active = max(max_active, active)
-            time.sleep(0.05)
-            active -= 1
+    producer = task_queue._AsyncTaskProducer(client=_Client())
+    task = type("_Task", (), {"name": "stubgraph.scan"})()
 
-    await asyncio.gather(*[adapter.enqueue_async(_Task(), args=[str(i)], queue="medium") for i in range(12)])
-    adapter.shutdown()
+    await producer.enqueue_task_async(task, args=["job-99"], queue="medium")
 
-    assert max_active <= 2
-    assert max_active > 1
-
-
-@pytest.mark.anyio
-async def test_celery_enqueue_adapter_shutdown_waits_and_rejects_new(monkeypatch):
-    monkeypatch.setattr(task_queue.settings, "task_queue_enqueue_workers", 2)
-    adapter = task_queue._CeleryEnqueueAdapter()
-
-    started = Event()
-    release = Event()
-
-    class _Task:
-        def apply_async(self, *, args, queue):
-            _ = (args, queue)
-            started.set()
-            while not release.is_set():
-                time.sleep(0.01)
-
-    pending = asyncio.create_task(adapter.enqueue_async(_Task(), args=["job-1"], queue="medium"))
-    await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1)
-
-    shutdown_task = asyncio.create_task(asyncio.to_thread(adapter.shutdown))
-    await asyncio.sleep(0.05)
-    assert not shutdown_task.done()
-
-    release.set()
-    await asyncio.wait_for(pending, timeout=1)
-    await asyncio.wait_for(shutdown_task, timeout=1)
-
-    with pytest.raises(RuntimeError):
-        await adapter.enqueue_async(_Task(), args=["job-2"], queue="medium")
+    assert calls == [("stubgraph.scan", ["job-99"], "medium")]
 
 
 @pytest.mark.anyio
 async def test_enqueue_error_mapping_timeout(monkeypatch):
     session = _FakeDbSession()
 
-    async def _slow_enqueue(task, *, args, queue):
+    async def _offloaded_enqueue(task, *, args, queue):
         _ = (task, args, queue)
         await asyncio.sleep(0.05)
 
     monkeypatch.setattr(task_queue, "_ENQUEUE_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(task_queue, "_enqueue_celery_task_async", _slow_enqueue)
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _offloaded_enqueue)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
-            session,
             task=object(),
             args=["job-1"],
             queue="medium",
@@ -244,18 +200,41 @@ async def test_enqueue_error_mapping_timeout(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_enqueue_error_mapping_cancellation(monkeypatch):
+    session = _FakeDbSession()
+
+    async def _cancelled_enqueue(task, *, args, queue):
+        _ = (task, args, queue)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _cancelled_enqueue)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
+
+    with pytest.raises(ExternalServiceError) as exc_ctx:
+        await task_queue._enqueue_with_error_mapping_async(
+            task=object(),
+            args=["job-cancel"],
+            queue="medium",
+            task_id="job-cancel",
+        )
+
+    assert exc_ctx.value.context["enqueue_reason"] == "internal_enqueue_failure"
+    assert session.commits == 1
+
+
+@pytest.mark.anyio
 async def test_enqueue_error_mapping_broker_error(monkeypatch):
     session = _FakeDbSession()
 
     async def _broken_enqueue(task, *, args, queue):
         _ = (task, args, queue)
-        raise task_queue._EnqueueBrokerError("broker down")
+        raise task_queue._AsyncTaskProducerError("broker down")
 
-    monkeypatch.setattr(task_queue, "_enqueue_celery_task_async", _broken_enqueue)
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _broken_enqueue)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
-            session,
             task=object(),
             args=["job-2"],
             queue="medium",
@@ -317,16 +296,16 @@ async def test_submit_run_async_enqueues_when_quota_available(monkeypatch):
         _ = (args, kwargs)
         return "job-1", True
 
-    async def _fake_enqueue(session, *, task, args, queue, task_id):
-        _ = (session, task)
-        enqueue_calls.append({"args": args, "queue": queue, "task_id": task_id})
+    async def _fake_enqueue(task, *, args, queue):
+        _ = task
+        enqueue_calls.append({"args": args, "queue": queue})
 
     monkeypatch.setattr(task_queue, "uuid4", lambda: _UUID())
     monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency)
     monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
     monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing)
     monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job)
-    monkeypatch.setattr(task_queue, "_enqueue_with_error_mapping_async", _fake_enqueue)
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _fake_enqueue)
     monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 2)
     monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: client)
 
@@ -359,3 +338,42 @@ async def test_guard_inflight_async_uses_shared_client_concurrently(monkeypatch)
 
     assert get_client_calls == 2
     assert [call[4] for call in client.eval_calls] == ["job-1", "job-2"]
+
+
+@pytest.mark.anyio
+async def test_submit_scan_async_releases_db_session_before_enqueue(monkeypatch):
+    events: list[str] = []
+
+    class _Session:
+        pass
+
+    class _Ctx:
+        async def __aenter__(self):
+            events.append("db_enter")
+            return _Session()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            events.append("db_exit")
+            return False
+
+    async def _fake_find_existing(*_args, **_kwargs):
+        return None
+
+    async def _fake_create_job(*_args, **_kwargs):
+        return "scan-job", True
+
+    async def _fake_enqueue(_task, *, args, queue):
+        _ = (args, queue)
+        events.append("enqueue")
+
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _Ctx())
+    monkeypatch.setattr(task_queue, "get_scan_idempotency_key_async", lambda *_args, **_kwargs: asyncio.sleep(0, result="scan-key"))
+    monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing)
+    monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job)
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _fake_enqueue)
+
+    task_id = await task_queue.submit_scan_async(project_id=1, org_id=2)
+
+    assert task_id == "scan-job"
+    assert events == ["db_enter", "db_exit", "enqueue"]

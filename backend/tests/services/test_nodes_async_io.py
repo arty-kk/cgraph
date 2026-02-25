@@ -9,16 +9,16 @@ from app.api import nodes
 
 
 @pytest.mark.anyio
-async def test_resolve_under_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_under_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/repo/a.py"), "a.py"
 
-    monkeypatch.setattr(nodes.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(nodes, "run_fs_io_async", _fake_fs_runtime)
 
     result = await nodes._resolve_under_root_async(
         Path("/repo"),
@@ -29,7 +29,7 @@ async def test_resolve_under_root_async_uses_to_thread(monkeypatch: pytest.Monke
     assert result == (Path("/repo/a.py"), "a.py")
     assert calls["func"] is nodes.resolve_under_root
     assert calls["args"] == (Path("/repo"), "a.py")
-    assert calls["kwargs"] == {"max_length": 120}
+    assert calls["kwargs"] == {"max_length": 120, "operation": "nodes.resolve_under_root"}
 
 
 @pytest.mark.anyio
@@ -56,25 +56,25 @@ async def test_resolve_rename_paths_async_resolves_both(monkeypatch: pytest.Monk
 
 
 @pytest.mark.anyio
-async def test_path_exists_and_is_file_async_uses_to_thread(
+async def test_path_exists_and_is_file_async_uses_fs_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return True, True
 
-    monkeypatch.setattr(nodes.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(nodes, "run_fs_io_async", _fake_fs_runtime)
 
     result = await nodes._path_exists_and_is_file_async(Path("/repo/a.py"))
 
     assert result == (True, True)
     assert calls["func"] is nodes._path_exists_and_is_file
     assert calls["args"] == (Path("/repo/a.py"),)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "nodes.path_is_file"}
 
 
 @pytest.mark.anyio
@@ -114,25 +114,25 @@ async def test_ensure_existing_file_async_raises_for_not_file(
 
 
 @pytest.mark.anyio
-async def test_path_exists_and_is_dir_async_uses_to_thread(
+async def test_path_exists_and_is_dir_async_uses_fs_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return True, True
 
-    monkeypatch.setattr(nodes.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(nodes, "run_fs_io_async", _fake_fs_runtime)
 
     result = await nodes._path_exists_and_is_dir_async(Path("/repo/dir"))
 
     assert result == (True, True)
     assert calls["func"] is nodes._path_exists_and_is_dir
     assert calls["args"] == (Path("/repo/dir"),)
-    assert calls["kwargs"] == {}
+    assert calls["kwargs"] == {"operation": "nodes.path_is_dir"}
 
 
 @pytest.mark.anyio
@@ -184,23 +184,23 @@ async def test_collect_rename_path_state_async_runs_checks(monkeypatch: pytest.M
 
 
 @pytest.mark.anyio
-async def test_normalize_project_root_async_uses_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_normalize_project_root_async_uses_fs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
 
-    async def _fake_to_thread(func, *args, **kwargs):
+    async def _fake_fs_runtime(func, *args, **kwargs):
         calls["func"] = func
         calls["args"] = args
         calls["kwargs"] = kwargs
         return Path("/repo")
 
-    monkeypatch.setattr(nodes.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(nodes, "run_fs_io_async", _fake_fs_runtime)
 
     result = await nodes._normalize_project_root_async("/repo")
 
     assert result == Path("/repo")
     assert calls["func"] is nodes.normalize_project_root
     assert calls["args"] == ("/repo",)
-    assert calls["kwargs"] == {"max_length": nodes.settings.max_root_path_chars}
+    assert calls["kwargs"] == {"max_length": nodes.settings.max_root_path_chars, "operation": "nodes.normalize_root"}
 
 
 @pytest.mark.anyio
@@ -213,10 +213,10 @@ async def test_scan_files_async_uses_async_scan(monkeypatch: pytest.MonkeyPatch)
         return {'ok': True}
 
     async def _fail_to_thread(*_args, **_kwargs):
-        raise AssertionError('scan path must not use asyncio.to_thread')
+        raise AssertionError('scan path must not use fs runtime for async scan path')
 
     monkeypatch.setattr(nodes, 'scan_files_async', _fake_scan_files_async)
-    monkeypatch.setattr(nodes.asyncio, 'to_thread', _fail_to_thread)
+    monkeypatch.setattr(nodes, 'run_fs_io_async', _fail_to_thread)
 
     result = await nodes._scan_files_async(1, 2, Path('/repo'), ['a.py'])
 

@@ -5,7 +5,9 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app import async_db
+from app import async_db, snapshots
+from app.config import settings
+from app.infra import fs_runtime
 from app.llm import client as llm_client
 
 
@@ -115,3 +117,71 @@ def test_openai_singleton_recreated_only_after_close(monkeypatch: pytest.MonkeyP
 
     assert third is not first
     assert len(created) == 2
+
+
+@pytest.mark.anyio
+async def test_close_fs_runtime_is_idempotent() -> None:
+    await fs_runtime.init_fs_runtime()
+    await fs_runtime.close_fs_runtime()
+    await fs_runtime.close_fs_runtime()
+
+
+@pytest.mark.anyio
+async def test_fs_runtime_lifecycle_with_snapshot_workload() -> None:
+    import io
+    import zipfile
+    from tempfile import TemporaryDirectory
+
+    class _Upload:
+        def __init__(self, data: bytes):
+            self._data = data
+            self._offset = 0
+
+        async def seek(self, offset: int):
+            self._offset = offset
+
+        async def read(self, size: int = -1):
+            if size <= 0:
+                size = len(self._data) - self._offset
+            chunk = self._data[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
+
+    def _zip_payload(content: str) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zf:
+            zf.writestr("repo/README.md", content)
+        return buffer.getvalue()
+
+    original_dir = settings.db_dir
+    original_backend = settings.storage_backend
+
+    await fs_runtime.close_fs_runtime()
+
+    try:
+        with TemporaryDirectory() as tmpdir:
+            settings.db_dir = Path(tmpdir)
+            settings.storage_backend = "local"
+
+            for idx in range(4):
+                meta = await snapshots.store_snapshot_upload(_Upload(_zip_payload(f"cycle-{idx}")), f"repo-{idx}.zip")
+                root = await snapshots.prepare_snapshot_root_async(meta)
+                assert (root / "repo" / "README.md").read_text(encoding="utf-8") == f"cycle-{idx}"
+                await snapshots.delete_snapshot_async(meta)
+
+            runtime = fs_runtime._fs_runtime
+            assert runtime is not None
+            assert runtime.queue_depth == 0
+            assert runtime.in_flight == 0
+
+            await fs_runtime.close_fs_runtime()
+            assert fs_runtime._fs_runtime is None
+
+            await fs_runtime.init_fs_runtime()
+            assert fs_runtime._fs_runtime is not None
+
+            await fs_runtime.close_fs_runtime()
+            assert fs_runtime._fs_runtime is None
+    finally:
+        settings.db_dir = original_dir
+        settings.storage_backend = original_backend

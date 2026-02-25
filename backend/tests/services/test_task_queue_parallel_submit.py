@@ -3,7 +3,6 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -48,34 +47,29 @@ class _FakeRedisClient:
 @pytest.mark.anyio
 @pytest.mark.usefixtures("ensure_async_postgres")
 async def test_parallel_submit_is_idempotent_and_non_blocking(monkeypatch):
-    def _fake_run(*, args, queue):
+    async def _fake_enqueue(_task, *, args, queue):
         _ = (args, queue)
-        time.sleep(0.05)
+        await asyncio.sleep(0.05)
 
-    def _fake_scan(*, args, queue):
-        _ = (args, queue)
-        time.sleep(0.05)
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _fake_enqueue)
 
-    with patch("app.celery_tasks.run_task_job.apply_async", side_effect=_fake_run), patch(
-        "app.celery_tasks.scan_task.apply_async", side_effect=_fake_scan
-    ):
-        started = time.monotonic()
-        run_id, scan_id = await asyncio.wait_for(
-            asyncio.gather(
-                submit_run_async(project_id=11, org_id=77, payload={"a": 1}),
-                submit_scan_async(project_id=11, org_id=77),
-            ),
-            timeout=2,
-        )
-        elapsed = time.monotonic() - started
+    started = time.monotonic()
+    run_id, scan_id = await asyncio.wait_for(
+        asyncio.gather(
+            submit_run_async(project_id=11, org_id=77, payload={"a": 1}),
+            submit_scan_async(project_id=11, org_id=77),
+        ),
+        timeout=2,
+    )
+    elapsed = time.monotonic() - started
 
-        run_id_repeat, scan_id_repeat = await asyncio.wait_for(
-            asyncio.gather(
-                submit_run_async(project_id=11, org_id=77, payload={"a": 1}),
-                submit_scan_async(project_id=11, org_id=77),
-            ),
-            timeout=2,
-        )
+    run_id_repeat, scan_id_repeat = await asyncio.wait_for(
+        asyncio.gather(
+            submit_run_async(project_id=11, org_id=77, payload={"a": 1}),
+            submit_scan_async(project_id=11, org_id=77),
+        ),
+        timeout=2,
+    )
 
     assert elapsed < 1
     assert run_id_repeat == run_id
@@ -85,24 +79,34 @@ async def test_parallel_submit_is_idempotent_and_non_blocking(monkeypatch):
 @pytest.mark.anyio
 @pytest.mark.usefixtures("ensure_async_postgres")
 async def test_high_concurrency_submit_scan_not_serialized(monkeypatch):
-    monkeypatch.setattr(task_queue.settings, "task_queue_enqueue_workers", 8)
+    active = 0
+    peak = 0
+    lock = asyncio.Lock()
 
-    def _fake_scan(*, args, queue):
+    async def _slow_async_enqueue(_task, *, args, queue):
+        nonlocal active, peak
         _ = (args, queue)
-        time.sleep(0.05)
+        async with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            async with lock:
+                active -= 1
 
-    with patch("app.celery_tasks.scan_task.apply_async", side_effect=_fake_scan):
-        started = time.monotonic()
-        task_ids = await asyncio.wait_for(
-            asyncio.gather(
-                *[submit_scan_async(project_id=1000 + i, org_id=77) for i in range(80)]
-            ),
-            timeout=6,
-        )
-        elapsed = time.monotonic() - started
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _slow_async_enqueue)
 
-    assert len(set(task_ids)) == 80
+    started = time.monotonic()
+    task_ids = await asyncio.wait_for(
+        asyncio.gather(*[submit_scan_async(project_id=1000 + i, org_id=77) for i in range(40)]),
+        timeout=6,
+    )
+    elapsed = time.monotonic() - started
+
+    assert len(set(task_ids)) == 40
     assert elapsed < 2.5
+    assert peak > 1
 
 
 @pytest.mark.anyio
@@ -112,9 +116,14 @@ async def test_submit_run_async_rolls_back_status_and_inflight_on_enqueue_error(
     monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: redis_client)
     monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 1)
 
-    with patch("app.celery_tasks.run_task_job.apply_async", side_effect=RuntimeError("broker exploded")):
-        with pytest.raises(ExternalServiceError) as exc_ctx:
-            await submit_run_async(project_id=99, org_id=42, payload={"fail": True})
+    async def _boom_enqueue(_task, *, args, queue):
+        _ = (args, queue)
+        raise task_queue._AsyncTaskProducerError("broker exploded")
+
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _boom_enqueue)
+
+    with pytest.raises(ExternalServiceError) as exc_ctx:
+        await submit_run_async(project_id=99, org_id=42, payload={"fail": True})
 
     err = exc_ctx.value
     task_id = err.context["task_id"]

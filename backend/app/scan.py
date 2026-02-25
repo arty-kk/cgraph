@@ -5,10 +5,9 @@ import json
 import os
 import asyncio
 import time
+import threading
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from threading import Lock
 from typing import Awaitable, Callable, Iterable, Tuple, TypeVar, cast
@@ -35,6 +34,9 @@ from .errors import LimitExceededError, LockedError
 from .indexers import pick_indexer
 from .indexers.infra_indexer import is_infra_file
 from .llm.client import get_async_openai_client
+from .infra.external_io_runtime import run_openai_io_async
+from .infra.cpu_runtime import run_cpu_io_async
+from .infra.fs_runtime import run_fs_io_async
 from .logging import get_logger
 from .models import (
     ApiCall,
@@ -69,11 +71,11 @@ logger = get_logger("stubgraph.scan")
 EMBEDDING_CHUNKS_KIND = "embedding_chunks"
 SCAN_STAGE_BATCH_SIZE = 128
 SCAN_STAGE_MAX_PARALLEL = 8
+SCAN_EMBEDDINGS_MAX_PARALLEL = 4
 
 
 @dataclass
 class ScanRuntime:
-    executor: ThreadPoolExecutor
     batch_size: int
     max_parallel: int
 
@@ -82,38 +84,35 @@ class ScanRuntime:
         return self.max_parallel
 
 
-_scan_runtime: ScanRuntime | None = None
-_scan_runtime_lock = Lock()
-
-
 def get_scan_runtime() -> ScanRuntime:
-    global _scan_runtime
-    with _scan_runtime_lock:
-        if _scan_runtime is None:
-            max_parallel = max(1, int(SCAN_STAGE_MAX_PARALLEL))
-            _scan_runtime = ScanRuntime(
-                executor=ThreadPoolExecutor(max_workers=max_parallel, thread_name_prefix="scan-runtime"),
-                batch_size=max(1, int(SCAN_STAGE_BATCH_SIZE)),
-                max_parallel=max_parallel,
-            )
-        return _scan_runtime
+    max_parallel = max(1, int(SCAN_STAGE_MAX_PARALLEL))
+    return ScanRuntime(
+        batch_size=max(1, int(SCAN_STAGE_BATCH_SIZE)),
+        max_parallel=max_parallel,
+    )
 
 
 async def close_scan_runtime() -> None:
-    global _scan_runtime
-    with _scan_runtime_lock:
-        runtime = _scan_runtime
-        _scan_runtime = None
-    if runtime is None:
-        return
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, partial(runtime.executor.shutdown, wait=True, cancel_futures=True))
+    return
 
 
-async def _run_scan_batch(sync_fn, *args):
-    runtime = get_scan_runtime()
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(runtime.executor, partial(sync_fn, *args))
+async def _run_scan_fs_batch(sync_fn, *args, operation: str):
+    return await run_fs_io_async(sync_fn, *args, operation=operation)
+
+
+async def _run_scan_cpu_batch(sync_fn, *args, operation: str):
+    return await run_cpu_io_async(sync_fn, *args, operation=operation)
+
+
+def _compute_symbol_meta_for_embedding(
+    project_root_str: str,
+    rel_path: str,
+    text: str,
+) -> tuple[dict[str, int | str], ...]:
+    project_root = Path(project_root_str)
+    indexer = pick_indexer(rel_path)
+    symbols = indexer.parse_symbols(project_root / rel_path, text) or []
+    return tuple(_symbol_chunks(text, symbols))
 
 
 def _today_utc():
@@ -166,6 +165,29 @@ class FileReadResult:
     mtime_ns: int
     size: int
     oversized: bool
+
+
+@dataclass(frozen=True)
+class EmbeddingTaskCandidate:
+    rel_path: str
+    file_hash: str
+    chunks: tuple[str, ...]
+    symbol_meta: tuple[dict[str, int | str], ...]
+    existing_hashes: frozenset[str]
+
+
+@dataclass(frozen=True)
+class EmbeddingTaskResult:
+    rows: tuple[dict, ...]
+    paths_to_delete: tuple[str, ...]
+    status: str
+
+
+@dataclass(frozen=True)
+class VerifySnapshotFsItem:
+    rel: str
+    snap: FileSnapshot
+    text: str | None
 
 
 def _get_cached_parse(lang: str, file_hash: str, file_suffix: str) -> tuple[int, list[dict]] | None:
@@ -649,7 +671,7 @@ async def _parse_index_batch_async(
             )
         return parsed
 
-    return await _run_scan_batch(_sync_parse)
+    return await _run_scan_cpu_batch(_sync_parse, operation="scan.cpu.parse_batch")
 
 
 def _is_missing_table_error(e: Exception, table: str) -> bool:
@@ -712,6 +734,23 @@ def _verify_scan_snapshot(
     return True, ""
 
 
+def _verify_snapshot_hash_batch(batch: list[VerifySnapshotFsItem]) -> tuple[bool, str]:
+    for item in batch:
+        rel, snap = item.rel, item.snap
+        if snap.hash_kind == "content":
+            text = item.text or ""
+            if sha256_text(text) != snap.file_hash:
+                return False, f"hash_changed:{rel}"
+        elif snap.hash_kind == "oversized":
+            if sha256_text(f"oversized:{snap.size}:{snap.mtime_ns}") != snap.file_hash:
+                return False, f"hash_changed:{rel}"
+        elif snap.hash_kind == "stat_only":
+            continue
+        else:
+            return False, f"unknown_hash_kind:{rel}"
+    return True, ""
+
+
 async def _verify_scan_snapshot_async(
     project_root: Path,
     snapshot: dict[str, FileSnapshot],
@@ -723,7 +762,12 @@ async def _verify_scan_snapshot_async(
     runtime = get_scan_runtime()
     batch_size = max(1, int(batch_size or runtime.batch_size))
     max_parallel = max(1, int(max_parallel or runtime.max_parallel))
-    semaphore = asyncio.Semaphore(max_parallel)
+
+    class _VerifyBatchFailed(Exception):
+        def __init__(self, index: int, reason: str):
+            super().__init__(reason)
+            self.index = index
+            self.reason = reason
 
     def _check_removed_batch(batch: list[str]) -> tuple[bool, str]:
         for rel in batch:
@@ -731,45 +775,100 @@ async def _verify_scan_snapshot_async(
                 return False, f"removed_path_exists:{rel}"
         return True, ""
 
-    def _check_snapshot_batch(batch: list[tuple[str, FileSnapshot]]) -> tuple[bool, str]:
+    def _check_snapshot_fs_batch(batch: list[tuple[str, FileSnapshot]]) -> tuple[bool, str, list[VerifySnapshotFsItem]]:
+        out: list[VerifySnapshotFsItem] = []
         for rel, snap in batch:
             p = project_root / rel
             try:
                 st = p.stat()
             except OSError:
-                return False, f"missing:{rel}"
+                return False, f"missing:{rel}", []
             if int(st.st_mtime_ns) != int(snap.mtime_ns) or int(st.st_size) != int(snap.size):
-                return False, f"stat_changed:{rel}"
+                return False, f"stat_changed:{rel}", []
             if snap.hash_kind == "content":
                 try:
                     text = p.read_text(encoding="utf-8", errors="replace")
                 except Exception:
-                    return False, f"read_failed:{rel}"
-                if sha256_text(text) != snap.file_hash:
-                    return False, f"hash_changed:{rel}"
-            elif snap.hash_kind == "oversized":
-                if sha256_text(f"oversized:{snap.size}:{snap.mtime_ns}") != snap.file_hash:
-                    return False, f"hash_changed:{rel}"
-            elif snap.hash_kind == "stat_only":
-                continue
+                    return False, f"read_failed:{rel}", []
+                out.append(VerifySnapshotFsItem(rel=rel, snap=snap, text=text))
             else:
-                return False, f"unknown_hash_kind:{rel}"
-        return True, ""
+                out.append(VerifySnapshotFsItem(rel=rel, snap=snap, text=None))
+        return True, "", out
 
-    async def _run(sync_fn, batch):
-        async with semaphore:
-            return await _run_scan_batch(sync_fn, batch)
+    async def _run_stage(
+        items: list,
+        worker_count: int,
+        run_batch,
+    ) -> tuple[bool, str, list]:
+        batch_count = (len(items) + batch_size - 1) // batch_size
+        if batch_count == 0:
+            return True, "", []
 
-    for i in range(0, len(removed), batch_size):
-        ok, reason = await _run(_check_removed_batch, removed[i : i + batch_size])
-        if not ok:
-            return ok, reason
+        workers = min(worker_count, batch_count)
+        work_queue: asyncio.Queue[tuple[int, list] | None] = asyncio.Queue(maxsize=max_parallel)
+        indexed: list[list | None] = [None] * batch_count
+
+        async def _producer() -> None:
+            for index in range(batch_count):
+                start = index * batch_size
+                await work_queue.put((index, items[start : start + batch_size]))
+            for _ in range(workers):
+                await work_queue.put(None)
+
+        async def _worker() -> None:
+            while True:
+                item = await work_queue.get()
+                try:
+                    if item is None:
+                        return
+                    index, batch = item
+                    ok, reason, payload = await run_batch(batch)
+                    if not ok:
+                        raise _VerifyBatchFailed(index, reason)
+                    indexed[index] = payload
+                finally:
+                    work_queue.task_done()
+
+        failure_reason = ""
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(_producer())
+                for _ in range(workers):
+                    tg.create_task(_worker())
+        except* _VerifyBatchFailed as eg:
+            if eg.exceptions:
+                first = min(eg.exceptions, key=lambda exc: exc.index)
+                failure_reason = first.reason
+            else:
+                failure_reason = "snapshot_verify_failed"
+
+        if failure_reason:
+            return False, failure_reason, []
+        return True, "", [entry for batch in indexed if batch is not None for entry in batch]
+
+    async def _run_removed_batch(batch: list[str]) -> tuple[bool, str, list]:
+        ok, reason = await _run_scan_fs_batch(_check_removed_batch, batch, operation="scan.fs.verify_removed_batch")
+        return ok, reason, []
+
+    async def _run_snapshot_fs_batch(batch: list[tuple[str, FileSnapshot]]) -> tuple[bool, str, list[VerifySnapshotFsItem]]:
+        return await _run_scan_fs_batch(_check_snapshot_fs_batch, batch, operation="scan.fs.verify_snapshot_fs_batch")
+
+    async def _run_snapshot_cpu_batch(batch: list[VerifySnapshotFsItem]) -> tuple[bool, str, list]:
+        ok, reason = await _run_scan_cpu_batch(_verify_snapshot_hash_batch, batch, operation="scan.cpu.verify_snapshot_hash_batch")
+        return ok, reason, []
+
+    ok, reason, _ = await _run_stage(removed, max_parallel, _run_removed_batch)
+    if not ok:
+        return False, reason
 
     snapshot_items = list(snapshot.items())
-    for i in range(0, len(snapshot_items), batch_size):
-        ok, reason = await _run(_check_snapshot_batch, snapshot_items[i : i + batch_size])
-        if not ok:
-            return ok, reason
+    ok, reason, snapshot_fs_items = await _run_stage(snapshot_items, max_parallel, _run_snapshot_fs_batch)
+    if not ok:
+        return False, reason
+
+    ok, reason, _ = await _run_stage(snapshot_fs_items, max_parallel, _run_snapshot_cpu_batch)
+    if not ok:
+        return False, reason
 
     return True, ""
 
@@ -946,44 +1045,91 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
 
         runtime = get_scan_runtime()
         queue_size = runtime.queue_size
-        path_queue: asyncio.Queue[list[str] | None] = asyncio.Queue(maxsize=queue_size)
-        producer_done = asyncio.Event()
-        loop = asyncio.get_running_loop()
+        sentinel = object()
+        path_queue: asyncio.Queue[list[str] | object] = asyncio.Queue(maxsize=queue_size)
+        limiter = threading.BoundedSemaphore(queue_size)
+        producer_stop = threading.Event()
 
-        def _produce_paths() -> None:
+        async def _produce_paths_async() -> None:
             producer_started = time.monotonic()
-            current_batch: list[str] = []
-            try:
-                for path in iter_code_files(project_root):
-                    rel = path.relative_to(project_root).as_posix()
-                    current_batch.append(rel)
-                    if len(current_batch) >= runtime.batch_size:
-                        asyncio.run_coroutine_threadsafe(path_queue.put(current_batch), loop).result()
-                        scan_metrics["producer"]["batches"] += 1
-                        scan_metrics["producer"]["paths"] += len(current_batch)
-                        current_batch = []
-                if current_batch:
-                    asyncio.run_coroutine_threadsafe(path_queue.put(current_batch), loop).result()
+            loop = asyncio.get_running_loop()
+
+            def _publish_batch(rel_batch: list[str]) -> None:
+                if producer_stop.is_set():
+                    return
+                while not producer_stop.is_set():
+                    if limiter.acquire(timeout=0.05):
+                        break
+                else:
+                    return
+
+                def _enqueue() -> None:
+                    try:
+                        path_queue.put_nowait(list(rel_batch))
+                    except BaseException:
+                        limiter.release()
+                        raise
                     scan_metrics["producer"]["batches"] += 1
-                    scan_metrics["producer"]["paths"] += len(current_batch)
+                    scan_metrics["producer"]["paths"] += len(rel_batch)
+
+                try:
+                    loop.call_soon_threadsafe(_enqueue)
+                except RuntimeError:
+                    limiter.release()
+                    raise
+
+            try:
+                await run_fs_io_async(
+                    _stream_code_file_batches,
+                    project_root,
+                    runtime.batch_size,
+                    _publish_batch,
+                    producer_stop.is_set,
+                    operation="scan.fs.stream_paths",
+                )
             finally:
-                asyncio.run_coroutine_threadsafe(path_queue.put(None), loop).result()
-                loop.call_soon_threadsafe(producer_done.set)
+                producer_stop.set()
+                while True:
+                    try:
+                        await asyncio.shield(path_queue.put(sentinel))
+                        break
+                    except asyncio.CancelledError:
+                        if path_queue.full():
+                            try:
+                                dropped = path_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                await asyncio.sleep(0)
+                            else:
+                                if dropped is not sentinel:
+                                    limiter.release()
+                            continue
+                        raise
                 scan_metrics["producer"]["duration_s"] = (
                     scan_metrics["producer"].get("duration_s", 0.0) + time.monotonic() - producer_started
                 )
 
-        producer_task = asyncio.create_task(asyncio.to_thread(_produce_paths))
-        while True:
-            rel_batch = await path_queue.get()
-            if rel_batch is None:
-                break
-            for rel in rel_batch:
-                seen_paths.add(rel)
-            await _process_path_batch(rel_batch)
+        async def _consume_paths_async() -> None:
+            while True:
+                rel_batch = await path_queue.get()
+                if rel_batch is sentinel:
+                    break
+                assert isinstance(rel_batch, list)
+                try:
+                    for rel in rel_batch:
+                        seen_paths.add(rel)
+                    await _process_path_batch(rel_batch)
+                finally:
+                    limiter.release()
 
-        await producer_done.wait()
-        await producer_task
+        producer_task = asyncio.create_task(_produce_paths_async(), name=f"scan-producer-{project_id}")
+        consumer_task = asyncio.create_task(_consume_paths_async(), name=f"scan-consumer-{project_id}")
+        try:
+            await asyncio.gather(producer_task, consumer_task)
+        finally:
+            for task in (producer_task, consumer_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(producer_task, consumer_task, return_exceptions=True)
 
         removed = sorted(existing_keys - seen_paths)
         sorted_candidates = sorted(candidates)
@@ -1236,6 +1382,8 @@ async def _prepare_scan_files_async(
             scan_metrics["parse"]["batches"] += 1
             scan_metrics["parse"]["files"] += len(parsed_batch)
 
+        embedding_candidates: list[EmbeddingTaskCandidate] = []
+
         for parsed in parsed_batch:
             rel = str(parsed["rel"])
             snapshot[rel] = FileSnapshot(
@@ -1268,70 +1416,28 @@ async def _prepare_scan_files_async(
                             logger.warning("Embeddings enabled but OPENAI_API_KEY is not set; skipping embeddings.")
                             embedding_warned_missing_key = True
                     else:
-                        idx = pick_indexer(rel)
                         chunks = _chunk_text(
                             text,
                             int(settings.embeddings_chunk_size),
                             int(settings.embeddings_chunk_overlap),
                         )
                         if chunks:
-                            symbol_meta = await asyncio.to_thread(
-                                lambda: _symbol_chunks(text, idx.parse_symbols(project_root / rel, text) or [])
+                            symbol_meta = await _run_scan_cpu_batch(
+                                _compute_symbol_meta_for_embedding,
+                                str(project_root),
+                                rel,
+                                text,
+                                operation="scan.cpu.symbol_meta",
                             )
-                            client = get_async_openai_client()
-                            try:
-                                chunk_limit = await get_entitlement_int_async(
-                                    session,
-                                    org_id,
-                                    "embeddings_daily_chunk_limit",
+                            embedding_candidates.append(
+                                EmbeddingTaskCandidate(
+                                    rel_path=rel,
+                                    file_hash=file_hash,
+                                    chunks=tuple(chunks),
+                                    symbol_meta=tuple(symbol_meta),
+                                    existing_hashes=frozenset(existing_hashes),
                                 )
-                                await check_and_increment_async(
-                                    session,
-                                    org_id,
-                                    EMBEDDING_CHUNKS_KIND,
-                                    len(chunks),
-                                    int(chunk_limit)
-                                    if chunk_limit is not None
-                                    else settings.embeddings_daily_chunk_limit,
-                                )
-                                can_generate_embeddings = True
-                            except LimitExceededError:
-                                if not embedding_warned_limit:
-                                    logger.warning("Embeddings daily chunk limit exceeded; skipping embeddings.")
-                                    embedding_warned_limit = True
-                                continue
-                            try:
-                                response = await client.embeddings.create(
-                                    model=settings.embeddings_model,
-                                    input=chunks,
-                                )
-                            except Exception as e:  # noqa: BLE001
-                                logger.warning(
-                                    "Embeddings request failed for %s; skipping embeddings: %s",
-                                    rel,
-                                    e,
-                                    exc_info=True,
-                                )
-                                continue
-                            if can_generate_embeddings and existing_hashes:
-                                embedding_paths_to_delete.append(rel)
-                            for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
-                                embedding = getattr(item, "embedding", None)
-                                if embedding is None:
-                                    continue
-                                meta = symbol_meta[idx_chunk] if idx_chunk < len(symbol_meta) else {}
-                                embedding_rows.append(
-                                    {
-                                        "project_id": project_id,
-                                        "path": rel,
-                                        "chunk_index": idx_chunk,
-                                        "file_hash": file_hash,
-                                        "embedding_json": json.dumps(embedding),
-                                        "symbol_name": str(meta.get("symbol_name", "")),
-                                        "symbol_start_line": int(meta.get("symbol_start_line", 0) or 0),
-                                        "symbol_end_line": int(meta.get("symbol_end_line", 0) or 0),
-                                    }
-                                )
+                            )
 
             for imp in parsed.get("cached_imports") or []:
                 if not isinstance(imp, dict):
@@ -1364,6 +1470,86 @@ async def _prepare_scan_files_async(
                         kind=kind,
                         raw=raw,
                     )
+
+        if embedding_candidates:
+            client = get_async_openai_client()
+            semaphore = asyncio.Semaphore(max(1, int(SCAN_EMBEDDINGS_MAX_PARALLEL)))
+            quota_lock = asyncio.Lock()
+            chunk_limit = await get_entitlement_int_async(
+                session,
+                org_id,
+                "embeddings_daily_chunk_limit",
+            )
+            effective_chunk_limit = (
+                int(chunk_limit) if chunk_limit is not None else settings.embeddings_daily_chunk_limit
+            )
+
+            async def _run_embedding_candidate(candidate: EmbeddingTaskCandidate) -> EmbeddingTaskResult:
+                async with semaphore:
+                    try:
+                        async with quota_lock:
+                            await check_and_increment_async(
+                                session,
+                                org_id,
+                                EMBEDDING_CHUNKS_KIND,
+                                len(candidate.chunks),
+                                effective_chunk_limit,
+                            )
+                    except LimitExceededError:
+                        return EmbeddingTaskResult(rows=(), paths_to_delete=(), status="skipped_limit")
+
+                    try:
+                        async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+                            response = await run_openai_io_async(
+                                lambda: client.embeddings.create(
+                                    model=settings.embeddings_model,
+                                    input=list(candidate.chunks),
+                                ),
+                                kind="long",
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "Embeddings request failed for %s; skipping embeddings: %s",
+                            candidate.rel_path,
+                            e,
+                            exc_info=True,
+                        )
+                        return EmbeddingTaskResult(rows=(), paths_to_delete=(), status="error")
+
+                    rows: list[dict] = []
+                    for idx_chunk, item in enumerate(getattr(response, "data", []) or []):
+                        embedding = getattr(item, "embedding", None)
+                        if embedding is None:
+                            continue
+                        meta = candidate.symbol_meta[idx_chunk] if idx_chunk < len(candidate.symbol_meta) else {}
+                        rows.append(
+                            {
+                                "project_id": project_id,
+                                "path": candidate.rel_path,
+                                "chunk_index": idx_chunk,
+                                "file_hash": candidate.file_hash,
+                                "embedding_json": json.dumps(embedding),
+                                "symbol_name": str(meta.get("symbol_name", "")),
+                                "symbol_start_line": int(meta.get("symbol_start_line", 0) or 0),
+                                "symbol_end_line": int(meta.get("symbol_end_line", 0) or 0),
+                            }
+                        )
+
+                    paths_to_delete = (candidate.rel_path,) if candidate.existing_hashes else ()
+                    return EmbeddingTaskResult(rows=tuple(rows), paths_to_delete=paths_to_delete, status="ok")
+
+            embedding_tasks = [
+                asyncio.create_task(_run_embedding_candidate(candidate)) for candidate in embedding_candidates
+            ]
+            task_results = await asyncio.gather(*embedding_tasks, return_exceptions=False)
+            for task_result in task_results:
+                if task_result.status == "skipped_limit" and not embedding_warned_limit:
+                    logger.warning("Embeddings daily chunk limit exceeded; skipping embeddings.")
+                    embedding_warned_limit = True
+                embedding_rows.extend(task_result.rows)
+                embedding_paths_to_delete.extend(task_result.paths_to_delete)
 
         await asyncio.sleep(0)
 

@@ -17,6 +17,9 @@ from sqlmodel import select
 from .config import settings
 from .async_db import AsyncSessionLocal
 from .llm.client import get_async_openai_client
+from .infra.cpu_runtime import run_cpu_io_async
+from .infra.external_io_runtime import run_openai_io_async
+from .infra.fs_runtime import run_fs_io_async
 from .models import FileChunkEmbedding, FileEdge, FileNode
 from .utils import _chunk_text, resolve_under_root
 
@@ -209,7 +212,11 @@ async def compute_graph_metrics_async(
     if not graph_input["node_rows"]:
         return False
 
-    params = await asyncio.to_thread(_compute_graph_metrics_cpu, graph_input)
+    params = await run_cpu_io_async(
+        _compute_graph_metrics_cpu,
+        graph_input,
+        operation="graph.compute_graph_metrics",
+    )
     await _write_graph_metrics_async(session, params)
     return False
 
@@ -444,17 +451,15 @@ def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
 def _score_semantic_candidates_cpu(
     rows: list[tuple[Any, ...]],
     *,
-    root: Path,
     query_embedding: list[float],
+    file_cache: dict[str, str],
+    chunk_size: int,
+    overlap: int,
 ) -> tuple[int, list[dict[str, Any]]]:
     compared = 0
     scored: list[dict[str, Any]] = []
 
-    file_cache: dict[str, str] = {}
-    chunk_size = int(settings.embeddings_chunk_size)
-    overlap = int(settings.embeddings_chunk_overlap)
     step = max(1, chunk_size - overlap)
-    max_file_chars = int(settings.embeddings_max_file_chars)
 
     for row in rows:
         if isinstance(row, (tuple, list)):
@@ -488,20 +493,6 @@ def _score_semantic_candidates_cpu(
         compared += 1
 
         snippet = ""
-        if path not in file_cache:
-            try:
-                abs_path, _rel_norm = resolve_under_root(root, path, max_length=settings.max_rel_path_chars)
-            except Exception:
-                file_cache[path] = ""
-            else:
-                if abs_path.exists() and abs_path.is_file():
-                    try:
-                        with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                            file_cache[path] = f.read(max_file_chars)
-                    except Exception:
-                        file_cache[path] = ""
-                else:
-                    file_cache[path] = ""
         text = file_cache.get(path, "")
         if text:
             symbol_start = _as_int(symbol_start_line, 0)
@@ -532,6 +523,85 @@ def _score_semantic_candidates_cpu(
             }
         )
     return compared, scored
+
+
+def _resolve_and_read_semantic_candidate_file(
+    root: Path,
+    rel_path: str,
+    *,
+    max_rel_path_length: int,
+    max_chars: int,
+) -> tuple[str, str] | None:
+    try:
+        abs_path, _rel_norm = resolve_under_root(root, rel_path, max_length=max_rel_path_length)
+    except Exception:
+        return rel_path, ""
+    if not abs_path.exists() or not abs_path.is_file():
+        return rel_path, ""
+    try:
+        with abs_path.open("r", encoding="utf-8", errors="replace") as f:
+            payload = f.read(max_chars)
+    except Exception:
+        payload = ""
+    return rel_path, payload if isinstance(payload, str) else ""
+
+
+async def read_semantic_candidate_files_async(
+    root: Path,
+    rel_paths: list[str],
+    *,
+    max_parallel: int,
+    max_rel_path_length: int,
+    max_chars: int,
+) -> dict[str, str]:
+    selected_paths: list[str] = []
+    seen: set[str] = set()
+    for path in rel_paths:
+        if not isinstance(path, str) or not path or path in seen:
+            continue
+        seen.add(path)
+        selected_paths.append(path)
+    if not selected_paths:
+        return {}
+
+    worker_count = max(1, int(max_parallel))
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    for path in selected_paths:
+        queue.put_nowait(path)
+    for _ in range(worker_count):
+        queue.put_nowait(None)
+
+    file_cache: dict[str, str] = {}
+
+    async def _worker() -> None:
+        while True:
+            path = await queue.get()
+            try:
+                if path is None:
+                    return
+                try:
+                    row = await run_fs_io_async(
+                        _resolve_and_read_semantic_candidate_file,
+                        root,
+                        path,
+                        max_rel_path_length=max_rel_path_length,
+                        max_chars=max_chars,
+                        operation="graph.semantic.read_candidate",
+                    )
+                except Exception:
+                    row = (path, "")
+
+                if row is not None:
+                    row_path, payload = row
+                    if row_path not in file_cache:
+                        file_cache[row_path] = payload if isinstance(payload, str) else ""
+            finally:
+                queue.task_done()
+
+    workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+    await queue.join()
+    await asyncio.gather(*workers)
+    return file_cache
 
 
 async def search_semantic_async(
@@ -614,7 +684,13 @@ async def search_semantic_async(
 
     try:
         client = get_async_openai_client()
-        resp = await client.embeddings.create(model=settings.embeddings_model, input=[q])
+        async with asyncio.timeout(float(settings.openai_timeout_seconds)):
+            resp = await run_openai_io_async(
+                lambda: client.embeddings.create(model=settings.embeddings_model, input=[q]),
+                kind="short",
+            )
+    except asyncio.CancelledError:
+        raise
     except Exception as e:  # noqa: BLE001
         return {
             "error": "embedding_failed",
@@ -638,11 +714,43 @@ async def search_semantic_async(
             "meta": {"reason": "embedding_empty"},
         }
 
-    compared, scored = await asyncio.to_thread(
+    candidate_paths: list[str] = []
+    seen_candidate_paths: set[str] = set()
+    for row in rows:
+        path = row[0] if isinstance(row, (tuple, list)) else getattr(row, "path", "")
+        if not isinstance(path, str) or not path or path in seen_candidate_paths:
+            continue
+        seen_candidate_paths.add(path)
+        candidate_paths.append(path)
+
+    file_cache = await read_semantic_candidate_files_async(
+        root,
+        candidate_paths,
+        max_parallel=8,
+        max_rel_path_length=int(settings.max_rel_path_chars),
+        max_chars=int(settings.embeddings_max_file_chars),
+    )
+
+    rows_payload = [
+        (
+            str(row[0] or ""),
+            int(row[1] or 0),
+            str(row[2] or ""),
+            str(row[3] or ""),
+            int(row[4] or 0),
+            int(row[5] or 0),
+        )
+        for row in rows
+    ]
+
+    compared, scored = await run_cpu_io_async(
         _score_semantic_candidates_cpu,
-        rows,
-        root=root,
+        rows_payload,
         query_embedding=query_embedding,
+        file_cache=file_cache,
+        chunk_size=int(settings.embeddings_chunk_size),
+        overlap=int(settings.embeddings_chunk_overlap),
+        operation="graph.score_semantic_candidates",
     )
 
     scored.sort(key=lambda x: x["score"], reverse=True)

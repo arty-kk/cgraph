@@ -1,12 +1,10 @@
 # backend/app/celery_tasks.py
 from __future__ import annotations
 
-import asyncio
+import anyio
 import json
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Event, Thread
 from typing import Any
 
 from celery.signals import worker_process_init, worker_process_shutdown
@@ -14,11 +12,10 @@ from celery.signals import worker_process_init, worker_process_shutdown
 from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .celery_app import celery_app
 from .config import settings
-from .infra.redis_client import (
-    close_redis_pool_async,
-    get_async_redis_client,
-    init_redis_pool_async,
-)
+from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
+from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
+from .infra.fs_runtime import close_fs_runtime, init_fs_runtime, run_fs_io_async
+from .infra.redis_client import close_redis_pool_async, get_async_redis_client, init_redis_pool_async
 from .llm.client import close_async_openai_client, get_async_openai_client
 from .logging import get_logger
 from .models import Project, TaskJob
@@ -33,62 +30,20 @@ from .utils import normalize_project_root
 
 logger = get_logger("stubgraph.celery")
 
-_worker_loop: asyncio.AbstractEventLoop | None = None
-_worker_loop_thread: Thread | None = None
-_worker_loop_ready = Event()
 _worker_runtime_started = False
 
 
-def _worker_loop_main() -> None:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    global _worker_loop
-    _worker_loop = loop
-    _worker_loop_ready.set()
-    loop.run_forever()
-    loop.close()
-
-
-def _ensure_worker_loop() -> asyncio.AbstractEventLoop:
-    global _worker_loop_thread
-    loop = _worker_loop
-    if loop is not None and loop.is_running():
-        return loop
-    _worker_loop_ready.clear()
-    _worker_loop_thread = Thread(target=_worker_loop_main, daemon=True)
-    _worker_loop_thread.start()
-    _worker_loop_ready.wait()
-    loop = _worker_loop
-    if loop is None:
-        raise RuntimeError("Celery worker event loop is not initialized")
-    return loop
-
-
-def _run_in_worker_loop(awaitable: Awaitable[Any]) -> Any:
-    loop = _ensure_worker_loop()
-    future = asyncio.run_coroutine_threadsafe(awaitable, loop)
-    return future.result()
-
-
-def _stop_worker_loop() -> None:
-    global _worker_loop, _worker_loop_thread
-    loop = _worker_loop
-    thread = _worker_loop_thread
-    _worker_loop = None
-    _worker_loop_thread = None
-    if loop is not None and loop.is_running():
-        loop.call_soon_threadsafe(loop.stop)
-    if thread is not None and thread.is_alive():
-        thread.join()
-
-
 async def _startup_worker_resources_async() -> None:
-    startup_steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+    startup_steps: list[tuple[str, Any]] = [
         ("init_redis_pool_async", init_redis_pool_async),
         ("init_async_db", init_async_db),
+        ("init_fs_runtime", init_fs_runtime),
+        ("init_cpu_runtime", init_cpu_runtime),
+        ("init_external_io_runtime", init_external_io_runtime),
     ]
     if (settings.storage_backend or "local").strip().lower() == "s3":
         startup_steps.append(("init_s3_runtime", init_s3_runtime))
+
     for name, startup in startup_steps:
         await startup()
         logger.info("Celery worker startup step completed", extra={"step": name})
@@ -99,10 +54,13 @@ async def _startup_worker_resources_async() -> None:
 
 
 async def _cleanup_worker_resources_async() -> None:
-    cleanup_steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+    cleanup_steps: list[tuple[str, Any]] = [
         ("close_s3_runtime", close_s3_runtime),
         ("close_redis_pool_async", close_redis_pool_async),
         ("close_async_openai_client", close_async_openai_client),
+        ("close_fs_runtime", close_fs_runtime),
+        ("close_cpu_runtime", close_cpu_runtime),
+        ("close_external_io_runtime", close_external_io_runtime),
         ("close_async_db", close_async_db),
     ]
     for name, cleanup in cleanup_steps:
@@ -115,33 +73,33 @@ async def _cleanup_worker_resources_async() -> None:
 @worker_process_init.connect
 def _on_worker_process_init(**_kwargs: Any) -> None:
     global _worker_runtime_started
+    if _worker_runtime_started:
+        return
     try:
-        _run_in_worker_loop(_startup_worker_resources_async())
+        anyio.run(_startup_worker_resources_async)
         _worker_runtime_started = True
     except Exception:  # noqa: BLE001
         logger.exception("Celery worker startup failed")
         try:
-            _run_in_worker_loop(_cleanup_worker_resources_async())
+            anyio.run(_cleanup_worker_resources_async)
         except Exception:  # noqa: BLE001
             logger.exception("Celery worker cleanup after startup failure failed")
         finally:
             _worker_runtime_started = False
-            _stop_worker_loop()
         raise
 
 
 @worker_process_shutdown.connect
 def _on_worker_process_shutdown(**_kwargs: Any) -> None:
     global _worker_runtime_started
+    if not _worker_runtime_started:
+        return
     try:
-        loop = _worker_loop
-        if loop is not None and loop.is_running() and _worker_runtime_started:
-            _run_in_worker_loop(_cleanup_worker_resources_async())
+        anyio.run(_cleanup_worker_resources_async)
     except Exception:  # noqa: BLE001
         logger.exception("Celery worker cleanup failed")
     finally:
         _worker_runtime_started = False
-        _stop_worker_loop()
 
 
 async def _set_job_status_async(
@@ -191,7 +149,7 @@ async def _scan_task_async(job_id: str, project_id: int, org_id: int) -> None:
 
 @celery_app.task(name="stubgraph.scan")
 def scan_task(job_id: str, project_id: int, org_id: int) -> None:
-    _run_in_worker_loop(_scan_task_async(job_id, project_id, org_id))
+    anyio.run(_scan_task_async, job_id, project_id, org_id)
 
 
 async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
@@ -207,7 +165,7 @@ async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
 
 @celery_app.task(name="stubgraph.docs")
 def docs_task(job_id: str, project_id: int, org_id: int) -> None:
-    _run_in_worker_loop(_docs_task_async(job_id, project_id, org_id))
+    anyio.run(_docs_task_async, job_id, project_id, org_id)
 
 
 async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
@@ -227,7 +185,7 @@ async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload
 
 @celery_app.task(name="stubgraph.run_task")
 def run_task_job(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
-    _run_in_worker_loop(_run_task_job_async(job_id, project_id, org_id, payload))
+    anyio.run(_run_task_job_async, job_id, project_id, org_id, payload)
 
 
 async def _mutation_indexing_task_async(
@@ -275,18 +233,23 @@ def mutation_indexing_task(
     rel_paths: list[str],
     operation: str,
 ) -> None:
-    _run_in_worker_loop(
-        _mutation_indexing_task_async(job_id, project_id, org_id, rel_paths, operation)
-    )
+    anyio.run(_mutation_indexing_task_async, job_id, project_id, org_id, rel_paths, operation)
 
 
 @celery_app.task(name="stubgraph.routing_calibration")
 def routing_calibration_task() -> dict:
     try:
-        return _run_in_worker_loop(calibrate_routing_policy_thresholds_async())
+        return anyio.run(calibrate_routing_policy_thresholds_async)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Routing calibration task failed")
         return {"updated": False, "reason": "error", "error": str(exc)}
+
+
+async def dispatch_task_async(*, task_name: str, args: list[Any], queue: str) -> None:
+    task = celery_app.tasks.get(task_name)
+    if task is None:
+        raise RuntimeError(f"Celery task is not registered: {task_name}")
+    task.apply_async(args=args, queue=queue)
 
 
 async def _resolve_project_root_async(project_id: int, org_id: int) -> Path:
@@ -298,7 +261,11 @@ async def _resolve_project_root_async(project_id: int, org_id: int) -> Path:
 
 
 async def _normalize_project_root_async(root_path: str) -> Path:
-    return await asyncio.to_thread(normalize_project_root, root_path)
+    return await run_fs_io_async(
+        normalize_project_root,
+        root_path,
+        operation="celery.normalize_root",
+    )
 
 
 async def _touch_inflight_async(job_id: str) -> None:

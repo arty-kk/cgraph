@@ -8,6 +8,8 @@ TOOLS_PATH = Path("backend/app/llm/agentic/tools.py")
 DISPATCH_PATH = Path("backend/app/llm/agentic/dispatch.py")
 
 RUNTIME_ASYNC_FUNCS = {
+    "_tool_get_contract_async",
+    "_tool_get_symbol_async",
     "_tool_search_text_async",
     "_tool_route_usages_async",
     "_tool_suggest_endpoint_location_async",
@@ -57,6 +59,21 @@ def test_runtime_async_tool_path_has_no_sync_session_helpers() -> None:
             assert name not in {"_offline_get_session", "get_session"}, (
                 f"{fn_name} uses sync DB helper call: {name}"
             )
+
+
+def test_runtime_async_tool_path_has_no_local_session_factory_calls() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    for fn_name in RUNTIME_ASYNC_FUNCS | {"_tool_get_tree_outline_async", "_tool_project_summary_async"}:
+        fn = fn_nodes[fn_name]
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            if isinstance(call.func, ast.Name) and call.func.id == "AsyncSessionLocal":
+                raise AssertionError(f"{fn_name} must not call AsyncSessionLocal in runtime path")
 
 
 def test_async_functions_do_not_call_sync_search_text_paths() -> None:
@@ -115,7 +132,7 @@ def test_dispatch_passes_session_to_runtime_async_tools() -> None:
     assert '"unmatched_routes": ("_tool_unmatched_routes_async", (session, project_id, args), {})' in src
     assert '"unmatched_calls": ("_tool_unmatched_calls_async", (session, project_id, args), {})' in src
     assert (
-        '"compare_api_contract": (\n            "_tool_compare_api_contract_async",\n            (session, project_id, root, args),\n            {},\n        ),'
+        '"compare_api_contract": (\n            "_tool_compare_api_contract_async",\n            (session, project_id, root, args),\n            {"meta": meta},\n        ),'
         in src
     )
     assert (
@@ -190,6 +207,16 @@ def test_check_indexed_async_has_no_session_fallback_creation() -> None:
     assert "AsyncSessionLocal" not in chunk
     assert "session is None" not in chunk
 
+def test_runtime_outline_and_summary_async_have_no_session_fallback_creation() -> None:
+    source = TOOLS_PATH.read_text(encoding="utf-8")
+    for fn_name in {"_tool_get_tree_outline_async", "_tool_project_summary_async"}:
+        marker = f"async def {fn_name}"
+        assert marker in source
+        chunk = source.split(marker, 1)[1].split("\n\n", 1)[0]
+        assert "AsyncSessionLocal" not in chunk
+        assert "session is None" not in chunk
+
+
 
 def test_async_file_tools_have_no_sync_file_prechecks() -> None:
     module = _load_ast(TOOLS_PATH)
@@ -205,7 +232,7 @@ def test_async_file_tools_have_no_sync_file_prechecks() -> None:
                 raise AssertionError(f"{fn_name} contains sync pre-check .{call.func.attr}()")
 
 
-def test_runtime_contract_async_wrappers_avoid_sync_file_io_calls() -> None:
+def test_runtime_contract_async_functions_avoid_sync_file_io_calls() -> None:
     module = _load_ast(TOOLS_PATH)
     fn_nodes = {
         node.name: node
@@ -218,8 +245,102 @@ def test_runtime_contract_async_wrappers_avoid_sync_file_io_calls() -> None:
         fn = fn_nodes[fn_name]
         for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
             if isinstance(call.func, ast.Name) and call.func.id == "open":
-                raise AssertionError(f"{fn_name} has direct open() call in async runtime wrapper")
+                raise AssertionError(f"{fn_name} has direct open() call in async runtime function")
             if isinstance(call.func, ast.Attribute) and call.func.attr in banned_attrs:
                 raise AssertionError(
-                    f"{fn_name} has direct .{call.func.attr}() call in async runtime wrapper"
+                    f"{fn_name} has direct .{call.func.attr}() call in async runtime function"
                 )
+
+
+def test_suggest_fix_helpers_with_session_do_not_call_local_async_session_factory() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    for fn_name in {"_tool_suggest_api_fix_async", "_tool_suggest_contract_fix_async"}:
+        fn = fn_nodes[fn_name]
+        arg_names = [a.arg for a in fn.args.args]
+        assert "session" in arg_names, f"{fn_name} must receive session argument"
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            call_name = ""
+            if isinstance(call.func, ast.Name):
+                call_name = call.func.id
+            elif isinstance(call.func, ast.Attribute):
+                call_name = call.func.attr
+            assert call_name != "AsyncSessionLocal", (
+                f"{fn_name} must not call AsyncSessionLocal when session is provided"
+            )
+
+
+def test_suggest_contract_fix_functions_have_no_direct_fs_reads() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    banned_attrs = {"open", "read_text", "read", "read_bytes"}
+    for fn_name in {"_tool_suggest_contract_fix_async"}:
+        fn = fn_nodes[fn_name]
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            if isinstance(call.func, ast.Name) and call.func.id == "open":
+                raise AssertionError(f"{fn_name} has direct open() call")
+            if isinstance(call.func, ast.Attribute) and call.func.attr in banned_attrs:
+                raise AssertionError(f"{fn_name} has direct .{call.func.attr}() call")
+
+
+def test_seed_context_async_avoids_direct_sync_fs_calls() -> None:
+    context_path = Path("backend/app/llm/agentic/context.py")
+    module = _load_ast(context_path)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+
+    fn = fn_nodes["_seed_context_async"]
+    banned_attrs = {"open", "read", "read_text", "read_bytes", "stat", "is_file", "exists"}
+
+    for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+        if isinstance(call.func, ast.Name) and call.func.id in {"open", "resolve_under_root"}:
+            raise AssertionError(f"_seed_context_async has direct sync fs call: {call.func.id}")
+        if isinstance(call.func, ast.Attribute) and call.func.attr in banned_attrs:
+            raise AssertionError(
+                f"_seed_context_async has direct sync fs call: .{call.func.attr}()"
+            )
+
+    call_names = set()
+    for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+        if isinstance(call.func, ast.Name):
+            call_names.add(call.func.id)
+        elif isinstance(call.func, ast.Attribute):
+            call_names.add(call.func.attr)
+    assert "run_fs_io_async" not in call_names
+    assert "_run_seed_fs_io_async" in call_names
+
+
+def test_search_text_cpu_async_uses_cpu_runtime_not_asyncio_to_thread() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    fn = fn_nodes["_search_text_cpu_async"]
+
+    has_asyncio_to_thread = False
+    has_run_cpu_io_async = False
+
+    for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+        if isinstance(call.func, ast.Attribute):
+            if isinstance(call.func.value, ast.Name) and call.func.value.id == "asyncio" and call.func.attr == "to_thread":
+                has_asyncio_to_thread = True
+        elif isinstance(call.func, ast.Name) and call.func.id == "run_cpu_io_async":
+            has_run_cpu_io_async = True
+
+    assert not has_asyncio_to_thread, "_search_text_cpu_async must not call asyncio.to_thread"
+    assert has_run_cpu_io_async, "_search_text_cpu_async must call run_cpu_io_async"

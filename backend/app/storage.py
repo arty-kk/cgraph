@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import settings
+from .infra.cpu_runtime import run_cpu_io_async
+from .infra.fs_runtime import run_fs_io_async
 from .logging import get_logger
 from .s3_runtime import get_s3_client
 from .utils import sha256_text
@@ -82,7 +84,12 @@ def _s3_signed_url(bucket: str, key: str) -> str | None:
 async def _s3_signed_url_async(bucket: str, key: str) -> str | None:
     async with _S3_SIGNED_URL_SEMAPHORE:
         try:
-            return await asyncio.to_thread(_s3_signed_url, bucket, key)
+            return await run_cpu_io_async(
+                _s3_signed_url,
+                bucket,
+                key,
+                operation="storage.s3.signed_url",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to generate signed URL", extra={"reason": str(exc)})
             return None
@@ -112,9 +119,19 @@ async def store_patch_blob_async(patch_text: str) -> dict:
         base = Path(settings.db_dir).resolve()
         if base not in fp.parents and fp != base:
             raise StorageError("Refusing to write patch blob outside db_dir")
-        await asyncio.to_thread(fp.parent.mkdir, parents=True, exist_ok=True)
+        await run_fs_io_async(
+            fp.parent.mkdir,
+            parents=True,
+            exist_ok=True,
+            operation="storage.local.mkdir",
+        )
         try:
-            await asyncio.to_thread(_write_patch_blob_if_missing, fp, patch_text)
+            await run_fs_io_async(
+                _write_patch_blob_if_missing,
+                fp,
+                patch_text,
+                operation="storage.local.write_if_missing",
+            )
         except FileExistsError:
             pass
         return {
@@ -178,11 +195,16 @@ async def read_patch_blob_async(meta: dict) -> str:
     base = Path(settings.db_dir).resolve()
     if base not in fp.parents and fp != base:
         raise StorageError("Invalid patch path")
-    exists = await asyncio.to_thread(fp.exists)
-    is_file = await asyncio.to_thread(fp.is_file)
+    exists = await run_fs_io_async(fp.exists, operation="storage.local.exists")
+    is_file = await run_fs_io_async(fp.is_file, operation="storage.local.is_file")
     if not exists or not is_file:
         raise StorageError("Patch blob not found")
-    return await asyncio.to_thread(fp.read_text, encoding="utf-8", errors="replace")
+    return await run_fs_io_async(
+        fp.read_text,
+        encoding="utf-8",
+        errors="replace",
+        operation="storage.local.read_text",
+    )
 
 
 async def delete_patch_blob_async(meta: dict | None) -> None:
@@ -214,7 +236,7 @@ async def delete_patch_blob_by_sha_async(sha: str) -> None:
         logger.warning("Refusing to delete patch blob outside db_dir", extra={"sha": sha})
         return
     try:
-        await asyncio.to_thread(fp.unlink, True)
+        await run_fs_io_async(fp.unlink, True, operation="storage.local.unlink")
     except Exception as error:  # noqa: BLE001
         logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
 

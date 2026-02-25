@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 
@@ -20,6 +19,9 @@ from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .auth import extract_token
 from .config import settings
 from .errors import install_exception_handlers
+from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
+from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
+from .infra.fs_runtime import close_fs_runtime, init_fs_runtime
 from .infra.rate_limit import allow_request_async, rate_limit_response
 from .infra.redis_client import close_redis_pool_async, init_redis_pool_async
 from .llm.client import close_async_openai_client
@@ -27,16 +29,26 @@ from .logging import log_requests, setup_logging
 from .s3_runtime import close_s3_runtime, init_s3_runtime
 from .scan import close_scan_runtime
 from .services.auth_service import get_user_from_token_async
-from .services.task_queue import shutdown_celery_enqueue_adapter
 
 logger = logging.getLogger(__name__)
+
+
+
+
+def _should_attach_db_session(path: str) -> bool:
+    if path == "/health":
+        return False
+    return path.startswith("/api") or path.startswith("/api/v1")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     startup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
-        ("init_async_db", init_async_db),
         ("init_redis_pool_async", init_redis_pool_async),
+        ("init_async_db", init_async_db),
+        ("init_fs_runtime", init_fs_runtime),
+        ("init_cpu_runtime", init_cpu_runtime),
+        ("init_external_io_runtime", init_external_io_runtime),
     ]
 
     use_s3 = (settings.storage_backend or "local").strip().lower() == "s3"
@@ -48,14 +60,13 @@ async def lifespan(_: FastAPI):
             await initializer()
         yield
     finally:
-        async def _shutdown_celery_enqueue_adapter() -> None:
-            await asyncio.to_thread(shutdown_celery_enqueue_adapter)
-
         cleanup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = [
-            ("shutdown_celery_enqueue_adapter", _shutdown_celery_enqueue_adapter),
             ("close_s3_runtime", close_s3_runtime),
             ("close_redis_pool_async", close_redis_pool_async),
             ("close_async_openai_client", close_async_openai_client),
+            ("close_fs_runtime", close_fs_runtime),
+            ("close_cpu_runtime", close_cpu_runtime),
+            ("close_external_io_runtime", close_external_io_runtime),
             ("close_scan_runtime", close_scan_runtime),
             ("close_async_db", close_async_db),
         ]
@@ -117,6 +128,9 @@ async def auth_guard(request: Request, call_next):
 # is available in every middleware/endpoint and remains exactly one per request.
 @app.middleware("http")
 async def db_session_middleware(request: Request, call_next):
+    if not _should_attach_db_session(request.url.path):
+        return await call_next(request)
+
     async with AsyncSessionLocal() as session:
         request.state.db_session = session
         return await call_next(request)

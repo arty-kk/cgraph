@@ -17,14 +17,20 @@ class _AsyncPipeline:
     def __init__(self, client: "_AsyncClient") -> None:
         self.client = client
         self.batch: list[str] = []
+        self.setex_batch: list[tuple[str, int, str]] = []
 
     def delete(self, key: str) -> None:
         self.batch.append(key)
+
+    def setex(self, key: str, ttl: int, payload: str) -> None:
+        self.setex_batch.append((key, ttl, payload))
 
     async def execute(self) -> None:
         self.client.pipeline_execute_calls += 1
         batch_no = self.client.pipeline_execute_calls
         self.client.pipeline_batches.append(list(self.batch))
+        if self.setex_batch:
+            self.client.pipeline_setex_batches.append(list(self.setex_batch))
         if batch_no == self.client.fail_on_pipeline_batch:
             raise cache.RedisError(f"pipeline batch {batch_no} failed")
 
@@ -45,6 +51,7 @@ class _AsyncClient:
         self.scan_values: list[str] = scan_values or ["stubgraph:k:1", "stubgraph:k:2"]
         self.unlink_batches: list[list[str]] = []
         self.pipeline_batches: list[list[str]] = []
+        self.pipeline_setex_batches: list[list[tuple[str, int, str]]] = []
         self.unlink_calls = 0
         self.pipeline_execute_calls = 0
         self.fail_on_unlink_batch = fail_on_unlink_batch
@@ -253,3 +260,40 @@ async def test_cache_invalidate_prefix_async_maps_redis_error_to_external_servic
         "deleted_count": 0,
         "batches": 0,
     }
+
+
+@pytest.mark.anyio
+async def test_cache_mget_json_async_reads_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _AsyncClient()
+
+    async def _mget(keys):
+        return ['{"a": 1}', None, 'bad-json']
+
+    client.mget = _mget  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
+
+    result = await cache.cache_mget_json_async([["k1"], ["k2"], ["k3"]])
+
+    assert result == [{"a": 1}, None, None]
+
+
+@pytest.mark.anyio
+async def test_cache_mset_json_async_writes_batch_with_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _AsyncClient()
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_default_ttl_seconds", 60)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
+
+    await cache.cache_mset_json_async(
+        [(["k1"], {"x": 1}), (["k2"], {"x": 2})],
+        ttl_seconds=30,
+    )
+
+    assert len(client.pipeline_setex_batches) == 1
+    assert [item[0] for item in client.pipeline_setex_batches[0]] == ["stubgraph:k1", "stubgraph:k2"]
+    assert [item[1] for item in client.pipeline_setex_batches[0]] == [30, 30]

@@ -61,7 +61,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                 encoding="utf-8",
             )
 
-            async def _fake_route_usages(_project_id: int, _args: dict) -> dict:
+            async def _fake_route_usages(_session, _project_id: int, _args: dict) -> dict:
                 await asyncio.sleep(0.01)
                 return agentic._tool_ok(
                     {
@@ -92,21 +92,22 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
 
 
             async def _fake_load_type_defs(
-                _project_id: int, _type_names: list[str]
+                _session, _project_id: int, _type_names: list[str], cache=None
             ) -> dict[str, dict]:
+                _ = cache
                 await asyncio.sleep(0)
                 return {}
 
             async def _run_compare() -> dict:
                 return await agentic._tool_compare_api_contract_async(
-                    object(),
+                    _FakeSession(),
                     1,
                     root,
                     {"path": "/api/test", "method": "GET", "route_limit": 1, "call_limit": 1},
                 )
 
             with (
-                patch("app.llm.agentic.tools._tool_route_usages", side_effect=_fake_route_usages),
+                patch("app.llm.agentic.tools._tool_route_usages_async", side_effect=_fake_route_usages),
                 patch("app.llm.agentic.tools.AsyncSessionLocal", new=_FakeSessionFactory()),
                 patch("app.llm.agentic.tools._load_ts_typedefs_by_name", side_effect=_fake_load_type_defs),
             ):
@@ -182,9 +183,16 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                 source_path = "types.ts"
                 fields_json = '[{"name": "id", "type": "number"}]'
 
-            async def _fake_compare(_project_id: int, _root: Path, _args: dict) -> dict:
+            async def _fake_compare(_session, _project_id: int, _root: Path, _args: dict, *, meta=None) -> dict:
                 await asyncio.sleep(0.01)
                 return agentic._tool_ok(compare_report)
+
+            async def _fake_load_type_defs(
+                _session, _project_id: int, _type_names: list[str], cache=None
+            ) -> dict[str, dict]:
+                _ = cache
+                await asyncio.sleep(0)
+                return {}
 
             stop = asyncio.Event()
             ticks = 0
@@ -197,7 +205,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
 
             async def _run_suggest_contract(meta: agentic.AgenticMeta) -> dict:
                 return await agentic._tool_suggest_contract_fix_async(
-                    object(),
+                    _FakeSession(_FakeTsTypeDef()),
                     1,
                     root,
                     meta,
@@ -206,7 +214,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
 
             async def _run_suggest_api(meta: agentic.AgenticMeta) -> dict:
                 return await agentic._tool_suggest_api_fix_async(
-                    object(),
+                    _FakeSession(_FakeTsTypeDef()),
                     1,
                     root,
                     meta,
@@ -214,8 +222,9 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                 )
 
             with (
-                patch("app.llm.agentic.tools._tool_compare_api_contract", side_effect=_fake_compare),
+                patch("app.llm.agentic.tools._tool_compare_api_contract_async", side_effect=_fake_compare),
                 patch("app.llm.agentic.tools.AsyncSessionLocal", new=_FakeSessionFactory(_FakeTsTypeDef())),
+                patch("app.llm.agentic.tools._load_ts_typedefs_by_name", side_effect=_fake_load_type_defs),
                 patch("app.llm.agentic.tools.ts_add_fields_to_typedef", return_value=("", False, "ok")),
                 patch("app.llm.agentic.tools.ts_patch_wrapper_function", return_value=("", False, [])),
                 patch("app.llm.agentic.tools.py_add_keys_to_function_return_dicts", return_value=("", False, [])),

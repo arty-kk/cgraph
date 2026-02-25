@@ -5,8 +5,6 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor
-from threading import Condition, Lock
 from typing import Any
 from uuid import uuid4
 
@@ -19,6 +17,7 @@ from sqlmodel import delete, select
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
+from ..infra.celery_producer_runtime import run_celery_producer_io_async
 from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
@@ -40,95 +39,45 @@ _ENQUEUE_TIMEOUT_SECONDS = 10.0
 _ENQUEUE_REASON_KEY = "enqueue_reason"
 
 
-class _EnqueueBrokerError(Exception):
-    """Synchronous broker-side enqueue failure from Celery apply_async."""
+class _AsyncTaskProducerError(Exception):
+    """Transport-level async producer enqueue failure."""
 
 
-class _CeleryEnqueueAdapter:
-    def __init__(self) -> None:
-        self._lock = Lock()
-        self._pending_condition = Condition(self._lock)
-        self._executor: ThreadPoolExecutor | None = None
-        self._semaphore: asyncio.Semaphore | None = None
-        self._is_shutting_down = False
-        self._pending_submissions = 0
+class _AsyncTaskTransportClient:
+    async def publish_async(self, *, task_name: str, args: list[Any], queue: str) -> None:
+        from ..celery_tasks import dispatch_task_async
 
-    @staticmethod
-    def _apply_async_sync(task: Any, args: list[Any], queue: str) -> None:
+        await run_celery_producer_io_async(
+            lambda: dispatch_task_async(task_name=task_name, args=args, queue=queue)
+        )
+
+
+class _AsyncTaskProducer:
+    def __init__(self, client: _AsyncTaskTransportClient | None = None) -> None:
+        self._client = client or _AsyncTaskTransportClient()
+
+    async def enqueue_task_async(self, task: Any, *, args: list[Any], queue: str) -> None:
         try:
-            task.apply_async(args=args, queue=queue)
+            task_name = str(getattr(task, "name", "") or "")
+            if not task_name:
+                raise RuntimeError("Celery task name is required")
+            await self._client.publish_async(task_name=task_name, args=args, queue=queue)
         except Exception as exc:  # noqa: BLE001
-            raise _EnqueueBrokerError(str(exc)) from exc
-
-    def _accept_submission(self) -> tuple[ThreadPoolExecutor, asyncio.Semaphore]:
-        with self._lock:
-            if self._is_shutting_down:
-                raise RuntimeError("Celery enqueue adapter is shutting down")
-            if self._executor is None:
-                self._executor = ThreadPoolExecutor(
-                    max_workers=settings.task_queue_enqueue_workers,
-                    thread_name_prefix="celery-enqueue",
-                )
-            if self._semaphore is None:
-                # Semaphore limit is intentionally synchronized with enqueue workers to keep
-                # executor queue pressure deterministic: at most N apply_async calls in-flight.
-                self._semaphore = asyncio.Semaphore(settings.task_queue_enqueue_workers)
-            self._pending_submissions += 1
-            return self._executor, self._semaphore
-
-    def _finish_submission(self) -> None:
-        with self._lock:
-            self._pending_submissions = max(0, self._pending_submissions - 1)
-            if self._pending_submissions == 0:
-                self._pending_condition.notify_all()
-
-    async def enqueue_async(self, task: Any, *, args: list[Any], queue: str) -> None:
-        loop = asyncio.get_running_loop()
-        executor, semaphore = self._accept_submission()
-        try:
-            async with semaphore:
-                await loop.run_in_executor(
-                    executor,
-                    self._apply_async_sync,
-                    task,
-                    args,
-                    queue,
-                )
-        finally:
-            self._finish_submission()
-
-    def shutdown(self) -> None:
-        with self._lock:
-            self._is_shutting_down = True
-            while self._pending_submissions > 0:
-                self._pending_condition.wait()
-            executor = self._executor
-            self._executor = None
-            self._semaphore = None
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=False)
+            raise _AsyncTaskProducerError(str(exc)) from exc
 
 
-_enqueue_adapter = _CeleryEnqueueAdapter()
+_async_task_producer = _AsyncTaskProducer()
 
 
-async def _enqueue_celery_task_async(task: Any, *, args: list[Any], queue: str) -> None:
-    await _enqueue_adapter.enqueue_async(task, args=args, queue=queue)
-
-
-def shutdown_celery_enqueue_adapter() -> None:
-    _enqueue_adapter.shutdown()
-
-
-def _classify_enqueue_failure(exc: Exception) -> str:
+def _classify_enqueue_failure(exc: BaseException) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
-    if isinstance(exc, _EnqueueBrokerError):
+    if isinstance(exc, _AsyncTaskProducerError):
         return "broker_error"
     return "internal_enqueue_failure"
 
 
-async def _mark_enqueue_failure_async(session: AsyncSession, task_id: str, exc: Exception) -> None:
+async def _mark_enqueue_failure_async(session: AsyncSession, task_id: str, exc: BaseException) -> None:
     now = datetime.now(timezone.utc)
     try:
         job = await session.get(TaskJob, task_id)
@@ -146,8 +95,12 @@ async def _mark_enqueue_failure_async(session: AsyncSession, task_id: str, exc: 
         )
 
 
+async def _mark_enqueue_failure_for_task_id_async(task_id: str, exc: BaseException) -> None:
+    async with AsyncSessionLocal() as session:
+        await _mark_enqueue_failure_async(session, task_id, exc)
+
+
 async def _enqueue_with_error_mapping_async(
-    session: AsyncSession,
     *,
     task: Any,
     args: list[Any],
@@ -156,12 +109,22 @@ async def _enqueue_with_error_mapping_async(
 ) -> None:
     try:
         await asyncio.wait_for(
-            _enqueue_celery_task_async(task, args=args, queue=queue),
+            _async_task_producer.enqueue_task_async(task, args=args, queue=queue),
             timeout=_ENQUEUE_TIMEOUT_SECONDS,
         )
+    except asyncio.CancelledError as exc:
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task.cancelling():
+            raise
+        reason = _classify_enqueue_failure(exc)
+        await _mark_enqueue_failure_for_task_id_async(task_id, exc)
+        raise ExternalServiceError(
+            "Не удалось отправить задачу в очередь",
+            context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
+        ) from exc
     except Exception as exc:
         reason = _classify_enqueue_failure(exc)
-        await _mark_enqueue_failure_async(session, task_id, exc)
+        await _mark_enqueue_failure_for_task_id_async(task_id, exc)
         raise ExternalServiceError(
             "Не удалось отправить задачу в очередь",
             context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
@@ -193,7 +156,7 @@ def _idempotency_key(kind: str, org_id: int, payload: dict) -> str:
 
 
 async def _idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
-    return await asyncio.to_thread(_idempotency_key, kind, org_id, payload)
+    return _idempotency_key(kind, org_id, payload)
 
 
 async def get_scan_idempotency_key_async(org_id: int, project_id: int) -> str:
@@ -409,19 +372,18 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
             await _release_inflight_async("heavy", task_id)
             return task_id
 
-        from ..celery_tasks import run_task_job
+    from ..celery_tasks import run_task_job
 
-        try:
-            await _enqueue_with_error_mapping_async(
-                session,
-                task=run_task_job,
-                args=[task_id, project_id, org_id, payload],
-                queue="heavy",
-                task_id=task_id,
-            )
-        except ExternalServiceError:
-            await _release_inflight_async("heavy", task_id)
-            raise
+    try:
+        await _enqueue_with_error_mapping_async(
+            task=run_task_job,
+            args=[task_id, project_id, org_id, payload],
+            queue="heavy",
+            task_id=task_id,
+        )
+    except ExternalServiceError:
+        await _release_inflight_async("heavy", task_id)
+        raise
     return task_id
 
 
@@ -439,16 +401,16 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
             queue="medium",
             idempotency_key=idempotency_key,
         )
-        if created:
-            from ..celery_tasks import scan_task
-            await _enqueue_with_error_mapping_async(
-                session,
-                task=scan_task,
-                args=[task_id, project_id, org_id],
-                queue="medium",
-                task_id=task_id,
-            )
+    if not created:
         return task_id
+    from ..celery_tasks import scan_task
+    await _enqueue_with_error_mapping_async(
+        task=scan_task,
+        args=[task_id, project_id, org_id],
+        queue="medium",
+        task_id=task_id,
+    )
+    return task_id
 
 
 async def submit_docs_async(project_id: int, org_id: int) -> str:
@@ -466,16 +428,16 @@ async def submit_docs_async(project_id: int, org_id: int) -> str:
             queue="light",
             idempotency_key=idempotency_key,
         )
-        if created:
-            from ..celery_tasks import docs_task
-            await _enqueue_with_error_mapping_async(
-                session,
-                task=docs_task,
-                args=[task_id, project_id, org_id],
-                queue="light",
-                task_id=task_id,
-            )
+    if not created:
         return task_id
+    from ..celery_tasks import docs_task
+    await _enqueue_with_error_mapping_async(
+        task=docs_task,
+        args=[task_id, project_id, org_id],
+        queue="light",
+        task_id=task_id,
+    )
+    return task_id
 
 
 async def submit_mutation_indexing_async(
@@ -503,15 +465,14 @@ async def submit_mutation_indexing_async(
             queue="medium",
             idempotency_key=idempotency_key,
         )
-        if created:
-            from ..celery_tasks import mutation_indexing_task
-            await _enqueue_with_error_mapping_async(
-                session,
-                task=mutation_indexing_task,
-                args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
-                queue="medium",
-                task_id=task_id,
-            )
+    if created:
+        from ..celery_tasks import mutation_indexing_task
+        await _enqueue_with_error_mapping_async(
+            task=mutation_indexing_task,
+            args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
+            queue="medium",
+            task_id=task_id,
+        )
     return task_id, "pending"
 
 

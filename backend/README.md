@@ -25,10 +25,11 @@ Patch storage в `app.storage` также работает только в async
 - `submit_docs_async`;
 - `submit_mutation_indexing_async`.
 
-Bridge к sync Celery изолирован внутри `task_queue` в `_CeleryEnqueueAdapter`:
-- сервисный слой остаётся async;
-- фактический вызов `task.apply_async(...)` выполняется через выделенный `ThreadPoolExecutor` адаптера (один shared executor), без `asyncio.to_thread` на каждый enqueue.
+Публикация задач выполняется через awaitable producer API транспорта:
+- сервисный слой остаётся полностью async;
+- enqueue выполняется без `asyncio.to_thread`, `run_coroutine_threadsafe`, loop-thread глобалей и bridge-timeout логики;
+- `submit_*_async` вызывают только async producer-клиент и маппят transport-ошибки в `ExternalServiceError` с `task_id`/`queue`/`enqueue_reason`.
 
-Требования к lifecycle transport/producer:
-- адаптер инициализируется один раз на процесс;
-- при контролируемом завершении процесса можно явно вызвать `shutdown_celery_enqueue_adapter()` для корректного `executor.shutdown(...)`.
+Lifecycle соответствует единому async-паттерну:
+- `app.main.lifespan` инициализирует/закрывает только реальные async-ресурсы (Redis/DB/FS/CPU/external I/O/S3/OpenAI/scan runtime);
+- worker startup/shutdown в `app.celery_tasks` использует тот же набор async-ресурсов, без loop-thread bridge и adapter-specific producer runtime shutdown.

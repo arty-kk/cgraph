@@ -17,6 +17,8 @@ from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..contracts import get_or_build_contract_async
 from ..errors import BadRequestError, ExternalServiceError, NotFoundError
+from ..infra.cpu_runtime import run_cpu_io_async
+from ..infra.fs_runtime import run_fs_io_async
 from ..llm.orchestrator import generate_docs_async
 from ..models import (
     ApiCall,
@@ -222,12 +224,13 @@ async def _compute_project_summary_facts_async(
     hubs_limit: int = 25,
     module_map_limit: int = 100,
 ) -> dict:
-    return await asyncio.to_thread(
+    return await run_cpu_io_async(
         _compute_project_summary_facts,
         nodes,
         hotspots_limit=hotspots_limit,
         hubs_limit=hubs_limit,
         module_map_limit=module_map_limit,
+        operation="docs_service.compute_project_summary_facts",
     )
 
 
@@ -264,7 +267,12 @@ def _tree_outline(paths: list[str], max_lines: int = 1200) -> dict:
 
 
 async def _tree_outline_async(paths: list[str], max_lines: int = 1200) -> dict:
-    return await asyncio.to_thread(_tree_outline, paths, max_lines)
+    return await run_cpu_io_async(
+        _tree_outline,
+        paths,
+        max_lines=max_lines,
+        operation="docs_service.tree_outline",
+    )
 
 
 def _path_depth(p: str) -> int:
@@ -608,15 +616,21 @@ async def _build_api_summary_async(session: AsyncSession, project_id: int) -> di
     except Exception as e:
         return {"error": "api_summary_failed", "message": str(e)}
 
-    return await asyncio.to_thread(
+    route_methods_payload = [(str(row[0] or ""), int(row[1] or 0)) for row in route_methods_rows]
+    call_methods_payload = [(str(row[0] or ""), int(row[1] or 0)) for row in call_methods_rows]
+    route_paths_payload = [str(row[0] or "") for row in route_paths_rows]
+    call_paths_payload = [str(row[0] or "") for row in call_paths_rows]
+
+    return await run_cpu_io_async(
         _build_api_summary_payload,
         routes_total=routes_total,
         calls_total=calls_total,
         includes_total=includes_total,
-        route_methods_rows=route_methods_rows,
-        call_methods_rows=call_methods_rows,
-        route_paths_rows=route_paths_rows,
-        call_paths_rows=call_paths_rows,
+        route_methods_rows=route_methods_payload,
+        call_methods_rows=call_methods_payload,
+        route_paths_rows=route_paths_payload,
+        call_paths_rows=call_paths_payload,
+        operation="docs_service.build_api_summary",
     )
 
 
@@ -801,7 +815,12 @@ def _collect_key_files(root: Path, project_paths: list[str]) -> tuple[list[dict]
 
 
 async def _collect_key_files_async(root: Path, project_paths: list[str]) -> tuple[list[dict], dict]:
-    return await asyncio.to_thread(_collect_key_files, root, project_paths)
+    return await run_fs_io_async(
+        _collect_key_files,
+        root,
+        project_paths,
+        operation="docs_service.collect_key_files",
+    )
 
 
 def _select_contract_paths(
@@ -877,12 +896,13 @@ async def _select_contract_paths_async(
     hubs: list[dict],
     paths: list[str],
 ) -> list[str]:
-    return await asyncio.to_thread(
+    return await run_cpu_io_async(
         _select_contract_paths,
         risks=risks,
         hotspots=hotspots,
         hubs=hubs,
         paths=paths,
+        operation="docs_service.select_contract_paths",
     )
 
 
@@ -974,7 +994,12 @@ def _build_run_hints(key_files: list[dict], parsed: dict) -> list[str]:
 
 
 async def _build_run_hints_async(key_files: list[dict], parsed: dict) -> list[str]:
-    return await asyncio.to_thread(_build_run_hints, key_files, parsed)
+    return await run_cpu_io_async(
+        _build_run_hints,
+        key_files,
+        parsed,
+        operation="docs_service.build_run_hints",
+    )
 
 
 def _api_summary_md(api_summary: dict) -> str:
@@ -1150,7 +1175,7 @@ async def _build_docs_markdown_parts_async(
     key_files: list[dict],
     api_summary: dict,
 ) -> dict[str, str]:
-    return await asyncio.to_thread(
+    return await run_cpu_io_async(
         _build_docs_markdown_parts,
         module_rows=module_rows,
         hotspots=hotspots,
@@ -1158,6 +1183,7 @@ async def _build_docs_markdown_parts_async(
         run_hints=run_hints,
         key_files=key_files,
         api_summary=api_summary,
+        operation="docs_service.build_docs_markdown_parts",
     )
 
 
@@ -1186,7 +1212,12 @@ async def _collect_outline_and_key_files_async(
 
 
 async def _normalize_project_root_async(root_path: str, *, max_length: int) -> Path:
-    return await asyncio.to_thread(normalize_project_root, root_path, max_length=max_length)
+    return await run_fs_io_async(
+        normalize_project_root,
+        root_path,
+        max_length=max_length,
+        operation="docs_service.normalize_project_root",
+    )
 
 async def build_project_docs_async(project_id: int, org_id: int) -> dict:
     async with AsyncSessionLocal() as session:
@@ -1226,7 +1257,20 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
         if not nodes:
             raise BadRequestError("Проект не проиндексирован. Сначала сделай Scan.")
 
-        summary = await _compute_project_summary_facts_async(nodes)
+        nodes_payload = [
+            (
+                str(row[0] or ""),
+                str(row[1] or ""),
+                int(row[2] or 0),
+                int(row[3] or 0),
+                int(row[4] or 0),
+                int(row[5] or 0),
+                str(row[6] or ""),
+            )
+            for row in nodes
+        ]
+
+        summary = await _compute_project_summary_facts_async(nodes_payload)
         risks = summary["risks"]
         paths = summary["paths"]
         lang_count = summary["languages"]
