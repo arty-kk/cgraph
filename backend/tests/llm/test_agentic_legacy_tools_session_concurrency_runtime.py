@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.llm import agentic
+from app.llm.agentic.types import AgenticMeta
 
 
 class _FakeExecResult:
@@ -66,8 +67,8 @@ class _FakeSession:
         return _FakeExecResult()
 
 
-class TestAgenticLegacyToolsSessionConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
-    async def test_legacy_async_wrappers_reuse_passed_session_without_local_factory(self) -> None:
+class TestAgenticCanonicalToolsSessionConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatch_runtime_tools_reuse_passed_session_without_local_factory(self) -> None:
         fake_session = _FakeSession()
         async_session_local_calls = 0
 
@@ -78,7 +79,24 @@ class TestAgenticLegacyToolsSessionConcurrencyRuntime(unittest.IsolatedAsyncioTe
         def _forbidden_local_session_factory(*_args, **_kwargs):
             nonlocal async_session_local_calls
             async_session_local_calls += 1
-            raise AssertionError("AsyncSessionLocal must not be used in legacy async wrappers")
+            raise AssertionError("AsyncSessionLocal must not be used in runtime async tool path")
+
+        async def _dispatch(
+            *,
+            root: Path,
+            name: str,
+            args: dict,
+        ) -> dict:
+            meta = AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
+            return await agentic._dispatch_tool_async(
+                fake_session,
+                1,
+                root,
+                meta,
+                name,
+                args,
+                max_file_chars=4_000,
+            )
 
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -88,40 +106,39 @@ class TestAgenticLegacyToolsSessionConcurrencyRuntime(unittest.IsolatedAsyncioTe
             ):
                 results = await asyncio.gather(
                     *[
-                        agentic._tool_route_usages_async(
-                            fake_session,
-                            1,
-                            {
+                        _dispatch(
+                            root=root,
+                            name="route_usages",
+                            args={
                                 "path": "/api/items/{item_id}",
                                 "method": "GET",
                                 "route_limit": 1,
                                 "call_limit": 5,
                             },
                         )
-                        for _ in range(6)
+                        for _ in range(4)
                     ],
                     *[
-                        agentic._tool_suggest_endpoint_location_async(
-                            fake_session,
-                            1,
-                            {"path": "/api/items/{item_id}", "method": "GET", "limit": 3},
+                        _dispatch(
+                            root=root,
+                            name="suggest_endpoint_location",
+                            args={"path": "/api/items/{item_id}", "method": "GET", "limit": 3},
                         )
-                        for _ in range(6)
+                        for _ in range(4)
                     ],
                     *[
-                        agentic._tool_suggest_frontend_client_async(
-                            fake_session,
-                            1,
-                            root,
-                            {"path": "/api/items/{item_id}", "method": "GET", "limit": 3},
+                        _dispatch(
+                            root=root,
+                            name="suggest_frontend_client",
+                            args={"path": "/api/items/{item_id}", "method": "GET", "limit": 3},
                         )
-                        for _ in range(6)
+                        for _ in range(4)
                     ],
                     *[
-                        agentic._tool_impact_route_change_async(
-                            fake_session,
-                            1,
-                            {
+                        _dispatch(
+                            root=root,
+                            name="impact_route_change",
+                            args={
                                 "old_path": "/api/items/{item_id}",
                                 "new_path": "/api/v2/items/{item_id}",
                                 "old_method": "GET",
@@ -129,14 +146,16 @@ class TestAgenticLegacyToolsSessionConcurrencyRuntime(unittest.IsolatedAsyncioTe
                                 "limit": 20,
                             },
                         )
-                        for _ in range(6)
+                        for _ in range(4)
                     ],
                 )
 
         self.assertEqual(async_session_local_calls, 0)
-        self.assertEqual(len(results), 24)
+        self.assertEqual(len(results), 16)
         for result in results:
+            self.assertIsInstance(result, dict)
             self.assertTrue(result.get("ok"), result)
+            self.assertIsNotNone(result.get("data"), result)
             self.assertIsNone(result.get("error"), result)
 
 

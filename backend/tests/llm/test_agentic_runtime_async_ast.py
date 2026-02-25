@@ -8,6 +8,8 @@ TOOLS_PATH = Path("backend/app/llm/agentic/tools.py")
 DISPATCH_PATH = Path("backend/app/llm/agentic/dispatch.py")
 
 RUNTIME_ASYNC_FUNCS = {
+    "_tool_get_contract_async",
+    "_tool_get_symbol_async",
     "_tool_search_text_async",
     "_tool_route_usages_async",
     "_tool_suggest_endpoint_location_async",
@@ -31,13 +33,6 @@ RUNTIME_CONTRACT_ASYNC_FUNCS = {
     "_tool_compare_api_contract_async",
     "_tool_suggest_contract_fix_async",
     "_tool_suggest_api_fix_async",
-}
-
-LEGACY_WRAPPER_PAIRS = {
-    "_tool_route_usages_async": "_tool_route_usages",
-    "_tool_suggest_endpoint_location_async": "_tool_suggest_endpoint_location",
-    "_tool_suggest_frontend_client_async": "_tool_suggest_frontend_client",
-    "_tool_impact_route_change_async": "_tool_impact_route_change",
 }
 
 
@@ -64,6 +59,21 @@ def test_runtime_async_tool_path_has_no_sync_session_helpers() -> None:
             assert name not in {"_offline_get_session", "get_session"}, (
                 f"{fn_name} uses sync DB helper call: {name}"
             )
+
+
+def test_runtime_async_tool_path_has_no_local_session_factory_calls() -> None:
+    module = _load_ast(TOOLS_PATH)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    for fn_name in RUNTIME_ASYNC_FUNCS | {"_tool_get_tree_outline_async", "_tool_project_summary_async"}:
+        fn = fn_nodes[fn_name]
+        for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+            if isinstance(call.func, ast.Name) and call.func.id == "AsyncSessionLocal":
+                raise AssertionError(f"{fn_name} must not call AsyncSessionLocal in runtime path")
 
 
 def test_async_functions_do_not_call_sync_search_text_paths() -> None:
@@ -172,39 +182,6 @@ def test_get_neighbors_runtime_path_avoids_local_session_factory() -> None:
     assert "AsyncSessionLocal" not in chunk
 
 
-def test_legacy_runtime_wrappers_do_not_open_local_sessions_or_delete_session() -> None:
-    module = _load_ast(TOOLS_PATH)
-    fn_nodes = {
-        node.name: node
-        for node in module.body
-        if isinstance(node, ast.AsyncFunctionDef)
-    }
-
-    for fn_name, target_name in LEGACY_WRAPPER_PAIRS.items():
-        fn = fn_nodes[fn_name]
-        call_names = set()
-        has_del_session = False
-        target_calls_with_session = 0
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Delete):
-                for tgt in node.targets:
-                    if isinstance(tgt, ast.Name) and tgt.id == "session":
-                        has_del_session = True
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name):
-                    call_names.add(node.func.id)
-                    if node.func.id == target_name:
-                        for arg in node.args:
-                            if isinstance(arg, ast.Name) and arg.id == "session":
-                                target_calls_with_session += 1
-                elif isinstance(node.func, ast.Attribute):
-                    call_names.add(node.func.attr)
-
-        assert "AsyncSessionLocal" not in call_names, f"{fn_name} must not call AsyncSessionLocal"
-        assert not has_del_session, f"{fn_name} must not contain del session"
-        assert target_calls_with_session >= 1, f"{fn_name} must pass session to {target_name}"
-
-
 def test_neighbors_helper_uses_passed_session_without_local_factory() -> None:
     context_path = Path("backend/app/llm/agentic/context.py")
     src = context_path.read_text(encoding="utf-8")
@@ -230,6 +207,16 @@ def test_check_indexed_async_has_no_session_fallback_creation() -> None:
     assert "AsyncSessionLocal" not in chunk
     assert "session is None" not in chunk
 
+def test_runtime_outline_and_summary_async_have_no_session_fallback_creation() -> None:
+    source = TOOLS_PATH.read_text(encoding="utf-8")
+    for fn_name in {"_tool_get_tree_outline_async", "_tool_project_summary_async"}:
+        marker = f"async def {fn_name}"
+        assert marker in source
+        chunk = source.split(marker, 1)[1].split("\n\n", 1)[0]
+        assert "AsyncSessionLocal" not in chunk
+        assert "session is None" not in chunk
+
+
 
 def test_async_file_tools_have_no_sync_file_prechecks() -> None:
     module = _load_ast(TOOLS_PATH)
@@ -245,7 +232,7 @@ def test_async_file_tools_have_no_sync_file_prechecks() -> None:
                 raise AssertionError(f"{fn_name} contains sync pre-check .{call.func.attr}()")
 
 
-def test_runtime_contract_async_wrappers_avoid_sync_file_io_calls() -> None:
+def test_runtime_contract_async_functions_avoid_sync_file_io_calls() -> None:
     module = _load_ast(TOOLS_PATH)
     fn_nodes = {
         node.name: node
@@ -258,10 +245,10 @@ def test_runtime_contract_async_wrappers_avoid_sync_file_io_calls() -> None:
         fn = fn_nodes[fn_name]
         for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
             if isinstance(call.func, ast.Name) and call.func.id == "open":
-                raise AssertionError(f"{fn_name} has direct open() call in async runtime wrapper")
+                raise AssertionError(f"{fn_name} has direct open() call in async runtime function")
             if isinstance(call.func, ast.Attribute) and call.func.attr in banned_attrs:
                 raise AssertionError(
-                    f"{fn_name} has direct .{call.func.attr}() call in async runtime wrapper"
+                    f"{fn_name} has direct .{call.func.attr}() call in async runtime function"
                 )
 
 
@@ -273,7 +260,7 @@ def test_suggest_fix_helpers_with_session_do_not_call_local_async_session_factor
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    for fn_name in {"_tool_suggest_api_fix", "_tool_suggest_contract_fix"}:
+    for fn_name in {"_tool_suggest_api_fix_async", "_tool_suggest_contract_fix_async"}:
         fn = fn_nodes[fn_name]
         arg_names = [a.arg for a in fn.args.args]
         assert "session" in arg_names, f"{fn_name} must receive session argument"
@@ -297,7 +284,7 @@ def test_suggest_contract_fix_functions_have_no_direct_fs_reads() -> None:
     }
 
     banned_attrs = {"open", "read_text", "read", "read_bytes"}
-    for fn_name in {"_tool_suggest_contract_fix_async", "_tool_suggest_contract_fix"}:
+    for fn_name in {"_tool_suggest_contract_fix_async"}:
         fn = fn_nodes[fn_name]
         for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
             if isinstance(call.func, ast.Name) and call.func.id == "open":

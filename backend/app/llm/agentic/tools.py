@@ -1086,7 +1086,7 @@ async def _tool_get_file_lines_async(
     )
 
 
-async def _tool_get_contract(
+async def _tool_get_contract_async(
     session: AsyncSession,
     project_id: int,
     root: Path,
@@ -1112,7 +1112,7 @@ async def _tool_get_contract(
     return _tool_ok(contract)
 
 
-async def _tool_get_symbol(
+async def _tool_get_symbol_async(
     session: AsyncSession,
     project_id: int,
     root: Path,
@@ -1148,193 +1148,6 @@ async def _tool_get_symbol(
         if isinstance(item, dict) and str(item.get("name") or "") == needle:
             return _tool_ok({"path": rel_norm, "symbol": item})
     return _tool_error("not_found", "symbol not found", {"path": rel_norm, "name": needle})
-
-
-    async with AsyncSessionLocal() as s:
-        rows = (
-            await s.execute(
-                select(ModuleContract)
-                .where(ModuleContract.project_id == project_id)
-                .order_by(ModuleContract.path.asc())
-            )
-        ).scalars().all()
-
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        try:
-            contract = json.loads(row.contract_json)
-        except Exception:
-            continue
-        if not isinstance(contract, dict):
-            continue
-        path = str(row.path or contract.get("path") or "")
-        if not path:
-            continue
-
-        symbol_names: set[str] = set()
-        symbols = contract.get("symbols")
-        if isinstance(symbols, list):
-            for item in symbols:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name") or "")
-                if not name:
-                    continue
-                symbol_names.add(name)
-                match_type = _match_type(name)
-                if not match_type:
-                    continue
-                if not _allow_match(match_type):
-                    continue
-                exported = bool(item.get("exported"))
-                if exported_only and not exported:
-                    continue
-                results.append(
-                    {
-                        "path": path,
-                        "name": name,
-                        "kind": item.get("kind") if item.get("kind") is not None else None,
-                        "signature": item.get("signature")
-                        if item.get("signature") is not None
-                        else None,
-                        "start_line": item.get("start_line")
-                        if item.get("start_line") is not None
-                        else None,
-                        "end_line": item.get("end_line")
-                        if item.get("end_line") is not None
-                        else None,
-                        "exported": exported,
-                        "source": "symbol",
-                        "_match": match_type,
-                    }
-                )
-
-        exports = contract.get("exports")
-        if isinstance(exports, list):
-            for exp in exports:
-                name = str(exp or "")
-                if not name or name in symbol_names:
-                    continue
-                match_type = _match_type(name)
-                if not match_type:
-                    continue
-                if not _allow_match(match_type):
-                    continue
-                results.append(
-                    {
-                        "path": path,
-                        "name": name,
-                        "kind": None,
-                        "signature": None,
-                        "start_line": None,
-                        "end_line": None,
-                        "exported": True,
-                        "source": "export",
-                        "_match": match_type,
-                    }
-                )
-
-    match_rank = {"exact": 0, "prefix": 1, "contains": 2}
-    results.sort(
-        key=lambda r: (
-            match_rank.get(r.get("_match"), 99),
-            0 if r.get("exported") else 1,
-            str(r.get("path") or ""),
-            str(r.get("name") or ""),
-        )
-    )
-    results = results[:limit]
-    for item in results:
-        item.pop("_match", None)
-
-    return _tool_ok(
-        {
-            "query": needle,
-            "match": match_mode,
-            "case_sensitive": bool(case_sensitive),
-            "exported_only": bool(exported_only),
-            "limit": int(limit),
-            "count": len(results),
-            "results": results,
-        }
-    )
-
-
-async def _tool_get_tree_outline(project_id: int, args: dict) -> dict:
-    prefix = args.get("prefix")
-    prefix_norm = ""
-    if isinstance(prefix, str) and prefix.strip():
-        prefix_norm = prefix.strip().replace("\\", "/").strip("/")
-
-    max_lines = _clamp_int(args.get("max_lines"), 1200, 100, 2000)
-    max_depth_raw = args.get("max_depth")
-    max_depth = None
-    if max_depth_raw is not None:
-        max_depth = _clamp_int(max_depth_raw, 10, 1, 20)
-
-    async with AsyncSessionLocal() as s:
-        indexed_error = await _check_indexed_async(s, project_id)
-        if indexed_error:
-            return indexed_error
-        q = select(FileNode.path).where(FileNode.project_id == project_id)
-        if prefix_norm:
-            like = f"{prefix_norm}/%"
-            q = q.where((FileNode.path == prefix_norm) | (FileNode.path.like(like)))
-        q = q.order_by(FileNode.path.asc())
-        rows = (await s.execute(q)).all()
-
-    paths: list[str] = []
-    for row in rows:
-        p = row[0] if isinstance(row, (tuple, list)) else row
-        if not isinstance(p, str) or not p:
-            continue
-        if max_depth is not None and len(p.split("/")) > max_depth:
-            continue
-        paths.append(p)
-
-    outline = _tree_outline(paths, max_lines=max_lines)
-    return _tool_ok(
-        {
-            "lines": outline.get("lines", []),
-            "truncated": bool(outline.get("truncated")),
-            "max_lines": int(outline.get("max_lines", max_lines)),
-        }
-    )
-
-
-async def _tool_project_summary(project_id: int, root: Path, args: dict) -> dict:
-    async with AsyncSessionLocal() as s:
-        nodes = (
-            await s.execute(
-                select(
-                    FileNode.path,
-                    FileNode.language,
-                    FileNode.loc,
-                    FileNode.complexity,
-                    FileNode.fan_in,
-                    FileNode.fan_out,
-                    FileNode.status,
-                )
-                .where(FileNode.project_id == project_id)
-                .order_by(FileNode.path)
-            )
-        ).all()
-    if not nodes:
-        return _tool_error("not_indexed", "Project is not indexed. Run scan first.")
-    summary = _compute_project_summary_facts(nodes)
-    return _tool_ok(
-        {
-            "counts": summary["counts"],
-            "hotspots": summary["hotspots"],
-            "hubs_by_fan_in": summary["hubs_by_fan_in"],
-            "module_map": summary["module_map"],
-            "truncation": {
-                "hotspots": bool(summary["hotspots_truncated"]),
-                "hubs_by_fan_in": bool(summary["hubs_by_fan_in_truncated"]),
-                "module_map": bool(summary["module_map_truncated"]),
-            },
-        }
-    )
 
 
 async def _tool_search_semantic_impl(
@@ -1417,7 +1230,7 @@ async def _tool_search_semantic_impl(
     return _tool_ok(semantic)
 
 
-async def _tool_route_usages(session: AsyncSession, project_id: int, args: dict) -> dict:
+async def _tool_route_usages_async(session: AsyncSession, project_id: int, args: dict) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
         return _tool_error("bad_args", "path is required")
@@ -3085,83 +2898,11 @@ async def _tool_search_text_async(
     )
 
 
-async def _tool_get_contract_async(
-    session: AsyncSession,
-    project_id: int,
-    root: Path,
-    meta: AgenticMeta,
-    args: dict,
-) -> dict:
-    return await _tool_get_contract(session, project_id, root, meta, args)
-
-
-async def _tool_get_symbol_async(
-    session: AsyncSession,
-    project_id: int,
-    root: Path,
-    meta: AgenticMeta,
-    args: dict,
-) -> dict:
-    return await _tool_get_symbol(session, project_id, root, meta, args)
-
-
-async def _tool_route_usages_async(session: AsyncSession, project_id: int, args: dict) -> dict:
-    return await _tool_route_usages(session, project_id, args)
-
-
 async def _tool_suggest_endpoint_location_async(
     session: AsyncSession,
     project_id: int,
     args: dict,
 ) -> dict:
-    return await _tool_suggest_endpoint_location(session, project_id, args)
-
-
-async def _tool_suggest_frontend_client_async(
-    session: AsyncSession,
-    project_id: int,
-    root: Path,
-    args: dict,
-) -> dict:
-    return await _tool_suggest_frontend_client(session, project_id, root, args)
-
-
-async def _tool_impact_route_change_async(session: AsyncSession, project_id: int, args: dict) -> dict:
-    return await _tool_impact_route_change(session, project_id, args)
-
-
-async def _tool_compare_api_contract_async(
-    session: AsyncSession,
-    project_id: int,
-    root: Path,
-    args: dict,
-    *,
-    meta: AgenticMeta | None = None,
-) -> dict:
-    return await _tool_compare_api_contract(session, project_id, root, args, meta=meta)
-
-
-async def _tool_suggest_contract_fix_async(
-    session: AsyncSession,
-    project_id: int,
-    root: Path,
-    meta: AgenticMeta,
-    args: dict,
-) -> dict:
-    return await _tool_suggest_contract_fix(session, project_id, root, meta, args)
-
-
-async def _tool_suggest_api_fix_async(
-    session: AsyncSession,
-    project_id: int,
-    root: Path,
-    meta: AgenticMeta,
-    args: dict,
-) -> dict:
-    return await _tool_suggest_api_fix(session, project_id, root, meta, args)
-
-
-async def _tool_suggest_endpoint_location(session: AsyncSession, project_id: int, args: dict) -> dict:
     path = args.get("path")
     if not isinstance(path, str) or not path.strip():
         return _tool_error("bad_args", "path is required")
@@ -3258,7 +2999,7 @@ async def _tool_suggest_endpoint_location(session: AsyncSession, project_id: int
     )
 
 
-async def _tool_suggest_frontend_client(
+async def _tool_suggest_frontend_client_async(
     session: AsyncSession, project_id: int, root: Path, args: dict
 ) -> dict:
     path_q = args.get("path")
@@ -3364,7 +3105,7 @@ async def _tool_suggest_frontend_client(
     )
 
 
-async def _tool_impact_route_change(session: AsyncSession, project_id: int, args: dict) -> dict:
+async def _tool_impact_route_change_async(session: AsyncSession, project_id: int, args: dict) -> dict:
     old_path = args.get("old_path")
     new_path = args.get("new_path")
     if not isinstance(old_path, str) or not old_path.strip():
@@ -3547,7 +3288,7 @@ def _ts_type_to_py_literal(ts_type: str) -> str:
     return "None"
 
 
-async def _tool_suggest_api_fix(
+async def _tool_suggest_api_fix_async(
     session: AsyncSession,
     project_id: int,
     root: Path,
@@ -3568,7 +3309,7 @@ async def _tool_suggest_api_fix(
     )
     max_files = _clamp_int(args.get("max_files"), 12, 1, 20)
 
-    report_result = await _tool_compare_api_contract(
+    report_result = await _tool_compare_api_contract_async(
         session,
         project_id,
         root,
@@ -3884,7 +3625,7 @@ async def _tool_suggest_api_fix(
     )
 
 
-async def _tool_suggest_contract_fix(
+async def _tool_suggest_contract_fix_async(
     session: AsyncSession,
     project_id: int,
     root: Path,
@@ -3901,7 +3642,7 @@ async def _tool_suggest_contract_fix(
     call_limit = _clamp_int(args.get("call_limit"), 3, 1, 10)
     max_patches = _clamp_int(args.get("max_patches"), 10, 1, 20)
 
-    report_result = await _tool_compare_api_contract(
+    report_result = await _tool_compare_api_contract_async(
         session,
         project_id,
         root,
@@ -4220,7 +3961,7 @@ async def _load_ts_typedefs_by_name(
     return out
 
 
-async def _tool_compare_api_contract(
+async def _tool_compare_api_contract_async(
     session: AsyncSession,
     project_id: int,
     root: Path,
@@ -4237,7 +3978,7 @@ async def _tool_compare_api_contract(
     route_limit = _clamp_int(args.get("route_limit"), 3, 1, 10)
     call_limit = _clamp_int(args.get("call_limit"), 10, 1, 50)
 
-    ru_result = await _tool_route_usages(
+    ru_result = await _tool_route_usages_async(
         session,
         project_id,
         {

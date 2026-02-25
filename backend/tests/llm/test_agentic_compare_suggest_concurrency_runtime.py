@@ -107,7 +107,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                 )
 
             with (
-                patch("app.llm.agentic.tools._tool_route_usages", side_effect=_fake_route_usages),
+                patch("app.llm.agentic.tools._tool_route_usages_async", side_effect=_fake_route_usages),
                 patch("app.llm.agentic.tools.AsyncSessionLocal", new=_FakeSessionFactory()),
                 patch("app.llm.agentic.tools._load_ts_typedefs_by_name", side_effect=_fake_load_type_defs),
             ):
@@ -222,7 +222,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                 )
 
             with (
-                patch("app.llm.agentic.tools._tool_compare_api_contract", side_effect=_fake_compare),
+                patch("app.llm.agentic.tools._tool_compare_api_contract_async", side_effect=_fake_compare),
                 patch("app.llm.agentic.tools.AsyncSessionLocal", new=_FakeSessionFactory(_FakeTsTypeDef())),
                 patch("app.llm.agentic.tools._load_ts_typedefs_by_name", side_effect=_fake_load_type_defs),
                 patch("app.llm.agentic.tools.ts_add_fields_to_typedef", return_value=("", False, "ok")),
