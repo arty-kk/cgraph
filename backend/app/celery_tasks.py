@@ -1,25 +1,17 @@
 # backend/app/celery_tasks.py
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Coroutine, TypeVar
 
 from celery.signals import worker_process_init, worker_process_shutdown
 
 from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .celery_app import celery_app
-from .celery_async_runner import (
-    run_coroutine_sync,
-    start_process_async_runner,
-    stop_process_async_runner,
-)
 from .config import settings
-from .infra.celery_producer_runtime import (
-    close_celery_producer_runtime,
-    init_celery_producer_runtime,
-)
 from .infra.cpu_runtime import close_cpu_runtime, init_cpu_runtime
 from .infra.external_io_runtime import close_external_io_runtime, init_external_io_runtime
 from .infra.fs_runtime import close_fs_runtime, init_fs_runtime, run_fs_io_async
@@ -43,6 +35,19 @@ from .utils import normalize_project_root
 logger = get_logger("stubgraph.celery")
 
 _worker_runtime_started = False
+T = TypeVar("T")
+
+
+def _run_async_entrypoint(
+    coro: Callable[..., Coroutine[Any, Any, T]],
+    *args: Any,
+    log_context: str,
+) -> T:
+    try:
+        return asyncio.run(coro(*args))
+    except Exception:  # noqa: BLE001
+        logger.exception("Celery async entrypoint failed", extra={"entrypoint": log_context})
+        raise
 
 
 async def _startup_worker_resources_async() -> None:
@@ -51,7 +56,6 @@ async def _startup_worker_resources_async() -> None:
         ("init_async_db", init_async_db),
         ("init_fs_runtime", init_fs_runtime),
         ("init_cpu_runtime", init_cpu_runtime),
-        ("init_celery_producer_runtime", init_celery_producer_runtime),
         ("init_external_io_runtime", init_external_io_runtime),
     ]
     if (settings.storage_backend or "local").strip().lower() == "s3":
@@ -76,7 +80,6 @@ async def _cleanup_worker_resources_async() -> None:
         ("close_async_openai_client", close_async_openai_client),
         ("close_fs_runtime", close_fs_runtime),
         ("close_cpu_runtime", close_cpu_runtime),
-        ("close_celery_producer_runtime", close_celery_producer_runtime),
         ("close_external_io_runtime", close_external_io_runtime),
         ("close_async_db", close_async_db),
     ]
@@ -93,8 +96,7 @@ def _on_worker_process_init(**_kwargs: Any) -> None:
     if _worker_runtime_started:
         return
     try:
-        start_process_async_runner()
-        run_coroutine_sync(
+        _run_async_entrypoint(
             _startup_worker_resources_async,
             log_context="worker_process_init.startup",
         )
@@ -102,7 +104,7 @@ def _on_worker_process_init(**_kwargs: Any) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("Celery worker startup failed")
         try:
-            run_coroutine_sync(
+            _run_async_entrypoint(
                 _cleanup_worker_resources_async,
                 log_context="worker_process_init.cleanup_after_failure",
             )
@@ -110,7 +112,6 @@ def _on_worker_process_init(**_kwargs: Any) -> None:
             logger.exception("Celery worker cleanup after startup failure failed")
         finally:
             _worker_runtime_started = False
-            stop_process_async_runner()
         raise
 
 
@@ -120,7 +121,7 @@ def _on_worker_process_shutdown(**_kwargs: Any) -> None:
     if not _worker_runtime_started:
         return
     try:
-        run_coroutine_sync(
+        _run_async_entrypoint(
             _cleanup_worker_resources_async,
             log_context="worker_process_shutdown.cleanup",
         )
@@ -128,7 +129,6 @@ def _on_worker_process_shutdown(**_kwargs: Any) -> None:
         logger.exception("Celery worker cleanup failed")
     finally:
         _worker_runtime_started = False
-        stop_process_async_runner()
 
 
 async def _set_job_status_async(
@@ -178,7 +178,7 @@ async def _scan_task_async(job_id: str, project_id: int, org_id: int) -> None:
 
 @celery_app.task(name="stubgraph.scan")
 def scan_task(job_id: str, project_id: int, org_id: int) -> None:
-    run_coroutine_sync(_scan_task_async, job_id, project_id, org_id, log_context="scan_task")
+    _run_async_entrypoint(_scan_task_async, job_id, project_id, org_id, log_context="scan_task")
 
 
 async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
@@ -194,7 +194,7 @@ async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
 
 @celery_app.task(name="stubgraph.docs")
 def docs_task(job_id: str, project_id: int, org_id: int) -> None:
-    run_coroutine_sync(_docs_task_async, job_id, project_id, org_id, log_context="docs_task")
+    _run_async_entrypoint(_docs_task_async, job_id, project_id, org_id, log_context="docs_task")
 
 
 async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
@@ -214,7 +214,7 @@ async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload
 
 @celery_app.task(name="stubgraph.run_task")
 def run_task_job(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
-    run_coroutine_sync(
+    _run_async_entrypoint(
         _run_task_job_async,
         job_id,
         project_id,
@@ -269,7 +269,7 @@ def mutation_indexing_task(
     rel_paths: list[str],
     operation: str,
 ) -> None:
-    run_coroutine_sync(
+    _run_async_entrypoint(
         _mutation_indexing_task_async,
         job_id,
         project_id,
@@ -283,20 +283,13 @@ def mutation_indexing_task(
 @celery_app.task(name="stubgraph.routing_calibration")
 def routing_calibration_task() -> dict:
     try:
-        return run_coroutine_sync(
+        return _run_async_entrypoint(
             calibrate_routing_policy_thresholds_async,
             log_context="routing_calibration_task",
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Routing calibration task failed")
         return {"updated": False, "reason": "error", "error": str(exc)}
-
-
-def dispatch_task(*, task_name: str, args: list[Any], queue: str) -> None:
-    task = celery_app.tasks.get(task_name)
-    if task is None:
-        raise RuntimeError(f"Celery task is not registered: {task_name}")
-    task.apply_async(args=args, queue=queue)
 
 
 async def _resolve_project_root_async(project_id: int, org_id: int) -> Path:
