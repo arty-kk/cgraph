@@ -1,18 +1,72 @@
 # backend/app/infra/rate_limit.py
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import ipaddress
 from functools import lru_cache
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from redis.asyncio import RedisError as AsyncRedisError
+from redis.exceptions import NoScriptError
 
 from ..config import settings
 from ..logging import get_logger
 from .redis_client import get_async_redis_client
 
 logger = get_logger("stubgraph.rate_limit")
+
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_LUA_SCRIPT = """
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return current
+""".strip()
+_RATE_LIMIT_LUA_SHA: str | None = None
+_RATE_LIMIT_LUA_SHA_LOCK: asyncio.Lock | None = None
+_RATE_LIMIT_LUA_SHA_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _get_rate_limit_lua_sha_lock() -> asyncio.Lock:
+    global _RATE_LIMIT_LUA_SHA_LOCK
+    global _RATE_LIMIT_LUA_SHA_LOCK_LOOP
+
+    current_loop = asyncio.get_running_loop()
+    if _RATE_LIMIT_LUA_SHA_LOCK is None or _RATE_LIMIT_LUA_SHA_LOCK_LOOP is not current_loop:
+        _RATE_LIMIT_LUA_SHA_LOCK = asyncio.Lock()
+        _RATE_LIMIT_LUA_SHA_LOCK_LOOP = current_loop
+    return _RATE_LIMIT_LUA_SHA_LOCK
+
+
+async def _get_rate_limit_lua_sha(client) -> str:
+    global _RATE_LIMIT_LUA_SHA
+
+    if _RATE_LIMIT_LUA_SHA is not None:
+        return _RATE_LIMIT_LUA_SHA
+
+    async with _get_rate_limit_lua_sha_lock():
+        if _RATE_LIMIT_LUA_SHA is not None:
+            return _RATE_LIMIT_LUA_SHA
+        sha = await client.script_load(_RATE_LIMIT_LUA_SCRIPT)
+        _RATE_LIMIT_LUA_SHA = sha
+        return sha
+
+
+async def _run_rate_limit_increment(client, key: str) -> int:
+    global _RATE_LIMIT_LUA_SHA
+
+    sha = await _get_rate_limit_lua_sha(client)
+    try:
+        return int(await client.evalsha(sha, 1, key, _RATE_LIMIT_WINDOW_SECONDS))
+    except NoScriptError:
+        count = int(await client.eval(_RATE_LIMIT_LUA_SCRIPT, 1, key, _RATE_LIMIT_WINDOW_SECONDS))
+        script_sha = hashlib.sha1(_RATE_LIMIT_LUA_SCRIPT.encode("utf-8")).hexdigest()
+        async with _get_rate_limit_lua_sha_lock():
+            _RATE_LIMIT_LUA_SHA = script_sha
+        return count
 
 
 @lru_cache(maxsize=1)
@@ -77,10 +131,9 @@ async def allow_request_async(request: Request) -> bool:
     key = f"stubgraph:rl:{_client_id(request)}"
     try:
         client = get_async_redis_client()
-        count = await client.incr(key)
-        if count == 1:
-            await client.expire(key, 60)
+        count = await _run_rate_limit_increment(client, key)
         return count <= limit
     except AsyncRedisError as exc:
+        # Fail-safe policy: when Redis is unavailable, block request to avoid limit bypass.
         logger.warning("Rate limit check failed", extra={"reason": str(exc)})
         return False

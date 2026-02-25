@@ -1,8 +1,12 @@
 import ipaddress
+import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+from redis.asyncio import RedisError as AsyncRedisError
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
@@ -67,6 +71,50 @@ class TestRateLimitTrustedProxy(unittest.TestCase):
             self.assertFalse(rate_limit._client_is_trusted_proxy("10.1.2.4"))
 
         self.assertEqual(warning_spy.call_count, 2)
+
+
+    def test_rate_limit_response_contract_unchanged(self) -> None:
+        response = rate_limit.rate_limit_response()
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(
+            json.loads(response.body.decode("utf-8")),
+            {"error": {"code": "rate_limited", "message": "Превышен лимит запросов"}},
+        )
+
+class TestRateLimitAllowRequest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.original_enabled = settings.rate_limit_enabled
+        self.original_limit = settings.rate_limit_requests_per_minute
+
+    async def asyncTearDown(self) -> None:
+        settings.rate_limit_enabled = self.original_enabled
+        settings.rate_limit_requests_per_minute = self.original_limit
+
+    async def test_allow_request_async_fails_closed_on_redis_error(self) -> None:
+        request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={})
+        settings.rate_limit_enabled = True
+
+        with patch(
+            "app.infra.rate_limit._run_rate_limit_increment",
+            side_effect=AsyncRedisError("boom"),
+        ):
+            with patch("app.infra.rate_limit.get_async_redis_client", return_value=object()):
+                result = await rate_limit.allow_request_async(request)
+
+        self.assertFalse(result)
+
+    async def test_allow_request_async_uses_counter_for_limit_decision(self) -> None:
+        request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={})
+        settings.rate_limit_enabled = True
+        settings.rate_limit_requests_per_minute = 2
+
+        with patch("app.infra.rate_limit.get_async_redis_client", return_value=object()):
+            with patch("app.infra.rate_limit._run_rate_limit_increment", return_value=2):
+                self.assertTrue(await rate_limit.allow_request_async(request))
+
+            with patch("app.infra.rate_limit._run_rate_limit_increment", return_value=3):
+                self.assertFalse(await rate_limit.allow_request_async(request))
 
 
 if __name__ == "__main__":
