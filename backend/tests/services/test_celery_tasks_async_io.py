@@ -1,5 +1,8 @@
 import asyncio
+import concurrent.futures
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -611,3 +614,112 @@ async def test_set_job_status_async_failed_sets_completed_at_and_triggers_cleanu
     assert job.completed_at is not None
     assert job.error == "boom"
     assert cleanup_calls == ["cleanup"]
+
+
+def test_submit_to_worker_loop_times_out_and_cancels_coroutine(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cancelled = threading.Event()
+
+    async def _startup() -> None:
+        return None
+
+    async def _cleanup() -> None:
+        return None
+
+    async def _long_running() -> None:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(celery_tasks, "_startup_worker_resources_async", _startup)
+    monkeypatch.setattr(celery_tasks, "_cleanup_worker_resources_async", _cleanup)
+    monkeypatch.setattr(celery_tasks.settings, "celery_worker_bridge_timeout_seconds", 0.05)
+
+    caplog.set_level("ERROR")
+
+    celery_tasks._on_worker_process_init()
+    try:
+        with pytest.raises(RuntimeError, match="bridge timed out"):
+            celery_tasks._submit_to_worker_loop(_long_running())
+        assert cancelled.wait(timeout=1)
+    finally:
+        celery_tasks._on_worker_process_shutdown()
+
+    assert "Celery worker loop bridge timed out" in caplog.text
+
+
+def test_worker_loop_shutdown_cancels_pending_coroutines_without_hanging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    cleaned = threading.Event()
+
+    async def _startup() -> None:
+        return None
+
+    async def _cleanup() -> None:
+        return None
+
+    async def _long_running() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            cleaned.set()
+
+    monkeypatch.setattr(celery_tasks, "_startup_worker_resources_async", _startup)
+    monkeypatch.setattr(celery_tasks, "_cleanup_worker_resources_async", _cleanup)
+
+    celery_tasks._on_worker_process_init()
+    loop = celery_tasks._worker_loop
+    thread = celery_tasks._worker_loop_thread
+    assert loop is not None
+    assert thread is not None
+
+    future = asyncio.run_coroutine_threadsafe(_long_running(), loop)
+    assert started.wait(timeout=1)
+
+    shutdown_started = time.monotonic()
+    celery_tasks._on_worker_process_shutdown()
+    shutdown_elapsed = time.monotonic() - shutdown_started
+
+    assert shutdown_elapsed < 2
+    assert cleaned.wait(timeout=1)
+    assert future.cancelled()
+    assert not thread.is_alive()
+
+
+def test_stop_worker_loop_logs_warning_when_pending_cancel_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _FakeFuture:
+        def result(self, timeout=None):
+            _ = timeout
+            raise concurrent.futures.TimeoutError()
+
+    def _fake_run_coroutine_threadsafe(_awaitable, _loop):
+        _awaitable.close()
+        return _FakeFuture()
+
+    monkeypatch.setattr(celery_tasks.settings, "celery_worker_bridge_timeout_seconds", 0.01)
+
+    celery_tasks._ensure_worker_loop_started()
+    thread = celery_tasks._worker_loop_thread
+    assert thread is not None
+
+    monkeypatch.setattr(
+        celery_tasks.asyncio,
+        "run_coroutine_threadsafe",
+        _fake_run_coroutine_threadsafe,
+    )
+    caplog.set_level("WARNING")
+
+    celery_tasks._stop_worker_loop()
+
+    assert "pending-task cancellation did not finish before stop" in caplog.text
+    assert not thread.is_alive()
