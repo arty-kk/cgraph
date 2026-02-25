@@ -120,23 +120,48 @@ async def test_submit_docs_async_uses_async_idempotency_key(monkeypatch):
         captured["payload"] = payload
         return "docs-key"
 
-    async def _fake_find_existing_job_id_async(session, org_id: int, idempotency_key: str):
+    async def _fake_find_existing_job_async(session, org_id: int, idempotency_key: str):
         assert idempotency_key == "docs-key"
-        return "existing-doc-job"
+        return ("existing-doc-job", "running")
 
     monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency_key_async)
     monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
-    monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing_job_id_async)
+    monkeypatch.setattr(task_queue, "_find_existing_job_async", _fake_find_existing_job_async)
 
-    task_id = await task_queue.submit_docs_async(project_id=99, org_id=5)
+    result = await task_queue.submit_docs_async(project_id=99, org_id=5)
 
-    assert task_id == "existing-doc-job"
+    assert result == ("existing-doc-job", "running")
     assert captured == {
         "kind": "docs",
         "org_id": 5,
         "payload": {"project_id": 99},
     }
 
+
+
+
+@pytest.mark.anyio
+async def test_submit_docs_async_returns_existing_status_after_integrity_race(monkeypatch):
+    async def _fake_idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
+        _ = (kind, org_id, payload)
+        return "docs-key"
+
+    async def _fake_find_existing_job_async(session, org_id: int, idempotency_key: str):
+        _ = (session, org_id, idempotency_key)
+        return ("existing-doc-job", "running")
+
+    async def _fake_create_job_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return ("existing-doc-job", False)
+
+    monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency_key_async)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
+    monkeypatch.setattr(task_queue, "_find_existing_job_async", _fake_find_existing_job_async)
+    monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job_async)
+
+    result = await task_queue.submit_docs_async(project_id=99, org_id=5)
+
+    assert result == ("existing-doc-job", "running")
 
 @pytest.mark.anyio
 async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
