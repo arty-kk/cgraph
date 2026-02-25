@@ -1287,17 +1287,12 @@ async def scan_with_background_async(
     session: AsyncSession,
     project_id: int,
     org_id: int,
-    background: bool = False,
-    background_tasks: BackgroundTasks | None = None,
 ) -> dict:
-    _ = background
     task_id, status = await _get_active_scan_task_async(session, project_id, org_id)
     if task_id and status in ("pending", "running"):
         return {"task_id": task_id, "status": status}
 
     task_id = await submit_scan_async(project_id, org_id)
-    if background_tasks is not None:
-        background_tasks.add_task(lambda: None)
     return {"task_id": task_id, "status": "pending"}
 
 

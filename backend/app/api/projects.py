@@ -126,8 +126,6 @@ async def scan(
         request.state.db_session,
         project.id,
         project.org_id,
-        False,
-        None,
     )
     return response
 

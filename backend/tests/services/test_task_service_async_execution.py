@@ -151,7 +151,11 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
         return {"path": rel_path}
 
     monkeypatch.setattr(task_service, "project_lock_async", lambda *_args, **_kwargs: _Lock())
-    monkeypatch.setattr(task_service, "_parse_diff_paths", lambda root, patch_text: ["a.py"])
+    async def _fake_parse_diff_paths_async(root, patch_text):
+        _ = (root, patch_text)
+        return ["a.py"]
+
+    monkeypatch.setattr(task_service, "_parse_diff_paths_async", _fake_parse_diff_paths_async)
     monkeypatch.setattr(task_service, "apply_unified_diff", lambda *args, **kwargs: ["a.py"])
     async def _fake_scan_files_async(*args, **kwargs):
         _ = args, kwargs

@@ -10,7 +10,6 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from fastapi import BackgroundTasks
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import delete, select
@@ -240,17 +239,12 @@ async def _get_active_scan_task_async(
 async def _scan_with_background_async(
     project_id: int,
     org_id: int,
-    background: bool = False,
-    background_tasks: BackgroundTasks | None = None,
 ) -> dict:
-    _ = background
     task_id, status = await _get_active_scan_task_async(project_id, org_id)
     if task_id and status in ("pending", "running"):
         return {"task_id": task_id, "status": status}
 
     task_id = await submit_scan_async(project_id, org_id)
-    if background_tasks is not None:
-        background_tasks.add_task(lambda: None)
     return {"task_id": task_id, "status": "pending"}
 
 
@@ -960,7 +954,7 @@ async def _run_task_impl_async(
     warning = await _graph_warning_async(session, project_id)
     graph_scan_task: dict | None = None
     if warning == GRAPH_NOT_READY_WARNING:
-        graph_scan_task = await _scan_with_background_async(project_id, org_id, background=True)
+        graph_scan_task = await _scan_with_background_async(project_id, org_id)
     graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
     graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 
@@ -2176,13 +2170,8 @@ async def run_task_with_background_async(
     project_id: int,
     org_id: int,
     request: TaskRequest,
-    background: bool = False,
-    background_tasks: BackgroundTasks | None = None,
 ) -> dict:
-    _ = background
     task_id = await submit_run_async(project_id, org_id, _serialize_request(request))
-    if background_tasks is not None:
-        background_tasks.add_task(lambda: None)
     return {"task_id": task_id, "status": "pending"}
 
 

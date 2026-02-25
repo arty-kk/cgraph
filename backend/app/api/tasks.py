@@ -132,8 +132,6 @@ async def run_task(
         project.id,
         project.org_id,
         task_request,
-        False,
-        None,
     )
     return response
 
