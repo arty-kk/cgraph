@@ -121,3 +121,100 @@ async def test_search_semantic_async_keeps_sorting_and_meta_contract(
     assert result["meta"]["compared"] == 3
     assert result["meta"]["returned"] == 2
     assert result["meta"]["truncated"] is True
+
+
+@pytest.mark.anyio
+async def test_read_semantic_candidate_files_async_has_bounded_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    max_parallel = 3
+    rel_paths = [f"f{i}.py" for i in range(25)]
+
+    in_flight = 0
+    peak_in_flight = 0
+    lock = asyncio.Lock()
+
+    async def _fake_run_fs_io_async(fn, *args, **kwargs):
+        nonlocal in_flight, peak_in_flight
+        async with lock:
+            in_flight += 1
+            peak_in_flight = max(peak_in_flight, in_flight)
+        await asyncio.sleep(0.002)
+        kwargs.pop("operation", None)
+        result = fn(*args, **kwargs)
+        async with lock:
+            in_flight -= 1
+        return result
+
+    monkeypatch.setattr(graph, "run_fs_io_async", _fake_run_fs_io_async)
+
+    result = await graph.read_semantic_candidate_files_async(
+        tmp_path,
+        rel_paths,
+        max_parallel=max_parallel,
+        max_rel_path_length=512,
+        max_chars=64,
+    )
+
+    assert peak_in_flight <= max_parallel
+    assert set(result.keys()) == set(rel_paths)
+    assert all(payload == "" for payload in result.values())
+
+
+@pytest.mark.anyio
+async def test_read_semantic_candidate_files_async_keeps_dedup_and_dict_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    rel_paths = ["a.py", "b.py", "a.py", "", "b.py", "c.py"]
+
+    async def _fake_run_fs_io_async(_fn, _root, path, **_kwargs):
+        calls.append(path)
+        return (path, f"payload:{path}")
+
+    monkeypatch.setattr(graph, "run_fs_io_async", _fake_run_fs_io_async)
+
+    result = await graph.read_semantic_candidate_files_async(
+        tmp_path,
+        rel_paths,
+        max_parallel=4,
+        max_rel_path_length=512,
+        max_chars=64,
+    )
+
+    assert sorted(calls) == ["a.py", "b.py", "c.py"]
+    assert result == {
+        "a.py": "payload:a.py",
+        "b.py": "payload:b.py",
+        "c.py": "payload:c.py",
+    }
+
+
+@pytest.mark.anyio
+async def test_read_semantic_candidate_files_async_handles_per_item_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    async def _fake_run_fs_io_async(_fn, _root, path, **_kwargs):
+        if path in {"bad-1.py", "bad-2.py"}:
+            raise RuntimeError("boom")
+        return (path, f"payload:{path}")
+
+    monkeypatch.setattr(graph, "run_fs_io_async", _fake_run_fs_io_async)
+
+    result = await graph.read_semantic_candidate_files_async(
+        tmp_path,
+        ["ok.py", "bad-1.py", "bad-2.py", "ok2.py"],
+        max_parallel=2,
+        max_rel_path_length=512,
+        max_chars=64,
+    )
+
+    assert result == {
+        "ok.py": "payload:ok.py",
+        "bad-1.py": "",
+        "bad-2.py": "",
+        "ok2.py": "payload:ok2.py",
+    }

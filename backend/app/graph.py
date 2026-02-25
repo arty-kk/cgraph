@@ -564,27 +564,43 @@ async def read_semantic_candidate_files_async(
     if not selected_paths:
         return {}
 
-    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+    worker_count = max(1, int(max_parallel))
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    for path in selected_paths:
+        queue.put_nowait(path)
+    for _ in range(worker_count):
+        queue.put_nowait(None)
 
-    async def _load_one(path: str) -> tuple[str, str] | None:
-        async with semaphore:
-            return await run_fs_io_async(
-                _resolve_and_read_semantic_candidate_file,
-                root,
-                path,
-                max_rel_path_length=max_rel_path_length,
-                max_chars=max_chars,
-                operation="graph.semantic.read_candidate",
-            )
-
-    rows = await asyncio.gather(*[_load_one(path) for path in selected_paths])
     file_cache: dict[str, str] = {}
-    for row in rows:
-        if row is None:
-            continue
-        path, payload = row
-        if path not in file_cache:
-            file_cache[path] = payload if isinstance(payload, str) else ""
+
+    async def _worker() -> None:
+        while True:
+            path = await queue.get()
+            try:
+                if path is None:
+                    return
+                try:
+                    row = await run_fs_io_async(
+                        _resolve_and_read_semantic_candidate_file,
+                        root,
+                        path,
+                        max_rel_path_length=max_rel_path_length,
+                        max_chars=max_chars,
+                        operation="graph.semantic.read_candidate",
+                    )
+                except Exception:
+                    row = (path, "")
+
+                if row is not None:
+                    row_path, payload = row
+                    if row_path not in file_cache:
+                        file_cache[row_path] = payload if isinstance(payload, str) else ""
+            finally:
+                queue.task_done()
+
+    workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+    await queue.join()
+    await asyncio.gather(*workers)
     return file_cache
 
 
