@@ -7,7 +7,6 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.errors import BadRequestError, ExternalServiceError
-from app.infra import celery_producer_runtime
 from app.services import task_queue
 
 
@@ -161,33 +160,19 @@ async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_async_celery_producer_offloads_sync_send(monkeypatch):
-    events: list[str] = []
+async def test_async_task_producer_uses_async_transport_client(monkeypatch):
+    calls: list[tuple[str, list[object], str]] = []
 
-    def _fake_send_task(name, *, args, queue):
-        events.append(f"send:{name}:{queue}:{args[0]}")
+    class _Client:
+        async def publish_async(self, *, task_name: str, args: list[object], queue: str) -> None:
+            calls.append((task_name, args, queue))
 
-    async def _fake_run(fn, *args, **kwargs):
-        events.append("offload_called")
-        assert fn is _fake_send_task
-        assert not any(evt.startswith("send:") for evt in events)
-        result = fn(*args, **kwargs)
-        events.append("offload_completed")
-        return result
-
-    monkeypatch.setattr(task_queue.celery_app, "send_task", _fake_send_task)
-    monkeypatch.setattr(celery_producer_runtime, "run_celery_producer_io_async", _fake_run)
-    monkeypatch.setattr(task_queue, "run_celery_producer_io_async", _fake_run)
-
-    producer = task_queue._AsyncCeleryProducer()
+    producer = task_queue._AsyncTaskProducer(client=_Client())
     task = type("_Task", (), {"name": "stubgraph.scan"})()
+
     await producer.enqueue_task_async(task, args=["job-99"], queue="medium")
 
-    assert events == [
-        "offload_called",
-        "send:stubgraph.scan:medium:job-99",
-        "offload_completed",
-    ]
+    assert calls == [("stubgraph.scan", ["job-99"], "medium")]
 
 
 @pytest.mark.anyio
