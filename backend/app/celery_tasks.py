@@ -6,11 +6,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import anyio
 from celery.signals import worker_process_init, worker_process_shutdown
 
 from .async_db import AsyncSessionLocal, close_async_db, init_async_db
 from .celery_app import celery_app
+from .celery_async_runner import (
+    run_coroutine_sync,
+    start_process_async_runner,
+    stop_process_async_runner,
+)
 from .config import settings
 from .infra.celery_producer_runtime import (
     close_celery_producer_runtime,
@@ -86,16 +90,24 @@ def _on_worker_process_init(**_kwargs: Any) -> None:
     if _worker_runtime_started:
         return
     try:
-        anyio.run(_startup_worker_resources_async)
+        start_process_async_runner()
+        run_coroutine_sync(
+            _startup_worker_resources_async,
+            log_context="worker_process_init.startup",
+        )
         _worker_runtime_started = True
     except Exception:  # noqa: BLE001
         logger.exception("Celery worker startup failed")
         try:
-            anyio.run(_cleanup_worker_resources_async)
+            run_coroutine_sync(
+                _cleanup_worker_resources_async,
+                log_context="worker_process_init.cleanup_after_failure",
+            )
         except Exception:  # noqa: BLE001
             logger.exception("Celery worker cleanup after startup failure failed")
         finally:
             _worker_runtime_started = False
+            stop_process_async_runner()
         raise
 
 
@@ -105,11 +117,15 @@ def _on_worker_process_shutdown(**_kwargs: Any) -> None:
     if not _worker_runtime_started:
         return
     try:
-        anyio.run(_cleanup_worker_resources_async)
+        run_coroutine_sync(
+            _cleanup_worker_resources_async,
+            log_context="worker_process_shutdown.cleanup",
+        )
     except Exception:  # noqa: BLE001
         logger.exception("Celery worker cleanup failed")
     finally:
         _worker_runtime_started = False
+        stop_process_async_runner()
 
 
 async def _set_job_status_async(
@@ -159,7 +175,7 @@ async def _scan_task_async(job_id: str, project_id: int, org_id: int) -> None:
 
 @celery_app.task(name="stubgraph.scan")
 def scan_task(job_id: str, project_id: int, org_id: int) -> None:
-    anyio.run(_scan_task_async, job_id, project_id, org_id)
+    run_coroutine_sync(_scan_task_async, job_id, project_id, org_id, log_context="scan_task")
 
 
 async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
@@ -175,7 +191,7 @@ async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
 
 @celery_app.task(name="stubgraph.docs")
 def docs_task(job_id: str, project_id: int, org_id: int) -> None:
-    anyio.run(_docs_task_async, job_id, project_id, org_id)
+    run_coroutine_sync(_docs_task_async, job_id, project_id, org_id, log_context="docs_task")
 
 
 async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
@@ -195,7 +211,14 @@ async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload
 
 @celery_app.task(name="stubgraph.run_task")
 def run_task_job(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
-    anyio.run(_run_task_job_async, job_id, project_id, org_id, payload)
+    run_coroutine_sync(
+        _run_task_job_async,
+        job_id,
+        project_id,
+        org_id,
+        payload,
+        log_context="run_task_job",
+    )
 
 
 async def _mutation_indexing_task_async(
@@ -243,13 +266,24 @@ def mutation_indexing_task(
     rel_paths: list[str],
     operation: str,
 ) -> None:
-    anyio.run(_mutation_indexing_task_async, job_id, project_id, org_id, rel_paths, operation)
+    run_coroutine_sync(
+        _mutation_indexing_task_async,
+        job_id,
+        project_id,
+        org_id,
+        rel_paths,
+        operation,
+        log_context="mutation_indexing_task",
+    )
 
 
 @celery_app.task(name="stubgraph.routing_calibration")
 def routing_calibration_task() -> dict:
     try:
-        return anyio.run(calibrate_routing_policy_thresholds_async)
+        return run_coroutine_sync(
+            calibrate_routing_policy_thresholds_async,
+            log_context="routing_calibration_task",
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Routing calibration task failed")
         return {"updated": False, "reason": "error", "error": str(exc)}
