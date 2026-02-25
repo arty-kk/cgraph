@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import threading
 from collections.abc import Awaitable, Callable
@@ -80,7 +81,34 @@ def _submit_to_worker_loop(awaitable: Awaitable[Any]) -> Any:
         awaitable.close()
         raise RuntimeError("Celery worker loop is not running")
     future = asyncio.run_coroutine_threadsafe(awaitable, loop)
-    return future.result()
+    try:
+        return future.result(timeout=settings.celery_worker_bridge_timeout_seconds)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        logger.error(
+            "Celery worker loop bridge timed out",
+            extra={
+                "timeout_seconds": settings.celery_worker_bridge_timeout_seconds,
+                "reason": "bridge_timeout",
+            },
+        )
+        raise RuntimeError(
+            "Celery worker loop bridge timed out while waiting for coroutine result"
+        ) from exc
+
+
+async def _cancel_pending_worker_tasks_async() -> None:
+    current_task = asyncio.current_task()
+    pending_tasks = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not current_task and not task.done()
+    ]
+    if not pending_tasks:
+        return
+    for task in pending_tasks:
+        task.cancel()
+    await asyncio.gather(*pending_tasks, return_exceptions=True)
 
 
 def _stop_worker_loop() -> None:
@@ -92,6 +120,20 @@ def _stop_worker_loop() -> None:
     _worker_loop_ready.clear()
     if loop is None or thread is None:
         return
+
+    try:
+        asyncio.run_coroutine_threadsafe(
+            _cancel_pending_worker_tasks_async(),
+            loop,
+        ).result(timeout=settings.celery_worker_bridge_timeout_seconds)
+    except (concurrent.futures.TimeoutError, RuntimeError):
+        logger.warning(
+            "Celery worker loop pending-task cancellation did not finish before stop",
+            extra={
+                "timeout_seconds": settings.celery_worker_bridge_timeout_seconds,
+                "reason": "shutdown_cancel_timeout",
+            },
+        )
 
     loop.call_soon_threadsafe(loop.stop)
     thread.join(timeout=5)

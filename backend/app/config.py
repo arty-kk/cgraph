@@ -98,6 +98,10 @@ class Settings(BaseSettings):
         alias="STUBGRAPH_CELERY_BROKER_URL",
     )
     celery_queue_default: str = Field(default="medium", alias="STUBGRAPH_CELERY_QUEUE_DEFAULT")
+    celery_worker_bridge_timeout_seconds: float = Field(
+        default=300.0,
+        alias="STUBGRAPH_CELERY_WORKER_BRIDGE_TIMEOUT_SECONDS",
+    )
 
     auth_enabled: bool = Field(default=False, alias="STUBGRAPH_AUTH_ENABLED")
     auth_allow_public_signup: bool = Field(
@@ -371,6 +375,10 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_ALLOW_LOCAL_ROOT_PATH должен быть булевым")
         if not isinstance(self.celery_broker_url, str) or not self.celery_broker_url.strip():
             raise ValueError("STUBGRAPH_CELERY_BROKER_URL должен быть непустым")
+        if self.celery_worker_bridge_timeout_seconds <= 0:
+            raise ValueError(
+                "STUBGRAPH_CELERY_WORKER_BRIDGE_TIMEOUT_SECONDS должен быть положительным"
+            )
         if not isinstance(self.redis_url, str) or not self.redis_url.strip():
             raise ValueError("STUBGRAPH_REDIS_URL должен быть непустым")
         if self.db_pool_size <= 0:
