@@ -124,3 +124,34 @@ def test_runtime_llm_modules_are_async_only_contract() -> None:
                 violations.append(f"{rel_path}:name:{forbidden}")
 
     assert not violations, "Sync LLM runtime symbols must be removed: " + ", ".join(violations)
+
+
+def test_openai_client_runtime_lifecycle_is_explicit_init_only() -> None:
+    path = BACKEND_ROOT / "app/llm/client.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    async_defs = {
+        node.name for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+    }
+    assert "init_async_openai_client" in async_defs
+
+    get_fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "get_async_openai_client"
+    )
+    called_names = {
+        node.func.id
+        for node in ast.walk(get_fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "AsyncOpenAI" not in called_names
+    assert "init_async_openai_client" not in called_names
+
+    error_messages = {
+        node.value
+        for node in ast.walk(get_fn)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert any("init_async_openai_client" in msg for msg in error_messages)

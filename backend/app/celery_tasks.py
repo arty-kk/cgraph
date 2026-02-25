@@ -28,7 +28,7 @@ from .infra.redis_client import (
     get_async_redis_client,
     init_redis_pool_async,
 )
-from .llm.client import close_async_openai_client, get_async_openai_client
+from .llm.client import close_async_openai_client, init_async_openai_client
 from .logging import get_logger
 from .models import Project, TaskJob
 from .s3_runtime import close_s3_runtime, init_s3_runtime
@@ -62,8 +62,11 @@ async def _startup_worker_resources_async() -> None:
         logger.info("Celery worker startup step completed", extra={"step": name})
 
     if settings.openai_api_key:
-        get_async_openai_client()
-        logger.info("Celery worker startup step completed", extra={"step": "prewarm_openai"})
+        await init_async_openai_client()
+        logger.info(
+            "Celery worker startup step completed",
+            extra={"step": "init_async_openai_client"},
+        )
 
 
 async def _cleanup_worker_resources_async() -> None:

@@ -28,7 +28,7 @@ from .infra.external_io_runtime import close_external_io_runtime, init_external_
 from .infra.fs_runtime import close_fs_runtime, init_fs_runtime
 from .infra.rate_limit import allow_request_async, rate_limit_response
 from .infra.redis_client import close_redis_pool_async, init_redis_pool_async
-from .llm.client import close_async_openai_client
+from .llm.client import close_async_openai_client, init_async_openai_client
 from .logging import log_requests, setup_logging
 from .s3_runtime import close_s3_runtime, init_s3_runtime
 from .scan import close_scan_runtime
@@ -55,6 +55,9 @@ async def lifespan(_: FastAPI):
         ("init_celery_producer_runtime", init_celery_producer_runtime),
         ("init_external_io_runtime", init_external_io_runtime),
     ]
+
+    if settings.openai_api_key:
+        startup_steps.append(("init_async_openai_client", init_async_openai_client))
 
     use_s3 = (settings.storage_backend or "local").strip().lower() == "s3"
     if use_s3:
