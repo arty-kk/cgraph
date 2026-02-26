@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -102,7 +103,7 @@ class Settings(BaseSettings):
     allow_local_root_path: bool = Field(default=False, alias="STUBGRAPH_ALLOW_LOCAL_ROOT_PATH")
 
     celery_broker_url: str = Field(
-        default="amqp://guest:guest@localhost:5672//",
+        default="redis://localhost:6379/1",
         alias="STUBGRAPH_CELERY_BROKER_URL",
     )
     celery_queue_default: str = Field(default="medium", alias="STUBGRAPH_CELERY_QUEUE_DEFAULT")
@@ -404,6 +405,9 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_ALLOW_LOCAL_ROOT_PATH должен быть булевым")
         if not isinstance(self.celery_broker_url, str) or not self.celery_broker_url.strip():
             raise ValueError("STUBGRAPH_CELERY_BROKER_URL должен быть непустым")
+        celery_scheme = urlparse(self.celery_broker_url).scheme.lower()
+        if not celery_scheme.startswith("redis"):
+            raise ValueError("STUBGRAPH_CELERY_BROKER_URL должен использовать redis://")
         if not isinstance(self.redis_url, str) or not self.redis_url.strip():
             raise ValueError("STUBGRAPH_REDIS_URL должен быть непустым")
         if self.db_pool_size <= 0:

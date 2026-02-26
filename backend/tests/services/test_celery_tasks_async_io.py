@@ -145,23 +145,6 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
 
 
 
-def test_worker_startup_failure_stops_background_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _boom() -> None:
-        raise RuntimeError("boom")
-
-    async def _noop() -> None:
-        return None
-
-    monkeypatch.setattr(celery_tasks, "build_startup_steps", lambda *, role: [("boom", _boom)])
-    monkeypatch.setattr(celery_tasks, "build_cleanup_steps", lambda *, role: [("noop", _noop)])
-    monkeypatch.setattr(celery_tasks, "_worker_runtime_started", False)
-
-    with pytest.raises(RuntimeError, match="boom"):
-        celery_tasks._on_worker_process_init()
-
-    assert celery_tasks._worker_loop is None
-    assert celery_tasks._worker_loop_thread is None
-
 def test_run_async_entrypoint_executes_coroutine() -> None:
     async def _value() -> int:
         await asyncio.sleep(0)
@@ -170,24 +153,13 @@ def test_run_async_entrypoint_executes_coroutine() -> None:
     assert celery_tasks._run_async_entrypoint(_value, log_context="test") == 42
 
 
-def test_run_async_entrypoint_reuses_worker_loop_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(celery_tasks, "_worker_runtime_started", False)
-
+def test_run_async_entrypoint_runs_each_call_with_direct_boundary() -> None:
     async def _value(value: int) -> int:
         await asyncio.sleep(0)
         return value
 
-    first = celery_tasks._run_async_entrypoint(_value, 1, log_context="first")
-    first_loop = celery_tasks._worker_loop
-    second = celery_tasks._run_async_entrypoint(_value, 2, log_context="second")
-    second_loop = celery_tasks._worker_loop
-
-    assert first == 1
-    assert second == 2
-    assert first_loop is not None
-    assert second_loop is first_loop
-
-    celery_tasks._stop_worker_event_loop()
+    assert celery_tasks._run_async_entrypoint(_value, 1, log_context="first") == 1
+    assert celery_tasks._run_async_entrypoint(_value, 2, log_context="second") == 2
 
 
 @pytest.mark.anyio

@@ -179,7 +179,7 @@ def test_lifespan_repeated_shutdown_remains_stable(monkeypatch):
     assert calls.count("close_redis") == 2
 
 
-def test_db_session_middleware_skips_health(monkeypatch):
+def test_db_session_dependency_skips_health(monkeypatch):
     calls = {"enter": 0}
 
     class _Ctx:

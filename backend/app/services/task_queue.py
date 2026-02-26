@@ -5,7 +5,6 @@ import asyncio
 import base64
 import json
 from datetime import datetime, timedelta, timezone
-from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -34,7 +33,29 @@ _ENQUEUE_TIMEOUT_SECONDS = 10.0
 _ENQUEUE_REASON_KEY = "enqueue_reason"
 
 _producer_redis_client: redis_async.Redis | None = None
-_producer_runtime_guard = Lock()
+_producer_runtime_guard: asyncio.Lock | None = None
+_producer_runtime_guard_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_producer_runtime_guard() -> asyncio.Lock:
+    global _producer_runtime_guard
+    global _producer_runtime_guard_loop
+    current_loop = asyncio.get_running_loop()
+    if _producer_runtime_guard is None or _producer_runtime_guard_loop is not current_loop:
+        _producer_runtime_guard = asyncio.Lock()
+        _producer_runtime_guard_loop = current_loop
+    return _producer_runtime_guard
+
+
+def _validate_broker_url() -> str:
+    broker_url = str(settings.celery_broker_url or "").strip()
+    parsed_broker = urlparse(broker_url)
+    scheme = parsed_broker.scheme.lower()
+    if not scheme.startswith("redis"):
+        raise RuntimeError(
+            f"STUBGRAPH_CELERY_BROKER_URL must use redis:// scheme, got: {scheme or 'empty'}"
+        )
+    return broker_url
 
 
 class _AsyncTaskProducerError(Exception):
@@ -44,13 +65,6 @@ class _AsyncTaskProducerError(Exception):
 class _AsyncTaskTransportClient:
     async def publish_async(self, *, task_name: str, args: list[Any], queue: str) -> None:
         from ..celery_app import celery_app
-
-        broker_url = str(settings.celery_broker_url or "").strip()
-        parsed_broker = urlparse(broker_url)
-        scheme = parsed_broker.scheme.lower()
-
-        if scheme and not scheme.startswith("redis"):
-            raise _AsyncTaskProducerError(f"unsupported broker scheme: {scheme}")
 
         client = _producer_redis_client
         if client is None:
@@ -110,15 +124,9 @@ async def init_task_producer_runtime_async() -> None:
     if _producer_redis_client is not None:
         return
 
-    broker_url = str(settings.celery_broker_url or "").strip()
-    parsed_broker = urlparse(broker_url)
-    scheme = parsed_broker.scheme.lower()
-    if scheme and not scheme.startswith("redis"):
-        _producer_redis_client = None
-        return
-
-    # Thread-level guard: safe across API/worker loops; no await inside critical section.
-    with _producer_runtime_guard:
+    broker_url = _validate_broker_url()
+    guard = _get_producer_runtime_guard()
+    async with guard:
         if _producer_redis_client is not None:
             return
         _producer_redis_client = redis_async.Redis.from_url(broker_url, decode_responses=True)
@@ -126,7 +134,8 @@ async def init_task_producer_runtime_async() -> None:
 
 async def close_task_producer_runtime_async() -> None:
     global _producer_redis_client
-    with _producer_runtime_guard:
+    guard = _get_producer_runtime_guard()
+    async with guard:
         client = _producer_redis_client
         _producer_redis_client = None
     if client is not None:
@@ -140,8 +149,6 @@ def _classify_enqueue_failure(exc: BaseException) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
     if isinstance(exc, _AsyncTaskProducerError):
-        if "unsupported broker scheme" in str(exc):
-            return "unsupported_broker_scheme"
         return "broker_error"
     return "internal_enqueue_failure"
 
@@ -168,13 +175,9 @@ async def _mark_enqueue_failure_async(
         )
 
 
-async def _mark_enqueue_failure_for_task_id_async(task_id: str, exc: BaseException) -> None:
-    async with AsyncSessionLocal() as session:
-        await _mark_enqueue_failure_async(session, task_id, exc)
-
-
 async def _enqueue_with_error_mapping_async(
     *,
+    session: AsyncSession | None = None,
     task_name: str,
     args: list[Any],
     queue: str,
@@ -190,14 +193,26 @@ async def _enqueue_with_error_mapping_async(
         if current_task is not None and current_task.cancelling():
             raise
         reason = _classify_enqueue_failure(exc)
-        await _mark_enqueue_failure_for_task_id_async(task_id, exc)
+        if session is not None:
+            await _mark_enqueue_failure_async(session, task_id, exc)
+        else:
+            logger.warning(
+                "Failed to persist enqueue failure status: session is unavailable",
+                extra={"task_id": task_id},
+            )
         raise ExternalServiceError(
             "Не удалось отправить задачу в очередь",
             context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
         ) from exc
     except Exception as exc:
         reason = _classify_enqueue_failure(exc)
-        await _mark_enqueue_failure_for_task_id_async(task_id, exc)
+        if session is not None:
+            await _mark_enqueue_failure_async(session, task_id, exc)
+        else:
+            logger.warning(
+                "Failed to persist enqueue failure status: session is unavailable",
+                extra={"task_id": task_id},
+            )
         raise ExternalServiceError(
             "Не удалось отправить задачу в очередь",
             context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
@@ -457,18 +472,17 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
         if not created:
             await _release_inflight_async("heavy", task_id)
             return task_id
-
-
-    try:
-        await _enqueue_with_error_mapping_async(
-            task_name="stubgraph.run_task",
-            args=[task_id, project_id, org_id, payload],
-            queue="heavy",
-            task_id=task_id,
-        )
-    except ExternalServiceError:
-        await _release_inflight_async("heavy", task_id)
-        raise
+        try:
+            await _enqueue_with_error_mapping_async(
+                session=session,
+                task_name="stubgraph.run_task",
+                args=[task_id, project_id, org_id, payload],
+                queue="heavy",
+                task_id=task_id,
+            )
+        except ExternalServiceError:
+            await _release_inflight_async("heavy", task_id)
+            raise
     return task_id
 
 
@@ -486,14 +500,15 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
             queue="medium",
             idempotency_key=idempotency_key,
         )
-    if not created:
-        return task_id
-    await _enqueue_with_error_mapping_async(
-        task_name="stubgraph.scan",
-        args=[task_id, project_id, org_id],
-        queue="medium",
-        task_id=task_id,
-    )
+        if not created:
+            return task_id
+        await _enqueue_with_error_mapping_async(
+            session=session,
+            task_name="stubgraph.scan",
+            args=[task_id, project_id, org_id],
+            queue="medium",
+            task_id=task_id,
+        )
     return task_id
 
 
@@ -512,14 +527,15 @@ async def submit_docs_async(project_id: int, org_id: int) -> tuple[str, str]:
             queue="light",
             idempotency_key=idempotency_key,
         )
-    if created:
-        await _enqueue_with_error_mapping_async(
-            task_name="stubgraph.docs",
-            args=[task_id, project_id, org_id],
-            queue="light",
-            task_id=task_id,
-        )
-        return task_id, "pending"
+        if created:
+            await _enqueue_with_error_mapping_async(
+                session=session,
+                task_name="stubgraph.docs",
+                args=[task_id, project_id, org_id],
+                queue="light",
+                task_id=task_id,
+            )
+            return task_id, "pending"
 
     async with AsyncSessionLocal() as session:
         existing = await _find_existing_job_async(session, org_id, idempotency_key)
@@ -553,13 +569,14 @@ async def submit_mutation_indexing_async(
             queue="medium",
             idempotency_key=idempotency_key,
         )
-    if created:
-        await _enqueue_with_error_mapping_async(
-            task_name="stubgraph.mutation_indexing",
-            args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
-            queue="medium",
-            task_id=task_id,
-        )
+        if created:
+            await _enqueue_with_error_mapping_async(
+                session=session,
+                task_name="stubgraph.mutation_indexing",
+                args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
+                queue="medium",
+                task_id=task_id,
+            )
     return task_id, "pending"
 
 
