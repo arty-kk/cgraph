@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Tuple
@@ -99,28 +98,28 @@ def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
 @asynccontextmanager
 async def project_lock_async(session: AsyncSession, project_id: int):
     timeout_seconds = float(getattr(settings, "project_lock_timeout_seconds", 30.0))
-    poll_interval = float(getattr(settings, "project_lock_poll_interval_seconds", 0.25))
     if timeout_seconds < 0:
         timeout_seconds = 0.0
-    if poll_interval <= 0:
-        poll_interval = 0.1
 
-    start = time.monotonic()
-    locked = False
-    while not locked:
-        result = await session.execute(
-            text("SELECT pg_try_advisory_lock(:key)"), {"key": int(project_id)}
+    statement_timeout_ms = max(1, int(timeout_seconds * 1000))
+    lock_acquired = False
+    await session.execute(text("SAVEPOINT stubgraph_project_lock"))
+    try:
+        await session.execute(
+            text("SET LOCAL statement_timeout = :statement_timeout_ms"),
+            {"statement_timeout_ms": statement_timeout_ms},
         )
-        locked = bool(result.scalar())
-        if locked:
-            break
-        elapsed = time.monotonic() - start
-        if elapsed >= timeout_seconds:
-            raise ProjectLockTimeout("Timeout while waiting for project lock")
-        import asyncio
-
-        await asyncio.sleep(min(poll_interval, max(0.0, timeout_seconds - elapsed)))
+        await session.execute(text("SELECT pg_advisory_lock(:key)"), {"key": int(project_id)})
+        lock_acquired = True
+        await session.execute(text("RELEASE SAVEPOINT stubgraph_project_lock"))
+    except Exception as exc:  # noqa: BLE001
+        await session.execute(text("ROLLBACK TO SAVEPOINT stubgraph_project_lock"))
+        await session.execute(text("RELEASE SAVEPOINT stubgraph_project_lock"))
+        if "statement timeout" in str(exc).lower():
+            raise ProjectLockTimeout("Timeout while waiting for project lock") from exc
+        raise
     try:
         yield
     finally:
-        await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": int(project_id)})
+        if lock_acquired:
+            await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": int(project_id)})

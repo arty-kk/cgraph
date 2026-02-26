@@ -26,6 +26,7 @@ Patch storage в `app.storage` также работает только в async
 - `submit_mutation_indexing_async`.
 
 Публикация задач выполняется через awaitable producer API транспорта:
+- поддерживается только Redis broker (`STUBGRAPH_CELERY_BROKER_URL=redis://...`); несовместимая схема валидируется на startup API/worker;
 - сервисный слой остаётся полностью async;
 - enqueue выполняется без `asyncio.to_thread`, `run_coroutine_threadsafe`, loop-thread глобалей и bridge-timeout логики;
 - `submit_*_async` вызывают только async producer-клиент и маппят transport-ошибки в `ExternalServiceError` с `task_id`/`queue`/`enqueue_reason`.

@@ -174,6 +174,7 @@ async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
     monkeypatch.setattr(task_queue, "_async_task_producer", _Producer())
 
     await task_queue._enqueue_with_error_mapping_async(
+        session=_FakeDbSession(),
         task_name="stubgraph.scan",
         args=["job-0", 1],
         queue="heavy",
@@ -241,13 +242,12 @@ async def test_transport_client_publishes_celery_payload_to_async_broker(monkeyp
 
 
 @pytest.mark.anyio
-async def test_transport_client_rejects_unsupported_broker_scheme(monkeypatch):
+async def test_init_task_producer_runtime_fails_for_non_redis_scheme(monkeypatch):
     monkeypatch.setattr(task_queue.settings, "celery_broker_url", "amqp://guest:guest@localhost:5672//")
+    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
 
-    client = task_queue._AsyncTaskTransportClient()
-
-    with pytest.raises(task_queue._AsyncTaskProducerError, match="unsupported broker scheme"):
-        await client.publish_async(task_name="stubgraph.scan", args=["job-8", 1, 2], queue="medium")
+    with pytest.raises(RuntimeError, match="redis:// scheme"):
+        await task_queue.init_task_producer_runtime_async()
 
 
 @pytest.mark.anyio
@@ -260,10 +260,10 @@ async def test_enqueue_error_mapping_timeout(monkeypatch):
 
     monkeypatch.setattr(task_queue, "_ENQUEUE_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _offloaded_enqueue)
-    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
+            session=session,
             task_name="stubgraph.scan",
             args=["job-1"],
             queue="medium",
@@ -283,10 +283,10 @@ async def test_enqueue_error_mapping_cancellation(monkeypatch):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _cancelled_enqueue)
-    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
+            session=session,
             task_name="stubgraph.scan",
             args=["job-cancel"],
             queue="medium",
@@ -306,10 +306,10 @@ async def test_enqueue_error_mapping_broker_error(monkeypatch):
         raise task_queue._AsyncTaskProducerError("broker down")
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _broken_enqueue)
-    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
+            session=session,
             task_name="stubgraph.scan",
             args=["job-2"],
             queue="medium",
@@ -331,10 +331,10 @@ async def test_enqueue_retry_succeeds_after_transient_broker_error(monkeypatch):
             raise task_queue._AsyncTaskProducerError("temporary")
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _flaky_enqueue)
-    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_FakeDbSession()))
 
     with pytest.raises(ExternalServiceError):
         await task_queue._enqueue_with_error_mapping_async(
+            session=_FakeDbSession(),
             task_name="stubgraph.scan",
             args=["job-r"],
             queue="medium",
@@ -342,6 +342,7 @@ async def test_enqueue_retry_succeeds_after_transient_broker_error(monkeypatch):
         )
 
     await task_queue._enqueue_with_error_mapping_async(
+        session=_FakeDbSession(),
         task_name="stubgraph.scan",
         args=["job-r"],
         queue="medium",
@@ -472,7 +473,7 @@ async def test_guard_inflight_async_uses_shared_client_concurrently(monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_submit_scan_async_releases_db_session_before_enqueue(monkeypatch):
+async def test_submit_scan_async_keeps_single_session_for_enqueue_failure_updates(monkeypatch):
     events: list[str] = []
 
     class _Session:
@@ -511,7 +512,7 @@ async def test_submit_scan_async_releases_db_session_before_enqueue(monkeypatch)
     task_id = await task_queue.submit_scan_async(project_id=1, org_id=2)
 
     assert task_id == "scan-job"
-    assert events == ["db_enter", "db_exit", "enqueue"]
+    assert events == ["db_enter", "enqueue", "db_exit"]
 
 
 @pytest.mark.anyio
