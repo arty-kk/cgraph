@@ -6,10 +6,8 @@ import base64
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
-import redis.asyncio as redis_async
 from kombu.serialization import dumps
 from redis import RedisError
 from sqlalchemy.exc import IntegrityError
@@ -32,32 +30,6 @@ _HEAVY_INFLIGHT_KEY = "stubgraph:queue:heavy:inflight"
 _ENQUEUE_TIMEOUT_SECONDS = 10.0
 _ENQUEUE_REASON_KEY = "enqueue_reason"
 
-_producer_redis_client: redis_async.Redis | None = None
-_producer_runtime_guard: asyncio.Lock | None = None
-_producer_runtime_guard_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _get_producer_runtime_guard() -> asyncio.Lock:
-    global _producer_runtime_guard
-    global _producer_runtime_guard_loop
-    current_loop = asyncio.get_running_loop()
-    if _producer_runtime_guard is None or _producer_runtime_guard_loop is not current_loop:
-        _producer_runtime_guard = asyncio.Lock()
-        _producer_runtime_guard_loop = current_loop
-    return _producer_runtime_guard
-
-
-def _validate_broker_url() -> str:
-    broker_url = str(settings.celery_broker_url or "").strip()
-    parsed_broker = urlparse(broker_url)
-    scheme = parsed_broker.scheme.lower()
-    if not scheme.startswith("redis"):
-        raise RuntimeError(
-            f"STUBGRAPH_CELERY_BROKER_URL must use redis:// scheme, got: {scheme or 'empty'}"
-        )
-    return broker_url
-
-
 class _AsyncTaskProducerError(Exception):
     """Transport-level async producer enqueue failure."""
 
@@ -66,12 +38,10 @@ class _AsyncTaskTransportClient:
     async def publish_async(self, *, task_name: str, args: list[Any], queue: str) -> None:
         from ..celery_app import celery_app
 
-        client = _producer_redis_client
-        if client is None:
-            await init_task_producer_runtime_async()
-            client = _producer_redis_client
-        if client is None:
-            raise _AsyncTaskProducerError("task queue producer runtime is not initialized")
+        try:
+            client = get_async_redis_client()
+        except RuntimeError as exc:
+            raise _AsyncTaskProducerError(str(exc)) from exc
 
         message = celery_app.amqp.as_task_v2(
             task_id=str(args[0]) if args else uuid4().hex,
@@ -117,29 +87,6 @@ class _AsyncTaskProducer:
             raise _AsyncTaskProducerError(str(exc)) from exc
 
 
-
-
-async def init_task_producer_runtime_async() -> None:
-    global _producer_redis_client
-    if _producer_redis_client is not None:
-        return
-
-    broker_url = _validate_broker_url()
-    guard = _get_producer_runtime_guard()
-    async with guard:
-        if _producer_redis_client is not None:
-            return
-        _producer_redis_client = redis_async.Redis.from_url(broker_url, decode_responses=True)
-
-
-async def close_task_producer_runtime_async() -> None:
-    global _producer_redis_client
-    guard = _get_producer_runtime_guard()
-    async with guard:
-        client = _producer_redis_client
-        _producer_redis_client = None
-    if client is not None:
-        await client.aclose()
 
 
 _async_task_producer = _AsyncTaskProducer()

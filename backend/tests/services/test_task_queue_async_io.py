@@ -199,41 +199,29 @@ async def test_async_task_producer_uses_async_transport_client(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_transport_client_publishes_celery_payload_to_async_broker(monkeypatch):
+async def test_transport_client_publishes_celery_payload_to_shared_async_broker(monkeypatch):
     class _FakeRedis:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str]] = []
-            self.closed = False
 
         async def lpush(self, key: str, payload: str) -> None:
             self.calls.append((key, payload))
 
-        async def aclose(self) -> None:
-            self.closed = True
-
     fake_redis = _FakeRedis()
-    from_url_calls: list[tuple[str, bool]] = []
+    get_client_calls = 0
 
-    class _RedisClientFactory:
-        @staticmethod
-        def from_url(url: str, decode_responses: bool):
-            from_url_calls.append((url, decode_responses))
-            return fake_redis
+    def _get_client():
+        nonlocal get_client_calls
+        get_client_calls += 1
+        return fake_redis
 
-    class _RedisModule:
-        Redis = _RedisClientFactory
-
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "redis://localhost:6379/5")
-    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
-
-    await task_queue.init_task_producer_runtime_async()
+    monkeypatch.setattr(task_queue, "get_async_redis_client", _get_client)
 
     client = task_queue._AsyncTaskTransportClient()
     await client.publish_async(task_name="stubgraph.scan", args=["job-7", 1, 2], queue="medium")
 
+    assert get_client_calls == 1
     assert len(fake_redis.calls) == 1
-    assert from_url_calls == [("redis://localhost:6379/5", True)]
-    assert fake_redis.closed is False
     queue, payload_raw = fake_redis.calls[0]
     payload = __import__("json").loads(payload_raw)
     assert queue == "medium"
@@ -242,12 +230,16 @@ async def test_transport_client_publishes_celery_payload_to_async_broker(monkeyp
 
 
 @pytest.mark.anyio
-async def test_init_task_producer_runtime_fails_for_non_redis_scheme(monkeypatch):
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "amqp://guest:guest@localhost:5672//")
-    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
+async def test_transport_client_maps_uninitialized_shared_client_to_producer_error(monkeypatch):
+    def _raise_runtime_error():
+        raise RuntimeError("Async Redis client is not initialized")
 
-    with pytest.raises(RuntimeError, match="redis:// scheme"):
-        await task_queue.init_task_producer_runtime_async()
+    monkeypatch.setattr(task_queue, "get_async_redis_client", _raise_runtime_error)
+
+    client = task_queue._AsyncTaskTransportClient()
+
+    with pytest.raises(task_queue._AsyncTaskProducerError, match="not initialized"):
+        await client.publish_async(task_name="stubgraph.scan", args=["job-7", 1, 2], queue="medium")
 
 
 @pytest.mark.anyio
@@ -516,113 +508,22 @@ async def test_submit_scan_async_keeps_single_session_for_enqueue_failure_update
 
 
 @pytest.mark.anyio
-async def test_close_task_producer_runtime_closes_singleton_client(monkeypatch):
-    closed = {"value": False}
-
-    class _FakeRedis:
-        async def aclose(self):
-            closed["value"] = True
-
-    monkeypatch.setattr(task_queue, "_producer_redis_client", _FakeRedis())
-    await task_queue.close_task_producer_runtime_async()
-
-    assert closed["value"] is True
-    assert task_queue._producer_redis_client is None
-
-
-@pytest.mark.anyio
-async def test_transport_client_lazy_initializes_producer_runtime(monkeypatch):
-    class _FakeRedis:
-        async def lpush(self, key: str, payload: str) -> None:
-            _ = (key, payload)
-
-    fake_redis = _FakeRedis()
-
-    class _RedisClientFactory:
-        calls = 0
-
-        @classmethod
-        def from_url(cls, url: str, decode_responses: bool):
-            _ = (url, decode_responses)
-            cls.calls += 1
-            return fake_redis
-
-    class _RedisModule:
-        Redis = _RedisClientFactory
-
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "redis://localhost:6379/5")
-    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
-    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
-
-    client = task_queue._AsyncTaskTransportClient()
-    await client.publish_async(task_name="stubgraph.scan", args=["job-10", 1, 2], queue="medium")
-
-    assert _RedisClientFactory.calls == 1
-
-
-@pytest.mark.anyio
-async def test_init_task_producer_runtime_reuses_existing_client(monkeypatch):
-    class _FakeRedis:
-        pass
-
-    fake = _FakeRedis()
-    monkeypatch.setattr(task_queue, "_producer_redis_client", fake)
-
-    await task_queue.init_task_producer_runtime_async()
-
-    assert task_queue._producer_redis_client is fake
-
-
-@pytest.mark.anyio
-async def test_init_task_producer_runtime_concurrent_calls_create_single_client(monkeypatch):
-    class _FakeRedis:
-        async def lpush(self, key: str, payload: str) -> None:
-            _ = (key, payload)
-
-    class _RedisClientFactory:
-        calls = 0
-
-        @classmethod
-        def from_url(cls, url: str, decode_responses: bool):
-            _ = (url, decode_responses)
-            cls.calls += 1
-            return _FakeRedis()
-
-    class _RedisModule:
-        Redis = _RedisClientFactory
-
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "redis://localhost:6379/5")
-    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
-    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
-
-    await asyncio.gather(*[task_queue.init_task_producer_runtime_async() for _ in range(20)])
-
-    assert _RedisClientFactory.calls == 1
-
-
-@pytest.mark.anyio
-async def test_transport_client_concurrent_lazy_publish_initializes_runtime_once(monkeypatch):
+async def test_transport_client_concurrent_publish_uses_shared_client(monkeypatch):
     pushed: list[tuple[str, str]] = []
 
     class _FakeRedis:
         async def lpush(self, key: str, payload: str) -> None:
             pushed.append((key, payload))
 
-    class _RedisClientFactory:
-        calls = 0
+    shared_client = _FakeRedis()
+    get_client_calls = 0
 
-        @classmethod
-        def from_url(cls, url: str, decode_responses: bool):
-            _ = (url, decode_responses)
-            cls.calls += 1
-            return _FakeRedis()
+    def _get_client():
+        nonlocal get_client_calls
+        get_client_calls += 1
+        return shared_client
 
-    class _RedisModule:
-        Redis = _RedisClientFactory
-
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "redis://localhost:6379/5")
-    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
-    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
+    monkeypatch.setattr(task_queue, "get_async_redis_client", _get_client)
 
     client = task_queue._AsyncTaskTransportClient()
     await asyncio.gather(
@@ -636,85 +537,5 @@ async def test_transport_client_concurrent_lazy_publish_initializes_runtime_once
         ]
     )
 
-    assert _RedisClientFactory.calls == 1
+    assert get_client_calls == 25
     assert len(pushed) == 25
-
-
-@pytest.mark.anyio
-async def test_init_task_producer_runtime_safe_across_event_loops(monkeypatch):
-    import threading
-
-    class _FakeRedis:
-        pass
-
-    class _RedisClientFactory:
-        calls = 0
-
-        @classmethod
-        def from_url(cls, url: str, decode_responses: bool):
-            _ = (url, decode_responses)
-            cls.calls += 1
-            return _FakeRedis()
-
-    class _RedisModule:
-        Redis = _RedisClientFactory
-
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "redis://localhost:6379/5")
-    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
-    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
-
-    errors: list[BaseException] = []
-
-    def _worker() -> None:
-        try:
-            asyncio.run(task_queue.init_task_producer_runtime_async())
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    threads = [threading.Thread(target=_worker) for _ in range(6)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert not errors
-    assert _RedisClientFactory.calls == 1
-
-
-@pytest.mark.anyio
-async def test_init_and_close_task_producer_runtime_are_serialized(monkeypatch):
-    events: list[str] = []
-
-    class _FakeRedis:
-        async def aclose(self) -> None:
-            events.append("close")
-            await asyncio.sleep(0)
-
-    class _RedisClientFactory:
-        calls = 0
-
-        @classmethod
-        def from_url(cls, url: str, decode_responses: bool):
-            _ = (url, decode_responses)
-            cls.calls += 1
-            events.append("create")
-            return _FakeRedis()
-
-    class _RedisModule:
-        Redis = _RedisClientFactory
-
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "redis://localhost:6379/5")
-    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
-    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
-
-    await task_queue.init_task_producer_runtime_async()
-    assert _RedisClientFactory.calls == 1
-
-    await asyncio.gather(
-        task_queue.close_task_producer_runtime_async(),
-        task_queue.init_task_producer_runtime_async(),
-    )
-
-    assert events.count("close") == 1
-    assert _RedisClientFactory.calls == 2
-    assert task_queue._producer_redis_client is not None

@@ -26,11 +26,15 @@ Patch storage в `app.storage` также работает только в async
 - `submit_mutation_indexing_async`.
 
 Публикация задач выполняется через awaitable producer API транспорта:
-- поддерживается только Redis broker (`STUBGRAPH_CELERY_BROKER_URL=redis://...`); несовместимая схема валидируется на startup API/worker;
+- publish path использует только общий async Redis runtime (`get_async_redis_client`) и не создаёт отдельный producer-клиент;
 - сервисный слой остаётся полностью async;
 - enqueue выполняется без `asyncio.to_thread`, `run_coroutine_threadsafe`, loop-thread глобалей и bridge-timeout логики;
 - `submit_*_async` вызывают только async producer-клиент и маппят transport-ошибки в `ExternalServiceError` с `task_id`/`queue`/`enqueue_reason`.
 
 Lifecycle соответствует единому async-паттерну:
-- `app.main.lifespan` инициализирует/закрывает только реальные async-ресурсы (Redis/DB/FS/CPU/external I/O/S3/OpenAI/scan runtime);
-- worker startup/shutdown в `app.celery_tasks` использует тот же набор async-ресурсов, без loop-thread bridge и adapter-specific producer runtime shutdown.
+- один async Redis runtime на процесс: startup через `init_redis_pool_async`, cleanup через `close_redis_pool_async`;
+- producer-specific runtime для task queue отсутствует;
+- `app.main.lifespan` и worker startup/shutdown в `app.celery_tasks` используют единый Redis runtime lifecycle вместе с остальными async-ресурсами (DB/FS/CPU/external I/O/S3/OpenAI/scan runtime).
+
+Ожидаемая конфигурация Redis для enqueue:
+- `STUBGRAPH_REDIS_URL` и `STUBGRAPH_CELERY_BROKER_URL` должны указывать на совместимый Redis broker (enqueue публикуется в тот же Redis runtime).
