@@ -1,0 +1,175 @@
+import asyncio
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+from fastapi import Request
+from fastapi.testclient import TestClient
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
+from app import main
+
+
+async def _noop_async():
+    return None
+
+
+class _Session:
+    def __init__(self, counters: dict[str, int]):
+        self._counters = counters
+
+    async def rollback(self):
+        self._counters["rollback"] += 1
+
+
+class _SessionCtx:
+    def __init__(self, counters: dict[str, int]):
+        self._counters = counters
+        self._session = _Session(counters)
+
+    async def __aenter__(self):
+        self._counters["enter"] += 1
+        self._counters["active"] += 1
+        self._counters["max_active"] = max(self._counters["max_active"], self._counters["active"])
+        return self._session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        _ = (exc_type, exc, tb)
+        self._counters["exit"] += 1
+        self._counters["active"] -= 1
+        return False
+
+
+class _SessionFactory:
+    def __init__(self):
+        self.counters = {
+            "created": 0,
+            "enter": 0,
+            "exit": 0,
+            "rollback": 0,
+            "active": 0,
+            "max_active": 0,
+        }
+
+    def __call__(self):
+        self.counters["created"] += 1
+        return _SessionCtx(self.counters)
+
+
+@contextmanager
+def _temporary_get(path: str, endpoint):
+    routes_before = len(main.app.router.routes)
+    main.app.get(path)(endpoint)
+    try:
+        yield
+    finally:
+        del main.app.router.routes[routes_before:]
+
+
+def _patch_runtime(monkeypatch):
+    monkeypatch.setattr(main, "build_startup_steps", lambda *, role: [("noop", lambda: _noop_async())])
+    monkeypatch.setattr(main, "build_cleanup_steps", lambda *, role: [("noop", lambda: _noop_async())])
+    monkeypatch.setattr(main.settings, "rate_limit_enabled", False)
+    monkeypatch.setattr(main.settings, "openai_api_key", "")
+
+
+def test_api_prefixes_share_single_request_scoped_session(monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(main.settings, "auth_enabled", False)
+    session_factory = _SessionFactory()
+    monkeypatch.setattr(main, "AsyncSessionLocal", session_factory)
+
+    async def _probe(request: Request):
+        return {"session_attached": hasattr(request.state, "db_session")}
+
+    with _temporary_get("/api/_session_probe", _probe), _temporary_get("/api/v1/_session_probe", _probe):
+        with TestClient(main.app) as client:
+            assert client.get("/api/_session_probe").status_code == 200
+            assert client.get("/api/v1/_session_probe").status_code == 200
+
+    assert session_factory.counters["created"] == 2
+    assert session_factory.counters["enter"] == 2
+    assert session_factory.counters["exit"] == 2
+
+
+def test_session_rolls_back_when_error_happens_before_auth_lookup(monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(main.settings, "auth_enabled", True)
+    session_factory = _SessionFactory()
+    monkeypatch.setattr(main, "AsyncSessionLocal", session_factory)
+
+    async def _protected(_request: Request):
+        return {"ok": True}
+
+    async def _never_called(_session, _token):
+        raise AssertionError("get_user_from_token_async should not be called")
+
+    monkeypatch.setattr(main, "extract_token", lambda _request: (_ for _ in ()).throw(RuntimeError("pre-auth")))
+    monkeypatch.setattr(main, "get_user_from_token_async", _never_called)
+
+    with _temporary_get("/api/_pre_auth_failure", _protected):
+        with TestClient(main.app, raise_server_exceptions=False) as client:
+            response = client.get("/api/_pre_auth_failure")
+
+    assert response.status_code == 500
+    assert session_factory.counters["rollback"] == 1
+    assert session_factory.counters["exit"] == 1
+
+
+def test_session_rolls_back_when_error_happens_after_auth(monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(main.settings, "auth_enabled", True)
+    session_factory = _SessionFactory()
+    monkeypatch.setattr(main, "AsyncSessionLocal", session_factory)
+
+    async def _boom(_request: Request):
+        raise RuntimeError("post-auth")
+
+    async def _user_from_token(_session, _token):
+        return SimpleNamespace(id=1)
+
+    monkeypatch.setattr(main, "extract_token", lambda _request: "token")
+    monkeypatch.setattr(main, "get_user_from_token_async", _user_from_token)
+
+    with _temporary_get("/api/_post_auth_failure", _boom):
+        with TestClient(main.app, raise_server_exceptions=False) as client:
+            response = client.get("/api/_post_auth_failure", headers={"Authorization": "Bearer token"})
+
+    assert response.status_code == 500
+    assert session_factory.counters["rollback"] == 1
+    assert session_factory.counters["exit"] == 1
+
+
+def test_concurrent_and_prefixed_auth_requests_use_single_session_per_request(monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(main.settings, "auth_enabled", True)
+    session_factory = _SessionFactory()
+    monkeypatch.setattr(main, "AsyncSessionLocal", session_factory)
+
+    async def _ok(_request: Request):
+        return {"ok": True}
+
+    async def _user_from_token(_session, _token):
+        await asyncio.sleep(0.01)
+        return SimpleNamespace(id=1)
+
+    monkeypatch.setattr(main, "get_user_from_token_async", _user_from_token)
+
+    async def _run_batch():
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            reqs = [client.get("/api/_batch", headers={"Authorization": "Bearer token"}) for _ in range(10)]
+            reqs += [client.get("/api/v1/_batch", headers={"Authorization": "Bearer token"}) for _ in range(10)]
+            return await asyncio.gather(*reqs)
+
+    with _temporary_get("/api/_batch", _ok), _temporary_get("/api/v1/_batch", _ok):
+        responses = asyncio.run(_run_batch())
+
+    assert all(response.status_code == 200 for response in responses)
+    assert session_factory.counters["created"] == 20
+    assert session_factory.counters["enter"] == 20
+    assert session_factory.counters["exit"] == 20
+    assert session_factory.counters["active"] == 0

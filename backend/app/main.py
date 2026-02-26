@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -26,12 +25,6 @@ from .logging import log_requests, setup_logging
 from .services.auth_service import get_user_from_token_async
 
 logger = logging.getLogger(__name__)
-
-
-async def attach_request_db_session(request: Request) -> AsyncIterator[None]:
-    async with AsyncSessionLocal() as session:
-        request.state.db_session = session
-        yield
 
 
 @asynccontextmanager
@@ -76,42 +69,48 @@ async def rate_limit(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
-    if not settings.auth_enabled:
-        return await call_next(request)
-    if request.method == "OPTIONS":
-        return await call_next(request)
     path = request.url.path
-    if path == "/health":
+    if not path.startswith("/api"):
         return await call_next(request)
-    if path.startswith("/api"):
-        if path.startswith("/api/auth") or path.startswith("/api/v1/auth"):
+
+    async with AsyncSessionLocal() as session:
+        request.state.db_session = session
+        try:
+            if not settings.auth_enabled:
+                return await call_next(request)
+            if request.method == "OPTIONS":
+                return await call_next(request)
+            if path.startswith("/api/auth") or path.startswith("/api/v1/auth"):
+                return await call_next(request)
+
+            token = extract_token(request)
+            if not token:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
+                )
+
+            user = await get_user_from_token_async(request.state.db_session, token)
+            request.state.user = user
             return await call_next(request)
-        token = extract_token(request)
-        if not token:
-            return JSONResponse(
-                status_code=401,
-                content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
-            )
-        async with AsyncSessionLocal() as session:
-            user = await get_user_from_token_async(session, token)
-        request.state.user = user
-    return await call_next(request)
+        except Exception:
+            await session.rollback()
+            raise
 
 
-api_dependencies = [Depends(attach_request_db_session)]
 
-app.include_router(projects_router, prefix="/api", dependencies=api_dependencies)
-app.include_router(nodes_router, prefix="/api", dependencies=api_dependencies)
-app.include_router(tasks_router, prefix="/api", dependencies=api_dependencies)
-app.include_router(auth_router, prefix="/api", dependencies=api_dependencies)
-app.include_router(orgs_router, prefix="/api", dependencies=api_dependencies)
-app.include_router(config_router, prefix="/api", dependencies=api_dependencies)
-app.include_router(projects_router, prefix="/api/v1", dependencies=api_dependencies)
-app.include_router(nodes_router, prefix="/api/v1", dependencies=api_dependencies)
-app.include_router(tasks_router, prefix="/api/v1", dependencies=api_dependencies)
-app.include_router(auth_router, prefix="/api/v1", dependencies=api_dependencies)
-app.include_router(orgs_router, prefix="/api/v1", dependencies=api_dependencies)
-app.include_router(config_router, prefix="/api/v1", dependencies=api_dependencies)
+app.include_router(projects_router, prefix="/api")
+app.include_router(nodes_router, prefix="/api")
+app.include_router(tasks_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
+app.include_router(orgs_router, prefix="/api")
+app.include_router(config_router, prefix="/api")
+app.include_router(projects_router, prefix="/api/v1")
+app.include_router(nodes_router, prefix="/api/v1")
+app.include_router(tasks_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(orgs_router, prefix="/api/v1")
+app.include_router(config_router, prefix="/api/v1")
 
 
 @app.get("/health")
