@@ -63,6 +63,31 @@ class TestAuthServiceAsync(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(fake.rollback_called)
 
+    async def test_get_user_from_token_async_rejects_inactive_user(self) -> None:
+        from app.errors import UnauthorizedError  # noqa: E402
+        from app.services.auth_service import get_user_from_token_async  # noqa: E402
+
+        class _FakeSession:
+            async def get(self, _model, _user_id):
+                return type("User", (), {"is_active": False})()
+
+        fake_session = _FakeSession()
+
+        for flow in ("session", "api_key"):
+            with self.subTest(flow=flow):
+                user_session = type("UserSession", (), {"user_id": 1})() if flow == "session" else None
+                api_key = type("ApiKey", (), {"user_id": 1})() if flow == "api_key" else None
+
+                with patch(
+                    "app.services.auth_service._get_valid_session_async",
+                    AsyncMock(return_value=user_session),
+                ), patch(
+                    "app.services.auth_service._get_valid_api_key_async",
+                    AsyncMock(return_value=api_key),
+                ):
+                    with self.assertRaisesRegex(UnauthorizedError, "Неверный токен"):
+                        await get_user_from_token_async(fake_session, "valid-token")
+
 
 if __name__ == "__main__":
     unittest.main()

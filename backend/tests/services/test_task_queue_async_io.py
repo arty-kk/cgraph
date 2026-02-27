@@ -120,23 +120,48 @@ async def test_submit_docs_async_uses_async_idempotency_key(monkeypatch):
         captured["payload"] = payload
         return "docs-key"
 
-    async def _fake_find_existing_job_id_async(session, org_id: int, idempotency_key: str):
+    async def _fake_find_existing_job_async(session, org_id: int, idempotency_key: str):
         assert idempotency_key == "docs-key"
-        return "existing-doc-job"
+        return ("existing-doc-job", "running")
 
     monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency_key_async)
     monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
-    monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing_job_id_async)
+    monkeypatch.setattr(task_queue, "_find_existing_job_async", _fake_find_existing_job_async)
 
-    task_id = await task_queue.submit_docs_async(project_id=99, org_id=5)
+    result = await task_queue.submit_docs_async(project_id=99, org_id=5)
 
-    assert task_id == "existing-doc-job"
+    assert result == ("existing-doc-job", "running")
     assert captured == {
         "kind": "docs",
         "org_id": 5,
         "payload": {"project_id": 99},
     }
 
+
+
+
+@pytest.mark.anyio
+async def test_submit_docs_async_returns_existing_status_after_integrity_race(monkeypatch):
+    async def _fake_idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
+        _ = (kind, org_id, payload)
+        return "docs-key"
+
+    async def _fake_find_existing_job_async(session, org_id: int, idempotency_key: str):
+        _ = (session, org_id, idempotency_key)
+        return ("existing-doc-job", "running")
+
+    async def _fake_create_job_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return ("existing-doc-job", False)
+
+    monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency_key_async)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
+    monkeypatch.setattr(task_queue, "_find_existing_job_async", _fake_find_existing_job_async)
+    monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job_async)
+
+    result = await task_queue.submit_docs_async(project_id=99, org_id=5)
+
+    assert result == ("existing-doc-job", "running")
 
 @pytest.mark.anyio
 async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
@@ -149,6 +174,7 @@ async def test_enqueue_with_error_mapping_uses_async_producer(monkeypatch):
     monkeypatch.setattr(task_queue, "_async_task_producer", _Producer())
 
     await task_queue._enqueue_with_error_mapping_async(
+        session=_FakeDbSession(),
         task_name="stubgraph.scan",
         args=["job-0", 1],
         queue="heavy",
@@ -173,38 +199,30 @@ async def test_async_task_producer_uses_async_transport_client(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_transport_client_publishes_celery_payload_to_async_broker(monkeypatch):
+async def test_transport_client_publishes_celery_payload_to_shared_async_broker(monkeypatch):
     class _FakeRedis:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str]] = []
-            self.closed = False
 
         async def lpush(self, key: str, payload: str) -> None:
             self.calls.append((key, payload))
 
-        async def aclose(self) -> None:
-            self.closed = True
-
     fake_redis = _FakeRedis()
-    from_url_calls: list[tuple[str, bool]] = []
+    get_client_calls = 0
 
-    class _RedisClientFactory:
-        @staticmethod
-        def from_url(url: str, decode_responses: bool):
-            from_url_calls.append((url, decode_responses))
-            return fake_redis
+    def _get_client():
+        nonlocal get_client_calls
+        get_client_calls += 1
+        return fake_redis
 
-    class _RedisModule:
-        Redis = _RedisClientFactory
-
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "redis://localhost:6379/5")
-    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
+    monkeypatch.setattr(task_queue, "get_async_redis_client", _get_client)
 
     await task_queue.init_task_producer_runtime_async()
 
     client = task_queue._AsyncTaskTransportClient()
     await client.publish_async(task_name="stubgraph.scan", args=["job-7", 1, 2], queue="medium")
 
+    assert get_client_calls == 1
     assert len(fake_redis.calls) == 1
     assert from_url_calls == [("redis://localhost:6379/5", True)]
     assert fake_redis.closed is False
@@ -235,10 +253,10 @@ async def test_enqueue_error_mapping_timeout(monkeypatch):
 
     monkeypatch.setattr(task_queue, "_ENQUEUE_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _offloaded_enqueue)
-    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
+            session=session,
             task_name="stubgraph.scan",
             args=["job-1"],
             queue="medium",
@@ -258,10 +276,10 @@ async def test_enqueue_error_mapping_cancellation(monkeypatch):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _cancelled_enqueue)
-    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
+            session=session,
             task_name="stubgraph.scan",
             args=["job-cancel"],
             queue="medium",
@@ -281,10 +299,10 @@ async def test_enqueue_error_mapping_broker_error(monkeypatch):
         raise task_queue._AsyncTaskProducerError("broker down")
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _broken_enqueue)
-    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(session))
 
     with pytest.raises(ExternalServiceError) as exc_ctx:
         await task_queue._enqueue_with_error_mapping_async(
+            session=session,
             task_name="stubgraph.scan",
             args=["job-2"],
             queue="medium",
@@ -306,10 +324,10 @@ async def test_enqueue_retry_succeeds_after_transient_broker_error(monkeypatch):
             raise task_queue._AsyncTaskProducerError("temporary")
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _flaky_enqueue)
-    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_FakeDbSession()))
 
     with pytest.raises(ExternalServiceError):
         await task_queue._enqueue_with_error_mapping_async(
+            session=_FakeDbSession(),
             task_name="stubgraph.scan",
             args=["job-r"],
             queue="medium",
@@ -317,6 +335,7 @@ async def test_enqueue_retry_succeeds_after_transient_broker_error(monkeypatch):
         )
 
     await task_queue._enqueue_with_error_mapping_async(
+        session=_FakeDbSession(),
         task_name="stubgraph.scan",
         args=["job-r"],
         queue="medium",
@@ -355,6 +374,31 @@ async def test_guard_inflight_async_raises_bad_request_when_limit_exhausted(monk
 
     with pytest.raises(BadRequestError):
         await task_queue._guard_inflight_async(object(), "heavy", "job-1")
+
+
+@pytest.mark.anyio
+async def test_guard_inflight_async_retries_after_reconcile(monkeypatch):
+    eval_results = [(0, 2), (1, 2)]
+    eval_calls: list[tuple[object, ...]] = []
+    reconcile_calls = 0
+
+    class _RedisClient:
+        async def eval(self, script, numkeys, key, limit, job_id):
+            eval_calls.append((script, numkeys, key, limit, job_id))
+            return eval_results.pop(0)
+
+    async def _fake_reconcile():
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+
+    monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 2)
+    monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: _RedisClient())
+    monkeypatch.setattr(task_queue, "_reconcile_heavy_inflight_async", _fake_reconcile)
+
+    await task_queue._guard_inflight_async(object(), "heavy", "job-1")
+
+    assert len(eval_calls) == 2
+    assert reconcile_calls == 1
 
 
 @pytest.mark.anyio
@@ -422,7 +466,7 @@ async def test_guard_inflight_async_uses_shared_client_concurrently(monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_submit_scan_async_releases_db_session_before_enqueue(monkeypatch):
+async def test_submit_scan_async_keeps_single_session_for_enqueue_failure_updates(monkeypatch):
     events: list[str] = []
 
     class _Session:

@@ -265,12 +265,12 @@ async def get_user_from_token_async(session: AsyncSession, token: str) -> User:
     user_session = await _get_valid_session_async(session, token)
     if user_session:
         user = await session.get(User, user_session.user_id)
-        if user:
+        if user and user.is_active:
             return user
     key = await _get_valid_api_key_async(session, token)
     if key:
         user = await session.get(User, key.user_id)
-        if user:
+        if user and user.is_active:
             return user
     raise UnauthorizedError("Неверный токен")
 

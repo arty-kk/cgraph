@@ -75,38 +75,34 @@ async def rate_limit(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
-    if not settings.auth_enabled:
-        return await call_next(request)
-    if request.method == "OPTIONS":
-        return await call_next(request)
     path = request.url.path
-    if path == "/health":
-        return await call_next(request)
-    if path.startswith("/api"):
-        if path.startswith("/api/auth") or path.startswith("/api/v1/auth"):
-            return await call_next(request)
-        token = extract_token(request)
-        if not token:
-            return JSONResponse(
-                status_code=401,
-                content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
-            )
-        user = await get_user_from_token_async(request.state.db_session, token)
-        request.state.user = user
-    return await call_next(request)
-
-
-# NOTE: function-based middlewares execute in reverse declaration order.
-# Keep DB session middleware declared after all others so request.state.db_session
-# is available in every middleware/endpoint and remains exactly one per request.
-@app.middleware("http")
-async def db_session_middleware(request: Request, call_next):
-    if not _should_attach_db_session(request.url.path):
+    if not path.startswith("/api"):
         return await call_next(request)
 
     async with AsyncSessionLocal() as session:
         request.state.db_session = session
-        return await call_next(request)
+        try:
+            if not settings.auth_enabled:
+                return await call_next(request)
+            if request.method == "OPTIONS":
+                return await call_next(request)
+            if path.startswith("/api/auth") or path.startswith("/api/v1/auth"):
+                return await call_next(request)
+
+            token = extract_token(request)
+            if not token:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
+                )
+
+            user = await get_user_from_token_async(request.state.db_session, token)
+            request.state.user = user
+            return await call_next(request)
+        except Exception:
+            await session.rollback()
+            raise
+
 
 
 app.include_router(projects_router, prefix="/api")

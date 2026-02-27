@@ -4,14 +4,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
-import redis.asyncio as redis_async
 from kombu.serialization import dumps
 from redis import RedisError
 from sqlalchemy.exc import IntegrityError
@@ -26,14 +23,6 @@ from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
 from ..utils import sha256_text
-
-
-@dataclass
-class TaskState:
-    status: str
-    result: Any | None = None
-    error: str | None = None
-    completed_at: datetime | None = None
 
 
 logger = get_logger("stubgraph.task_queue")
@@ -177,13 +166,9 @@ async def _mark_enqueue_failure_async(
         )
 
 
-async def _mark_enqueue_failure_for_task_id_async(task_id: str, exc: BaseException) -> None:
-    async with AsyncSessionLocal() as session:
-        await _mark_enqueue_failure_async(session, task_id, exc)
-
-
 async def _enqueue_with_error_mapping_async(
     *,
+    session: AsyncSession | None = None,
     task_name: str,
     args: list[Any],
     queue: str,
@@ -199,14 +184,26 @@ async def _enqueue_with_error_mapping_async(
         if current_task is not None and current_task.cancelling():
             raise
         reason = _classify_enqueue_failure(exc)
-        await _mark_enqueue_failure_for_task_id_async(task_id, exc)
+        if session is not None:
+            await _mark_enqueue_failure_async(session, task_id, exc)
+        else:
+            logger.warning(
+                "Failed to persist enqueue failure status: session is unavailable",
+                extra={"task_id": task_id},
+            )
         raise ExternalServiceError(
             "Не удалось отправить задачу в очередь",
             context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
         ) from exc
     except Exception as exc:
         reason = _classify_enqueue_failure(exc)
-        await _mark_enqueue_failure_for_task_id_async(task_id, exc)
+        if session is not None:
+            await _mark_enqueue_failure_async(session, task_id, exc)
+        else:
+            logger.warning(
+                "Failed to persist enqueue failure status: session is unavailable",
+                extra={"task_id": task_id},
+            )
         raise ExternalServiceError(
             "Не удалось отправить задачу в очередь",
             context={"task_id": task_id, "queue": queue, _ENQUEUE_REASON_KEY: reason},
@@ -350,8 +347,19 @@ async def _guard_inflight_async(
             count = redis.call("SCARD", set_key)
             return {1, count}
             """
-        added, count = await client.eval(lua, 1, _HEAVY_INFLIGHT_KEY, int(limit), job_id)
-        if int(added) != 1 and int(count) > int(limit):
+
+        async def _try_add_inflight() -> tuple[int, int]:
+            added_raw, count_raw = await client.eval(
+                lua,
+                1,
+                _HEAVY_INFLIGHT_KEY,
+                int(limit),
+                job_id,
+            )
+            return int(added_raw), int(count_raw)
+
+        added, _ = await _try_add_inflight()
+        if added != 1:
             try:
                 await _reconcile_heavy_inflight_async()
             except Exception as exc:  # noqa: BLE001
@@ -359,7 +367,9 @@ async def _guard_inflight_async(
                     "Heavy inflight reconciliation failed",
                     extra={"reason": str(exc)},
                 )
-        if int(added) != 1:
+            added, _ = await _try_add_inflight()
+
+        if added != 1:
             raise BadRequestError("Превышен лимит одновременных heavy задач")
     except RedisError as exc:
         logger.warning(
@@ -453,18 +463,17 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
         if not created:
             await _release_inflight_async("heavy", task_id)
             return task_id
-
-
-    try:
-        await _enqueue_with_error_mapping_async(
-            task_name="stubgraph.run_task",
-            args=[task_id, project_id, org_id, payload],
-            queue="heavy",
-            task_id=task_id,
-        )
-    except ExternalServiceError:
-        await _release_inflight_async("heavy", task_id)
-        raise
+        try:
+            await _enqueue_with_error_mapping_async(
+                session=session,
+                task_name="stubgraph.run_task",
+                args=[task_id, project_id, org_id, payload],
+                queue="heavy",
+                task_id=task_id,
+            )
+        except ExternalServiceError:
+            await _release_inflight_async("heavy", task_id)
+            raise
     return task_id
 
 
@@ -482,22 +491,23 @@ async def submit_scan_async(project_id: int, org_id: int) -> str:
             queue="medium",
             idempotency_key=idempotency_key,
         )
-    if not created:
-        return task_id
-    await _enqueue_with_error_mapping_async(
-        task_name="stubgraph.scan",
-        args=[task_id, project_id, org_id],
-        queue="medium",
-        task_id=task_id,
-    )
+        if not created:
+            return task_id
+        await _enqueue_with_error_mapping_async(
+            session=session,
+            task_name="stubgraph.scan",
+            args=[task_id, project_id, org_id],
+            queue="medium",
+            task_id=task_id,
+        )
     return task_id
 
 
-async def submit_docs_async(project_id: int, org_id: int) -> str:
+async def submit_docs_async(project_id: int, org_id: int) -> tuple[str, str]:
     payload = {"project_id": project_id}
     idempotency_key = await _idempotency_key_async("docs", org_id, payload)
     async with AsyncSessionLocal() as session:
-        existing = await _find_existing_job_id_async(session, org_id, idempotency_key)
+        existing = await _find_existing_job_async(session, org_id, idempotency_key)
         if existing:
             return existing
 
@@ -508,15 +518,21 @@ async def submit_docs_async(project_id: int, org_id: int) -> str:
             queue="light",
             idempotency_key=idempotency_key,
         )
-    if not created:
-        return task_id
-    await _enqueue_with_error_mapping_async(
-        task_name="stubgraph.docs",
-        args=[task_id, project_id, org_id],
-        queue="light",
-        task_id=task_id,
-    )
-    return task_id
+        if created:
+            await _enqueue_with_error_mapping_async(
+                session=session,
+                task_name="stubgraph.docs",
+                args=[task_id, project_id, org_id],
+                queue="light",
+                task_id=task_id,
+            )
+            return task_id, "pending"
+
+    async with AsyncSessionLocal() as session:
+        existing = await _find_existing_job_async(session, org_id, idempotency_key)
+        if existing:
+            return existing
+    return task_id, "pending"
 
 
 async def submit_mutation_indexing_async(
@@ -544,13 +560,14 @@ async def submit_mutation_indexing_async(
             queue="medium",
             idempotency_key=idempotency_key,
         )
-    if created:
-        await _enqueue_with_error_mapping_async(
-            task_name="stubgraph.mutation_indexing",
-            args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
-            queue="medium",
-            task_id=task_id,
-        )
+        if created:
+            await _enqueue_with_error_mapping_async(
+                session=session,
+                task_name="stubgraph.mutation_indexing",
+                args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
+                queue="medium",
+                task_id=task_id,
+            )
     return task_id, "pending"
 
 

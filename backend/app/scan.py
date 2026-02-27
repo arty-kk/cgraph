@@ -5,12 +5,11 @@ import json
 import os
 import asyncio
 import time
-import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Awaitable, Callable, Iterable, Tuple, TypeVar, cast
+from typing import Awaitable, Callable, Iterable, Iterator, Tuple, TypeVar, cast
 
 from sqlalchemy import bindparam, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -307,6 +306,32 @@ def _stream_code_file_batches(
 
     if batch and not should_stop():
         publish_batch(batch)
+
+
+@dataclass
+class _CodeFileBatchCursor:
+    project_root: Path
+    iterator: Iterator[Path]
+
+
+def _create_code_file_batch_cursor(project_root: Path) -> _CodeFileBatchCursor:
+    return _CodeFileBatchCursor(project_root=project_root, iterator=iter(iter_code_files(project_root)))
+
+
+def _next_code_file_batch(cursor: _CodeFileBatchCursor, batch_size: int) -> list[str]:
+    batch: list[str] = []
+    effective_batch_size = max(1, int(batch_size))
+    for _ in range(effective_batch_size):
+        try:
+            file_path = next(cursor.iterator)
+        except StopIteration:
+            break
+        try:
+            rel_path = file_path.relative_to(cursor.project_root).as_posix()
+        except ValueError:
+            continue
+        batch.append(rel_path)
+    return batch
 
 
 def _chunks(seq: list[str], size: int = 400) -> list[list[str]]:
@@ -1073,87 +1098,50 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                 await asyncio.sleep(0)
 
         runtime = get_scan_runtime()
-        queue_size = runtime.queue_size
+        queue_size = max(1, runtime.queue_size)
+        producer_started = time.monotonic()
+        cursor = await run_fs_io_async(
+            _create_code_file_batch_cursor,
+            project_root,
+            operation="scan.fs.stream_paths",
+        )
         sentinel = object()
         path_queue: asyncio.Queue[list[str] | object] = asyncio.Queue(maxsize=queue_size)
-        limiter = threading.BoundedSemaphore(queue_size)
-        producer_stop = threading.Event()
 
         async def _produce_paths_async() -> None:
-            producer_started = time.monotonic()
-            loop = asyncio.get_running_loop()
-
-            def _publish_batch(rel_batch: list[str]) -> None:
-                if producer_stop.is_set():
-                    return
-                while not producer_stop.is_set():
-                    if limiter.acquire(timeout=0.05):
+            try:
+                while True:
+                    rel_batch = await run_fs_io_async(
+                        _next_code_file_batch,
+                        cursor,
+                        runtime.batch_size,
+                        operation="scan.fs.stream_paths",
+                    )
+                    if not rel_batch:
                         break
-                else:
-                    return
-
-                def _enqueue() -> None:
-                    try:
-                        path_queue.put_nowait(list(rel_batch))
-                    except asyncio.QueueFull:
-                        limiter.release()
-                        if producer_stop.is_set():
-                            return
-                        raise
-                    except BaseException:
-                        limiter.release()
-                        raise
                     scan_metrics["producer"]["batches"] += 1
                     scan_metrics["producer"]["paths"] += len(rel_batch)
-
-                try:
-                    loop.call_soon_threadsafe(_enqueue)
-                except RuntimeError:
-                    limiter.release()
-                    raise
-
-            try:
-                await run_fs_io_async(
-                    _stream_code_file_batches,
-                    project_root,
-                    runtime.batch_size,
-                    _publish_batch,
-                    producer_stop.is_set,
-                    operation="scan.fs.stream_paths",
-                )
+                    await path_queue.put(rel_batch)
             finally:
-                producer_stop.set()
-                while True:
-                    try:
-                        await asyncio.shield(path_queue.put(sentinel))
-                        break
-                    except asyncio.CancelledError:
-                        if path_queue.full():
-                            try:
-                                dropped = path_queue.get_nowait()
-                            except asyncio.QueueEmpty:
-                                await asyncio.sleep(0)
-                            else:
-                                if dropped is not sentinel:
-                                    limiter.release()
-                            continue
-                        raise
+                await path_queue.put(sentinel)
                 scan_metrics["producer"]["duration_s"] = (
-                    scan_metrics["producer"].get("duration_s", 0.0) + time.monotonic() - producer_started
+                    scan_metrics["producer"].get("duration_s", 0.0)
+                    + time.monotonic()
+                    - producer_started
                 )
 
         async def _consume_paths_async() -> None:
             while True:
                 rel_batch = await path_queue.get()
-                if rel_batch is sentinel:
-                    break
-                assert isinstance(rel_batch, list)
                 try:
+                    if rel_batch is sentinel:
+                        return
+                    assert isinstance(rel_batch, list)
                     for rel in rel_batch:
                         seen_paths.add(rel)
                     await _process_path_batch(rel_batch)
                 finally:
-                    limiter.release()
+                    path_queue.task_done()
 
         producer_task = asyncio.create_task(_produce_paths_async(), name=f"scan-producer-{project_id}")
         consumer_task = asyncio.create_task(_consume_paths_async(), name=f"scan-consumer-{project_id}")

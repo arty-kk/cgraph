@@ -14,6 +14,14 @@ from app.llm import agentic
 from app.llm.agentic import tools as agentic_tools
 
 
+_ORIGINAL_SEARCH_TEXT_CPU = agentic_tools._search_text_cpu
+
+
+def _slow_cpu_proxy(**kwargs):
+    time.sleep(0.03)
+    return _ORIGINAL_SEARCH_TEXT_CPU(**kwargs)
+
+
 class _IndexedSession:
     async def execute(self, _query):
         class _Result:
@@ -43,12 +51,6 @@ class TestAgenticSearchTextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
                     ticks += 1
                     await asyncio.sleep(0.005)
 
-            original_cpu = agentic_tools._search_text_cpu
-
-            def _slow_cpu(**kwargs):
-                time.sleep(0.03)
-                return original_cpu(**kwargs)
-
             async def _run_once() -> dict:
                 return await agentic._tool_search_text_async(
                     session,
@@ -59,9 +61,10 @@ class TestAgenticSearchTextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
                     meta=meta,
                 )
 
-            with patch("app.llm.agentic.tools.search_text_paths_async", return_value=[f"file_{i}.txt" for i in range(6)]), patch(
-                "app.llm.agentic.tools._search_text_cpu", side_effect=_slow_cpu
-            ):
+            with patch(
+                "app.llm.agentic.tools.search_text_paths_async",
+                return_value=[f"file_{i}.txt" for i in range(6)],
+            ), patch("app.llm.agentic.tools._search_text_cpu", new=_slow_cpu_proxy):
                 hb_task = asyncio.create_task(_heartbeat())
                 started = time.perf_counter()
                 try:
