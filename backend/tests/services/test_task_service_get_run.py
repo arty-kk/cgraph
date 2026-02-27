@@ -108,16 +108,67 @@ async def test_delete_run_async_deletes_blob_via_async_helper(monkeypatch):
     async def _fake_delete_patch_blob_for_sha_async(sha: str) -> None:
         calls.append(sha)
 
+    async def _fake_load_patch_blob_ref_counts_async(_session, shas, *, exclude_run_id=None, exclude_project_id=None):
+        assert _session is session
+        assert shas == {"sha-del"}
+        assert exclude_run_id == 101
+        assert exclude_project_id is None
+        return {"sha-del": 0}
+
     monkeypatch.setattr(
         task_service,
         "_delete_patch_blob_for_sha_async",
         _fake_delete_patch_blob_for_sha_async,
+    )
+    monkeypatch.setattr(
+        task_service,
+        "load_patch_blob_ref_counts_async",
+        _fake_load_patch_blob_ref_counts_async,
     )
 
     result = await task_service.delete_run_async(session, 77, 55, 101)
 
     assert result == {"ok": True}
     assert calls == ["sha-del"]
+    assert session.deleted == [run]
+    assert session.committed is True
+
+
+@pytest.mark.anyio
+async def test_delete_run_async_keeps_shared_blob(monkeypatch):
+    run = SimpleNamespace(
+        id=102,
+        project_id=77,
+        org_id=55,
+        result_json=json.dumps({"patch_unified_diff_meta": {"sha256": "sha-shared"}}),
+    )
+    session = _FakeAsyncSession(run)
+
+    calls: list[str] = []
+
+    async def _fake_delete_patch_blob_for_sha_async(sha: str) -> None:
+        calls.append(sha)
+
+    async def _fake_load_patch_blob_ref_counts_async(_session, shas, *, exclude_run_id=None, exclude_project_id=None):
+        _ = (_session, shas, exclude_project_id)
+        assert exclude_run_id == 102
+        return {"sha-shared": 1}
+
+    monkeypatch.setattr(
+        task_service,
+        "_delete_patch_blob_for_sha_async",
+        _fake_delete_patch_blob_for_sha_async,
+    )
+    monkeypatch.setattr(
+        task_service,
+        "load_patch_blob_ref_counts_async",
+        _fake_load_patch_blob_ref_counts_async,
+    )
+
+    result = await task_service.delete_run_async(session, 77, 55, 102)
+
+    assert result == {"ok": True}
+    assert calls == []
     assert session.deleted == [run]
     assert session.committed is True
 

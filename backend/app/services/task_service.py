@@ -85,6 +85,7 @@ from ..utils import (
     project_lock_async,
     resolve_under_root,
 )
+from .project_service import load_patch_blob_ref_counts_async
 from .task_queue import get_scan_idempotency_key_async, submit_run_async, submit_scan_async
 
 MAX_PATCH_STORE_CHARS = 50_000
@@ -2349,7 +2350,13 @@ async def delete_run_async(
         if isinstance(meta, dict):
             sha = meta.get("sha256")
             if isinstance(sha, str) and sha:
-                await _delete_patch_blob_for_sha_async(sha)
+                counts = await load_patch_blob_ref_counts_async(
+                    session,
+                    {sha},
+                    exclude_run_id=run_id,
+                )
+                if int(counts.get(sha, 0)) == 0:
+                    await _delete_patch_blob_for_sha_async(sha)
     await session.delete(run)
     await session.commit()
     return {"ok": True}
