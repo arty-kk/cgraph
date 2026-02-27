@@ -142,6 +142,46 @@ async def _extract_patch_blob_shas_async(runs) -> set[str]:
     return await run_fs_io_async(_extract_patch_blob_shas, runs, operation="project.extract_patch_blob_shas")
 
 
+async def load_patch_blob_ref_counts_async(
+    session: AsyncSession,
+    shas: set[str],
+    *,
+    exclude_run_id: int | None = None,
+    exclude_project_id: int | None = None,
+) -> dict[str, int]:
+    selected = [sha for sha in sorted(shas) if isinstance(sha, str) and sha]
+    if not selected:
+        return {}
+
+    stmt = select(AnalysisRun.id, AnalysisRun.result_json).where(AnalysisRun.result_json.is_not(None))
+    if exclude_run_id is not None:
+        stmt = stmt.where(AnalysisRun.id != exclude_run_id)
+    if exclude_project_id is not None:
+        stmt = stmt.where(AnalysisRun.project_id != exclude_project_id)
+
+    rows = (await session.execute(stmt)).all()
+    counts = {sha: 0 for sha in selected}
+    selected_set = set(selected)
+    for row in rows:
+        try:
+            result_json = row[1]
+        except Exception:
+            continue
+        try:
+            data = json.loads(result_json or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            continue
+        meta = data.get("patch_unified_diff_meta")
+        if not isinstance(meta, dict):
+            continue
+        sha = meta.get("sha256")
+        if isinstance(sha, str) and sha and sha in selected_set:
+            counts[sha] = counts.get(sha, 0) + 1
+    return counts
+
+
 def _parse_snapshot_storage_payloads(snapshots) -> list[tuple[RepoSnapshot, dict]]:
     payloads: list[tuple[RepoSnapshot, dict]] = []
     for snap in snapshots:
@@ -957,6 +997,12 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                 if isinstance(snap.content_sha256, str) and snap.content_sha256
             }
             shared_counts = await _load_snapshot_ref_counts_async(session, project_id, snapshot_shas)
+            patch_shared_counts = await load_patch_blob_ref_counts_async(
+                session,
+                shas,
+                exclude_project_id=project_id,
+            )
+            shas = {sha for sha in shas if int(patch_shared_counts.get(sha, 0)) == 0}
             for snap, payload in parsed_snapshot_payloads:
                 if int(shared_counts.get(str(snap.content_sha256), 0)) > 0:
                     continue
