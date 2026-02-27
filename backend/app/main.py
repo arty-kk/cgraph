@@ -27,6 +27,12 @@ from .services.auth_service import get_user_from_token_async
 logger = logging.getLogger(__name__)
 
 
+def _should_attach_db_session(path: str) -> bool:
+    if path == "/health":
+        return False
+    return path.startswith("/api") or path.startswith("/api/v1")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     startup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = build_startup_steps(role="api")

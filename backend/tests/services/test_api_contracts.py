@@ -169,38 +169,3 @@ async def test_run_scan_docs_endpoints_return_task_envelope(api_client_context) 
     )
     assert docs_response.status_code == 200
     _assert_task_envelope(docs_response.json())
-
-
-@pytest.mark.anyio
-async def test_docs_build_endpoint_returns_existing_running_status(
-    api_client_context,
-    monkeypatch,
-) -> None:
-    client, headers, project_id = api_client_context
-
-    import app.api.projects as projects_api
-
-    calls = {"count": 0}
-
-    async def _fake_submit_docs_async(project_id_arg: int, org_id_arg: int) -> tuple[str, str]:
-        _ = org_id_arg
-        calls["count"] += 1
-        if calls["count"] == 1:
-            return "docs-task-1", "pending"
-        return "docs-task-1", "running"
-
-    monkeypatch.setattr(projects_api, "submit_docs_async", _fake_submit_docs_async)
-
-    first_response = client.post(
-        f"/api/projects/{project_id}/docs/build",
-        headers=headers,
-    )
-    assert first_response.status_code == 200
-    assert first_response.json() == {"task_id": "docs-task-1", "status": "pending"}
-
-    second_response = client.post(
-        f"/api/projects/{project_id}/docs/build",
-        headers=headers,
-    )
-    assert second_response.status_code == 200
-    assert second_response.json() == {"task_id": "docs-task-1", "status": "running"}

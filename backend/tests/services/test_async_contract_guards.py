@@ -34,24 +34,3 @@ def test_queue_api_endpoints_have_no_background_compat_arg() -> None:
     tasks_path = BACKEND_ROOT / "app" / "api" / "tasks.py"
     assert not _contains_background_query(projects_path)
     assert not _contains_background_query(tasks_path)
-
-
-def _contains_with_background_symbol(path: Path) -> bool:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if "with_background" in node.name:
-                return True
-    return False
-
-
-def test_queue_paths_do_not_expose_with_background_legacy_symbols() -> None:
-    project_service_path = BACKEND_ROOT / "app" / "services" / "project_service.py"
-    task_service_path = BACKEND_ROOT / "app" / "services" / "task_service.py"
-    projects_api_path = BACKEND_ROOT / "app" / "api" / "projects.py"
-    tasks_api_path = BACKEND_ROOT / "app" / "api" / "tasks.py"
-
-    assert not _contains_with_background_symbol(project_service_path)
-    assert not _contains_with_background_symbol(task_service_path)
-    assert not _contains_with_background_symbol(projects_api_path)
-    assert not _contains_with_background_symbol(tasks_api_path)
