@@ -581,6 +581,11 @@ def _build_api_summary_payload(
 
 
 async def _build_api_summary_async(session: AsyncSession, project_id: int) -> dict:
+    """Build API summary using an active SQLAlchemy session.
+
+    IMPORTANT: do not pass this coroutine to a background task that can outlive
+    the ``async with AsyncSessionLocal()`` scope that owns ``session``.
+    """
     try:
         routes_total = int((await session.execute(select(func.count()).select_from(ApiRoute).where(ApiRoute.project_id == project_id))).scalar_one() or 0)
         calls_total = int((await session.execute(select(func.count()).select_from(ApiCall).where(ApiCall.project_id == project_id))).scalar_one() or 0)
@@ -1195,6 +1200,11 @@ async def _collect_docs_enrichment_async(
     root: Path,
     contract_paths: list[str],
 ) -> tuple[list[dict], dict]:
+    """Collect docs enrichment pieces while the provided session is alive.
+
+    ``session`` lifecycle is managed by the caller; this function must be
+    awaited before leaving the corresponding ``async with`` session context.
+    """
     return await asyncio.gather(
         _collect_compact_contracts_async(project_id, root, contract_paths),
         _build_api_summary_async(session, project_id),
@@ -1296,10 +1306,10 @@ async def build_project_docs_async(project_id: int, org_id: int) -> dict:
         )
 
         outline, key_files_data = await outline_key_files_task
+        contracts, api_summary = await enrichment_task
 
     key_files, key_files_parsed = key_files_data
     run_hints_task = asyncio.create_task(_build_run_hints_async(key_files, key_files_parsed))
-    contracts, api_summary = await enrichment_task
     run_hints = await run_hints_task
     markdown_parts = await _build_docs_markdown_parts_async(
         module_rows=module_rows,
