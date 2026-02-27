@@ -7,8 +7,10 @@ import json
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
+import redis.asyncio as redis_async
 from kombu.serialization import dumps
 from redis import RedisError
 from sqlalchemy.exc import IntegrityError
@@ -23,7 +25,6 @@ from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
 from ..utils import sha256_text
-
 
 logger = get_logger("stubgraph.task_queue")
 
