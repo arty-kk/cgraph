@@ -4,16 +4,16 @@ import { api } from './client'
 import type { Org } from './types'
 
 export async function listOrgs(): Promise<Org[]> {
-  const r = await api.get('/api/orgs')
+  const r = await api.get('/orgs')
   return r.data
 }
 
 export async function getOrg(orgId: number): Promise<Org> {
-  const r = await api.get(`/api/orgs/${orgId}`)
+  const r = await api.get(`/orgs/${orgId}`)
   return r.data
 }
 
 export async function createOrg(name: string): Promise<Org> {
-  const r = await api.post('/api/orgs', { name })
+  const r = await api.post('/orgs', { name })
   return r.data
 }

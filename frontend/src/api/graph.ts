@@ -7,7 +7,7 @@ export async function getGraph(projectId: number, limitNodes?: number | null): P
     typeof limitNodes === 'number' && Number.isFinite(limitNodes)
       ? { limit_nodes: limitNodes }
       : undefined
-  const r = await api.get(`/api/projects/${projectId}/graph`, { params })
+  const r = await api.get(`/projects/${projectId}/graph`, { params })
   return r.data
 }
 
@@ -19,12 +19,12 @@ export async function getLocalGraph(
   maxEdges = 800,
 ): Promise<GraphData> {
   const params: Record<string, any> = { path, hops, max_nodes: maxNodes, max_edges: maxEdges }
-  const r = await api.get(`/api/projects/${projectId}/graph/local`, { params })
+  const r = await api.get(`/projects/${projectId}/graph/local`, { params })
   return r.data
 }
 
 export async function searchNodes(projectId: number, query: string, limit = 20): Promise<NodeSearchItem[]> {
   const params = { q: query, limit }
-  const r = await api.get(`/api/projects/${projectId}/search`, { params })
+  const r = await api.get(`/projects/${projectId}/search`, { params })
   return r.data
 }

@@ -26,7 +26,7 @@ function isTaskStatus(payload: unknown): payload is TaskStatus {
 }
 
 export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
-  const r = await api.get(`/api/tasks/status/${taskId}`)
+  const r = await api.get(`/tasks/status/${taskId}`)
   return r.data
 }
 
@@ -80,18 +80,18 @@ export async function runTask(
   opts: TaskPollOptions = {}
 ): Promise<TaskStatus> {
   void opts
-  const r = await api.post(`/api/tasks/${projectId}/run`, body)
+  const r = await api.post(`/tasks/${projectId}/run`, body)
   return r.data
 }
 
 
 export async function listRuns(projectId: number): Promise<RunRecord[]> {
-  const r = await api.get(`/api/tasks/${projectId}/runs`)
+  const r = await api.get(`/tasks/${projectId}/runs`)
   return r.data
 }
 
 export async function getRunPatch(projectId: number, runId: number): Promise<{ patch_unified_diff: string }> {
-  const r = await api.get(`/api/tasks/${projectId}/runs/${runId}/patch`)
+  const r = await api.get(`/tasks/${projectId}/runs/${runId}/patch`)
   return r.data
 }
 
@@ -99,16 +99,16 @@ export async function applyRunPatch(
   projectId: number,
   runId: number
 ): Promise<{ applied: RunTaskResult['applied'] }> {
-  const r = await api.post(`/api/tasks/${projectId}/runs/${runId}/apply`)
+  const r = await api.post(`/tasks/${projectId}/runs/${runId}/apply`)
   return r.data
 }
 
 export async function getRun(projectId: number, runId: number): Promise<RunDetails> {
-  const r = await api.get(`/api/tasks/${projectId}/runs/${runId}`)
+  const r = await api.get(`/tasks/${projectId}/runs/${runId}`)
   return r.data
 }
 
 export async function deleteRun(projectId: number, runId: number): Promise<{ ok: boolean }> {
-  const r = await api.delete(`/api/tasks/${projectId}/runs/${runId}`)
+  const r = await api.delete(`/tasks/${projectId}/runs/${runId}`)
   return r.data
 }

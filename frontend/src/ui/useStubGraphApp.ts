@@ -309,13 +309,15 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
   const [selectedOrgId, setSelectedOrgIdState] = useState<number | null>(null)
   const prevOrgIdRef = useRef<number | null>(null)
+  const [orgSelectionStorageFailureMarker, setOrgSelectionStorageFailureMarker] = useState(0)
 
   const applyOrgSelection = useCallback((orgId: number | null) => {
     setSelectedOrgId(orgId)
-    if (orgId == null) {
-      safeStorageRemove(ORG_STORAGE_KEY)
-    } else {
-      safeStorageSet(ORG_STORAGE_KEY, String(orgId))
+    const persisted = orgId == null
+      ? safeStorageRemove(ORG_STORAGE_KEY)
+      : safeStorageSet(ORG_STORAGE_KEY, String(orgId))
+    if (!persisted) {
+      setOrgSelectionStorageFailureMarker((prev) => prev + 1)
     }
     setSelectedOrgIdState(orgId)
   }, [])
@@ -740,6 +742,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const notifyInfo = useCallback((message: string) => {
     pushNotification('info', message)
   }, [pushNotification])
+
+  useEffect(() => {
+    if (!orgSelectionStorageFailureMarker) return
+    notifyInfo('Organization selection is active for this session only and will not be saved after reload.')
+  }, [orgSelectionStorageFailureMarker, notifyInfo])
 
   useEffect(() => {
     return addStorageErrorListener(() => {
