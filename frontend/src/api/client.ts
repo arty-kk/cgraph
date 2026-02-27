@@ -8,10 +8,23 @@ const baseURL = (() => {
     typeof rawBaseURL === 'string' && rawBaseURL.trim()
       ? rawBaseURL.trim()
       : 'http://localhost:8000'
-  // Допустимые форматы: https://host, https://host/api, https://host/api/v1 (с хвостовым слешем или без).
-  const noTrailing = v.replace(/\/+$/, '')
-  return noTrailing.replace(/\/api(?:\/v1)?$/, '')
+  // Нормализуем только пробелы/хвостовые слеши; API-префикс не вырезаем.
+  // Endpoint-пути в API-модулях должны быть относительными к baseURL (без встроенного /api).
+  return v.replace(/\/+$/, '')
 })()
+
+function baseUrlHasApiPrefix(url: string | undefined): boolean {
+  if (typeof url !== 'string' || !url) return false
+  return /\/api(?:\/v1)?$/.test(url)
+}
+
+function shouldPrefixApiPath(url: string | undefined): boolean {
+  if (typeof url !== 'string' || !url) return false
+  if (/^https?:\/\//.test(url)) return false
+  if (!url.startsWith('/')) return false
+  if (url === '/api' || url.startsWith('/api/')) return false
+  return true
+}
 
 export const api = axios.create({
   baseURL,
@@ -21,12 +34,24 @@ export const api = axios.create({
 const ORG_STORAGE_KEY = 'cs.org.id'
 const ORG_HEADER = 'X-Org-ID'
 
+function parsePositiveInteger(value: unknown): number | null {
+  const n = Number(value)
+  if (!Number.isInteger(n) || n <= 0) return null
+  return n
+}
+
 api.interceptors.request.use((config) => {
-  const raw = safeStorageGet(ORG_STORAGE_KEY)
-  const n = Number(raw)
-  const valid = Number.isFinite(n) && n > 0
-  if (valid) {
-    const value = String(Math.trunc(n))
+  if (!baseUrlHasApiPrefix(config.baseURL ?? api.defaults.baseURL) && shouldPrefixApiPath(config.url)) {
+    config.url = `/api${config.url}`
+  }
+
+  const inMemoryOrgId = parsePositiveInteger(selectedOrgId)
+  const shouldUseStorageFallback = selectedOrgId !== null && inMemoryOrgId == null
+  const fallbackOrgId = shouldUseStorageFallback ? parsePositiveInteger(safeStorageGet(ORG_STORAGE_KEY)) : null
+  const resolvedOrgId = inMemoryOrgId ?? fallbackOrgId
+
+  if (resolvedOrgId != null) {
+    const value = String(resolvedOrgId)
     if (!config.headers) {
       config.headers = new AxiosHeaders()
     }
@@ -45,7 +70,7 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-let selectedOrgId: number | null = null
+let selectedOrgId: number | null | undefined = undefined
 
 export function setSelectedOrgId(orgId: number | null): void {
   selectedOrgId = orgId
@@ -57,5 +82,5 @@ export function setSelectedOrgId(orgId: number | null): void {
 }
 
 export function getSelectedOrgId(): number | null {
-  return selectedOrgId
+  return selectedOrgId ?? null
 }

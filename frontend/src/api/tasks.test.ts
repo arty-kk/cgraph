@@ -20,7 +20,7 @@ afterEach(() => {
 })
 
 describe('tasks api polling', () => {
-  it('does a single POST /run and all next status checks via GET /api/tasks/status/{task_id}', async () => {
+  it('does a single POST /run and all next status checks via GET /tasks/status/{task_id}', async () => {
     const calls: Array<{ method: 'POST' | 'GET'; url: string }> = []
     const taskId = 'task-42'
     const body: RunTaskBody = {
@@ -64,11 +64,11 @@ describe('tasks api polling', () => {
       return acc
     }, {})
 
-    expect(grouped['POST /api/tasks/7/run']).toBe(1)
-    expect(grouped[`GET /api/tasks/status/${taskId}`]).toBeGreaterThanOrEqual(2)
+    expect(grouped['POST /tasks/7/run']).toBe(1)
+    expect(grouped[`GET /tasks/status/${taskId}`]).toBeGreaterThanOrEqual(2)
     expect(Object.keys(grouped)).toEqual([
-      'POST /api/tasks/7/run',
-      `GET /api/tasks/status/${taskId}`,
+      'POST /tasks/7/run',
+      `GET /tasks/status/${taskId}`,
     ])
   })
 
@@ -185,7 +185,7 @@ describe('tasks api polling', () => {
     ]
 
     get.mockImplementation(async (url: string) => {
-      expect(url).toBe(`/api/tasks/status/${taskId}`)
+      expect(url).toBe(`/tasks/status/${taskId}`)
       const next = statuses.shift()
       if (!next) throw new Error('No status prepared')
       return { data: next }
