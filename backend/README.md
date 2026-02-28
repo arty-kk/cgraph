@@ -38,3 +38,7 @@ Lifecycle соответствует единому async-паттерну:
 
 Ожидаемая конфигурация Redis для enqueue:
 - `STUBGRAPH_REDIS_URL` и `STUBGRAPH_CELERY_BROKER_URL` должны указывать на совместимый Redis broker (enqueue публикуется в тот же Redis runtime).
+
+## Background task notes
+
+- `stubgraph.routing_calibration`: устранена причина падения фоновой задачи из-за `NameError` (`asyncio` теперь импортируется в `app.services.routing_calibration_service`).
