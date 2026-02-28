@@ -918,23 +918,27 @@ async def _collect_compact_contracts_async(
     *,
     max_parallel: int = 4,
 ) -> list[dict]:
-    _ = max_parallel
     selected_paths = [
         p for p in (contract_paths or [])[:_MAX_CONTRACTS] if isinstance(p, str) and p
     ]
     if not selected_paths:
         return []
 
-    results: list[dict] = []
-    async with AsyncSessionLocal() as session:
-        for path in selected_paths:
+    semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
+
+    async def _worker(path: str) -> dict | None:
+        async with semaphore:
             try:
-                contract = await get_or_build_contract_async(session, project_id, root, path)
-                if isinstance(contract, dict):
-                    results.append({"path": path, "contract": _compact_contract(contract)})
+                async with AsyncSessionLocal() as session:
+                    contract = await get_or_build_contract_async(session, project_id, root, path)
+                if not isinstance(contract, dict):
+                    return None
+                return {"path": path, "contract": _compact_contract(contract)}
             except Exception:
-                continue
-    return results
+                return None
+
+    ordered_results = await asyncio.gather(*(_worker(path) for path in selected_paths))
+    return [item for item in ordered_results if isinstance(item, dict)]
 
 
 def _build_run_hints(key_files: list[dict], parsed: dict) -> list[str]:
