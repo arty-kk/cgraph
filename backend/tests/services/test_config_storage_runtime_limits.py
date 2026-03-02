@@ -78,3 +78,11 @@ def test_scan_runtime_limits_loaded_from_env(monkeypatch: pytest.MonkeyPatch) ->
     assert cfg.scan_stage_batch_size == 12
     assert cfg.scan_stage_max_parallel == 5
     assert cfg.scan_embeddings_max_parallel == 3
+
+
+def test_redis_and_celery_urls_must_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STUBGRAPH_REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("STUBGRAPH_CELERY_BROKER_URL", "redis://localhost:6379/1")
+
+    with pytest.raises(ValueError, match="enqueue и runtime используют единый Redis"):
+        Settings()

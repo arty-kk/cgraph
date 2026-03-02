@@ -17,7 +17,6 @@ def build_startup_steps(*, role: str) -> list[LifecycleStep]:
     from ..llm.client import init_async_openai_client
     from ..s3_runtime import init_s3_runtime
     from ..infra.async_worker_runtime import init_worker_runtime_async
-    from ..services.task_queue import init_task_producer_runtime_async
 
     if role == "worker":
         return [("init_worker_runtime_async", init_worker_runtime_async)]
@@ -30,8 +29,6 @@ def build_startup_steps(*, role: str) -> list[LifecycleStep]:
         ("init_external_io_runtime", init_external_io_runtime),
     ]
 
-    if role == "api":
-        steps.append(("init_task_producer_runtime_async", init_task_producer_runtime_async))
 
     if (settings.storage_backend or "local").strip().lower() == "s3":
         steps.append(("init_s3_runtime", init_s3_runtime))
@@ -52,7 +49,6 @@ def build_cleanup_steps(*, role: str) -> list[LifecycleStep]:
     from ..s3_runtime import close_s3_runtime
     from ..scan import close_scan_runtime
     from ..infra.async_worker_runtime import close_worker_runtime_async
-    from ..services.task_queue import close_task_producer_runtime_async
 
     if role == "worker":
         return [("close_worker_runtime_async", close_worker_runtime_async)]
@@ -66,7 +62,6 @@ def build_cleanup_steps(*, role: str) -> list[LifecycleStep]:
         ("close_external_io_runtime", close_external_io_runtime),
     ]
     if role == "api":
-        steps.append(("close_task_producer_runtime_async", close_task_producer_runtime_async))
         steps.append(("close_scan_runtime", close_scan_runtime))
     steps.append(("close_async_db", close_async_db))
     return steps

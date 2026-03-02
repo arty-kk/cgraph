@@ -37,7 +37,7 @@ Lifecycle соответствует единому async-паттерну:
 - `app.main.lifespan` и worker startup/shutdown в `app.celery_tasks` используют единый Redis runtime lifecycle вместе с остальными async-ресурсами (DB/FS/CPU/external I/O/S3/OpenAI/scan runtime).
 
 Ожидаемая конфигурация Redis для enqueue:
-- `STUBGRAPH_REDIS_URL` и `STUBGRAPH_CELERY_BROKER_URL` должны указывать на совместимый Redis broker (enqueue публикуется в тот же Redis runtime).
+- `STUBGRAPH_REDIS_URL` и `STUBGRAPH_CELERY_BROKER_URL` должны совпадать и указывать на один Redis broker (enqueue и runtime используют единый Redis).
 
 ## Background task notes
 
