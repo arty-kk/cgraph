@@ -376,3 +376,12 @@ def test_coverage_runtime_path_uses_run_cpu_io_async() -> None:
     assert "run_cpu_io_async" in chunk
     assert 'operation="agentic.api_coverage_index"' in chunk
     assert 'operation="agentic.api_coverage_match"' in chunk
+
+
+def test_compute_prefix_map_runtime_helper_exists_and_uses_cpu_runtime() -> None:
+    source = TOOLS_PATH.read_text(encoding="utf-8")
+    marker = "async def _compute_prefix_map"
+    assert marker in source
+    chunk = source.split(marker, 1)[1].split("\n\n\nasync def _compute_api_coverage_async", 1)[0]
+    assert "run_cpu_io_async" in chunk
+    assert 'operation="agentic.api_prefix_map"' in chunk
