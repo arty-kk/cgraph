@@ -80,9 +80,15 @@ def test_scan_runtime_limits_loaded_from_env(monkeypatch: pytest.MonkeyPatch) ->
     assert cfg.scan_embeddings_max_parallel == 3
 
 
-def test_redis_and_celery_urls_must_match(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("STUBGRAPH_REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.setenv("STUBGRAPH_CELERY_BROKER_URL", "redis://localhost:6379/1")
+def test_task_queue_default_queue_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STUBGRAPH_TASK_QUEUE_DEFAULT", "  ")
 
-    with pytest.raises(ValueError, match="enqueue и runtime используют единый Redis"):
+    with pytest.raises(ValueError, match="STUBGRAPH_TASK_QUEUE_DEFAULT"):
+        Settings()
+
+
+def test_arq_runtime_limits_must_be_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STUBGRAPH_ARQ_JOB_TIMEOUT_SECONDS", "0")
+
+    with pytest.raises(ValueError, match="STUBGRAPH_ARQ_JOB_TIMEOUT_SECONDS"):
         Settings()

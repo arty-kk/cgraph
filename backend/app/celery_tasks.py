@@ -16,7 +16,7 @@ from .services.docs_service import build_project_docs_async
 from .services.file_mutation_service import run_mutation_indexing_async
 from .services.project_service import _scan_and_update_graph_async
 from .services.routing_calibration_service import calibrate_routing_policy_thresholds_async
-from .services.task_queue import cleanup_completed_jobs_async, get_task_transport_redis_client_async
+from .services.task_queue import cleanup_completed_jobs_async
 from .services.task_service import TaskRequest, run_task_async
 from .utils import normalize_project_root
 
@@ -186,7 +186,8 @@ async def consume_queued_task_payload_async(payload_raw: str) -> Any:
 
 
 async def consume_worker_queue_once_async(*, queue: str, timeout_seconds: int = 1) -> bool:
-    client = await get_task_transport_redis_client_async()
+    await init_redis_pool_async()
+    client = get_async_redis_client()
     item = await client.brpop(queue, timeout=timeout_seconds)
     if item is None:
         return False

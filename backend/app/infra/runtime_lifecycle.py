@@ -16,10 +16,11 @@ def build_startup_steps(*, role: str) -> list[LifecycleStep]:
     from ..infra.redis_client import init_redis_pool_async
     from ..llm.client import init_async_openai_client
     from ..s3_runtime import init_s3_runtime
-    from ..infra.async_worker_runtime import init_worker_runtime_async
-
     if role == "worker":
-        return [("init_worker_runtime_async", init_worker_runtime_async)]
+        raise RuntimeError(
+            "Legacy worker lifecycle role is not supported after ARQ migration; "
+            "start workers with `arq app.arq_worker.WorkerSettings`"
+        )
 
     steps: list[LifecycleStep] = [
         ("init_redis_pool_async", init_redis_pool_async),
@@ -41,6 +42,7 @@ def build_startup_steps(*, role: str) -> list[LifecycleStep]:
 
 def build_cleanup_steps(*, role: str) -> list[LifecycleStep]:
     from ..async_db import close_async_db
+    from ..infra.arq_client import close_arq_pool_async
     from ..infra.cpu_runtime import close_cpu_runtime
     from ..infra.external_io_runtime import close_external_io_runtime
     from ..infra.fs_runtime import close_fs_runtime
@@ -48,13 +50,15 @@ def build_cleanup_steps(*, role: str) -> list[LifecycleStep]:
     from ..llm.client import close_async_openai_client
     from ..s3_runtime import close_s3_runtime
     from ..scan import close_scan_runtime
-    from ..infra.async_worker_runtime import close_worker_runtime_async
-
     if role == "worker":
-        return [("close_worker_runtime_async", close_worker_runtime_async)]
+        raise RuntimeError(
+            "Legacy worker lifecycle role is not supported after ARQ migration; "
+            "ARQ worker handles startup/shutdown via app.arq_worker hooks"
+        )
 
     steps: list[LifecycleStep] = [
         ("close_s3_runtime", close_s3_runtime),
+        ("close_arq_pool_async", close_arq_pool_async),
         ("close_redis_pool_async", close_redis_pool_async),
         ("close_async_openai_client", close_async_openai_client),
         ("close_fs_runtime", close_fs_runtime),

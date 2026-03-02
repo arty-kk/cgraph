@@ -199,40 +199,27 @@ async def test_async_task_producer_uses_async_transport_client(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_transport_client_publishes_celery_payload_via_runtime_client(monkeypatch):
-    class _FakeRedis:
+async def test_transport_client_enqueues_arq_job_via_runtime_client(monkeypatch):
+    class _FakeArq:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, str]] = []
+            self.calls: list[tuple[str, tuple[object, ...], str, str]] = []
 
-        async def lpush(self, key: str, payload: str) -> None:
-            self.calls.append((key, payload))
+        async def enqueue_job(self, task_name: str, *args: object, _job_id: str, _queue_name: str) -> None:
+            self.calls.append((task_name, args, _job_id, _queue_name))
 
-    fake_redis = _FakeRedis()
+    fake_arq = _FakeArq()
 
     async def _fake_get_transport_client_async():
-        return fake_redis
+        return fake_arq
 
     monkeypatch.setattr(task_queue, "get_task_transport_redis_client_async", _fake_get_transport_client_async)
 
     client = task_queue._AsyncTaskTransportClient()
     await client.publish_async(task_name="stubgraph.scan", args=["job-7", 1, 2], queue="medium")
 
-    assert len(fake_redis.calls) == 1
-    queue, payload_raw = fake_redis.calls[0]
-    payload = __import__("json").loads(payload_raw)
-    assert queue == "medium"
-    assert payload["headers"]["task"] == "stubgraph.scan"
-    assert payload["headers"]["id"] == "job-7"
-
-
-@pytest.mark.anyio
-async def test_transport_client_rejects_unsupported_broker_scheme(monkeypatch):
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", "amqp://guest:guest@localhost:5672//")
-
-    client = task_queue._AsyncTaskTransportClient()
-
-    with pytest.raises(task_queue._AsyncTaskProducerError, match="unsupported broker scheme"):
-        await client.publish_async(task_name="stubgraph.scan", args=["job-8", 1, 2], queue="medium")
+    assert fake_arq.calls == [
+        ("stubgraph.scan", ("job-7", 1, 2), "job-7", "medium")
+    ]
 
 
 @pytest.mark.anyio
@@ -501,45 +488,35 @@ async def test_submit_scan_async_keeps_single_session_for_enqueue_failure_update
 
 
 @pytest.mark.anyio
-async def test_get_task_transport_redis_client_async_uses_shared_runtime(monkeypatch):
-    class _FakeRedis:
+async def test_get_task_transport_redis_client_async_uses_arq_pool(monkeypatch):
+    class _FakeArq:
         pass
 
-    fake_redis = _FakeRedis()
+    fake_arq = _FakeArq()
     calls: list[str] = []
 
-    async def _fake_init_redis_pool_async():
-        calls.append("init")
+    async def _fake_get_arq_pool_async():
+        calls.append("pool")
+        return fake_arq
 
-    def _fake_get_async_redis_client():
-        calls.append("get")
-        return fake_redis
-
-    monkeypatch.setattr(task_queue, "init_redis_pool_async", _fake_init_redis_pool_async)
-    monkeypatch.setattr(task_queue, "get_async_redis_client", _fake_get_async_redis_client)
+    monkeypatch.setattr(task_queue, "get_arq_pool_async", _fake_get_arq_pool_async)
 
     client = await task_queue.get_task_transport_redis_client_async()
 
-    assert client is fake_redis
-    assert calls == ["init", "get"]
+    assert client is fake_arq
+    assert calls == ["pool"]
 
 
 @pytest.mark.anyio
-async def test_get_task_transport_redis_client_async_does_not_use_from_url(monkeypatch):
-    async def _fake_init_redis_pool_async():
-        return None
+async def test_get_task_transport_redis_client_async_does_not_use_sync_redis_runtime(monkeypatch):
+    async def _fake_get_arq_pool_async():
+        return object()
 
-    class _RedisModule:
-        class Redis:
-            @staticmethod
-            def from_url(*_args, **_kwargs):
-                raise AssertionError("redis_async.Redis.from_url must not be called")
-
-    class _FakeRedis:
-        pass
-
-    monkeypatch.setattr(task_queue, "init_redis_pool_async", _fake_init_redis_pool_async)
-    monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: _FakeRedis())
-    monkeypatch.setattr(task_queue, "redis_async", _RedisModule)
+    monkeypatch.setattr(task_queue, "get_arq_pool_async", _fake_get_arq_pool_async)
+    monkeypatch.setattr(
+        task_queue,
+        "get_async_redis_client",
+        lambda: (_ for _ in ()).throw(AssertionError("sync redis runtime must not be used")),
+    )
 
     await task_queue.get_task_transport_redis_client_async()

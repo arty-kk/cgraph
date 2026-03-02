@@ -95,10 +95,11 @@ async def test_consume_once_safe_exception_does_not_break_flow(
         raise RuntimeError("boom")
 
     fake_client = _FakeClient()
+    monkeypatch.setattr(async_worker_runtime, "init_redis_pool_async", lambda: asyncio.sleep(0))
     monkeypatch.setattr(
         async_worker_runtime,
-        "get_task_transport_redis_client_async",
-        lambda: asyncio.sleep(0, result=fake_client),
+        "get_async_redis_client",
+        lambda: fake_client,
     )
     monkeypatch.setattr(
         async_worker_runtime,
@@ -141,4 +142,69 @@ async def test_worker_runtime_close_cancels_all_consumer_tasks(
     await async_worker_runtime.close_worker_runtime_async()
 
     assert async_worker_runtime._worker_runtime_stop is None
+    assert async_worker_runtime._worker_runtime_scheduler_task is None
     assert not async_worker_runtime._worker_runtime_tasks
+
+
+@pytest.mark.anyio
+async def test_worker_runtime_starts_and_stops_scheduler_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _startup() -> None:
+        return None
+
+    async def _cleanup() -> None:
+        return None
+
+    async def _consume_once_safe(*, queues: list[str], timeout_seconds: int = 1) -> bool:
+        _ = (queues, timeout_seconds)
+        await asyncio.sleep(0.01)
+        return False
+
+    scheduler_started = asyncio.Event()
+
+    async def _scheduler_loop(*, stop_event: asyncio.Event) -> None:
+        scheduler_started.set()
+        await stop_event.wait()
+
+    monkeypatch.setattr(async_worker_runtime.settings, "worker_runtime_concurrency", 1)
+    monkeypatch.setattr(async_worker_runtime.settings, "llm_routing_calibration_enabled", True)
+    monkeypatch.setattr(async_worker_runtime, "_startup_worker_resources_async", _startup)
+    monkeypatch.setattr(async_worker_runtime, "_cleanup_worker_resources_async", _cleanup)
+    monkeypatch.setattr(async_worker_runtime, "_consume_once_safe_async", _consume_once_safe)
+    monkeypatch.setattr(async_worker_runtime, "_routing_calibration_scheduler_loop_async", _scheduler_loop)
+
+    await async_worker_runtime.init_worker_runtime_async()
+    await asyncio.wait_for(scheduler_started.wait(), timeout=1.0)
+    assert async_worker_runtime._worker_runtime_scheduler_task is not None
+
+    await async_worker_runtime.close_worker_runtime_async()
+
+    assert async_worker_runtime._worker_runtime_scheduler_task is None
+
+
+@pytest.mark.anyio
+async def test_routing_calibration_scheduler_ticks_on_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = 0
+
+    async def _calibrate() -> dict[str, object]:
+        nonlocal called
+        called += 1
+        await asyncio.sleep(0)
+        return {"updated": True}
+
+    async def _timeout_wait_for(awaitable, timeout):
+        _ = timeout
+        awaitable.close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(async_worker_runtime, "calibrate_routing_policy_thresholds_async", _calibrate)
+    monkeypatch.setattr(async_worker_runtime.asyncio, "wait_for", _timeout_wait_for)
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        async_worker_runtime._routing_calibration_scheduler_loop_async(stop_event=stop_event)
+    )
+    await asyncio.sleep(0)
+    stop_event.set()
+    await task
+
+    assert called >= 1

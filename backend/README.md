@@ -26,7 +26,7 @@ Patch storage в `app.storage` также работает только в async
 - `submit_mutation_indexing_async`.
 
 Публикация задач выполняется через awaitable producer API транспорта:
-- publish path использует только общий async Redis runtime (`get_async_redis_client`) и не создаёт отдельный producer-клиент;
+- publish path использует ARQ enqueue (`enqueue_job`) поверх Redis и общий ARQ pool runtime;
 - сервисный слой остаётся полностью async;
 - enqueue выполняется без `asyncio.to_thread`, `run_coroutine_threadsafe`, loop-thread глобалей и bridge-timeout логики;
 - `submit_*_async` вызывают только async producer-клиент и маппят transport-ошибки в `ExternalServiceError` с `task_id`/`queue`/`enqueue_reason`.
@@ -34,10 +34,13 @@ Patch storage в `app.storage` также работает только в async
 Lifecycle соответствует единому async-паттерну:
 - один async Redis runtime на процесс: startup через `init_redis_pool_async`, cleanup через `close_redis_pool_async`;
 - producer-specific runtime для task queue отсутствует;
-- `app.main.lifespan` и worker startup/shutdown в `app.celery_tasks` используют единый Redis runtime lifecycle вместе с остальными async-ресурсами (DB/FS/CPU/external I/O/S3/OpenAI/scan runtime).
+- `app.main.lifespan` и ARQ worker startup/shutdown в `app.arq_worker` используют единый lifecycle ресурсов (DB/FS/CPU/external I/O/S3/OpenAI/scan runtime).
+- для ARQ cron-задач используйте явный флаг `STUBGRAPH_ARQ_ENABLE_CRON=true` только у одного worker-контейнера.
+- legacy role `worker` в `build_startup_steps/build_cleanup_steps` больше не используется; запускайте воркеры только через `arq app.arq_worker.WorkerSettings`.
+- стабильность ARQ worker регулируется runtime-параметрами: `STUBGRAPH_ARQ_MAX_TRIES`, `STUBGRAPH_ARQ_JOB_TIMEOUT_SECONDS`, `STUBGRAPH_ARQ_KEEP_RESULT_SECONDS`, `STUBGRAPH_ARQ_POLL_DELAY_SECONDS`.
 
 Ожидаемая конфигурация Redis для enqueue:
-- `STUBGRAPH_REDIS_URL` и `STUBGRAPH_CELERY_BROKER_URL` должны совпадать и указывать на один Redis broker (enqueue и runtime используют единый Redis).
+- `STUBGRAPH_REDIS_URL` задаёт единый Redis broker для enqueue и runtime; queue по умолчанию задаётся через `STUBGRAPH_TASK_QUEUE_DEFAULT`.
 
 ## Background task notes
 

@@ -206,66 +206,42 @@ async def test_submit_run_to_execute_updates_job_status(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_task_queue_transport_reuses_single_redis_runtime_client(monkeypatch):
-    class _FakeRedis:
+async def test_task_queue_transport_reuses_single_arq_pool_client(monkeypatch):
+    class _FakeArq:
         def __init__(self) -> None:
-            self.published: list[tuple[str, str]] = []
-            self.closed = False
+            self.published: list[tuple[str, tuple[object, ...], str, str]] = []
 
-        async def lpush(self, key: str, payload: str) -> None:
-            self.published.append((key, payload))
+        async def enqueue_job(self, task_name: str, *args: object, _job_id: str, _queue_name: str) -> None:
+            self.published.append((task_name, args, _job_id, _queue_name))
 
-        async def aclose(self) -> None:
-            self.closed = True
+    fake_arq = _FakeArq()
 
-    created: list[_FakeRedis] = []
+    async def _fake_get_arq_pool_async():
+        return fake_arq
 
-    def _from_url(*args, **kwargs):
-        _ = (args, kwargs)
-        client = _FakeRedis()
-        created.append(client)
-        return client
-
-    await redis_client.close_redis_pool_async()
-    monkeypatch.setattr(redis_client.redis_async.Redis, "from_url", _from_url)
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", task_queue.settings.redis_url)
-
-    await redis_client.init_redis_pool_async()
+    monkeypatch.setattr(task_queue, "get_arq_pool_async", _fake_get_arq_pool_async)
     client = task_queue._AsyncTaskTransportClient()
     await client.publish_async(task_name="stubgraph.scan", args=["job-1", 1], queue="medium")
-    await redis_client.close_redis_pool_async()
 
-    assert len(created) == 1
-    assert len(created[0].published) == 1
-    assert created[0].closed is True
+    assert len(fake_arq.published) == 1
 
 
 @pytest.mark.anyio
-async def test_task_queue_transport_mass_publish_does_not_create_extra_redis_clients(monkeypatch):
-    class _FakeRedis:
+async def test_task_queue_transport_mass_publish_uses_single_arq_pool(monkeypatch):
+    class _FakeArq:
         def __init__(self) -> None:
             self.published = 0
 
-        async def lpush(self, key: str, payload: str) -> None:
-            _ = (key, payload)
+        async def enqueue_job(self, task_name: str, *args: object, _job_id: str, _queue_name: str) -> None:
+            _ = (task_name, args, _job_id, _queue_name)
             self.published += 1
 
-        async def aclose(self) -> None:
-            return None
+    fake_arq = _FakeArq()
 
-    created: list[_FakeRedis] = []
+    async def _fake_get_arq_pool_async():
+        return fake_arq
 
-    def _from_url(*args, **kwargs):
-        _ = (args, kwargs)
-        client = _FakeRedis()
-        created.append(client)
-        return client
-
-    await redis_client.close_redis_pool_async()
-    monkeypatch.setattr(redis_client.redis_async.Redis, "from_url", _from_url)
-    monkeypatch.setattr(task_queue.settings, "celery_broker_url", task_queue.settings.redis_url)
-
-    await redis_client.init_redis_pool_async()
+    monkeypatch.setattr(task_queue, "get_arq_pool_async", _fake_get_arq_pool_async)
     transport = task_queue._AsyncTaskTransportClient()
     await asyncio.gather(
         *[
@@ -277,7 +253,5 @@ async def test_task_queue_transport_mass_publish_does_not_create_extra_redis_cli
             for idx in range(200)
         ]
     )
-    await redis_client.close_redis_pool_async()
 
-    assert len(created) == 1
-    assert created[0].published == 200
+    assert fake_arq.published == 200
