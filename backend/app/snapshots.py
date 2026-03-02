@@ -282,6 +282,19 @@ def _read_chunk_batch(stream, chunk_size: int, batch_size: int = 4) -> list[byte
     return chunks
 
 
+def _open_archive_read_stream(archive_path: Path):
+    return archive_path.open("rb")
+
+
+def _close_archive_read_stream(stream) -> None:
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except ValueError:
+        return
+
+
 async def _cleanup_path_async(path: Path) -> None:
     await run_fs_io_async(path.unlink, missing_ok=True, operation="snapshots.path.unlink")
 
@@ -352,29 +365,38 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
             await queue.join()
             await asyncio.gather(*workers, return_exceptions=True)
 
+        stream = await run_fs_io_async(
+            _open_archive_read_stream,
+            archive_path,
+            operation="snapshots.archive.open_read_stream",
+        )
         workers = [asyncio.create_task(_upload_worker()) for _ in range(concurrency)]
         producer_part_number = 1
         try:
-            with archive_path.open("rb") as stream:
-                while True:
+            while True:
+                if pipeline_error is not None:
+                    raise pipeline_error
+
+                chunk_batch = await run_fs_io_async(
+                    _read_chunk_batch,
+                    stream,
+                    chunk_size,
+                    operation="snapshots.archive.read_chunks",
+                )
+                if not chunk_batch:
+                    break
+
+                for chunk in chunk_batch:
                     if pipeline_error is not None:
                         raise pipeline_error
-
-                    chunk_batch = await run_fs_io_async(
-                        _read_chunk_batch,
-                        stream,
-                        chunk_size,
-                        operation="snapshots.archive.read_chunks",
-                    )
-                    if not chunk_batch:
-                        break
-
-                    for chunk in chunk_batch:
-                        if pipeline_error is not None:
-                            raise pipeline_error
-                        await queue.put((producer_part_number, chunk))
-                        producer_part_number += 1
+                    await queue.put((producer_part_number, chunk))
+                    producer_part_number += 1
         finally:
+            await run_fs_io_async(
+                _close_archive_read_stream,
+                stream,
+                operation="snapshots.archive.close_read_stream",
+            )
             shutdown_task = asyncio.create_task(_shutdown_workers(workers))
             try:
                 await asyncio.shield(shutdown_task)
