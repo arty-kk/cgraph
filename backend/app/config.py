@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     allow_local_root_path: bool = Field(default=False, alias="STUBGRAPH_ALLOW_LOCAL_ROOT_PATH")
 
     celery_broker_url: str = Field(
-        default="redis://localhost:6379/1",
+        default="redis://localhost:6379/0",
         alias="STUBGRAPH_CELERY_BROKER_URL",
     )
     celery_queue_default: str = Field(default="medium", alias="STUBGRAPH_CELERY_QUEUE_DEFAULT")
@@ -414,6 +414,13 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_CELERY_BROKER_URL должен использовать redis://")
         if not isinstance(self.redis_url, str) or not self.redis_url.strip():
             raise ValueError("STUBGRAPH_REDIS_URL должен быть непустым")
+        redis_url = self.redis_url.strip()
+        broker_url = self.celery_broker_url.strip()
+        if redis_url != broker_url:
+            raise ValueError(
+                "STUBGRAPH_REDIS_URL и STUBGRAPH_CELERY_BROKER_URL должны совпадать: "
+                "enqueue и runtime используют единый Redis"
+            )
         if self.db_pool_size <= 0:
             raise ValueError("STUBGRAPH_DB_POOL_SIZE должен быть положительным")
         if self.db_max_overflow < 0:

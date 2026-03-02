@@ -19,7 +19,7 @@ from sqlmodel import delete, select
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
-from ..infra.redis_client import get_async_redis_client
+from ..infra.redis_client import get_async_redis_client, init_redis_pool_async
 from ..logging import get_logger
 from ..models import TaskJob
 from ..utils import sha256_text
@@ -29,20 +29,6 @@ logger = get_logger("stubgraph.task_queue")
 _HEAVY_INFLIGHT_KEY = "stubgraph:queue:heavy:inflight"
 _ENQUEUE_TIMEOUT_SECONDS = 10.0
 _ENQUEUE_REASON_KEY = "enqueue_reason"
-
-_producer_redis_client: redis_async.Redis | None = None
-_producer_runtime_guard: asyncio.Lock | None = None
-_producer_runtime_guard_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _get_producer_runtime_guard() -> asyncio.Lock:
-    global _producer_runtime_guard, _producer_runtime_guard_loop
-    loop = asyncio.get_running_loop()
-    if _producer_runtime_guard is None or _producer_runtime_guard_loop is not loop:
-        _producer_runtime_guard = asyncio.Lock()
-        _producer_runtime_guard_loop = loop
-    return _producer_runtime_guard
-
 
 class _AsyncTaskProducerError(Exception):
     """Transport-level async producer enqueue failure."""
@@ -96,55 +82,9 @@ class _AsyncTaskProducer:
         except Exception as exc:  # noqa: BLE001
             raise _AsyncTaskProducerError(str(exc)) from exc
 
-
-
-
-async def init_task_producer_runtime_async() -> None:
-    global _producer_redis_client
-    if _producer_redis_client is not None:
-        return
-
-    broker_url = str(settings.celery_broker_url or "").strip()
-    parsed_broker = urlparse(broker_url)
-    scheme = parsed_broker.scheme.lower()
-    if scheme and not scheme.startswith("redis"):
-        _producer_redis_client = None
-        return
-
-    async with _get_producer_runtime_guard():
-        if _producer_redis_client is not None:
-            return
-        try:
-            shared_client = get_async_redis_client()
-            if str(settings.redis_url or "").strip() == broker_url:
-                _producer_redis_client = shared_client
-                return
-        except RuntimeError:
-            pass
-        _producer_redis_client = redis_async.Redis.from_url(
-            broker_url,
-            decode_responses=True,
-        )
-
-
-async def close_task_producer_runtime_async() -> None:
-    global _producer_redis_client
-    async with _get_producer_runtime_guard():
-        client = _producer_redis_client
-        _producer_redis_client = None
-    if client is not None:
-        await client.aclose()
-
-
 async def get_task_transport_redis_client_async() -> redis_async.Redis:
-    client = _producer_redis_client
-    if client is not None:
-        return client
-    await init_task_producer_runtime_async()
-    client = _producer_redis_client
-    if client is None:
-        raise _AsyncTaskProducerError("task queue producer runtime is not initialized")
-    return client
+    await init_redis_pool_async()
+    return get_async_redis_client()
 
 
 _async_task_producer = _AsyncTaskProducer()
