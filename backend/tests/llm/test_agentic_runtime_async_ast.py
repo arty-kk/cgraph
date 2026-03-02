@@ -225,7 +225,7 @@ def test_async_file_tools_have_no_sync_file_prechecks() -> None:
         for node in module.body
         if isinstance(node, ast.AsyncFunctionDef)
     }
-    for fn_name in {"_tool_get_file_async", "_tool_get_file_lines_async", "_tool_search_text_async"}:
+    for fn_name in {"_tool_get_file_async", "_tool_get_file_lines_async", "_tool_search_text_async", "_tool_suggest_frontend_client_async"}:
         fn = fn_nodes[fn_name]
         for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
             if isinstance(call.func, ast.Attribute) and call.func.attr in {"exists", "is_file"}:

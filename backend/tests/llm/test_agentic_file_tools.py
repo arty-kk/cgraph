@@ -2,6 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
@@ -119,6 +120,61 @@ class TestAgenticFileToolsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["error"]["details"],
             {"path": "boom.txt", "reason": "denied: boom.txt"},
+        )
+
+    async def test_suggest_frontend_client_async_uses_fs_runtime_for_file_exists_check(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            args = {"path": "/api/users", "method": "GET"}
+            calls: list[tuple[object, tuple, dict]] = []
+
+            route = SimpleNamespace(
+                method="GET",
+                path="/api/users",
+                source_path="backend/app/api/users.py",
+                handler_name="list_users",
+                lineno=10,
+                decorator="router.get",
+            )
+
+            class _FakeExecuteResult:
+                def scalars(self):
+                    return self
+
+                def all(self):
+                    return [route]
+
+            class _FakeSession:
+                async def execute(self, _q):
+                    return _FakeExecuteResult()
+
+            async def _fake_prefix_map(_project_id: int):
+                return {}
+
+            async def _fake_fs_runtime(fn, *a, **kw):
+                calls.append((fn, a, dict(kw)))
+                kw.pop("operation", None)
+                return fn(*a, **kw)
+
+            with (
+                patch("app.llm.agentic.tools._compute_prefix_map", side_effect=_fake_prefix_map),
+                patch("app.llm.agentic.tools.run_fs_io_async", side_effect=_fake_fs_runtime),
+            ):
+                result = await agentic._tool_suggest_frontend_client_async(
+                    _FakeSession(),
+                    1,
+                    root,
+                    args,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("data", result)
+        self.assertIsNone(result["error"])
+        self.assertIsInstance(result["data"]["frontend"]["file_exists"], bool)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0][2].get("operation"),
+            "agentic.suggest_frontend_client.path_exists",
         )
 
 
