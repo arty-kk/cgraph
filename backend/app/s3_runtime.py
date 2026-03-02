@@ -14,7 +14,17 @@ class S3RuntimeError(RuntimeError):
 _session: Any | None = None
 _client: Any | None = None
 _client_cm: Any | None = None
-_lock = asyncio.Lock()
+_s3_runtime_lock: asyncio.Lock | None = None
+_s3_runtime_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_s3_runtime_lock() -> asyncio.Lock:
+    global _s3_runtime_lock, _s3_runtime_lock_loop
+    loop = asyncio.get_running_loop()
+    if _s3_runtime_lock is None or _s3_runtime_lock_loop is not loop:
+        _s3_runtime_lock = asyncio.Lock()
+        _s3_runtime_lock_loop = loop
+    return _s3_runtime_lock
 
 
 def _build_session() -> Any:
@@ -27,7 +37,7 @@ def _build_session() -> Any:
 
 async def init_s3_runtime() -> None:
     global _session, _client, _client_cm
-    async with _lock:
+    async with _get_s3_runtime_lock():
         if _client is not None:
             return
         _session = _build_session()
@@ -41,12 +51,13 @@ async def init_s3_runtime() -> None:
 
 async def close_s3_runtime() -> None:
     global _session, _client, _client_cm
-    async with _lock:
-        if _client_cm is not None:
-            await _client_cm.__aexit__(None, None, None)
+    async with _get_s3_runtime_lock():
+        saved_cm = _client_cm
         _session = None
         _client_cm = None
         _client = None
+    if saved_cm is not None:
+        await saved_cm.__aexit__(None, None, None)
 
 
 def get_s3_client() -> Any:

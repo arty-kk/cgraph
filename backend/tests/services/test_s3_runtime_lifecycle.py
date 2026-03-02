@@ -128,6 +128,59 @@ async def test_s3_runtime_concurrent_init_close_reuses_single_client(
 
 
 @pytest.mark.anyio
+async def test_s3_runtime_close_resets_singletons_before_aexit_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = {"count": 0}
+    exited = {"count": 0}
+    exit_started = asyncio.Event()
+    allow_exit = asyncio.Event()
+    clients = [object(), object()]
+
+    class _ClientCtx:
+        def __init__(self, client: object):
+            self._client = client
+
+        async def __aenter__(self):
+            entered["count"] += 1
+            return self._client
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = exc_type, exc, tb
+            exited["count"] += 1
+            exit_started.set()
+            await allow_exit.wait()
+
+    class _Session:
+        def client(self, *_args, **_kwargs):
+            return _ClientCtx(clients[entered["count"]])
+
+    monkeypatch.setattr(s3_runtime, "_build_session", lambda: _Session())
+
+    await s3_runtime.close_s3_runtime()
+    await s3_runtime.init_s3_runtime()
+
+    close_task = asyncio.create_task(s3_runtime.close_s3_runtime())
+    await exit_started.wait()
+
+    assert s3_runtime._session is None
+    assert s3_runtime._client_cm is None
+    assert s3_runtime._client is None
+
+    await s3_runtime.init_s3_runtime()
+    assert s3_runtime.get_s3_client() is clients[1]
+
+    allow_exit.set()
+    await close_task
+
+    assert entered["count"] == 2
+    assert exited["count"] == 1
+
+    await s3_runtime.close_s3_runtime()
+    assert exited["count"] == 2
+
+
+@pytest.mark.anyio
 async def test_s3_runtime_reinit_keeps_signed_url_generation_working(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
