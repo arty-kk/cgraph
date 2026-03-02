@@ -51,7 +51,13 @@ class _AsyncTaskTransportClient:
         if scheme and not scheme.startswith("redis"):
             raise _AsyncTaskProducerError(f"unsupported broker scheme: {scheme}")
 
-        client = _producer_redis_client
+        client: redis_async.Redis | None
+        try:
+            client = get_async_redis_client()
+            global _producer_redis_client
+            _producer_redis_client = client
+        except RuntimeError:
+            client = _producer_redis_client
         if client is None:
             await init_task_producer_runtime_async()
             client = _producer_redis_client
@@ -107,6 +113,13 @@ class _AsyncTaskProducer:
 async def init_task_producer_runtime_async() -> None:
     global _producer_redis_client
     if _producer_redis_client is not None:
+        try:
+            shared_client = get_async_redis_client()
+        except RuntimeError:
+            return
+        if _producer_redis_client is shared_client:
+            return
+        _producer_redis_client = shared_client
         return
 
     broker_url = str(settings.celery_broker_url or "").strip()
@@ -120,7 +133,14 @@ async def init_task_producer_runtime_async() -> None:
     with _producer_runtime_guard:
         if _producer_redis_client is not None:
             return
-        _producer_redis_client = redis_async.Redis.from_url(broker_url, decode_responses=True)
+        try:
+            _producer_redis_client = get_async_redis_client()
+            return
+        except RuntimeError:
+            _producer_redis_client = redis_async.Redis.from_url(
+                broker_url,
+                decode_responses=True,
+            )
 
 
 async def close_task_producer_runtime_async() -> None:

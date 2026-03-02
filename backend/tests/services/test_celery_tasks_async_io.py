@@ -66,6 +66,7 @@ def test_worker_process_init_and_shutdown_use_async_resource_lifecycle(
         ],
     )
     monkeypatch.setattr(celery_tasks, "_worker_runtime_started", False)
+    monkeypatch.setattr(celery_tasks, "_worker_runner", None)
 
     celery_tasks._on_worker_process_init()
     celery_tasks._on_worker_process_shutdown()
@@ -126,6 +127,7 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
         ],
     )
     monkeypatch.setattr(celery_tasks, "_worker_runtime_started", False)
+    monkeypatch.setattr(celery_tasks, "_worker_runner", None)
 
     with pytest.raises(RuntimeError, match="db boom"):
         celery_tasks._on_worker_process_init()
@@ -143,9 +145,7 @@ def test_worker_process_init_cleans_up_partial_startup_on_failure(
     ]
 
 
-
-
-def test_worker_startup_failure_stops_background_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_startup_failure_resets_runtime_started_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _boom() -> None:
         raise RuntimeError("boom")
 
@@ -155,39 +155,73 @@ def test_worker_startup_failure_stops_background_loop(monkeypatch: pytest.Monkey
     monkeypatch.setattr(celery_tasks, "build_startup_steps", lambda *, role: [("boom", _boom)])
     monkeypatch.setattr(celery_tasks, "build_cleanup_steps", lambda *, role: [("noop", _noop)])
     monkeypatch.setattr(celery_tasks, "_worker_runtime_started", False)
+    monkeypatch.setattr(celery_tasks, "_worker_runner", None)
 
     with pytest.raises(RuntimeError, match="boom"):
         celery_tasks._on_worker_process_init()
 
-    assert celery_tasks._worker_loop is None
-    assert celery_tasks._worker_loop_thread is None
-
-def test_run_async_entrypoint_executes_coroutine() -> None:
-    async def _value() -> int:
-        await asyncio.sleep(0)
-        return 42
-
-    assert celery_tasks._run_async_entrypoint(_value, log_context="test") == 42
+    assert celery_tasks._worker_runtime_started is False
+    assert celery_tasks._worker_runner is None
 
 
-def test_run_async_entrypoint_reuses_worker_loop_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(celery_tasks, "_worker_runtime_started", False)
+def test_worker_process_shutdown_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    async def _record(name: str) -> None:
+        calls.append(name)
+
+    monkeypatch.setattr(
+        celery_tasks,
+        "build_cleanup_steps",
+        lambda *, role: [
+            ("close_redis", lambda: _record("close_redis")),
+            ("close_db", lambda: _record("close_db")),
+        ],
+    )
+    monkeypatch.setattr(celery_tasks, "_worker_runtime_started", True)
+    celery_tasks._run_async_entrypoint(_record, "startup", log_context="seed")
+
+    celery_tasks._on_worker_process_shutdown()
+    celery_tasks._on_worker_process_shutdown()
+
+    assert calls == ["startup", "close_redis", "close_db"]
+    assert celery_tasks._worker_runner is None
+
+
+def test_run_async_entrypoint_reuses_worker_runner_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(celery_tasks, "_worker_runner", None)
 
     async def _value(value: int) -> int:
-        await asyncio.sleep(0)
         return value
 
     first = celery_tasks._run_async_entrypoint(_value, 1, log_context="first")
-    first_loop = celery_tasks._worker_loop
+    first_runner = celery_tasks._worker_runner
     second = celery_tasks._run_async_entrypoint(_value, 2, log_context="second")
-    second_loop = celery_tasks._worker_loop
+    second_runner = celery_tasks._worker_runner
 
     assert first == 1
     assert second == 2
-    assert first_loop is not None
-    assert second_loop is first_loop
+    assert first_runner is not None
+    assert second_runner is first_runner
 
-    celery_tasks._stop_worker_event_loop()
+    celery_tasks._close_worker_runner()
+
+
+def test_run_async_entrypoint_executes_coroutine() -> None:
+    async def _value() -> int:
+        return 42
+
+    assert celery_tasks._run_async_entrypoint(_value, log_context="test") == 42
+    celery_tasks._close_worker_runner()
+
+
+def test_run_async_entrypoint_handles_cancelled_error() -> None:
+    async def _cancelled() -> None:
+        raise asyncio.CancelledError("cancelled")
+
+    with pytest.raises(asyncio.CancelledError, match="cancelled"):
+        celery_tasks._run_async_entrypoint(_cancelled, log_context="cancelled")
+    celery_tasks._close_worker_runner()
 
 
 @pytest.mark.anyio
