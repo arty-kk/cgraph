@@ -1,4 +1,5 @@
 import asyncio
+import builtins
 import io
 import sys
 import zipfile
@@ -541,6 +542,52 @@ async def test_upload_archive_to_s3_cancellation_aborts_once(monkeypatch: pytest
     assert worker_tasks == []
 
 
+
+
+@pytest.mark.anyio
+async def test_upload_archive_to_s3_uses_runtime_open_read_close_ops(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    operations: list[str] = []
+    opened_streams: list[io.BufferedReader] = []
+    open_helper_calls = 0
+
+    original_run_fs_io_async = snapshots.run_fs_io_async
+
+    def _tracking_open_archive_read_stream(archive_path: Path):
+        nonlocal open_helper_calls
+        open_helper_calls += 1
+        stream = builtins.open(archive_path, "rb")
+        opened_streams.append(stream)
+        return stream
+
+    def _forbid_path_open(self: Path, *_args, **_kwargs):
+        raise AssertionError("direct Path.open usage is forbidden in upload hot-path")
+
+    async def _tracking_run_fs_io_async(fn, *args, operation=None, **kwargs):
+        operations.append(operation or "")
+        return await original_run_fs_io_async(fn, *args, operation=operation, **kwargs)
+
+    archive_path = tmp_path / "hot-path.bin"
+    archive_path.write_bytes(_multipart_payload(parts=3))
+
+    fake = _FakeS3()
+    monkeypatch.setattr(snapshots, "get_s3_client", lambda: fake)
+    monkeypatch.setattr(Path, "open", _forbid_path_open)
+    monkeypatch.setattr(snapshots, "_open_archive_read_stream", _tracking_open_archive_read_stream)
+    monkeypatch.setattr(snapshots, "run_fs_io_async", _tracking_run_fs_io_async)
+
+    await snapshots._upload_archive_to_s3(archive_path, "bucket", "snapshots/sha/hot-path.bin")
+
+    assert "snapshots.archive.open_read_stream" in operations
+    assert "snapshots.archive.read_chunks" in operations
+    assert "snapshots.archive.close_read_stream" in operations
+    assert operations.count("snapshots.archive.open_read_stream") == 1
+    assert operations.count("snapshots.archive.close_read_stream") == 1
+    assert open_helper_calls == 1
+    assert opened_streams and all(stream.closed for stream in opened_streams)
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("mode", ["error", "cancel"])
 async def test_upload_archive_to_s3_closes_stream_on_failure_or_cancel(
@@ -548,15 +595,19 @@ async def test_upload_archive_to_s3_closes_stream_on_failure_or_cancel(
     tmp_path: Path,
     mode: str,
 ) -> None:
-    original_open = Path.open
-    opened_streams = []
+    operations: list[str] = []
+    opened_streams: list[io.BufferedReader] = []
 
-    def _tracking_open(self: Path, *args, **kwargs):
-        stream = original_open(self, *args, **kwargs)
-        opened_streams.append(stream)
-        return stream
+    original_run_fs_io_async = snapshots.run_fs_io_async
 
-    monkeypatch.setattr(Path, "open", _tracking_open)
+    async def _tracking_run_fs_io_async(fn, *args, operation=None, **kwargs):
+        operations.append(operation or "")
+        result = await original_run_fs_io_async(fn, *args, operation=operation, **kwargs)
+        if operation == "snapshots.archive.open_read_stream":
+            opened_streams.append(result)
+        return result
+
+    monkeypatch.setattr(snapshots, "run_fs_io_async", _tracking_run_fs_io_async)
 
     class _FailureS3(_FakeS3):
         def __init__(self):
@@ -590,6 +641,12 @@ async def test_upload_archive_to_s3_closes_stream_on_failure_or_cancel(
     renamed_path = archive_path.with_suffix(".moved")
     archive_path.rename(renamed_path)
     renamed_path.unlink()
+
+    assert "snapshots.archive.open_read_stream" in operations
+    assert "snapshots.archive.read_chunks" in operations
+    assert "snapshots.archive.close_read_stream" in operations
+    assert operations.count("snapshots.archive.open_read_stream") == 1
+    assert operations.count("snapshots.archive.close_read_stream") == 1
     assert opened_streams and all(stream.closed for stream in opened_streams)
 
 
@@ -645,6 +702,44 @@ async def test_snapshot_parallel_pipeline_with_retry_and_no_hanging_multipart(mo
             await asyncio.gather(*[_pipeline(idx) for idx in range(4)])
             assert fake.multipart == {}
             assert list((Path(tmpdir) / "snapshots" / "tmp").glob("*")) == []
+
+            class _AlwaysFailS3(_FakeS3):
+                def __init__(self):
+                    super().__init__()
+                    self.abort_calls = 0
+                    self.started = asyncio.Event()
+
+                async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+                    _ = Bucket, Key, UploadId, PartNumber, Body
+                    self.started.set()
+                    raise RuntimeError("forced multipart failure")
+
+                async def abort_multipart_upload(self, *, Bucket: str, Key: str, UploadId: str):
+                    self.abort_calls += 1
+                    await super().abort_multipart_upload(Bucket=Bucket, Key=Key, UploadId=UploadId)
+
+            failing = _AlwaysFailS3()
+            monkeypatch.setattr(snapshots, "get_s3_client", lambda: failing)
+
+            failed_archive = Path(tmpdir) / "snapshots" / "failed.bin"
+            failed_archive.parent.mkdir(parents=True, exist_ok=True)
+            failed_archive.write_bytes(_multipart_payload(parts=2))
+
+            with pytest.raises(RuntimeError, match="forced multipart failure"):
+                await snapshots._upload_archive_to_s3(failed_archive, "bucket", "snapshots/sha/failed.bin")
+
+            await asyncio.sleep(0)
+            worker_tasks = [
+                pending
+                for pending in asyncio.all_tasks()
+                if pending is not asyncio.current_task()
+                and pending.get_coro().__name__ == "_upload_worker"
+                and not pending.done()
+            ]
+
+            assert failing.abort_calls == 1
+            assert failing.multipart == {}
+            assert worker_tasks == []
     finally:
         settings.db_dir = original_dir
         settings.storage_backend = original_backend
