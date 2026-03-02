@@ -128,9 +128,9 @@ def test_worker_runtime_modules_forbid_sync_asyncio_bridges() -> None:
     assert not violations, "Sync asyncio bridges are forbidden in worker runtime modules: " + ", ".join(violations)
 
 
-def test_celery_worker_module_has_no_loop_thread_globals() -> None:
-    celery_tasks = APP_ROOT / "celery_tasks.py"
-    assert not _contains_forbidden_globals(celery_tasks)
+def test_worker_task_dispatch_module_has_no_loop_thread_globals() -> None:
+    worker_tasks = APP_ROOT / "celery_tasks.py"
+    assert not _contains_forbidden_globals(worker_tasks)
 
 
 def test_scan_runtime_does_not_use_call_soon_threadsafe() -> None:

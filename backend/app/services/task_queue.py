@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
-import redis.asyncio as redis_async
+from arq.connections import ArqRedis
 from redis import RedisError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +17,8 @@ from sqlmodel import delete, select
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
-from ..infra.redis_client import get_async_redis_client, init_redis_pool_async
+from ..infra.arq_client import get_arq_pool_async
+from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
 from ..utils import sha256_text
@@ -36,38 +35,12 @@ class _AsyncTaskProducerError(Exception):
 
 class _AsyncTaskTransportClient:
     async def publish_async(self, *, task_name: str, args: list[Any], queue: str) -> None:
-        broker_url = str(settings.celery_broker_url or "").strip()
-        parsed_broker = urlparse(broker_url)
-        scheme = parsed_broker.scheme.lower()
-
-        if scheme and not scheme.startswith("redis"):
-            raise _AsyncTaskProducerError(f"unsupported broker scheme: {scheme}")
-
         client = await get_task_transport_redis_client_async()
         if client is None:
             raise _AsyncTaskProducerError("task queue producer runtime is not initialized")
 
         task_id = str(args[0]) if args else uuid4().hex
-        body = json.dumps([args, {}, None], ensure_ascii=False).encode("utf-8")
-        payload = {
-            "body": base64.b64encode(body).decode("ascii"),
-            "content-type": "application/json",
-            "content-encoding": "utf-8",
-            "headers": {
-                "id": task_id,
-                "task": task_name,
-                "lang": "py",
-            },
-            "properties": {
-                "correlation_id": task_id,
-                "reply_to": "",
-                "body_encoding": "base64",
-                "delivery_info": {"exchange": "", "routing_key": queue},
-                "delivery_mode": 2,
-                "priority": 0,
-            },
-        }
-        await client.lpush(queue, json.dumps(payload, ensure_ascii=False))
+        await client.enqueue_job(task_name, *args, _job_id=task_id, _queue_name=queue)
 
 
 class _AsyncTaskProducer:
@@ -77,14 +50,13 @@ class _AsyncTaskProducer:
     async def enqueue_task_async(self, task_name: str, *, args: list[Any], queue: str) -> None:
         try:
             if not task_name:
-                raise RuntimeError("Celery task name is required")
+                raise RuntimeError("Task name is required")
             await self._client.publish_async(task_name=task_name, args=args, queue=queue)
         except Exception as exc:  # noqa: BLE001
             raise _AsyncTaskProducerError(str(exc)) from exc
 
-async def get_task_transport_redis_client_async() -> redis_async.Redis:
-    await init_redis_pool_async()
-    return get_async_redis_client()
+async def get_task_transport_redis_client_async() -> ArqRedis:
+    return await get_arq_pool_async()
 
 
 _async_task_producer = _AsyncTaskProducer()
@@ -94,8 +66,6 @@ def _classify_enqueue_failure(exc: BaseException) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
     if isinstance(exc, _AsyncTaskProducerError):
-        if "unsupported broker scheme" in str(exc):
-            return "unsupported_broker_scheme"
         return "broker_error"
     return "internal_enqueue_failure"
 

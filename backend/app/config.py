@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -102,12 +101,6 @@ class Settings(BaseSettings):
     )
     allow_local_root_path: bool = Field(default=False, alias="STUBGRAPH_ALLOW_LOCAL_ROOT_PATH")
 
-    celery_broker_url: str = Field(
-        default="redis://localhost:6379/0",
-        alias="STUBGRAPH_CELERY_BROKER_URL",
-    )
-    celery_queue_default: str = Field(default="medium", alias="STUBGRAPH_CELERY_QUEUE_DEFAULT")
-
     auth_enabled: bool = Field(default=False, alias="STUBGRAPH_AUTH_ENABLED")
     auth_allow_public_signup: bool = Field(
         default=False,
@@ -143,9 +136,26 @@ class Settings(BaseSettings):
         default=4,
         alias="STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS",
     )
+    task_queue_default: str = Field(default="medium", alias="STUBGRAPH_TASK_QUEUE_DEFAULT")
     worker_runtime_concurrency: int = Field(
         default=3,
         alias="STUBGRAPH_WORKER_RUNTIME_CONCURRENCY",
+    )
+    arq_job_timeout_seconds: int = Field(
+        default=1800,
+        alias="STUBGRAPH_ARQ_JOB_TIMEOUT_SECONDS",
+    )
+    arq_keep_result_seconds: int = Field(
+        default=600,
+        alias="STUBGRAPH_ARQ_KEEP_RESULT_SECONDS",
+    )
+    arq_poll_delay_seconds: float = Field(
+        default=0.5,
+        alias="STUBGRAPH_ARQ_POLL_DELAY_SECONDS",
+    )
+    arq_max_tries: int = Field(
+        default=3,
+        alias="STUBGRAPH_ARQ_MAX_TRIES",
     )
 
     scan_stage_batch_size: int = Field(
@@ -407,20 +417,8 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_SNAPSHOT_S3_CONCURRENCY должен быть >= 1")
         if not isinstance(self.allow_local_root_path, bool):
             raise ValueError("STUBGRAPH_ALLOW_LOCAL_ROOT_PATH должен быть булевым")
-        if not isinstance(self.celery_broker_url, str) or not self.celery_broker_url.strip():
-            raise ValueError("STUBGRAPH_CELERY_BROKER_URL должен быть непустым")
-        celery_scheme = urlparse(self.celery_broker_url).scheme.lower()
-        if not celery_scheme.startswith("redis"):
-            raise ValueError("STUBGRAPH_CELERY_BROKER_URL должен использовать redis://")
         if not isinstance(self.redis_url, str) or not self.redis_url.strip():
             raise ValueError("STUBGRAPH_REDIS_URL должен быть непустым")
-        redis_url = self.redis_url.strip()
-        broker_url = self.celery_broker_url.strip()
-        if redis_url != broker_url:
-            raise ValueError(
-                "STUBGRAPH_REDIS_URL и STUBGRAPH_CELERY_BROKER_URL должны совпадать: "
-                "enqueue и runtime используют единый Redis"
-            )
         if self.db_pool_size <= 0:
             raise ValueError("STUBGRAPH_DB_POOL_SIZE должен быть положительным")
         if self.db_max_overflow < 0:
@@ -567,8 +565,18 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY должен быть положительным")
         if self.task_queue_producer_workers <= 0:
             raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS должен быть положительным")
+        if not (self.task_queue_default or "").strip():
+            raise ValueError("STUBGRAPH_TASK_QUEUE_DEFAULT должен быть непустым")
         if self.worker_runtime_concurrency <= 0:
             raise ValueError("STUBGRAPH_WORKER_RUNTIME_CONCURRENCY должен быть положительным")
+        if self.arq_job_timeout_seconds <= 0:
+            raise ValueError("STUBGRAPH_ARQ_JOB_TIMEOUT_SECONDS должен быть положительным")
+        if self.arq_keep_result_seconds < 0:
+            raise ValueError("STUBGRAPH_ARQ_KEEP_RESULT_SECONDS должен быть неотрицательным")
+        if self.arq_poll_delay_seconds <= 0:
+            raise ValueError("STUBGRAPH_ARQ_POLL_DELAY_SECONDS должен быть положительным")
+        if self.arq_max_tries <= 0:
+            raise ValueError("STUBGRAPH_ARQ_MAX_TRIES должен быть положительным")
         if self.scan_stage_batch_size < 1:
             raise ValueError("STUBGRAPH_SCAN_STAGE_BATCH_SIZE должен быть >= 1")
         if self.scan_stage_max_parallel < 1:
