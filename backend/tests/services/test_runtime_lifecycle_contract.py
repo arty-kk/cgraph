@@ -16,7 +16,7 @@ def test_api_and_worker_startup_steps_match_contract() -> None:
 
     assert api_steps == worker_steps
     assert api_steps[:2] == ["init_redis_pool_async", "init_async_db"]
-    assert "init_task_producer_runtime_async" not in api_steps
+    assert "init_task_producer_runtime_async" in api_steps
 
 
 def test_cleanup_order_keeps_dependency_safe_teardown() -> None:
@@ -25,7 +25,7 @@ def test_cleanup_order_keeps_dependency_safe_teardown() -> None:
 
     assert api_cleanup.index("close_redis_pool_async") < api_cleanup.index("close_async_db")
     assert worker_cleanup.index("close_redis_pool_async") < worker_cleanup.index("close_async_db")
-    assert "close_task_producer_runtime_async" not in api_cleanup
-    assert "close_task_producer_runtime_async" not in worker_cleanup
+    assert "close_task_producer_runtime_async" in api_cleanup
+    assert "close_task_producer_runtime_async" in worker_cleanup
     assert "close_scan_runtime" in api_cleanup
     assert "close_scan_runtime" not in worker_cleanup

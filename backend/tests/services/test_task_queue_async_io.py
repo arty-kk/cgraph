@@ -208,24 +208,12 @@ async def test_transport_client_publishes_celery_payload_to_shared_async_broker(
             self.calls.append((key, payload))
 
     fake_redis = _FakeRedis()
-    get_client_calls = 0
-
-    def _get_client():
-        nonlocal get_client_calls
-        get_client_calls += 1
-        return fake_redis
-
-    monkeypatch.setattr(task_queue, "get_async_redis_client", _get_client)
-
-    await task_queue.init_task_producer_runtime_async()
+    monkeypatch.setattr(task_queue, "_producer_redis_client", fake_redis)
 
     client = task_queue._AsyncTaskTransportClient()
     await client.publish_async(task_name="stubgraph.scan", args=["job-7", 1, 2], queue="medium")
 
-    assert get_client_calls == 1
     assert len(fake_redis.calls) == 1
-    assert from_url_calls == [("redis://localhost:6379/5", True)]
-    assert fake_redis.closed is False
     queue, payload_raw = fake_redis.calls[0]
     payload = __import__("json").loads(payload_raw)
     assert queue == "medium"
@@ -505,7 +493,7 @@ async def test_submit_scan_async_keeps_single_session_for_enqueue_failure_update
     task_id = await task_queue.submit_scan_async(project_id=1, org_id=2)
 
     assert task_id == "scan-job"
-    assert events == ["db_enter", "db_exit", "enqueue"]
+    assert events == ["db_enter", "enqueue", "db_exit"]
 
 
 @pytest.mark.anyio

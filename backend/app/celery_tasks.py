@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Event, Thread
 from typing import Any, Callable, Coroutine, TypeVar
 
 from celery.signals import worker_process_init, worker_process_shutdown
@@ -29,51 +27,24 @@ from .utils import normalize_project_root
 logger = get_logger("stubgraph.celery")
 
 _worker_runtime_started = False
-_worker_loop: asyncio.AbstractEventLoop | None = None
-_worker_loop_thread: Thread | None = None
-_worker_loop_ready = Event()
+_worker_runner: asyncio.Runner | None = None
 T = TypeVar("T")
 
-
-def _start_worker_event_loop() -> None:
-    global _worker_loop, _worker_loop_thread
-    if _worker_loop is not None and _worker_loop_thread is not None and _worker_loop_thread.is_alive():
-        return
-    _worker_loop_ready.clear()
-
-    def _loop_runner() -> None:
-        global _worker_loop
-        loop = asyncio.new_event_loop()
-        _worker_loop = loop
-        asyncio.set_event_loop(loop)
-        _worker_loop_ready.set()
-        loop.run_forever()
-        pending = asyncio.all_tasks(loop)
-        for task in pending:
-            task.cancel()
-        if pending:
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        loop.close()
-
-    _worker_loop_thread = Thread(target=_loop_runner, name="stubgraph-celery-loop", daemon=True)
-    _worker_loop_thread.start()
-    _worker_loop_ready.wait(timeout=5)
-    if _worker_loop is None:
-        raise RuntimeError("Celery worker loop failed to start")
+def _ensure_worker_runner() -> asyncio.Runner:
+    global _worker_runner
+    runner = _worker_runner
+    if runner is None:
+        runner = asyncio.Runner()
+        _worker_runner = runner
+    return runner
 
 
-def _stop_worker_event_loop() -> None:
-    global _worker_loop, _worker_loop_thread
-    loop = _worker_loop
-    thread = _worker_loop_thread
-    if loop is None:
-        return
-    loop.call_soon_threadsafe(loop.stop)
-    if thread is not None:
-        thread.join(timeout=5)
-    _worker_loop = None
-    _worker_loop_thread = None
-    _worker_loop_ready.clear()
+def _close_worker_runner() -> None:
+    global _worker_runner
+    runner = _worker_runner
+    _worker_runner = None
+    if runner is not None:
+        runner.close()
 
 
 def _run_async_entrypoint(
@@ -82,12 +53,8 @@ def _run_async_entrypoint(
     log_context: str,
 ) -> T:
     try:
-        _start_worker_event_loop()
-        loop = _worker_loop
-        if loop is None:
-            raise RuntimeError("Worker loop is not initialized")
-        future: Future[T] = asyncio.run_coroutine_threadsafe(coro(*args), loop)
-        return future.result()
+        runner = _ensure_worker_runner()
+        return runner.run(coro(*args))
     except Exception:  # noqa: BLE001
         logger.exception("Celery async entrypoint failed", extra={"entrypoint": log_context})
         raise
@@ -129,7 +96,7 @@ def _on_worker_process_init(**_kwargs: Any) -> None:
             logger.exception("Celery worker cleanup after startup failure failed")
         finally:
             _worker_runtime_started = False
-            _stop_worker_event_loop()
+            _close_worker_runner()
         raise
 
 
@@ -147,7 +114,7 @@ def _on_worker_process_shutdown(**_kwargs: Any) -> None:
         logger.exception("Celery worker cleanup failed")
     finally:
         _worker_runtime_started = False
-        _stop_worker_event_loop()
+        _close_worker_runner()
 
 
 async def _set_job_status_async(
