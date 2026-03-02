@@ -5,7 +5,6 @@ import asyncio
 import base64
 import json
 from datetime import datetime, timedelta, timezone
-from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -33,7 +32,17 @@ _ENQUEUE_TIMEOUT_SECONDS = 10.0
 _ENQUEUE_REASON_KEY = "enqueue_reason"
 
 _producer_redis_client: redis_async.Redis | None = None
-_producer_runtime_guard = Lock()
+_producer_runtime_guard: asyncio.Lock | None = None
+_producer_runtime_guard_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_producer_runtime_guard() -> asyncio.Lock:
+    global _producer_runtime_guard, _producer_runtime_guard_loop
+    loop = asyncio.get_running_loop()
+    if _producer_runtime_guard is None or _producer_runtime_guard_loop is not loop:
+        _producer_runtime_guard = asyncio.Lock()
+        _producer_runtime_guard_loop = loop
+    return _producer_runtime_guard
 
 
 class _AsyncTaskProducerError(Exception):
@@ -129,8 +138,7 @@ async def init_task_producer_runtime_async() -> None:
         _producer_redis_client = None
         return
 
-    # Thread-level guard: safe across API/worker loops; no await inside critical section.
-    with _producer_runtime_guard:
+    async with _get_producer_runtime_guard():
         if _producer_redis_client is not None:
             return
         try:
@@ -145,7 +153,7 @@ async def init_task_producer_runtime_async() -> None:
 
 async def close_task_producer_runtime_async() -> None:
     global _producer_redis_client
-    with _producer_runtime_guard:
+    async with _get_producer_runtime_guard():
         client = _producer_redis_client
         _producer_redis_client = None
     if client is not None:
