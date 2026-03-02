@@ -967,6 +967,10 @@ def _resolve_and_read_file_under_root(
     return rel_norm, payload
 
 
+def _path_exists_and_is_file(path: Path) -> bool:
+    return path.exists() and path.is_file()
+
+
 async def _read_file_under_root_async(
     root: Path,
     path: str,
@@ -3076,7 +3080,11 @@ async def _tool_suggest_frontend_client_async(
         abs_p, rel_norm = resolve_under_root(
             root, suggested_file, max_length=settings.max_rel_path_chars
         )
-        file_exists = abs_p.exists() and abs_p.is_file()
+        file_exists = await run_fs_io_async(
+            _path_exists_and_is_file,
+            abs_p,
+            operation="agentic.suggest_frontend_client.path_exists",
+        )
     except Exception:
         file_exists = False
 
