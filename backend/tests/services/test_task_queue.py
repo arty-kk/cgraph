@@ -88,7 +88,7 @@ async def test_submit_mutation_indexing_async_reuses_existing_job():
 
 @pytest.mark.anyio
 @pytest.mark.usefixtures("ensure_async_postgres")
-async def test_submit_run_async_marks_job_failed_when_apply_async_raises():
+async def test_submit_run_async_marks_job_failed_when_enqueue_fails():
     payload = {"cmd": "echo hello"}
 
     from unittest.mock import patch
@@ -101,7 +101,7 @@ async def test_submit_run_async_marks_job_failed_when_apply_async_raises():
     with patch("app.services.task_queue._guard_inflight_async", side_effect=_noop_guard), patch(
         "app.services.task_queue._release_inflight_async", release_mock
     ), patch(
-        "app.celery_tasks.run_task_job.apply_async",
+        "app.services.task_queue._async_task_producer.enqueue_task_async",
         side_effect=RuntimeError("queue unavailable"),
     ):
         with pytest.raises(ExternalServiceError) as exc_ctx:

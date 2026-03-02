@@ -10,7 +10,6 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import redis.asyncio as redis_async
-from kombu.serialization import dumps
 from redis import RedisError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,8 +50,6 @@ class _AsyncTaskProducerError(Exception):
 
 class _AsyncTaskTransportClient:
     async def publish_async(self, *, task_name: str, args: list[Any], queue: str) -> None:
-        from ..celery_app import celery_app
-
         broker_url = str(settings.celery_broker_url or "").strip()
         parsed_broker = urlparse(broker_url)
         scheme = parsed_broker.scheme.lower()
@@ -60,42 +57,25 @@ class _AsyncTaskTransportClient:
         if scheme and not scheme.startswith("redis"):
             raise _AsyncTaskProducerError(f"unsupported broker scheme: {scheme}")
 
-        client: redis_async.Redis | None
-        try:
-            client = get_async_redis_client()
-            global _producer_redis_client
-            _producer_redis_client = client
-        except RuntimeError:
-            client = _producer_redis_client
-        if client is None:
-            await init_task_producer_runtime_async()
-            client = _producer_redis_client
+        client = await get_task_transport_redis_client_async()
         if client is None:
             raise _AsyncTaskProducerError("task queue producer runtime is not initialized")
 
-        message = celery_app.amqp.as_task_v2(
-            task_id=str(args[0]) if args else uuid4().hex,
-            name=task_name,
-            args=args,
-            kwargs={},
-            root_id=str(args[0]) if args else None,
-            ignore_result=True,
-            argsrepr=repr(args),
-            kwargsrepr="{}",
-            origin="stubgraph.task_queue",
-        )
-        content_type, content_encoding, body = dumps(message.body, serializer="json")
-        body_encoded = (
-            base64.b64encode(body).decode("ascii") if isinstance(body, bytes) else str(body)
-        )
+        task_id = str(args[0]) if args else uuid4().hex
+        body = json.dumps([args, {}, None], ensure_ascii=False).encode("utf-8")
         payload = {
-            "body": body_encoded,
-            "content-type": content_type,
-            "content-encoding": content_encoding,
-            "headers": message.headers,
+            "body": base64.b64encode(body).decode("ascii"),
+            "content-type": "application/json",
+            "content-encoding": "utf-8",
+            "headers": {
+                "id": task_id,
+                "task": task_name,
+                "lang": "py",
+            },
             "properties": {
-                **message.properties,
-                "body_encoding": "base64" if isinstance(body, bytes) else "utf-8",
+                "correlation_id": task_id,
+                "reply_to": "",
+                "body_encoding": "base64",
                 "delivery_info": {"exchange": "", "routing_key": queue},
                 "delivery_mode": 2,
                 "priority": 0,
@@ -122,13 +102,6 @@ class _AsyncTaskProducer:
 async def init_task_producer_runtime_async() -> None:
     global _producer_redis_client
     if _producer_redis_client is not None:
-        try:
-            shared_client = get_async_redis_client()
-        except RuntimeError:
-            return
-        if _producer_redis_client is shared_client:
-            return
-        _producer_redis_client = shared_client
         return
 
     broker_url = str(settings.celery_broker_url or "").strip()
@@ -142,13 +115,16 @@ async def init_task_producer_runtime_async() -> None:
         if _producer_redis_client is not None:
             return
         try:
-            _producer_redis_client = get_async_redis_client()
-            return
+            shared_client = get_async_redis_client()
+            if str(settings.redis_url or "").strip() == broker_url:
+                _producer_redis_client = shared_client
+                return
         except RuntimeError:
-            _producer_redis_client = redis_async.Redis.from_url(
-                broker_url,
-                decode_responses=True,
-            )
+            pass
+        _producer_redis_client = redis_async.Redis.from_url(
+            broker_url,
+            decode_responses=True,
+        )
 
 
 async def close_task_producer_runtime_async() -> None:
@@ -158,6 +134,17 @@ async def close_task_producer_runtime_async() -> None:
         _producer_redis_client = None
     if client is not None:
         await client.aclose()
+
+
+async def get_task_transport_redis_client_async() -> redis_async.Redis:
+    client = _producer_redis_client
+    if client is not None:
+        return client
+    await init_task_producer_runtime_async()
+    client = _producer_redis_client
+    if client is None:
+        raise _AsyncTaskProducerError("task queue producer runtime is not initialized")
+    return client
 
 
 _async_task_producer = _AsyncTaskProducer()

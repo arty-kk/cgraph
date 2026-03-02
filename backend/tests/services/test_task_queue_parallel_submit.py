@@ -228,6 +228,8 @@ async def test_task_queue_transport_reuses_single_redis_runtime_client(monkeypat
 
     await redis_client.close_redis_pool_async()
     monkeypatch.setattr(redis_client.redis_async.Redis, "from_url", _from_url)
+    monkeypatch.setattr(task_queue.settings, "celery_broker_url", task_queue.settings.redis_url)
+    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
 
     await redis_client.init_redis_pool_async()
     client = task_queue._AsyncTaskTransportClient()
@@ -262,6 +264,8 @@ async def test_task_queue_transport_mass_publish_does_not_create_extra_redis_cli
 
     await redis_client.close_redis_pool_async()
     monkeypatch.setattr(redis_client.redis_async.Redis, "from_url", _from_url)
+    monkeypatch.setattr(task_queue.settings, "celery_broker_url", task_queue.settings.redis_url)
+    monkeypatch.setattr(task_queue, "_producer_redis_client", None)
 
     await redis_client.init_redis_pool_async()
     transport = task_queue._AsyncTaskTransportClient()
