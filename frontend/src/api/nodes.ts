@@ -5,7 +5,7 @@ import { encodePath } from './utils'
 
 export async function getNode(projectId: number, path: string): Promise<NodeInfo> {
   const r = await api.get(`/nodes/${projectId}/${encodePath(path)}/node`)
-  return r.data
+  return r.data as NodeInfo
 }
 
 export async function getContract(projectId: number, path: string): Promise<NodeContract> {

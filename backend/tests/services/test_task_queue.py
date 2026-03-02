@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import func
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
@@ -84,6 +85,68 @@ async def test_submit_mutation_indexing_async_reuses_existing_job():
 
     assert returned_id == job_id
     assert status == "pending"
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("ensure_async_postgres")
+async def test_submit_mutation_indexing_async_idempotent_for_repeated_read_miss():
+    first_id, first_status = await submit_mutation_indexing_async(
+        project_id=812,
+        org_id=91,
+        rel_paths=["repo/README.md"],
+        operation="read_node_miss",
+    )
+    second_id, second_status = await submit_mutation_indexing_async(
+        project_id=812,
+        org_id=91,
+        rel_paths=["repo/README.md"],
+        operation="read_node_miss",
+    )
+
+    assert first_id == second_id
+    assert first_status in {"pending", "running"}
+    assert second_status in {"pending", "running"}
+
+    async with AsyncSessionLocal() as session:
+        active_count = (
+            await session.execute(
+                select(func.count()).select_from(TaskJob).where(
+                    TaskJob.org_id == 91,
+                    TaskJob.status.in_(("pending", "running")),
+                )
+            )
+        ).scalar_one()
+    assert active_count == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("ensure_async_postgres")
+async def test_submit_mutation_indexing_async_marks_failed_on_enqueue_error(monkeypatch):
+    async def _boom_enqueue(_task, *, args, queue):
+        _ = (args, queue)
+        raise RuntimeError("mutation enqueue failed")
+
+    monkeypatch.setattr(
+        "app.services.task_queue._async_task_producer.enqueue_task_async",
+        _boom_enqueue,
+    )
+
+    with pytest.raises(ExternalServiceError) as exc_ctx:
+        await submit_mutation_indexing_async(
+            project_id=911,
+            org_id=101,
+            rel_paths=["repo/missing.py"],
+            operation="read_node_miss",
+        )
+
+    task_id = exc_ctx.value.context["task_id"]
+    async with AsyncSessionLocal() as session:
+        job = await session.get(TaskJob, task_id)
+
+    assert job is not None
+    assert job.status == "failed"
+    assert job.error == "mutation enqueue failed"
+    assert job.completed_at is not None
 
 
 @pytest.mark.anyio

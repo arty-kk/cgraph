@@ -1,6 +1,8 @@
 import io
 import sys
 import zipfile
+import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -128,3 +130,88 @@ async def test_rename_file_returns_async_task_contract(ensure_async_postgres, mo
     assert payload["saved"] is True
     assert payload["task_id"] == "mutation-2"
     assert payload["task_status"] == "running"
+
+
+@pytest.mark.anyio
+async def test_node_miss_enqueues_indexing_without_sync_scan(ensure_async_postgres, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, headers = await _get_client_and_headers_async()
+    project_id = _create_project(client, headers)
+
+    from app.api import nodes as nodes_api  # noqa: E402
+
+    submit_calls: list[dict] = []
+
+    async def _submit_mutation_indexing_async(**kwargs):
+        submit_calls.append(kwargs)
+        return "read-miss-task", "pending"
+
+    async def _forbidden_scan(*args, **kwargs):
+        _ = (args, kwargs)
+        raise AssertionError("_scan_files_async must not be called in read-path")
+
+    async def _forbidden_metrics(*args, **kwargs):
+        _ = (args, kwargs)
+        raise AssertionError("_update_graph_metrics_incremental_async must not be called in read-path")
+
+    monkeypatch.setattr(nodes_api, "submit_mutation_indexing_async", _submit_mutation_indexing_async)
+    monkeypatch.setattr(nodes_api, "_scan_files_async", _forbidden_scan)
+    monkeypatch.setattr(nodes_api, "_update_graph_metrics_incremental_async", _forbidden_metrics)
+
+    response = client.get(f"/api/nodes/{project_id}/repo/README.md/node", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["indexing_started"] is True
+    assert payload["node_available"] is False
+    assert payload["task_id"] == "read-miss-task"
+    assert payload["task_status"] == "pending"
+    assert "временно недоступен" in payload["message"]
+    assert len(submit_calls) == 1
+    assert submit_calls[0]["operation"] == "read_node_miss"
+    assert submit_calls[0]["rel_paths"] == ["repo/README.md"]
+
+
+@pytest.mark.anyio
+async def test_node_miss_burst_requests_keep_latency(ensure_async_postgres, monkeypatch: pytest.MonkeyPatch) -> None:
+    client, headers = await _get_client_and_headers_async()
+    project_id = _create_project(client, headers)
+
+    from app.api import nodes as nodes_api  # noqa: E402
+
+    async def _slow_submit_mutation_indexing_async(**kwargs):
+        _ = kwargs
+        await asyncio.sleep(0.05)
+        return "read-miss-task", "pending"
+
+    monkeypatch.setattr(nodes_api, "submit_mutation_indexing_async", _slow_submit_mutation_indexing_async)
+
+    ticks = 0
+    stop = asyncio.Event()
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while not stop.is_set():
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    async def _request_once() -> dict:
+        response = await asyncio.to_thread(
+            client.get,
+            f"/api/nodes/{project_id}/repo/README.md/node",
+            headers=headers,
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    ticker_task = asyncio.create_task(_ticker())
+    started = time.monotonic()
+    try:
+        payloads = await asyncio.wait_for(asyncio.gather(*[_request_once() for _ in range(20)]), timeout=5)
+    finally:
+        stop.set()
+        await ticker_task
+
+    elapsed = time.monotonic() - started
+    assert ticks > 10
+    assert elapsed < 2
+    assert all(p["indexing_started"] is True for p in payloads)
+    assert all(p["node_available"] is False for p in payloads)
