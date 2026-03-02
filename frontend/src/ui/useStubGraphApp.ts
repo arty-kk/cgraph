@@ -1202,10 +1202,17 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
       const contractRes = ctRes.status === 'fulfilled' ? ctRes.value : null
       if (ctRes.status !== 'fulfilled') {
         const e2 = extractError(ctRes.reason)
-        err = err ? `${err}\n${e2}` : e2
+        const shouldIgnoreContractError = Boolean(info?.indexing_started && info?.node_available === false)
+        if (!shouldIgnoreContractError) {
+          err = err ? `${err}\n${e2}` : e2
+        }
       }
 
-      if (err) setErrorMessage(err)
+      if (info?.indexing_started && info?.node_available === false) {
+        setErrorMessage(info.message || 'Индексация запущена, узел временно недоступен')
+      } else if (err) {
+        setErrorMessage(err)
+      }
       return { info, contract: contractRes }
     },
   })

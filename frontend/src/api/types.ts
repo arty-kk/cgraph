@@ -108,13 +108,18 @@ export type GraphData = {
 
 export type NodeInfo = {
   path: string
-  language: string
-  loc: number
-  fan_in: number
-  fan_out: number
-  complexity: number
-  scc_id: number
+  language?: string
+  loc?: number
+  fan_in?: number
+  fan_out?: number
+  complexity?: number
+  scc_id?: number
   status: string
+  node_available?: boolean
+  indexing_started?: boolean
+  message?: string
+  task_id?: string
+  task_status?: 'pending' | 'running' | 'succeeded' | 'failed'
 }
 
 export type NodeContract = Record<string, unknown>

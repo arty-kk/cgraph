@@ -22,8 +22,6 @@ from ..policy import require_project_access_async
 from ..scan import scan_files_async
 from ..services.file_mutation_service import (
     build_mutation_queued_response,
-    removed_neighbors,
-    scan_aborted,
 )
 from ..services.task_queue import submit_mutation_indexing_async
 from ..utils import (
@@ -256,41 +254,21 @@ async def node(request: Request, project_id: int, path: str):
         .first()
     )
     if not n:
-        try:
-            await _ensure_existing_file_async(abs_path, rel_norm)
-            reindexed = await _scan_files_async(project_id, project.org_id, root, [rel_norm])
-            if scan_aborted(reindexed):
-                logger.warning(
-                    "Scan aborted during node lookup",
-                    extra={"path": rel_norm, "operation": "node_lookup"},
-                )
-            else:
-                removed_neighbors_list = removed_neighbors(reindexed)
-                await _update_graph_metrics_incremental_async(
-                    request.state.db_session,
-                    project_id,
-                    [rel_norm],
-                    removed_edge_neighbors=removed_neighbors_list,
-                )
-        except ProjectLockTimeout as exc:
-            raise LockedError(
-                "Проект сейчас занят, повторите позже",
-                context={"project_id": project_id},
-            ) from exc
-        n = (
-            (
-                await request.state.db_session.execute(
-                    select(FileNode).where(
-                        FileNode.project_id == project_id,
-                        FileNode.path == rel_norm,
-                    )
-                )
-            )
-            .scalars()
-            .first()
+        task_id, task_status = await submit_mutation_indexing_async(
+            project_id=project_id,
+            org_id=project.org_id,
+            rel_paths=[rel_norm],
+            operation="read_node_miss",
         )
-        if not n:
-            raise NotFoundError("Узел не найден", context={"path": rel_norm})
+        return {
+            "path": rel_norm,
+            "status": "queued",
+            "node_available": False,
+            "indexing_started": True,
+            "message": "Индексация запущена, узел временно недоступен",
+            "task_id": task_id,
+            "task_status": task_status,
+        }
     return {
         "path": n.path,
         "language": n.language,
@@ -300,6 +278,7 @@ async def node(request: Request, project_id: int, path: str):
         "fan_out": n.fan_out,
         "scc_id": n.scc_id,
         "status": n.status,
+        "node_available": True,
     }
 
 
