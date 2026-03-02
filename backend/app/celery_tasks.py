@@ -1,18 +1,14 @@
 # backend/app/celery_tasks.py
 from __future__ import annotations
 
-import asyncio
+import base64
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Coroutine, TypeVar
-
-from celery.signals import worker_process_init, worker_process_shutdown
+from typing import Any
 
 from .async_db import AsyncSessionLocal
-from .celery_app import celery_app
 from .infra.fs_runtime import run_fs_io_async
-from .infra.runtime_lifecycle import build_cleanup_steps, build_startup_steps
 from .infra.redis_client import get_async_redis_client, init_redis_pool_async
 from .logging import get_logger
 from .models import Project, TaskJob
@@ -20,101 +16,11 @@ from .services.docs_service import build_project_docs_async
 from .services.file_mutation_service import run_mutation_indexing_async
 from .services.project_service import _scan_and_update_graph_async
 from .services.routing_calibration_service import calibrate_routing_policy_thresholds_async
-from .services.task_queue import cleanup_completed_jobs_async
+from .services.task_queue import cleanup_completed_jobs_async, get_task_transport_redis_client_async
 from .services.task_service import TaskRequest, run_task_async
 from .utils import normalize_project_root
 
 logger = get_logger("stubgraph.celery")
-
-_worker_runtime_started = False
-_worker_runner: asyncio.Runner | None = None
-T = TypeVar("T")
-
-def _ensure_worker_runner() -> asyncio.Runner:
-    global _worker_runner
-    runner = _worker_runner
-    if runner is None:
-        runner = asyncio.Runner()
-        _worker_runner = runner
-    return runner
-
-
-def _close_worker_runner() -> None:
-    global _worker_runner
-    runner = _worker_runner
-    _worker_runner = None
-    if runner is not None:
-        runner.close()
-
-
-def _run_async_entrypoint(
-    coro: Callable[..., Coroutine[Any, Any, T]],
-    *args: Any,
-    log_context: str,
-) -> T:
-    try:
-        runner = _ensure_worker_runner()
-        return runner.run(coro(*args))
-    except Exception:  # noqa: BLE001
-        logger.exception("Celery async entrypoint failed", extra={"entrypoint": log_context})
-        raise
-
-
-async def _startup_worker_resources_async() -> None:
-    for name, startup in build_startup_steps(role="worker"):
-        await startup()
-        logger.info("Celery worker startup step completed", extra={"step": name})
-
-
-async def _cleanup_worker_resources_async() -> None:
-    for name, cleanup in build_cleanup_steps(role="worker"):
-        try:
-            await cleanup()
-        except Exception:  # noqa: BLE001
-            logger.exception("Celery cleanup failed", extra={"step": name})
-
-
-@worker_process_init.connect
-def _on_worker_process_init(**_kwargs: Any) -> None:
-    global _worker_runtime_started
-    if _worker_runtime_started:
-        return
-    try:
-        _run_async_entrypoint(
-            _startup_worker_resources_async,
-            log_context="worker_process_init.startup",
-        )
-        _worker_runtime_started = True
-    except Exception:  # noqa: BLE001
-        logger.exception("Celery worker startup failed")
-        try:
-            _run_async_entrypoint(
-                _cleanup_worker_resources_async,
-                log_context="worker_process_init.cleanup_after_failure",
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("Celery worker cleanup after startup failure failed")
-        finally:
-            _worker_runtime_started = False
-            _close_worker_runner()
-        raise
-
-
-@worker_process_shutdown.connect
-def _on_worker_process_shutdown(**_kwargs: Any) -> None:
-    global _worker_runtime_started
-    if not _worker_runtime_started:
-        return
-    try:
-        _run_async_entrypoint(
-            _cleanup_worker_resources_async,
-            log_context="worker_process_shutdown.cleanup",
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("Celery worker cleanup failed")
-    finally:
-        _worker_runtime_started = False
-        _close_worker_runner()
 
 
 async def _set_job_status_async(
@@ -162,11 +68,6 @@ async def _scan_task_async(job_id: str, project_id: int, org_id: int) -> None:
     await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
 
 
-@celery_app.task(name="stubgraph.scan")
-def scan_task(job_id: str, project_id: int, org_id: int) -> None:
-    _run_async_entrypoint(_scan_task_async, job_id, project_id, org_id, log_context="scan_task")
-
-
 async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
     await _set_job_status_async(job_id, "running", org_id=org_id)
     try:
@@ -176,11 +77,6 @@ async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
         await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
         return
     await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
-
-
-@celery_app.task(name="stubgraph.docs")
-def docs_task(job_id: str, project_id: int, org_id: int) -> None:
-    _run_async_entrypoint(_docs_task_async, job_id, project_id, org_id, log_context="docs_task")
 
 
 async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
@@ -196,18 +92,6 @@ async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload
         await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
         return
     await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
-
-
-@celery_app.task(name="stubgraph.run_task")
-def run_task_job(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
-    _run_async_entrypoint(
-        _run_task_job_async,
-        job_id,
-        project_id,
-        org_id,
-        payload,
-        log_context="run_task_job",
-    )
 
 
 async def _mutation_indexing_task_async(
@@ -247,35 +131,68 @@ async def _mutation_indexing_task_async(
     await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
 
 
-@celery_app.task(name="stubgraph.mutation_indexing")
-def mutation_indexing_task(
-    job_id: str,
-    project_id: int,
-    org_id: int,
-    rel_paths: list[str],
-    operation: str,
-) -> None:
-    _run_async_entrypoint(
-        _mutation_indexing_task_async,
-        job_id,
-        project_id,
-        org_id,
-        rel_paths,
-        operation,
-        log_context="mutation_indexing_task",
-    )
-
-
-@celery_app.task(name="stubgraph.routing_calibration")
-def routing_calibration_task() -> dict:
+async def _routing_calibration_task_async() -> dict:
     try:
-        return _run_async_entrypoint(
-            calibrate_routing_policy_thresholds_async,
-            log_context="routing_calibration_task",
-        )
+        return await calibrate_routing_policy_thresholds_async()
     except Exception as exc:  # noqa: BLE001
         logger.exception("Routing calibration task failed")
         return {"updated": False, "reason": "error", "error": str(exc)}
+
+
+_TASK_DISPATCH: dict[str, Any] = {
+    "stubgraph.scan": _scan_task_async,
+    "stubgraph.docs": _docs_task_async,
+    "stubgraph.run_task": _run_task_job_async,
+    "stubgraph.mutation_indexing": _mutation_indexing_task_async,
+}
+
+
+async def execute_task_by_name_async(task_name: str, args: list[Any]) -> Any:
+    if task_name == "stubgraph.routing_calibration":
+        return await _routing_calibration_task_async()
+    handler = _TASK_DISPATCH.get(task_name)
+    if handler is None:
+        raise RuntimeError(f"Unsupported task: {task_name}")
+    await handler(*args)
+    return None
+
+
+def _decode_task_payload(payload_raw: str) -> tuple[str, list[Any]]:
+    payload = json.loads(payload_raw)
+    task_name = str(payload.get("headers", {}).get("task") or "")
+    body = payload.get("body")
+    body_encoding = payload.get("properties", {}).get("body_encoding")
+    if not task_name:
+        raise RuntimeError("Task payload missing task header")
+    if not isinstance(body, str):
+        raise RuntimeError("Task payload body must be str")
+    if body_encoding == "base64":
+        body_bytes = base64.b64decode(body.encode("ascii"))
+        body_data = json.loads(body_bytes.decode("utf-8"))
+    else:
+        body_data = json.loads(body)
+    if isinstance(body_data, list) and len(body_data) == 3 and isinstance(body_data[1], dict):
+        args = body_data[0]
+    else:
+        args = body_data
+    if not isinstance(args, list):
+        raise RuntimeError("Task payload args must be list")
+    return task_name, args
+
+
+async def consume_queued_task_payload_async(payload_raw: str) -> Any:
+    task_name, args = _decode_task_payload(payload_raw)
+    return await execute_task_by_name_async(task_name, args)
+
+
+async def consume_worker_queue_once_async(*, queue: str, timeout_seconds: int = 1) -> bool:
+    client = await get_task_transport_redis_client_async()
+    item = await client.brpop(queue, timeout=timeout_seconds)
+    if item is None:
+        return False
+    _, payload_raw = item
+    await consume_queued_task_payload_async(payload_raw)
+    return True
 
 
 async def _resolve_project_root_async(project_id: int, org_id: int) -> Path:
