@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import extract_token
 from ..errors import BadRequestError, UnauthorizedError
+from ..request_session import get_request_db_session
 from ..services.auth_service import (
     authenticate_user_async,
     bootstrap_user_async,
@@ -39,20 +40,23 @@ def _require_token(request: Request) -> str:
 
 @router.post("/bootstrap")
 async def bootstrap(request: Request, body: AuthCredentials):
-    user = await bootstrap_user_async(request.state.db_session, body.email, body.password)
+    session = await get_request_db_session(request)
+    user = await bootstrap_user_async(session, body.email, body.password)
     return {"id": user.id, "email": user.email}
 
 
 @router.post("/register")
 async def register(request: Request, body: AuthCredentials):
-    user = await register_user_async(request.state.db_session, body.email, body.password)
+    session = await get_request_db_session(request)
+    user = await register_user_async(session, body.email, body.password)
     return {"id": user.id, "email": user.email}
 
 
 @router.post("/login")
 async def login(request: Request, body: AuthCredentials):
-    user = await authenticate_user_async(request.state.db_session, body.email, body.password)
-    token, expires_at = await create_session_async(request.state.db_session, user.id)
+    session = await get_request_db_session(request)
+    user = await authenticate_user_async(session, body.email, body.password)
+    token, expires_at = await create_session_async(session, user.id)
     return {"token": token, "expires_at": expires_at.isoformat()}
 
 
@@ -69,22 +73,25 @@ async def logout(request: Request):
             raise BadRequestError("API-ключи не поддерживаются для logout endpoint")
         raise UnauthorizedError("Требуется токен")
 
-    await revoke_session_async(request.state.db_session, token)
+    session = await get_request_db_session(request)
+    await revoke_session_async(session, token)
     return {"ok": True}
 
 
 @router.get("/me")
 async def me(request: Request):
     token = _require_token(request)
-    user = await get_user_from_token_async(request.state.db_session, token)
+    session = await get_request_db_session(request)
+    user = await get_user_from_token_async(session, token)
     return {"id": user.id, "email": user.email}
 
 
 @router.post("/api-keys")
 async def create_key(request: Request, body: ApiKeyRequest):
     token = _require_token(request)
-    user = await get_user_from_token_async(request.state.db_session, token)
-    raw, key = await create_api_key_async(request.state.db_session, user.id, body.name)
+    session = await get_request_db_session(request)
+    user = await get_user_from_token_async(session, token)
+    raw, key = await create_api_key_async(session, user.id, body.name)
     return {
         "id": key.id,
         "name": key.name,
@@ -97,8 +104,9 @@ async def create_key(request: Request, body: ApiKeyRequest):
 @router.get("/api-keys")
 async def list_keys(request: Request):
     token = _require_token(request)
-    user = await get_user_from_token_async(request.state.db_session, token)
-    keys = await list_api_keys_async(request.state.db_session, user.id)
+    session = await get_request_db_session(request)
+    user = await get_user_from_token_async(session, token)
+    keys = await list_api_keys_async(session, user.id)
     return [
         {
             "id": k.id,
@@ -114,6 +122,7 @@ async def list_keys(request: Request):
 @router.delete("/api-keys/{key_id}")
 async def delete_key(request: Request, key_id: int):
     token = _require_token(request)
-    user = await get_user_from_token_async(request.state.db_session, token)
-    await revoke_api_key_async(request.state.db_session, user.id, key_id)
+    session = await get_request_db_session(request)
+    user = await get_user_from_token_async(session, token)
+    await revoke_api_key_async(session, user.id, key_id)
     return {"ok": True}

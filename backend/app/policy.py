@@ -13,14 +13,12 @@ from .auth import extract_token
 from .config import settings
 from .errors import BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError
 from .models import Organization, OrgMembership, Project, User
+from .request_session import get_request_db_session
 from .rbac import ORG_ROLES, role_at_least
 
 
 async def _get_request_session(request: Request):
-    session = getattr(request.state, "db_session", None)
-    if session is None:
-        raise RuntimeError("Async DB session is not available in request state")
-    return session
+    return await get_request_db_session(request)
 
 
 async def _resolve_org_id_unauth_async(request: Request) -> int:
