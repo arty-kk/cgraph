@@ -367,3 +367,21 @@ def test_project_summary_async_uses_cpu_runtime_not_asyncio_to_thread() -> None:
 
     assert not has_asyncio_to_thread, "_tool_project_summary_async must not call asyncio.to_thread"
     assert has_run_cpu_io_async, "_tool_project_summary_async must call run_cpu_io_async"
+
+def test_coverage_runtime_path_uses_run_cpu_io_async() -> None:
+    source = TOOLS_PATH.read_text(encoding="utf-8")
+    marker = "async def _compute_api_coverage_async"
+    assert marker in source
+    chunk = source.split(marker, 1)[1].split("\n\n\ndef _join", 1)[0]
+    assert "run_cpu_io_async" in chunk
+    assert 'operation="agentic.api_coverage_index"' in chunk
+    assert 'operation="agentic.api_coverage_match"' in chunk
+
+
+def test_compute_prefix_map_runtime_helper_exists_and_uses_cpu_runtime() -> None:
+    source = TOOLS_PATH.read_text(encoding="utf-8")
+    marker = "async def _compute_prefix_map"
+    assert marker in source
+    chunk = source.split(marker, 1)[1].split("\n\n\nasync def _compute_api_coverage_async", 1)[0]
+    assert "run_cpu_io_async" in chunk
+    assert 'operation="agentic.api_prefix_map"' in chunk

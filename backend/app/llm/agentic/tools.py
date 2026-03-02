@@ -1490,153 +1490,6 @@ def _candidate_keys_from_static_prefix(tokens: list[str]) -> list[str]:
     return keys
 
 
-async def _build_call_index(
-    project_id: int, *, prefix: str, method_filter: str = ""
-) -> tuple[list[ApiCall], dict[str, dict[str, list[dict]]]]:
-    # returns (calls, index[method][key] = list of {id, tokens, path_norm,
-    # source_path, lineno, path})
-    MAX_CALLS = 50_000
-    async with AsyncSessionLocal() as s:
-        q = select(ApiCall).where(ApiCall.project_id == project_id)
-        if method_filter:
-            q = q.where(ApiCall.method == method_filter)
-        rows = (
-            await s.execute(
-                q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(MAX_CALLS))
-            )
-        ).all()
-
-    idx: dict[str, dict[str, list[dict]]] = {}
-    filtered: list[ApiCall] = []
-    for c in rows:
-        pnorm = _normalize_http_path(str(c.path or ""))
-        if not pnorm:
-            continue
-        if prefix and not pnorm.startswith(prefix):
-            continue
-        tokens = split_skeleton(str(c.path_skeleton or ""))
-        if not tokens:
-            continue
-        m = str(c.method or "").upper()
-        if not m:
-            continue
-        filtered.append(c)
-        keys = _candidate_keys_from_path(pnorm)
-        if not keys:
-            keys = [""]
-        for k in keys:
-            idx.setdefault(m, {}).setdefault(k, []).append(
-                {
-                    "id": int(getattr(c, "id", 0) or 0),
-                    "tokens": tokens,
-                    "path_norm": pnorm,
-                    "path": str(c.path or ""),
-                    "source_path": str(c.source_path or ""),
-                    "lineno": int(c.lineno or 0),
-                    "client": str(c.client or ""),
-                }
-            )
-    return filtered, idx
-
-
-async def _build_route_patterns(
-    project_id: int,
-    *,
-    prefix: str,
-    method_filter: str = "",
-) -> tuple[list[ApiRoute], dict[int, list[dict]], dict[str, dict[str, list[dict]]]]:
-    # returns (routes, patterns_by_route_id, pattern_index[method][key] = list of patterns)
-    MAX_ROUTES = 50_000
-    prefix_map = await _compute_prefix_map(project_id)
-
-    # included set: (child_source_path, child_instance)
-    async with AsyncSessionLocal() as s:
-        inc_rows = (
-            await s.execute(
-                select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
-                    ApiInclude.project_id == project_id
-                )
-            )
-        ).all()
-    included: set[tuple[str, str]] = set()
-    for row in inc_rows:
-        if isinstance(row, (tuple, list)) and len(row) >= 2:
-            cs, ci = row[0], row[1]
-        else:
-            continue
-        if isinstance(cs, str) and cs and isinstance(ci, str) and ci:
-            included.add((cs, ci))
-
-    async with AsyncSessionLocal() as s:
-        q = select(ApiRoute).where(ApiRoute.project_id == project_id)
-        if method_filter:
-            q = q.where(ApiRoute.method == method_filter)
-        routes = (
-            await s.execute(
-                q.order_by(ApiRoute.source_path.asc(), ApiRoute.lineno.asc()).limit(int(MAX_ROUTES))
-            )
-        ).scalars().all()
-
-    patterns_by_route: dict[int, list[dict]] = {}
-    pindex: dict[str, dict[str, list[dict]]] = {}
-
-    for r in routes:
-        rid = int(getattr(r, "id", 0) or 0)
-        method = str(r.method or "").upper()
-        if not method:
-            continue
-        # Determine instance name from decorator base (e.g. "router.get" -> "router")
-        inst = ""
-        if isinstance(r.decorator, str) and "." in r.decorator:
-            inst = r.decorator.split(".", 1)[0]
-        inst = inst or ""
-
-        source_path = str(r.source_path or "")
-        # Reachability heuristic: included somewhere OR instance is "app"
-        reachable = bool((source_path, inst) in included) or (inst == "app")
-        prefs = prefix_map.get((source_path, inst)) if reachable else None
-        if not prefs:
-            prefs = [""]
-
-        local_path = str(r.path or "")
-        if not local_path.startswith("/"):
-            local_path = "/" + local_path if local_path else "/"
-
-        variants: list[dict] = []
-        for pfx in prefs:
-            full_path = _join(pfx, local_path)
-            if prefix and not full_path.startswith(prefix):
-                continue
-            skel = backend_path_skeleton(full_path)
-            tokens = split_skeleton(skel)
-            if not tokens:
-                continue
-            static_keys = _candidate_keys_from_static_prefix(tokens) or [""]
-            variants.append(
-                {
-                    "route_id": rid,
-                    "method": method,
-                    "source_path": source_path,
-                    "handler_name": str(r.handler_name or ""),
-                    "lineno": int(r.lineno or 0),
-                    "decorator": str(r.decorator or ""),
-                    "local_path": str(r.path or ""),
-                    "full_path": full_path,
-                    "skeleton": skel,
-                    "tokens": tokens,
-                    "reachable": bool(reachable),
-                    "static_keys": static_keys,
-                }
-            )
-            for k in static_keys:
-                pindex.setdefault(method, {}).setdefault(k, []).append(variants[-1])
-
-        if variants:
-            patterns_by_route[rid] = variants
-
-    return routes, patterns_by_route, pindex
-
-
 def _call_matches_any_pattern(call_tokens: list[str], candidates: list[dict]) -> bool:
     for p in candidates:
         rtoks = p.get("tokens") or []
@@ -1653,75 +1506,11 @@ def _pattern_matches_any_call(pattern_tokens: list[str], candidates: list[dict])
     return False
 
 
-async def _compute_api_coverage(project_id: int, *, prefix: str, method_filter: str = "") -> dict:
-    calls, call_index = await _build_call_index(project_id, prefix=prefix, method_filter=method_filter)
-    routes, patterns_by_route, pattern_index = await _build_route_patterns(
-        project_id, prefix=prefix, method_filter=method_filter
-    )
-
-    # matched calls
-    matched_call_ids: set[int] = set()
-    for c in calls:
-        cid = int(getattr(c, "id", 0) or 0)
-        m = str(c.method or "").upper()
-        pnorm = _normalize_http_path(str(c.path or ""))
-        ctoks = split_skeleton(str(c.path_skeleton or ""))
-        if not ctoks or not m or not pnorm:
-            continue
-        keys = _candidate_keys_from_path(pnorm) or [""]
-        candidates: list[dict] = []
-        for k in keys:
-            candidates.extend(pattern_index.get(m, {}).get(k, []))
-        if candidates and _call_matches_any_pattern(ctoks, candidates):
-            matched_call_ids.add(cid)
-
-    # matched routes (any variant matches any call)
-    matched_route_ids: set[int] = set()
-    for r in routes:
-        rid = int(getattr(r, "id", 0) or 0)
-        variants = patterns_by_route.get(rid) or []
-        if not variants:
-            continue
-        ok = False
-        for v in variants:
-            method = str(v.get("method") or "")
-            vtoks = v.get("tokens") or []
-            if not method or not isinstance(vtoks, list) or not vtoks:
-                continue
-            # gather call candidates by keys
-            candidates_calls: list[dict] = []
-            for k in v.get("static_keys") or [""]:
-                candidates_calls.extend(call_index.get(method, {}).get(k, []))
-            # fallback: allow broader match if no keyed candidates
-            if not candidates_calls:
-                candidates_calls = call_index.get(method, {}).get("", [])
-            if candidates_calls and _pattern_matches_any_call(vtoks, candidates_calls):
-                ok = True
-                break
-        if ok:
-            matched_route_ids.add(rid)
-
-    return {
-        "prefix": prefix,
-        "method_filter": method_filter,
-        "routes": routes,
-        "calls": calls,
-        "matched_route_ids": matched_route_ids,
-        "matched_call_ids": matched_call_ids,
-        "patterns_by_route": patterns_by_route,
-    }
-
-
-async def _compute_prefix_map_async(project_id: int) -> dict[tuple[str, str], list[str]]:
+def _compute_prefix_map_cpu(include_rows: list[ApiInclude]) -> dict[tuple[str, str], list[str]]:
     edges: dict[tuple[str, str], list[tuple[tuple[str, str], str]]] = {}
     nodes: set[tuple[str, str]] = set()
     child_set: set[tuple[str, str]] = set()
-
-    async with AsyncSessionLocal() as s:
-        rows = (
-            await s.execute(select(ApiInclude).where(ApiInclude.project_id == project_id))
-        ).scalars().all()
-    for inc in rows:
+    for inc in include_rows:
         ps = str(inc.parent_source_path or "")
         pi = str(inc.parent_instance or "")
         cs = str(inc.child_source_path or "")
@@ -1736,18 +1525,14 @@ async def _compute_prefix_map_async(project_id: int) -> dict[tuple[str, str], li
         child_set.add(child)
         edges.setdefault(parent, []).append((child, pref))
 
-    roots = [n for n in nodes if n not in child_set]
-    if not roots:
-        roots = list(nodes)
-
+    roots = [n for n in nodes if n not in child_set] or list(nodes)
     prefixes: dict[tuple[str, str], list[str]] = {r: [""] for r in roots}
-    max_depth = 8
     queue: list[tuple[tuple[str, str], str, int]] = [(r, "", 0) for r in roots]
     seen_states: set[tuple[tuple[str, str], str, int]] = set()
 
     while queue:
         node, cur_pref, depth = queue.pop(0)
-        if depth > max_depth:
+        if depth > 8:
             continue
         for child, add_pref in edges.get(node) or []:
             new_pref = _join(cur_pref, add_pref)
@@ -1764,40 +1549,21 @@ async def _compute_prefix_map_async(project_id: int) -> dict[tuple[str, str], li
     return prefixes
 
 
-async def _build_call_index_async(
-    project_id: int,
-    *,
-    prefix: str,
-    method_filter: str = "",
-) -> tuple[list[ApiCall], dict[str, dict[str, list[dict]]]]:
-    max_calls = 50_000
-    async with AsyncSessionLocal() as s:
-        q = select(ApiCall).where(ApiCall.project_id == project_id)
-        if method_filter:
-            q = q.where(ApiCall.method == method_filter)
-        rows = (
-            await s.execute(
-                q.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(int(max_calls))
-            )
-        ).scalars().all()
-
-    idx: dict[str, dict[str, list[dict]]] = {}
+def _build_call_index_cpu(
+    calls: list[ApiCall], *, prefix: str
+) -> tuple[list[ApiCall], dict[str, dict[str, list[dict[str, Any]]]]]:
+    idx: dict[str, dict[str, list[dict[str, Any]]]] = {}
     filtered: list[ApiCall] = []
-    for c in rows:
+    for c in calls:
         pnorm = _normalize_http_path(str(c.path or ""))
-        if not pnorm:
-            continue
-        if prefix and not pnorm.startswith(prefix):
+        if not pnorm or (prefix and not pnorm.startswith(prefix)):
             continue
         tokens = split_skeleton(str(c.path_skeleton or ""))
-        if not tokens:
-            continue
         m = str(c.method or "").upper()
-        if not m:
+        if not tokens or not m:
             continue
         filtered.append(c)
-        keys = _candidate_keys_from_path(pnorm) or [""]
-        for k in keys:
+        for k in _candidate_keys_from_path(pnorm) or [""]:
             idx.setdefault(m, {}).setdefault(k, []).append(
                 {
                     "id": int(getattr(c, "id", 0) or 0),
@@ -1812,45 +1578,23 @@ async def _build_call_index_async(
     return filtered, idx
 
 
-async def _build_route_patterns_async(
-    project_id: int,
+def _build_route_patterns_cpu(
+    routes: list[ApiRoute],
     *,
+    includes: list[ApiInclude],
     prefix: str,
-    method_filter: str = "",
 ) -> tuple[list[ApiRoute], dict[int, list[dict]], dict[str, dict[str, list[dict]]]]:
-    max_routes = 50_000
-    prefix_map = await _compute_prefix_map_async(project_id)
-
-    async with AsyncSessionLocal() as s:
-        inc_rows = (
-            await s.execute(
-                select(ApiInclude.child_source_path, ApiInclude.child_instance).where(
-                    ApiInclude.project_id == project_id
-                )
-            )
-        ).all()
-    included: set[tuple[str, str]] = set()
-    for row in inc_rows:
-        if isinstance(row, (tuple, list)) and len(row) >= 2:
-            cs, ci = row[0], row[1]
-        else:
-            continue
-        if isinstance(cs, str) and cs and isinstance(ci, str) and ci:
-            included.add((cs, ci))
-
-    async with AsyncSessionLocal() as s:
-        q = select(ApiRoute).where(ApiRoute.project_id == project_id)
-        if method_filter:
-            q = q.where(ApiRoute.method == method_filter)
-        routes = (
-            await s.execute(
-                q.order_by(ApiRoute.source_path.asc(), ApiRoute.lineno.asc()).limit(int(max_routes))
-            )
-        ).scalars().all()
-
+    prefix_map = _compute_prefix_map_cpu(includes)
+    included: set[tuple[str, str]] = {
+        (str(inc.child_source_path), str(inc.child_instance))
+        for inc in includes
+        if isinstance(inc.child_source_path, str)
+        and inc.child_source_path
+        and isinstance(inc.child_instance, str)
+        and inc.child_instance
+    }
     patterns_by_route: dict[int, list[dict]] = {}
     pindex: dict[str, dict[str, list[dict]]] = {}
-
     for r in routes:
         rid = int(getattr(r, "id", 0) or 0)
         method = str(r.method or "").upper()
@@ -1903,23 +1647,36 @@ async def _build_route_patterns_async(
     return routes, patterns_by_route, pindex
 
 
-async def _compute_api_coverage_async(
-    project_id: int,
+def _build_api_coverage_indexes_cpu(
     *,
+    calls_raw: list[ApiCall],
+    routes_raw: list[ApiRoute],
+    includes: list[ApiInclude],
     prefix: str,
-    method_filter: str = "",
-) -> dict:
-    calls, call_index = await _build_call_index_async(
-        project_id,
+) -> tuple[
+    list[ApiCall],
+    dict[str, dict[str, list[dict[str, Any]]]],
+    list[ApiRoute],
+    dict[int, list[dict]],
+    dict[str, dict[str, list[dict]]],
+]:
+    calls, call_index = _build_call_index_cpu(calls_raw, prefix=prefix)
+    routes, patterns_by_route, pattern_index = _build_route_patterns_cpu(
+        routes_raw,
+        includes=includes,
         prefix=prefix,
-        method_filter=method_filter,
     )
-    routes, patterns_by_route, pattern_index = await _build_route_patterns_async(
-        project_id,
-        prefix=prefix,
-        method_filter=method_filter,
-    )
+    return calls, call_index, routes, patterns_by_route, pattern_index
 
+
+def _match_api_coverage_cpu(
+    *,
+    calls: list[ApiCall],
+    call_index: dict[str, dict[str, list[dict[str, Any]]]],
+    routes: list[ApiRoute],
+    patterns_by_route: dict[int, list[dict]],
+    pattern_index: dict[str, dict[str, list[dict]]],
+) -> tuple[set[int], set[int]]:
     matched_call_ids: set[int] = set()
     for c in calls:
         cid = int(getattr(c, "id", 0) or 0)
@@ -1928,9 +1685,8 @@ async def _compute_api_coverage_async(
         ctoks = split_skeleton(str(c.path_skeleton or ""))
         if not ctoks or not m or not pnorm:
             continue
-        keys = _candidate_keys_from_path(pnorm) or [""]
         candidates: list[dict] = []
-        for k in keys:
+        for k in _candidate_keys_from_path(pnorm) or [""]:
             candidates.extend(pattern_index.get(m, {}).get(k, []))
         if candidates and _call_matches_any_pattern(ctoks, candidates):
             matched_call_ids.add(cid)
@@ -1939,8 +1695,6 @@ async def _compute_api_coverage_async(
     for r in routes:
         rid = int(getattr(r, "id", 0) or 0)
         variants = patterns_by_route.get(rid) or []
-        if not variants:
-            continue
         ok = False
         for v in variants:
             method = str(v.get("method") or "")
@@ -1957,6 +1711,96 @@ async def _compute_api_coverage_async(
                 break
         if ok:
             matched_route_ids.add(rid)
+    return matched_route_ids, matched_call_ids
+
+
+async def _load_api_coverage_inputs_async(
+    project_id: int, *, method_filter: str
+) -> tuple[list[ApiCall], list[ApiRoute], list[ApiInclude], dict[str, Any]]:
+    async with AsyncSessionLocal() as s:
+        q_calls = select(ApiCall).where(ApiCall.project_id == project_id)
+        q_routes = select(ApiRoute).where(ApiRoute.project_id == project_id)
+        if method_filter:
+            q_calls = q_calls.where(ApiCall.method == method_filter)
+            q_routes = q_routes.where(ApiRoute.method == method_filter)
+        calls_rows = (
+            await s.execute(
+                q_calls.order_by(ApiCall.source_path.asc(), ApiCall.lineno.asc()).limit(
+                    int(_API_COVERAGE_MAX_CALLS + 1)
+                )
+            )
+        ).scalars().all()
+        route_rows = (
+            await s.execute(
+                q_routes.order_by(ApiRoute.source_path.asc(), ApiRoute.lineno.asc()).limit(
+                    int(_API_COVERAGE_MAX_ROUTES + 1)
+                )
+            )
+        ).scalars().all()
+        include_rows = (
+            await s.execute(select(ApiInclude).where(ApiInclude.project_id == project_id))
+        ).scalars().all()
+
+    calls_truncated = len(calls_rows) > _API_COVERAGE_MAX_CALLS
+    routes_truncated = len(route_rows) > _API_COVERAGE_MAX_ROUTES
+    calls = calls_rows[:_API_COVERAGE_MAX_CALLS]
+    routes = route_rows[:_API_COVERAGE_MAX_ROUTES]
+    reasons: list[str] = []
+    if calls_truncated:
+        reasons.append("max_calls_reached")
+    if routes_truncated:
+        reasons.append("max_routes_reached")
+    return calls, routes, include_rows, {
+        "max_calls": int(_API_COVERAGE_MAX_CALLS),
+        "max_routes": int(_API_COVERAGE_MAX_ROUTES),
+        "calls_selected": int(len(calls)),
+        "routes_selected": int(len(routes)),
+        "calls_truncated": bool(calls_truncated),
+        "routes_truncated": bool(routes_truncated),
+        "degraded": bool(calls_truncated or routes_truncated),
+        "degraded_reasons": reasons,
+    }
+
+
+async def _compute_prefix_map(project_id: int) -> dict[tuple[str, str], list[str]]:
+    async with AsyncSessionLocal() as s:
+        include_rows = (
+            await s.execute(select(ApiInclude).where(ApiInclude.project_id == project_id))
+        ).scalars().all()
+    return await run_cpu_io_async(
+        _compute_prefix_map_cpu,
+        include_rows=include_rows,
+        operation="agentic.api_prefix_map",
+    )
+
+
+async def _compute_api_coverage_async(
+    project_id: int,
+    *,
+    prefix: str,
+    method_filter: str = "",
+) -> dict:
+    calls_raw, routes_raw, includes, limits = await _load_api_coverage_inputs_async(
+        project_id,
+        method_filter=method_filter,
+    )
+    calls, call_index, routes, patterns_by_route, pattern_index = await run_cpu_io_async(
+        _build_api_coverage_indexes_cpu,
+        calls_raw=calls_raw,
+        routes_raw=routes_raw,
+        includes=includes,
+        prefix=prefix,
+        operation="agentic.api_coverage_index",
+    )
+    matched_route_ids, matched_call_ids = await run_cpu_io_async(
+        _match_api_coverage_cpu,
+        calls=calls,
+        call_index=call_index,
+        routes=routes,
+        patterns_by_route=patterns_by_route,
+        pattern_index=pattern_index,
+        operation="agentic.api_coverage_match",
+    )
 
     return {
         "prefix": prefix,
@@ -1966,6 +1810,7 @@ async def _compute_api_coverage_async(
         "matched_route_ids": matched_route_ids,
         "matched_call_ids": matched_call_ids,
         "patterns_by_route": patterns_by_route,
+        "limits": limits,
     }
 
 
@@ -1985,62 +1830,6 @@ def _join(prefix: str, path: str) -> str:
     if pfx == "/":
         return pth
     return pfx + pth
-
-
-async def _compute_prefix_map(project_id: int) -> dict[tuple[str, str], list[str]]:
-    edges: dict[tuple[str, str], list[tuple[tuple[str, str], str]]] = {}
-    nodes: set[tuple[str, str]] = set()
-    child_set: set[tuple[str, str]] = set()
-
-    async with AsyncSessionLocal() as s:
-        rows = (
-            await s.execute(select(ApiInclude).where(ApiInclude.project_id == project_id))
-        ).all()
-    for inc in rows:
-        ps = str(inc.parent_source_path or "")
-        pi = str(inc.parent_instance or "")
-        cs = str(inc.child_source_path or "")
-        ci = str(inc.child_instance or "")
-        if not ps or not pi or not cs or not ci:
-            continue
-        parent = (ps, pi)
-        child = (cs, ci)
-        pref = str(inc.prefix or "")
-        nodes.add(parent)
-        nodes.add(child)
-        child_set.add(child)
-        edges.setdefault(parent, []).append((child, pref))
-
-    roots = [n for n in nodes if n not in child_set]
-    if not roots:
-        roots = list(nodes)
-
-    prefixes: dict[tuple[str, str], list[str]] = {r: [""] for r in roots}
-    MAX_DEPTH = 8
-    queue: list[tuple[tuple[str, str], str, int]] = [(r, "", 0) for r in roots]
-    seen_states: set[tuple[tuple[str, str], str, int]] = set()
-
-    while queue:
-        node, cur_pref, depth = queue.pop(0)
-        if depth > MAX_DEPTH:
-            continue
-        nxt_edges = edges.get(node) or []
-        for child, add_pref in nxt_edges:
-            new_pref = _join(cur_pref, add_pref)
-            lst = prefixes.setdefault(child, [])
-            if new_pref not in lst:
-                lst.append(new_pref)
-                if len(lst) > 12:
-                    lst[:] = lst[:12]
-            st = (child, new_pref, depth + 1)
-            if st in seen_states:
-                continue
-            seen_states.add(st)
-            queue.append((child, new_pref, depth + 1))
-
-    return prefixes
-
-
 
 
 async def _tool_get_node_async(session: AsyncSession, project_id: int, root: Path, args: dict) -> dict:
@@ -2404,6 +2193,7 @@ async def _tool_api_coverage_summary_async(session: AsyncSession, project_id: in
     matched_routes: set[int] = cov["matched_route_ids"]
     matched_calls: set[int] = cov["matched_call_ids"]
     patterns_by_route: dict[int, list[dict]] = cov["patterns_by_route"]
+    limits = cov["limits"]
 
     total_routes = len(routes)
     total_calls = len(calls)
@@ -2479,6 +2269,7 @@ async def _tool_api_coverage_summary_async(session: AsyncSession, project_id: in
                 "unmatched_calls": examples_calls,
                 "examples_limit": int(limit_examples),
             },
+            "analysis_meta": limits,
             "notes": (
                 "Matching is template-based. For backend routes, include_router resolution is "
                 "best-effort. Routes may be legitimately server-only; unmatched does not always "
@@ -2498,6 +2289,7 @@ async def _tool_unmatched_routes_async(session: AsyncSession, project_id: int, a
     routes: list[ApiRoute] = cov["routes"]
     matched_routes: set[int] = cov["matched_route_ids"]
     patterns_by_route: dict[int, list[dict]] = cov["patterns_by_route"]
+    limits = cov["limits"]
 
     out: list[dict] = []
     for r in routes:
@@ -2551,6 +2343,7 @@ async def _tool_unmatched_routes_async(session: AsyncSession, project_id: int, a
             "count": len(out),
             "limit": int(limit),
             "routes": out,
+            "analysis_meta": limits,
         }
     )
 
@@ -2564,6 +2357,7 @@ async def _tool_unmatched_calls_async(session: AsyncSession, project_id: int, ar
     cov = await _compute_api_coverage_async(project_id, prefix=prefix, method_filter=method_filter)
     calls: list[ApiCall] = cov["calls"]
     matched_calls: set[int] = cov["matched_call_ids"]
+    limits = cov["limits"]
 
     out: list[dict] = []
     for c in calls:
@@ -2590,6 +2384,7 @@ async def _tool_unmatched_calls_async(session: AsyncSession, project_id: int, ar
             "count": len(out),
             "limit": int(limit),
             "calls": out,
+            "analysis_meta": limits,
         }
     )
 
