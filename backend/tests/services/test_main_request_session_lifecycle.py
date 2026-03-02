@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app import main
+from app import request_session
 
 
 async def _noop_async():
@@ -76,11 +77,11 @@ def _patch_runtime(monkeypatch):
     monkeypatch.setattr(main.settings, "openai_api_key", "")
 
 
-def test_api_prefixes_share_single_request_scoped_session(monkeypatch):
+def test_api_prefixes_do_not_open_session_without_db_access(monkeypatch):
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(main.settings, "auth_enabled", False)
     session_factory = _SessionFactory()
-    monkeypatch.setattr(main, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(request_session, "AsyncSessionLocal", session_factory)
 
     async def _probe(request: Request):
         return {"session_attached": hasattr(request.state, "db_session")}
@@ -90,16 +91,50 @@ def test_api_prefixes_share_single_request_scoped_session(monkeypatch):
             assert client.get("/api/_session_probe").status_code == 200
             assert client.get("/api/v1/_session_probe").status_code == 200
 
-    assert session_factory.counters["created"] == 2
-    assert session_factory.counters["enter"] == 2
-    assert session_factory.counters["exit"] == 2
+    assert session_factory.counters["created"] == 0
+    assert session_factory.counters["enter"] == 0
+    assert session_factory.counters["exit"] == 0
 
 
-def test_session_rolls_back_when_error_happens_before_auth_lookup(monkeypatch):
+def test_options_requests_do_not_create_session(monkeypatch):
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(main.settings, "auth_enabled", True)
     session_factory = _SessionFactory()
-    monkeypatch.setattr(main, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(request_session, "AsyncSessionLocal", session_factory)
+
+    async def _probe(_request: Request):
+        return {"ok": True}
+
+    with _temporary_get("/api/_options_probe", _probe):
+        with TestClient(main.app) as client:
+            response = client.options("/api/_options_probe")
+
+    assert response.status_code == 405
+    assert session_factory.counters["created"] == 0
+
+
+def test_public_auth_route_without_db_access_does_not_create_session(monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(main.settings, "auth_enabled", True)
+    session_factory = _SessionFactory()
+    monkeypatch.setattr(request_session, "AsyncSessionLocal", session_factory)
+
+    async def _public_probe(_request: Request):
+        return {"ok": True}
+
+    with _temporary_get("/api/auth/_public_probe", _public_probe):
+        with TestClient(main.app) as client:
+            response = client.get("/api/auth/_public_probe")
+
+    assert response.status_code == 200
+    assert session_factory.counters["created"] == 0
+
+
+def test_session_not_created_when_error_happens_before_auth_lookup(monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(main.settings, "auth_enabled", True)
+    session_factory = _SessionFactory()
+    monkeypatch.setattr(request_session, "AsyncSessionLocal", session_factory)
 
     async def _protected(_request: Request):
         return {"ok": True}
@@ -115,15 +150,16 @@ def test_session_rolls_back_when_error_happens_before_auth_lookup(monkeypatch):
             response = client.get("/api/_pre_auth_failure")
 
     assert response.status_code == 500
-    assert session_factory.counters["rollback"] == 1
-    assert session_factory.counters["exit"] == 1
+    assert session_factory.counters["created"] == 0
+    assert session_factory.counters["rollback"] == 0
+    assert session_factory.counters["exit"] == 0
 
 
 def test_session_rolls_back_when_error_happens_after_auth(monkeypatch):
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(main.settings, "auth_enabled", True)
     session_factory = _SessionFactory()
-    monkeypatch.setattr(main, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(request_session, "AsyncSessionLocal", session_factory)
 
     async def _boom(_request: Request):
         raise RuntimeError("post-auth")
@@ -147,7 +183,7 @@ def test_concurrent_and_prefixed_auth_requests_use_single_session_per_request(mo
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(main.settings, "auth_enabled", True)
     session_factory = _SessionFactory()
-    monkeypatch.setattr(main, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(request_session, "AsyncSessionLocal", session_factory)
 
     async def _ok(_request: Request):
         return {"ok": True}

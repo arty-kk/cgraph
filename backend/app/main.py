@@ -15,22 +15,16 @@ from .api.nodes import router as nodes_router
 from .api.orgs import router as orgs_router
 from .api.projects import router as projects_router
 from .api.tasks import router as tasks_router
-from .async_db import AsyncSessionLocal
 from .auth import extract_token
 from .config import settings
 from .errors import install_exception_handlers
 from .infra.rate_limit import allow_request_async, rate_limit_response
 from .infra.runtime_lifecycle import build_cleanup_steps, build_startup_steps
 from .logging import log_requests, setup_logging
+from .request_session import get_request_db_session
 from .services.auth_service import get_user_from_token_async
 
 logger = logging.getLogger(__name__)
-
-
-def _should_attach_db_session(path: str) -> bool:
-    if path == "/health":
-        return False
-    return path.startswith("/api") or path.startswith("/api/v1")
 
 
 @asynccontextmanager
@@ -76,33 +70,52 @@ async def rate_limit(request: Request, call_next):
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
     path = request.url.path
-    if not path.startswith("/api"):
+    # DB session lifecycle is lazy: request.state.db_session may be absent
+    # until get_request_db_session(request) is called by middleware/dependency/handler.
+    if path == "/health" or not path.startswith("/api"):
+        return await call_next(request)
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    if path.startswith("/api/auth") or path.startswith("/api/v1/auth"):
+        return await call_next(request)
+    if not settings.auth_enabled:
         return await call_next(request)
 
-    async with AsyncSessionLocal() as session:
-        request.state.db_session = session
-        try:
-            if not settings.auth_enabled:
-                return await call_next(request)
-            if request.method == "OPTIONS":
-                return await call_next(request)
-            if path.startswith("/api/auth") or path.startswith("/api/v1/auth"):
-                return await call_next(request)
+    token = extract_token(request)
+    if not token:
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
+        )
 
-            token = extract_token(request)
-            if not token:
-                return JSONResponse(
-                    status_code=401,
-                    content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
-                )
+    session = await get_request_db_session(request)
+    user = await get_user_from_token_async(session, token)
+    request.state.user = user
+    return await call_next(request)
 
-            user = await get_user_from_token_async(request.state.db_session, token)
-            request.state.user = user
-            return await call_next(request)
-        except Exception:
+
+@app.middleware("http")
+async def request_db_session_lifecycle(request: Request, call_next):
+    session_ctx = None
+    session = None
+    exc_type = None
+    exc = None
+    tb = None
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as err:
+        exc_type = type(err)
+        exc = err
+        tb = err.__traceback__
+        session = getattr(request.state, "db_session", None)
+        if session is not None:
             await session.rollback()
-            raise
-
+        raise
+    finally:
+        session_ctx = getattr(request.state, "db_session_ctx", None)
+        if session_ctx is not None:
+            await session_ctx.__aexit__(exc_type, exc, tb)
 
 
 app.include_router(projects_router, prefix="/api")
