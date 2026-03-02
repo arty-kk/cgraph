@@ -143,6 +143,10 @@ class Settings(BaseSettings):
         default=4,
         alias="STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS",
     )
+    worker_runtime_concurrency: int = Field(
+        default=3,
+        alias="STUBGRAPH_WORKER_RUNTIME_CONCURRENCY",
+    )
 
     scan_stage_batch_size: int = Field(
         default=128,
@@ -556,6 +560,8 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_CONCURRENCY должен быть положительным")
         if self.task_queue_producer_workers <= 0:
             raise ValueError("STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS должен быть положительным")
+        if self.worker_runtime_concurrency <= 0:
+            raise ValueError("STUBGRAPH_WORKER_RUNTIME_CONCURRENCY должен быть положительным")
         if self.scan_stage_batch_size < 1:
             raise ValueError("STUBGRAPH_SCAN_STAGE_BATCH_SIZE должен быть >= 1")
         if self.scan_stage_max_parallel < 1:

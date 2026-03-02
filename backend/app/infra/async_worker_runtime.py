@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 
-from ..celery_tasks import consume_worker_queue_once_async
+from ..celery_tasks import consume_queued_task_payload_async
 from ..config import settings
 from ..logging import get_logger
+from ..services.task_queue import get_task_transport_redis_client_async
 from .runtime_lifecycle import build_cleanup_steps, build_startup_steps
 
 logger = get_logger("stubgraph.async_worker_runtime")
 
-_worker_runtime_task: asyncio.Task[None] | None = None
+_worker_runtime_tasks: set[asyncio.Task[None]] = set()
 _worker_runtime_stop: asyncio.Event | None = None
 _worker_runtime_lock: asyncio.Lock | None = None
 _worker_runtime_lock_loop: asyncio.AbstractEventLoop | None = None
@@ -22,6 +23,14 @@ def _get_runtime_lock() -> asyncio.Lock:
         _worker_runtime_lock = asyncio.Lock()
         _worker_runtime_lock_loop = loop
     return _worker_runtime_lock
+
+
+def _build_worker_queues() -> list[str]:
+    default_queue = (settings.celery_queue_default or "medium").strip() or "medium"
+    queues = ["light", "medium", "heavy"]
+    if default_queue not in queues:
+        queues.append(default_queue)
+    return queues
 
 
 async def _startup_worker_resources_async() -> None:
@@ -38,44 +47,58 @@ async def _cleanup_worker_resources_async() -> None:
             logger.exception("Async worker cleanup failed", extra={"step": name})
 
 
-async def _consumer_loop_async(stop_event: asyncio.Event) -> None:
-    default_queue = (settings.celery_queue_default or "medium").strip() or "medium"
-    queues = ["light", "medium", "heavy"]
-    if default_queue not in queues:
-        queues.append(default_queue)
+async def _consume_once_safe_async(*, queues: list[str], timeout_seconds: int = 1) -> bool:
+    try:
+        client = await get_task_transport_redis_client_async()
+        item = await client.brpop(queues, timeout=timeout_seconds)
+        if item is None:
+            return False
+        _, payload_raw = item
+        await consume_queued_task_payload_async(payload_raw)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("Async worker consumer failed")
+        return False
+
+
+async def _consumer_loop_async(*, stop_event: asyncio.Event, queues: list[str]) -> None:
     while not stop_event.is_set():
-        consumed = False
-        for queue in queues:
-            consumed = await consume_worker_queue_once_async(queue=queue, timeout_seconds=1)
-            if consumed or stop_event.is_set():
-                break
+        consumed = await _consume_once_safe_async(queues=queues, timeout_seconds=1)
         if not consumed:
             await asyncio.sleep(0.05)
 
 
 async def init_worker_runtime_async() -> None:
-    global _worker_runtime_task, _worker_runtime_stop
+    global _worker_runtime_stop
     async with _get_runtime_lock():
-        if _worker_runtime_task is not None:
+        if _worker_runtime_tasks:
             return
         await _startup_worker_resources_async()
         stop_event = asyncio.Event()
+        queues = _build_worker_queues()
+        tasks = {
+            asyncio.create_task(
+                _consumer_loop_async(stop_event=stop_event, queues=queues),
+                name=f"async-worker-consumer-loop-{idx}",
+            )
+            for idx in range(settings.worker_runtime_concurrency)
+        }
         _worker_runtime_stop = stop_event
-        _worker_runtime_task = asyncio.create_task(
-            _consumer_loop_async(stop_event), name="async-worker-consumer-loop"
-        )
+        _worker_runtime_tasks.clear()
+        _worker_runtime_tasks.update(tasks)
 
 
 async def close_worker_runtime_async() -> None:
-    global _worker_runtime_task, _worker_runtime_stop
+    global _worker_runtime_stop
     async with _get_runtime_lock():
-        task = _worker_runtime_task
         stop_event = _worker_runtime_stop
-        _worker_runtime_task = None
+        tasks = tuple(_worker_runtime_tasks)
         _worker_runtime_stop = None
+        _worker_runtime_tasks.clear()
     if stop_event is not None:
         stop_event.set()
-    if task is not None:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    if tasks:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     await _cleanup_worker_resources_async()
