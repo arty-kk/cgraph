@@ -2587,7 +2587,7 @@ async def _tool_search_text_async(
     max_matches = _clamp_int(args.get("max_matches"), 50, 1, 500)
     context_chars = _clamp_int(args.get("context_chars"), 160, 40, 400)
     scan_max_chars = max(1, min(int(max_file_chars), 200_000))
-    index_scan_max_chars = min(SEARCH_INDEX_MAX_CHARS, scan_max_chars)
+    index_scan_max_chars = max(scan_max_chars, max(1, int(SEARCH_INDEX_MAX_CHARS)))
 
     paths: list[str]
     try:
@@ -2615,75 +2615,127 @@ async def _tool_search_text_async(
     matched_files: set[str] = set()
     truncated_files = 0
 
-    for p in paths:
-        remaining_matches = max_matches - len(matches)
-        if remaining_matches <= 0:
-            break
+    read_stage_limit = max(1, min(int(getattr(settings, "llm_agentic_fs_ops_concurrency", 4)), 64))
+    cpu_stage_limit = max(1, min(read_stage_limit, 32))
+    read_stage_semaphore = asyncio.Semaphore(read_stage_limit)
+    cpu_stage_semaphore = asyncio.Semaphore(cpu_stage_limit)
+    pipeline_window = max(read_stage_limit, cpu_stage_limit)
 
-        def _read_capped(abs_path: Path) -> str:
-            with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                return f.read(int(scan_max_chars) + 1)
+    def _read_with_cap(abs_path: Path, cap: int) -> str:
+        with abs_path.open("r", encoding="utf-8", errors="replace") as f:
+            return f.read(int(cap) + 1)
 
-        read_result = await _read_file_under_root_async(root, p, _read_capped, meta=runtime_meta)
+    async def _process_path(rel_path: str) -> tuple[str, SearchChunkResult, bool] | None:
+        async with read_stage_semaphore:
+            read_result = await _read_file_under_root_async(
+                root,
+                rel_path,
+                lambda abs_path: _read_with_cap(abs_path, int(scan_max_chars)),
+                meta=runtime_meta,
+            )
         if isinstance(read_result, dict):
-            continue
+            return None
+
         rel_norm, text = read_result
-        scanned += 1
         truncated_initial = len(text) > scan_max_chars
         if truncated_initial:
             text = text[:scan_max_chars]
 
-        truncated = truncated_initial
-        cpu_result = await _search_text_cpu_async(
-            meta=runtime_meta,
-            payload=text,
-            rel_path=rel_norm,
-            needle=needle,
-            case_sensitive=case_sensitive,
-            truncated_file=truncated,
-            context_chars=context_chars,
-            max_matches=remaining_matches,
-        )
-        matches.extend(cpu_result.matches)
-        matched_files.update(cpu_result.matched_files)
-
-        if truncated_initial and not cpu_result.found_any and scan_max_chars < index_scan_max_chars:
-            remaining_matches = max_matches - len(matches)
-            if remaining_matches <= 0:
-                break
-
-            def _read_capped_extended(abs_path: Path) -> str:
-                with abs_path.open("r", encoding="utf-8", errors="replace") as f:
-                    return f.read(int(index_scan_max_chars) + 1)
-
-            read_result_extended = await _read_file_under_root_async(
-                root,
-                p,
-                _read_capped_extended,
-                meta=runtime_meta,
-            )
-            if isinstance(read_result_extended, dict):
-                continue
-            _rel_norm_extended, text = read_result_extended
-            truncated = len(text) > index_scan_max_chars
-            if truncated:
-                text = text[:index_scan_max_chars]
+        async with cpu_stage_semaphore:
             cpu_result = await _search_text_cpu_async(
                 meta=runtime_meta,
                 payload=text,
                 rel_path=rel_norm,
                 needle=needle,
                 case_sensitive=case_sensitive,
-                truncated_file=truncated,
+                truncated_file=truncated_initial,
                 context_chars=context_chars,
-                max_matches=remaining_matches,
+                max_matches=max_matches,
             )
-            matches.extend(cpu_result.matches)
-            matched_files.update(cpu_result.matched_files)
 
-        if truncated:
-            truncated_files += 1
+        truncated = truncated_initial
+        if truncated_initial and not cpu_result.found_any and scan_max_chars < index_scan_max_chars:
+            async with read_stage_semaphore:
+                read_result_extended = await _read_file_under_root_async(
+                    root,
+                    rel_path,
+                    lambda abs_path: _read_with_cap(abs_path, int(index_scan_max_chars)),
+                    meta=runtime_meta,
+                )
+            if not isinstance(read_result_extended, dict):
+                _rel_norm_extended, text_extended = read_result_extended
+                truncated_extended = len(text_extended) > index_scan_max_chars
+                if truncated_extended:
+                    text_extended = text_extended[:index_scan_max_chars]
+                truncated = bool(truncated_initial or truncated_extended)
+                async with cpu_stage_semaphore:
+                    cpu_result = await _search_text_cpu_async(
+                        meta=runtime_meta,
+                        payload=text_extended,
+                        rel_path=rel_norm,
+                        needle=needle,
+                        case_sensitive=case_sensitive,
+                        truncated_file=truncated,
+                        context_chars=context_chars,
+                        max_matches=max_matches,
+                    )
 
+        return rel_norm, cpu_result, truncated
+
+    next_schedule = 0
+    next_merge = 0
+    stop_requested = False
+    pending: dict[int, asyncio.Task[tuple[str, SearchChunkResult, bool] | None]] = {}
+    ready: dict[int, tuple[str, SearchChunkResult, bool] | None] = {}
+
+    try:
+        while True:
+            while (
+                not stop_requested
+                and next_schedule < len(paths)
+                and len(pending) < pipeline_window
+            ):
+                pending[next_schedule] = asyncio.create_task(_process_path(paths[next_schedule]))
+                next_schedule += 1
+
+            while next_merge in ready:
+                row = ready.pop(next_merge)
+                next_merge += 1
+                if row is None:
+                    continue
+                rel_norm, cpu_result, truncated = row
+                scanned += 1
+                if truncated:
+                    truncated_files += 1
+                if cpu_result.matches:
+                    matched_files.update(cpu_result.matched_files)
+                    remaining_matches = max_matches - len(matches)
+                    if remaining_matches <= 0:
+                        stop_requested = True
+                        break
+                    matches.extend(cpu_result.matches[:remaining_matches])
+                    if len(matches) >= max_matches:
+                        stop_requested = True
+                        break
+
+            if stop_requested:
+                break
+            if next_merge >= len(paths):
+                break
+            if not pending:
+                break
+
+            done, _pending = await asyncio.wait(pending.values(), return_when=asyncio.FIRST_COMPLETED)
+            for idx, task in list(pending.items()):
+                if task in done:
+                    ready[idx] = task.result()
+                    del pending[idx]
+    finally:
+        for task in pending.values():
+            if not task.done():
+                task.cancel()
+        if pending:
+            await asyncio.gather(*pending.values(), return_exceptions=True)
     return _tool_ok(
         {
             "query": needle,
