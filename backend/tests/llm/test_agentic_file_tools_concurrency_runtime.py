@@ -90,47 +90,17 @@ class TestAgenticFileToolsConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(item["error"])
             self.assertIn("path", item["data"])
 
-    async def test_fallback_fs_limiter_bounds_parallelism_without_meta(self) -> None:
+    async def test_read_text_requires_runtime_fs_semaphore(self) -> None:
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            for idx in range(10):
-                (root / f"f{idx}.txt").write_text(f"line-{idx}\n" * 40, encoding="utf-8")
+            (root / "f.txt").write_text("line\n", encoding="utf-8")
 
-            in_flight = 0
-            peak = 0
-            lock = asyncio.Lock()
-            real_runner = agentic_tools.run_fs_io_async
-
-            async def _tracked_runner(fn, *args, operation: str):
-                nonlocal in_flight, peak
-                async with lock:
-                    in_flight += 1
-                    peak = max(peak, in_flight)
-                await asyncio.sleep(0.01)
-                try:
-                    return await real_runner(fn, *args, operation=operation)
-                finally:
-                    async with lock:
-                        in_flight -= 1
-
-            agentic_tools._FS_OPS_FALLBACK_SEMAPHORE = None
-            with (
-                patch.object(agentic_tools.settings, "llm_agentic_fs_ops_concurrency", 3),
-                patch("app.llm.agentic.tools.run_fs_io_async", side_effect=_tracked_runner),
-            ):
-                results = await asyncio.gather(
-                    *[
-                        agentic_tools._read_text_under_root_async(
-                            root,
-                            f"f{i % 10}.txt",
-                            meta=None,
-                        )
-                        for i in range(40)
-                    ]
+            with self.assertRaises(RuntimeError):
+                await agentic_tools._read_text_under_root_async(
+                    root,
+                    "f.txt",
+                    meta=agentic.AgenticMeta(),
                 )
-
-        self.assertTrue(all(item is not None for item in results))
-        self.assertLessEqual(peak, 3)
 
     async def test_compare_api_contract_route_build_respects_shared_fs_limit(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -173,7 +143,7 @@ class TestAgenticFileToolsConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
                     async with lock:
                         in_flight -= 1
 
-            agentic_tools._FS_OPS_FALLBACK_SEMAPHORE = None
+            shared_meta = agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(4))
             with (
                 patch.object(agentic_tools.settings, "llm_agentic_fs_ops_concurrency", 4),
                 patch("app.llm.agentic.tools._tool_route_usages_async", side_effect=_fake_route_usages),
@@ -187,6 +157,7 @@ class TestAgenticFileToolsConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
                             1,
                             root,
                             {"path": "/api/r", "method": "GET", "route_limit": 16, "call_limit": 1},
+                            meta=shared_meta,
                         )
                         for _ in range(12)
                     ]

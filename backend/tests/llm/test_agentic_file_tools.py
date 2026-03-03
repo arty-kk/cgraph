@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ from app.llm.agentic import tools as agentic_tools  # noqa: E402
 
 class TestAgenticFileToolsAsync(unittest.IsolatedAsyncioTestCase):
     async def test_get_file_async_uses_fs_runtime_for_file_read(self) -> None:
-        meta = agentic.AgenticMeta()
+        meta = agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2))
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             file_path = root / "sample.txt"
@@ -36,7 +37,7 @@ class TestAgenticFileToolsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][2].get("operation"), "agentic.fs_tool")
 
     async def test_get_file_lines_async_schema_and_fs_runtime(self) -> None:
-        meta = agentic.AgenticMeta()
+        meta = agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2))
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             file_path = root / "lines.txt"
@@ -65,7 +66,7 @@ class TestAgenticFileToolsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][2].get("operation"), "agentic.fs_tool")
 
     async def test_get_file_async_preserves_not_found_error_shape(self) -> None:
-        meta = agentic.AgenticMeta()
+        meta = agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2))
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             result = await agentic._tool_get_file_async(
@@ -81,7 +82,7 @@ class TestAgenticFileToolsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"]["details"], {"path": "missing.txt"})
 
     async def test_get_file_lines_async_preserves_not_a_file_error_shape(self) -> None:
-        meta = agentic.AgenticMeta()
+        meta = agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2))
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "folder").mkdir()
@@ -98,7 +99,7 @@ class TestAgenticFileToolsAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"]["details"], {"path": "folder"})
 
     async def test_get_file_async_preserves_read_failed_error_shape(self) -> None:
-        meta = agentic.AgenticMeta()
+        meta = agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2))
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "boom.txt").write_text("hello", encoding="utf-8")

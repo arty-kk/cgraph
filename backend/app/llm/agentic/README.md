@@ -18,3 +18,10 @@
 ## Инструменты
 
 Инструменты для runtime также вызываются через async-функции (например `*_async` из `tools.py`), которые использует `_dispatch_tool_async`.
+
+## Lifecycle `AgenticMeta`
+
+- `AgenticMeta` создаётся **один раз на запрос** на уровне orchestration (`call.py`).
+- Этот же объект передаётся дальше через `dispatch.py` и все цепочки tools без пересоздания.
+- Внутри `AgenticMeta` хранятся shared-семафоры рантайма: `fs_ops_semaphore` (обязателен для FS/поисковых tools) и, при наличии, `cpu_ops_semaphore`.
+- Fallback-режим без `meta`/без `fs_ops_semaphore` не поддерживается: это контрактная ошибка рантайма.

@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -24,6 +25,7 @@ class TestAgenticSearchSemantic(unittest.IsolatedAsyncioTestCase):
                     root,
                     args,
                     max_file_chars=1000,
+                    meta=agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2)),
                 )
 
         search_mock.assert_awaited_once_with(
@@ -77,6 +79,7 @@ class TestAgenticSearchSemantic(unittest.IsolatedAsyncioTestCase):
                     root,
                     args,
                     max_file_chars=1000,
+                    meta=agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2)),
                 )
 
         text_async_mock.assert_awaited_once()
