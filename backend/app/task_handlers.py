@@ -1,4 +1,3 @@
-# backend/app/celery_tasks.py
 from __future__ import annotations
 
 import base64
@@ -20,7 +19,7 @@ from .services.task_queue import cleanup_completed_jobs_async
 from .services.task_service import TaskRequest, run_task_async
 from .utils import normalize_project_root
 
-logger = get_logger("stubgraph.celery")
+logger = get_logger("stubgraph.task_handlers")
 
 
 async def _set_job_status_async(
@@ -208,7 +207,7 @@ async def _normalize_project_root_async(root_path: str) -> Path:
     return await run_fs_io_async(
         normalize_project_root,
         root_path,
-        operation="celery.normalize_root",
+        operation="task_handlers.normalize_root",
     )
 
 

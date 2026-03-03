@@ -7,7 +7,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app import celery_tasks
+from app import task_handlers
 
 
 @pytest.mark.anyio
@@ -22,14 +22,14 @@ async def test_normalize_project_root_async_uses_fs_runtime(
         calls["kwargs"] = kwargs
         return Path("/repo")
 
-    monkeypatch.setattr(celery_tasks, "run_fs_io_async", _fake_fs_runtime)
+    monkeypatch.setattr(task_handlers, "run_fs_io_async", _fake_fs_runtime)
 
-    result = await celery_tasks._normalize_project_root_async("/repo")
+    result = await task_handlers._normalize_project_root_async("/repo")
 
     assert result == Path("/repo")
-    assert calls["func"] is celery_tasks.normalize_project_root
+    assert calls["func"] is task_handlers.normalize_project_root
     assert calls["args"] == ("/repo",)
-    assert calls["kwargs"] == {"operation": "celery.normalize_root"}
+    assert calls["kwargs"] == {"operation": "task_handlers.normalize_root"}
 
 
 @pytest.mark.anyio
@@ -39,8 +39,8 @@ async def test_consume_queued_task_payload_dispatches_by_task_name(monkeypatch: 
     async def _fake_scan(job_id: str, project_id: int, org_id: int) -> None:
         received["scan"] = (job_id, project_id, org_id)
 
-    monkeypatch.setattr(celery_tasks, "_scan_task_async", _fake_scan)
-    monkeypatch.setattr(celery_tasks, "_TASK_DISPATCH", {"stubgraph.scan": _fake_scan})
+    monkeypatch.setattr(task_handlers, "_scan_task_async", _fake_scan)
+    monkeypatch.setattr(task_handlers, "_TASK_DISPATCH", {"stubgraph.scan": _fake_scan})
 
     body = json.dumps([["job-1", 11, 22], {}, None], ensure_ascii=False).encode("utf-8")
     payload = {
@@ -49,7 +49,7 @@ async def test_consume_queued_task_payload_dispatches_by_task_name(monkeypatch: 
         "properties": {"body_encoding": "base64"},
     }
 
-    await celery_tasks.consume_queued_task_payload_async(json.dumps(payload, ensure_ascii=False))
+    await task_handlers.consume_queued_task_payload_async(json.dumps(payload, ensure_ascii=False))
 
     assert received["scan"] == ("job-1", 11, 22)
 
@@ -66,9 +66,9 @@ async def test_scan_task_async_marks_failed_when_business_coroutine_raises(
     async def _boom(_project_id: int, _org_id: int) -> dict:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(celery_tasks, "_set_job_status_async", _fake_set_job_status_async)
-    monkeypatch.setattr(celery_tasks, "_scan_and_update_graph_async", _boom)
+    monkeypatch.setattr(task_handlers, "_set_job_status_async", _fake_set_job_status_async)
+    monkeypatch.setattr(task_handlers, "_scan_and_update_graph_async", _boom)
 
-    await celery_tasks._scan_task_async("job", 1, 1)
+    await task_handlers._scan_task_async("job", 1, 1)
 
     assert statuses == ["running", "failed"]

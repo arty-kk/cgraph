@@ -8,7 +8,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app import celery_tasks
+from app import task_handlers
 from app.async_db import AsyncSessionLocal
 from app.errors import ExternalServiceError
 from app.infra import redis_client
@@ -186,15 +186,15 @@ async def test_submit_run_to_execute_updates_job_status(monkeypatch):
     async def _immediate_enqueue(task_name, *, args, queue):
         _ = queue
         if task_name == "stubgraph.run_task":
-            celery_tasks.run_task_job(*args)
+            await task_handlers.execute_task_by_name_async("stubgraph.run_task", list(args))
 
     async def _fake_run_task_async(_project_id, _org_id, _request):
         return {"ok": True}
 
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _immediate_enqueue)
-    monkeypatch.setattr(celery_tasks, "run_task_async", _fake_run_task_async)
-    monkeypatch.setattr(celery_tasks, "_touch_inflight_async", lambda _job_id: asyncio.sleep(0))
-    monkeypatch.setattr(celery_tasks, "_decrement_inflight_async", lambda _job_id: asyncio.sleep(0))
+    monkeypatch.setattr(task_handlers, "run_task_async", _fake_run_task_async)
+    monkeypatch.setattr(task_handlers, "_touch_inflight_async", lambda _job_id: asyncio.sleep(0))
+    monkeypatch.setattr(task_handlers, "_decrement_inflight_async", lambda _job_id: asyncio.sleep(0))
 
     task_id = await submit_run_async(project_id=1, org_id=42, payload={"query": "x"})
 

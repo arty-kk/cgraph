@@ -11,12 +11,10 @@ THREADING_LOCK_ALLOWLIST: set[str] = set()
 ASYNC_RUNTIME_LOCK_MODULES = {
     "app/infra/redis_client.py",
     "app/services/task_queue.py",
-    "app/infra/async_worker_runtime.py",
 }
 FORBIDDEN_WORKER_GLOBALS = {"_worker_loop", "_worker_loop_thread", "_worker_loop_ready"}
 WORKER_RUNTIME_MODULES = {
-    "app/celery_tasks.py",
-    "app/infra/async_worker_runtime.py",
+    "app/task_handlers.py",
     "app/services/task_queue.py",
 }
 FORBIDDEN_SYNC_BRIDGES = {"run", "run_until_complete", "run_coroutine_threadsafe"}
@@ -129,7 +127,7 @@ def test_worker_runtime_modules_forbid_sync_asyncio_bridges() -> None:
 
 
 def test_worker_task_dispatch_module_has_no_loop_thread_globals() -> None:
-    worker_tasks = APP_ROOT / "celery_tasks.py"
+    worker_tasks = APP_ROOT / "task_handlers.py"
     assert not _contains_forbidden_globals(worker_tasks)
 
 
