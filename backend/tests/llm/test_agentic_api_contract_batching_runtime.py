@@ -142,6 +142,7 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
                 1,
                 Path("."),
                 {"path": "/api/items", "method": "GET", "route_limit": 30, "call_limit": 15},
+                meta=agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(4)),
             )
 
         self.assertTrue(result["ok"])
@@ -161,6 +162,7 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
                 1,
                 Path("."),
                 {"path": "/api/items", "method": "GET", "route_limit": 10, "call_limit": 5},
+                meta=agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(4)),
             )
 
         self.assertTrue(result["ok"])
@@ -175,7 +177,7 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
             (root / "frontend/src/types.ts").write_text("export type X = {}\n", encoding="utf-8")
 
             session_api = _BatchSession(payload)
-            meta_api = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
+            meta_api = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}], fs_ops_semaphore=asyncio.Semaphore(4))
             with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
                 out_api = await agentic_tools._tool_suggest_api_fix_async(
                     session_api,
@@ -194,7 +196,7 @@ class TestAgenticApiContractBatchingRuntime(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sum(session_api.query_counts.values()), 4)
 
             session_contract = _BatchSession(payload)
-            meta_contract = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}])
+            meta_contract = agentic.AgenticMeta(tool_trace=[{"name": "plan_retrieval", "status": "ok"}], fs_ops_semaphore=asyncio.Semaphore(4))
             with patch("app.llm.agentic.tools._tool_route_usages_async", return_value=payload):
                 out_contract = await agentic_tools._tool_suggest_contract_fix_async(
                     session_contract,

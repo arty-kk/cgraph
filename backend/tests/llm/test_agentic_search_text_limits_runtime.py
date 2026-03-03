@@ -56,7 +56,7 @@ class TestAgenticSearchTextLimitsRuntime(unittest.IsolatedAsyncioTestCase):
                 (root / rel_path).write_text("needle\n", encoding="utf-8")
 
             session = _IndexedSession()
-            meta = agentic.AgenticMeta()
+            meta = agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2))
             read_in_flight = 0
             read_peak = 0
             cpu_in_flight = 0
@@ -135,7 +135,7 @@ class TestAgenticSearchTextLimitsRuntime(unittest.IsolatedAsyncioTestCase):
                     root,
                     {"query": "needle", "max_files": len(paths), "max_matches": 20, "context_chars": 80},
                     max_file_chars=5_000,
-                    meta=agentic.AgenticMeta(),
+                    meta=agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2)),
                 )
 
         self.assertTrue(result["ok"])
@@ -163,7 +163,7 @@ class TestAgenticSearchTextLimitsRuntime(unittest.IsolatedAsyncioTestCase):
                     root,
                     {"query": "needle", "max_files": len(paths), "max_matches": 1, "context_chars": 80},
                     max_file_chars=200,
-                    meta=agentic.AgenticMeta(),
+                    meta=agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(2)),
                 )
 
         self.assertTrue(result["ok"])

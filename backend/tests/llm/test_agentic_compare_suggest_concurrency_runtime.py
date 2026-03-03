@@ -104,6 +104,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                     1,
                     root,
                     {"path": "/api/test", "method": "GET", "route_limit": 1, "call_limit": 1},
+                    meta=agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(4)),
                 )
 
             with (
@@ -183,7 +184,7 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                 source_path = "types.ts"
                 fields_json = '[{"name": "id", "type": "number"}]'
 
-            async def _fake_compare(_session, _project_id: int, _root: Path, _args: dict, *, meta=None) -> dict:
+            async def _fake_compare(_session, _project_id: int, _root: Path, _args: dict, *, meta: agentic.AgenticMeta) -> dict:
                 await asyncio.sleep(0.01)
                 return agentic._tool_ok(compare_report)
 
@@ -235,10 +236,10 @@ class TestAgenticCompareSuggestConcurrencyRuntime(unittest.IsolatedAsyncioTestCa
                     results = await asyncio.wait_for(
                         asyncio.gather(
                             *[
-                                _run_suggest_contract(agentic.AgenticMeta())
+                                _run_suggest_contract(agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(4)))
                                 for _ in range(20)
                             ],
-                            *[_run_suggest_api(agentic.AgenticMeta()) for _ in range(20)],
+                            *[_run_suggest_api(agentic.AgenticMeta(fs_ops_semaphore=asyncio.Semaphore(4))) for _ in range(20)],
                         ),
                         timeout=10,
                     )

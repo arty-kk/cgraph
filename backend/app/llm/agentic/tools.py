@@ -46,12 +46,6 @@ from .dispatch import _clamp_int, _tool_error, _tool_ok
 from .types import AgenticMeta
 
 
-_FS_OPS_FALLBACK_SEMAPHORE: asyncio.Semaphore | None = None
-_FS_OPS_FALLBACK_SEMAPHORE_LOOP: asyncio.AbstractEventLoop | None = None
-_FS_OPS_FALLBACK_LOCK: asyncio.Lock | None = None
-_FS_OPS_FALLBACK_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
-
-
 def _tool_definitions(max_file_chars: int) -> list[dict]:
     max_file_chars = max(1, min(int(max_file_chars), 200_000))
     tools = [
@@ -906,39 +900,12 @@ async def _search_text_cpu_async(
         )
 
 
-async def _to_thread_fs_async(meta: AgenticMeta | None, fn: Any, *args: Any) -> Any:
-    semaphore = meta.fs_ops_semaphore if isinstance(meta, AgenticMeta) else None
+async def _to_thread_fs_async(meta: AgenticMeta, fn: Any, *args: Any) -> Any:
+    semaphore = meta.fs_ops_semaphore
     if semaphore is None:
-        semaphore = await _get_fs_ops_fallback_semaphore_async()
+        raise RuntimeError("AgenticMeta.fs_ops_semaphore is required for FS runtime tools")
     async with semaphore:
         return await run_fs_io_async(fn, *args, operation="agentic.fs_tool")
-
-
-async def _get_fs_ops_fallback_lock_async() -> asyncio.Lock:
-    global _FS_OPS_FALLBACK_LOCK, _FS_OPS_FALLBACK_LOCK_LOOP
-    current_loop = asyncio.get_running_loop()
-    lock = _FS_OPS_FALLBACK_LOCK
-    if lock is None or _FS_OPS_FALLBACK_LOCK_LOOP is not current_loop:
-        lock = asyncio.Lock()
-        _FS_OPS_FALLBACK_LOCK = lock
-        _FS_OPS_FALLBACK_LOCK_LOOP = current_loop
-    return lock
-
-
-async def _get_fs_ops_fallback_semaphore_async() -> asyncio.Semaphore:
-    global _FS_OPS_FALLBACK_SEMAPHORE, _FS_OPS_FALLBACK_SEMAPHORE_LOOP
-    current_loop = asyncio.get_running_loop()
-    semaphore = _FS_OPS_FALLBACK_SEMAPHORE
-    if semaphore is None or _FS_OPS_FALLBACK_SEMAPHORE_LOOP is not current_loop:
-        lock = await _get_fs_ops_fallback_lock_async()
-        async with lock:
-            semaphore = _FS_OPS_FALLBACK_SEMAPHORE
-            if semaphore is None or _FS_OPS_FALLBACK_SEMAPHORE_LOOP is not current_loop:
-                fallback_limit = max(1, int(settings.llm_agentic_fs_ops_concurrency))
-                semaphore = asyncio.Semaphore(fallback_limit)
-                _FS_OPS_FALLBACK_SEMAPHORE = semaphore
-                _FS_OPS_FALLBACK_SEMAPHORE_LOOP = current_loop
-    return semaphore
 
 
 def _resolve_and_read_file_under_root(
@@ -976,7 +943,7 @@ async def _read_file_under_root_async(
     path: str,
     reader: Any,
     *,
-    meta: AgenticMeta | None,
+    meta: AgenticMeta,
 ) -> tuple[str, Any] | dict:
     try:
         return await _to_thread_fs_async(meta, _resolve_and_read_file_under_root, root, path, reader)
@@ -988,7 +955,7 @@ async def _read_text_under_root_async(
     root: Path,
     rel_path: str,
     *,
-    meta: AgenticMeta | None,
+    meta: AgenticMeta,
 ) -> tuple[str, str] | None:
     def _read_local(abs_path: Path) -> str:
         with abs_path.open(encoding="utf-8", errors="replace") as f:
@@ -1213,7 +1180,7 @@ async def _tool_search_semantic_impl(
             root,
             fallback_args,
             max_file_chars=max_file_chars,
-            meta=runtime_meta,
+            meta=meta,
         )
         if not text_result.get("ok"):
             return text_result
@@ -2396,13 +2363,13 @@ async def _tool_search_semantic_async(
     args: dict,
     *,
     max_file_chars: int,
-    meta: AgenticMeta | None = None,
+    meta: AgenticMeta,
 ) -> dict:
     return await _tool_search_semantic_impl(
         session,
         project_id,
         root,
-        meta or AgenticMeta(),
+        meta,
         args,
         max_file_chars=max_file_chars,
     )
@@ -2563,9 +2530,8 @@ async def _tool_search_text_async(
     args: dict,
     *,
     max_file_chars: int,
-    meta: AgenticMeta | None = None,
+    meta: AgenticMeta,
 ) -> dict:
-    runtime_meta = meta or AgenticMeta()
     indexed_error = await _check_indexed_async(session, project_id)
     if indexed_error:
         return indexed_error
@@ -2631,7 +2597,7 @@ async def _tool_search_text_async(
                 root,
                 rel_path,
                 lambda abs_path: _read_with_cap(abs_path, int(scan_max_chars)),
-                meta=runtime_meta,
+                meta=meta,
             )
         if isinstance(read_result, dict):
             return None
@@ -2643,7 +2609,7 @@ async def _tool_search_text_async(
 
         async with cpu_stage_semaphore:
             cpu_result = await _search_text_cpu_async(
-                meta=runtime_meta,
+                meta=meta,
                 payload=text,
                 rel_path=rel_norm,
                 needle=needle,
@@ -2660,7 +2626,7 @@ async def _tool_search_text_async(
                     root,
                     rel_path,
                     lambda abs_path: _read_with_cap(abs_path, int(index_scan_max_chars)),
-                    meta=runtime_meta,
+                    meta=meta,
                 )
             if not isinstance(read_result_extended, dict):
                 _rel_norm_extended, text_extended = read_result_extended
@@ -2670,7 +2636,7 @@ async def _tool_search_text_async(
                 truncated = bool(truncated_initial or truncated_extended)
                 async with cpu_stage_semaphore:
                     cpu_result = await _search_text_cpu_async(
-                        meta=runtime_meta,
+                        meta=meta,
                         payload=text_extended,
                         rel_path=rel_norm,
                         needle=needle,
@@ -3826,7 +3792,7 @@ async def _tool_compare_api_contract_async(
     root: Path,
     args: dict,
     *,
-    meta: AgenticMeta | None = None,
+    meta: AgenticMeta,
 ) -> dict:
     path_q = args.get("path")
     if not isinstance(path_q, str) or not path_q.strip():
