@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Awaitable, Callable, Literal, TypeVar
@@ -22,6 +23,7 @@ class ExternalIORuntime:
     short_semaphore: asyncio.Semaphore
     long_semaphore: asyncio.Semaphore
     storage_sdk_semaphore: asyncio.Semaphore
+    storage_sdk_executor: ThreadPoolExecutor
     short_limit: int
     long_limit: int
     storage_sdk_limit: int
@@ -58,6 +60,10 @@ async def init_external_io_runtime() -> None:
             short_semaphore=asyncio.Semaphore(short_limit),
             long_semaphore=asyncio.Semaphore(long_limit),
             storage_sdk_semaphore=asyncio.Semaphore(storage_sdk_limit),
+            storage_sdk_executor=ThreadPoolExecutor(
+                max_workers=storage_sdk_limit,
+                thread_name_prefix="storage-sdk-io",
+            ),
             short_limit=short_limit,
             long_limit=long_limit,
             storage_sdk_limit=storage_sdk_limit,
@@ -75,8 +81,18 @@ async def _get_external_io_runtime() -> ExternalIORuntime:
 
 async def close_external_io_runtime() -> None:
     global _external_io_runtime
+    runtime: ExternalIORuntime | None
     async with _external_io_runtime_lock:
+        runtime = _external_io_runtime
         _external_io_runtime = None
+    if runtime is None:
+        return
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        partial(runtime.storage_sdk_executor.shutdown, wait=True, cancel_futures=False),
+    )
 
 
 async def run_openai_io_async(
@@ -113,7 +129,10 @@ async def run_storage_sdk_io_async(
         await runtime.storage_sdk_semaphore.acquire()
         acquired = True
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, partial(fn, *args, **kwargs))
+        return await loop.run_in_executor(
+            runtime.storage_sdk_executor,
+            partial(fn, *args, **kwargs),
+        )
     finally:
         if acquired:
             runtime.storage_sdk_semaphore.release()

@@ -114,3 +114,61 @@ async def test_storage_sdk_runtime_limit_burst(monkeypatch: pytest.MonkeyPatch) 
     assert max_seen <= 2
 
     await external_io_runtime.close_external_io_runtime()
+
+
+@pytest.mark.anyio
+async def test_storage_sdk_runtime_uses_dedicated_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(external_io_runtime.settings, "storage_sdk_io_concurrency", 2)
+    await external_io_runtime.close_external_io_runtime()
+    await external_io_runtime.init_external_io_runtime()
+
+    runtime = await external_io_runtime._get_external_io_runtime()
+    loop = asyncio.get_running_loop()
+    original_run_in_executor = loop.run_in_executor
+    seen_executors = []
+
+    async def _spy_run_in_executor(executor, func, *args):
+        seen_executors.append(executor)
+        return await original_run_in_executor(executor, func, *args)
+
+    monkeypatch.setattr(loop, "run_in_executor", _spy_run_in_executor)
+
+    assert await external_io_runtime.run_storage_sdk_io_async(lambda: "ok") == "ok"
+    assert seen_executors
+    assert seen_executors[0] is runtime.storage_sdk_executor
+    assert seen_executors[0] is not None
+
+    await external_io_runtime.close_external_io_runtime()
+
+
+@pytest.mark.anyio
+async def test_storage_sdk_runtime_shutdown_executor_and_reinit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(external_io_runtime.settings, "storage_sdk_io_concurrency", 1)
+    await external_io_runtime.close_external_io_runtime()
+    await external_io_runtime.init_external_io_runtime()
+
+    runtime_before_close = await external_io_runtime._get_external_io_runtime()
+    shutdown_calls: list[tuple[bool, bool]] = []
+    original_shutdown = runtime_before_close.storage_sdk_executor.shutdown
+
+    def _spy_shutdown(wait: bool = True, *, cancel_futures: bool = False) -> None:
+        shutdown_calls.append((wait, cancel_futures))
+        original_shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(runtime_before_close.storage_sdk_executor, "shutdown", _spy_shutdown)
+
+    await external_io_runtime.close_external_io_runtime()
+
+    assert shutdown_calls == [(True, False)]
+
+    await external_io_runtime.init_external_io_runtime()
+    runtime_after_reinit = await external_io_runtime._get_external_io_runtime()
+    assert runtime_after_reinit.storage_sdk_executor is not runtime_before_close.storage_sdk_executor
+
+    assert await external_io_runtime.run_storage_sdk_io_async(lambda: 1) == 1
+
+    await external_io_runtime.close_external_io_runtime()
