@@ -404,29 +404,42 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
 
 
 async def submit_scan_async(project_id: int, org_id: int) -> str:
-    idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
     async with AsyncSessionLocal() as session:
-        existing = await _find_existing_job_id_async(session, org_id, idempotency_key)
+        task_id, _status = await submit_scan_with_status_async(session, project_id, org_id)
+    return task_id
+
+
+async def submit_scan_with_status_async(
+    session: AsyncSession,
+    project_id: int,
+    org_id: int,
+) -> tuple[str, str]:
+    idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
+    existing = await _find_existing_job_async(session, org_id, idempotency_key)
+    if existing:
+        return existing
+
+    task_id, created = await _create_job_async(
+        session,
+        "scan",
+        org_id=org_id,
+        queue="medium",
+        idempotency_key=idempotency_key,
+    )
+    if not created:
+        existing = await _find_existing_job_async(session, org_id, idempotency_key)
         if existing:
             return existing
+        return task_id, "pending"
 
-        task_id, created = await _create_job_async(
-            session,
-            "scan",
-            org_id=org_id,
-            queue="medium",
-            idempotency_key=idempotency_key,
-        )
-        if not created:
-            return task_id
-        await _enqueue_with_error_mapping_async(
-            session=session,
-            task_name="stubgraph.scan",
-            args=[task_id, project_id, org_id],
-            queue="medium",
-            task_id=task_id,
-        )
-    return task_id
+    await _enqueue_with_error_mapping_async(
+        session=session,
+        task_name="stubgraph.scan",
+        args=[task_id, project_id, org_id],
+        queue="medium",
+        task_id=task_id,
+    )
+    return task_id, "pending"
 
 
 async def submit_docs_async(project_id: int, org_id: int) -> tuple[str, str]:

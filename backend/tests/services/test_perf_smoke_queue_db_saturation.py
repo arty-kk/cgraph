@@ -80,3 +80,46 @@ async def test_db_pool_saturation_smoke_wait_threshold() -> None:
     assert max(waits, default=0.0) < max_wait_ms
     # end-to-end completion should stay in expected envelope for burst/pool parameters
     assert elapsed_ms < 600.0
+
+
+@pytest.mark.anyio
+async def test_high_concurrency_docs_and_run_workloads_keep_event_loop_progress() -> None:
+    docs_limit = asyncio.Semaphore(3)
+    run_limit = asyncio.Semaphore(4)
+
+    async def _docs_request() -> None:
+        async with docs_limit:
+            await asyncio.sleep(0.015)
+            await asyncio.sleep(0)
+
+    async def _run_request() -> None:
+        async with run_limit:
+            await asyncio.sleep(0.01)
+            await asyncio.sleep(0)
+
+    ticks = 0
+    stop = asyncio.Event()
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while not stop.is_set():
+            ticks += 1
+            await asyncio.sleep(0.003)
+
+    ticker = asyncio.create_task(_ticker())
+    started = time.perf_counter()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                *[_docs_request() for _ in range(25)],
+                *[_run_request() for _ in range(40)],
+            ),
+            timeout=5,
+        )
+    finally:
+        stop.set()
+        await ticker
+
+    elapsed = time.perf_counter() - started
+    assert ticks >= 15
+    assert elapsed < 2

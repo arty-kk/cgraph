@@ -92,9 +92,10 @@ async def test_submit_scan_async_uses_async_idempotency_key(monkeypatch):
         calls.append((org_id, project_id))
         return "scan-key"
 
-    async def _fake_find_existing_job_id_async(session, org_id: int, idempotency_key: str):
+    async def _fake_find_existing_job_async(session, org_id: int, idempotency_key: str):
+        _ = (session, org_id)
         assert idempotency_key == "scan-key"
-        return "existing-job-id"
+        return "existing-job-id", "running"
 
     monkeypatch.setattr(
         task_queue,
@@ -102,7 +103,7 @@ async def test_submit_scan_async_uses_async_idempotency_key(monkeypatch):
         _fake_get_scan_idempotency_key_async,
     )
     monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
-    monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing_job_id_async)
+    monkeypatch.setattr(task_queue, "_find_existing_job_async", _fake_find_existing_job_async)
 
     task_id = await task_queue.submit_scan_async(project_id=42, org_id=7)
 
@@ -477,7 +478,7 @@ async def test_submit_scan_async_keeps_single_session_for_enqueue_failure_update
         "get_scan_idempotency_key_async",
         lambda *_args, **_kwargs: asyncio.sleep(0, result="scan-key"),
     )
-    monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing)
+    monkeypatch.setattr(task_queue, "_find_existing_job_async", _fake_find_existing)
     monkeypatch.setattr(task_queue, "_create_job_async", _fake_create_job)
     monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _fake_enqueue)
 
