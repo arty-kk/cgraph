@@ -16,7 +16,7 @@ from sqlmodel import select
 from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..contracts import get_or_build_contract_async
-from ..errors import BadRequestError, ExternalServiceError, NotFoundError
+from ..errors import BadRequestError, ExternalServiceError, NotFoundError, PathValidationError
 from ..infra.cpu_runtime import run_cpu_io_async
 from ..infra.fs_runtime import run_fs_io_async
 from ..llm.orchestrator import generate_docs_async
@@ -912,6 +912,7 @@ async def _select_contract_paths_async(
 
 
 async def _collect_compact_contracts_async(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     contract_paths: list[str],
@@ -926,18 +927,35 @@ async def _collect_compact_contracts_async(
 
     semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
 
-    async def _worker(path: str) -> dict | None:
+    async def _prepare_path_async(path: str) -> str | None:
         async with semaphore:
             try:
-                async with AsyncSessionLocal() as session:
-                    contract = await get_or_build_contract_async(session, project_id, root, path)
-                if not isinstance(contract, dict):
-                    return None
-                return {"path": path, "contract": _compact_contract(contract)}
+                _, rel_norm = await run_fs_io_async(
+                    resolve_under_root,
+                    root,
+                    path,
+                    max_length=settings.max_rel_path_chars,
+                    operation="docs_service.prepare_contract_path",
+                )
+                return rel_norm
+            except PathValidationError:
+                return None
             except Exception:
                 return None
 
-    ordered_results = await asyncio.gather(*(_worker(path) for path in selected_paths))
+    prepared_paths = await asyncio.gather(*(_prepare_path_async(path) for path in selected_paths))
+    ordered_results: list[dict] = []
+    for original_path, rel_path in zip(selected_paths, prepared_paths, strict=False):
+        if not rel_path:
+            continue
+        try:
+            contract = await get_or_build_contract_async(session, project_id, root, rel_path)
+            if not isinstance(contract, dict):
+                continue
+            ordered_results.append({"path": original_path, "contract": _compact_contract(contract)})
+        except Exception:
+            continue
+
     return [item for item in ordered_results if isinstance(item, dict)]
 
 
@@ -1210,7 +1228,7 @@ async def _collect_docs_enrichment_async(
     awaited before leaving the corresponding ``async with`` session context.
     """
     return await asyncio.gather(
-        _collect_compact_contracts_async(project_id, root, contract_paths),
+        _collect_compact_contracts_async(session, project_id, root, contract_paths),
         _build_api_summary_async(session, project_id),
     )
 

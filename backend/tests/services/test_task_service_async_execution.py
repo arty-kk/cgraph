@@ -91,17 +91,13 @@ async def test_run_task_async_passes_through_impact_mode(monkeypatch):
 
 @pytest.mark.anyio
 async def test_enqueue_graph_scan_task_uses_async_submit(monkeypatch):
-    async def _fake_get_active(project_id: int, org_id: int):
-        return None, None
+    async def _fake_submit_scan_with_status(session, project_id: int, org_id: int):
+        _ = (session, project_id, org_id)
+        return "scan-123", "pending"
 
-    async def _fake_submit_scan(project_id: int, org_id: int):
-        _ = (project_id, org_id)
-        return "scan-123"
+    monkeypatch.setattr(task_service, "submit_scan_with_status_async", _fake_submit_scan_with_status)
 
-    monkeypatch.setattr(task_service, "_get_active_scan_task_async", _fake_get_active)
-    monkeypatch.setattr(task_service, "submit_scan_async", _fake_submit_scan)
-
-    result = await task_service._enqueue_graph_scan_task_async(5, 9)
+    result = await task_service._enqueue_graph_scan_task_async(object(), 5, 9)
 
     assert result == {"task_id": "scan-123", "status": "pending"}
 
@@ -328,48 +324,6 @@ async def test_parse_diff_paths_async_uses_run_cpu_io_async(monkeypatch):
     assert calls["func"] is task_service._parse_diff_paths
     assert calls["args"] == ("/tmp", "diff --git a/a.py b/a.py\n")
     assert calls["kwargs"] == {"operation": "task_service.parse_diff_paths"}
-
-
-@pytest.mark.anyio
-async def test_get_active_scan_task_async_uses_async_idempotency_key(monkeypatch):
-    class _FakeResult:
-        def scalars(self):
-            return self
-
-        def first(self):
-            return None
-
-    class _FakeSession:
-        async def execute(self, stmt):
-            _ = stmt
-            return _FakeResult()
-
-    class _FakeSessionContext:
-        async def __aenter__(self):
-            return _FakeSession()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
-    calls: list[tuple[int, int]] = []
-
-    async def _fake_get_scan_idempotency_key_async(org_id: int, project_id: int) -> str:
-        calls.append((org_id, project_id))
-        return "scan-idem-key"
-
-    monkeypatch.setattr(
-        task_service,
-        "get_scan_idempotency_key_async",
-        _fake_get_scan_idempotency_key_async,
-    )
-    monkeypatch.setattr(task_service, "AsyncSessionLocal", lambda: _FakeSessionContext())
-
-    task_id, status = await task_service._get_active_scan_task_async(project_id=10, org_id=20)
-
-    assert task_id is None
-    assert status is None
-    assert calls == [(20, 10)]
 
 
 @pytest.mark.anyio
@@ -714,3 +668,112 @@ def test_task_service_agentic_imports_are_async_only() -> None:
     assert callable(task_service.analyze_agentic_async)
     assert callable(task_service.evolve_agentic_async)
     assert callable(task_service.fix_agentic_async)
+
+
+@pytest.mark.anyio
+async def test_run_task_impl_async_reuses_session_for_graph_scan_enqueue(monkeypatch, tmp_path):
+    file_path = tmp_path / "target.py"
+    file_path.write_text("print('x')\n", encoding="utf-8")
+
+    request = task_service.TaskRequest(
+        target_path="target.py",
+        prompt="analyze",
+        mode="analyze",
+        profile=None,
+        depth=1,
+        dep_mode="contracts",
+        impact_max_nodes=None,
+        impact_max_depth=None,
+        apply_patch=False,
+        allow_out_of_context_patch=False,
+        agentic=False,
+        provided_fields={"mode"},
+    )
+
+    class _Session:
+        async def execute(self, stmt):
+            _ = stmt
+
+            class _Result:
+                def all(self):
+                    return []
+
+                def first(self):
+                    return None
+
+                def scalars(self):
+                    return self
+
+                def one(self):
+                    return 0
+
+            return _Result()
+
+        def add(self, item):
+            _ = item
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, item):
+            _ = item
+            return None
+
+    async def _fake_get_project(session, project_id, org_id):
+        _ = (session, project_id, org_id)
+        return type("P", (), {"root_path": str(tmp_path)})()
+
+    async def _noop(*args, **kwargs):
+        _ = (args, kwargs)
+        return None
+
+    async def _plan_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return {"summary": "ok"}, {}
+
+    async def _analyze_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return {
+            "summary": "ok",
+            "sources": [{"path": "target.py", "start_line": 1, "end_line": 1}],
+        }, {}
+
+    enqueue_sessions: list[int] = []
+
+    async def _fake_enqueue_graph_scan_task_async(session, project_id, org_id):
+        _ = (project_id, org_id)
+        enqueue_sessions.append(id(session))
+        return {"task_id": "scan-1", "status": "pending"}
+
+    import app.context_pack as context_pack
+
+    monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
+    monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
+    async def _graph_warning_async(*_args, **_kwargs):
+        return task_service.GRAPH_NOT_READY_WARNING
+
+    monkeypatch.setattr(task_service, "_graph_warning_async", _graph_warning_async)
+    monkeypatch.setattr(task_service, "_enqueue_graph_scan_task_async", _fake_enqueue_graph_scan_task_async)
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
+    monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(task_service.settings, "cache_enabled", False)
+
+    async def _policy_async(**kwargs):
+        _ = kwargs
+        return task_service.DEFAULT_POLICY
+
+    monkeypatch.setattr(task_service, "resolve_runtime_policy_async", _policy_async)
+    monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_async)
+    monkeypatch.setattr(task_service, "analyze_with_usage_async", _analyze_async)
+    monkeypatch.setattr(context_pack, "get_or_build_contract_async", _noop)
+    monkeypatch.setattr(task_service, "AsyncSessionLocal", lambda: (_ for _ in ()).throw(AssertionError("unexpected extra session")))
+
+    session = _Session()
+    result = await task_service._run_task_impl_async(session, 1, 1, request)
+
+    assert result.get("graph_scan_task_id") == "scan-1"
+    assert result.get("graph_scan_status") == "pending"
+    assert enqueue_sessions == [id(session)]

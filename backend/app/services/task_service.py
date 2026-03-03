@@ -86,7 +86,10 @@ from ..utils import (
     resolve_under_root,
 )
 from .project_service import load_patch_blob_ref_counts_async
-from .task_queue import get_scan_idempotency_key_async, submit_run_async, submit_scan_async
+from .task_queue import (
+    submit_run_async,
+    submit_scan_with_status_async,
+)
 
 MAX_PATCH_STORE_CHARS = 50_000
 MAX_GRAPH_DEPS_FOR_LLM = 500
@@ -214,39 +217,13 @@ async def _get_project_async(session: AsyncSession, project_id: int, org_id: int
     return project
 
 
-async def _get_active_scan_task_async(
-    project_id: int, org_id: int
-) -> tuple[str | None, str | None]:
-    idempotency_key = await get_scan_idempotency_key_async(org_id, project_id)
-    async with AsyncSessionLocal() as session:
-        job = (
-            (
-                await session.execute(
-                    select(TaskJob).where(
-                        TaskJob.org_id == org_id,
-                        TaskJob.idempotency_key == idempotency_key,
-                        TaskJob.status.in_(("pending", "running")),
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-    if not job:
-        return None, None
-    return job.id, job.status
-
-
 async def _enqueue_graph_scan_task_async(
+    session: AsyncSession,
     project_id: int,
     org_id: int,
 ) -> dict:
-    task_id, status = await _get_active_scan_task_async(project_id, org_id)
-    if task_id and status in ("pending", "running"):
-        return {"task_id": task_id, "status": status}
-
-    task_id = await submit_scan_async(project_id, org_id)
-    return {"task_id": task_id, "status": "pending"}
+    task_id, status = await submit_scan_with_status_async(session, project_id, org_id)
+    return {"task_id": task_id, "status": status}
 
 
 PLAN_TZ_EMPTY = {
@@ -955,7 +932,7 @@ async def _run_task_impl_async(
     warning = await _graph_warning_async(session, project_id)
     graph_scan_task: dict | None = None
     if warning == GRAPH_NOT_READY_WARNING:
-        graph_scan_task = await _enqueue_graph_scan_task_async(project_id, org_id)
+        graph_scan_task = await _enqueue_graph_scan_task_async(session, project_id, org_id)
     graph_scan_task_id = graph_scan_task.get("task_id") if graph_scan_task else None
     graph_scan_status = graph_scan_task.get("status") if graph_scan_task else None
 

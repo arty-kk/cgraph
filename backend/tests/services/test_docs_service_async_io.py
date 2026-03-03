@@ -188,19 +188,8 @@ async def test_select_contract_paths_async_uses_run_cpu_io_async(
 async def test_collect_compact_contracts_async_keeps_format_and_best_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_factory_calls = 0
-
-    class _SessionCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    def _fake_session_local():
-        nonlocal session_factory_calls
-        session_factory_calls += 1
-        return _SessionCtx()
+    
+    session = object()
 
     async def _fake_get_or_build_contract_async(session, project_id, root, path):
         _ = (session, project_id, root)
@@ -208,17 +197,16 @@ async def test_collect_compact_contracts_async_keeps_format_and_best_effort(
             raise RuntimeError("boom")
         return {"exports": [path]}
 
-    monkeypatch.setattr(docs_service, "AsyncSessionLocal", _fake_session_local)
     monkeypatch.setattr(docs_service, "get_or_build_contract_async", _fake_get_or_build_contract_async)
     monkeypatch.setattr(docs_service, "_compact_contract", lambda contract: {"exports": contract["exports"]})
 
     result = await docs_service._collect_compact_contracts_async(
+        session,
         1,
         Path("/repo"),
         ["ok.py", "bad.py", "ok2.py"],
     )
 
-    assert session_factory_calls == 3
     assert result == [
         {"path": "ok.py", "contract": {"exports": ["ok.py"]}},
         {"path": "ok2.py", "contract": {"exports": ["ok2.py"]}},
@@ -229,16 +217,6 @@ async def test_collect_compact_contracts_async_keeps_format_and_best_effort(
 async def test_collect_compact_contracts_async_skips_compaction_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _SessionCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    def _fake_session_local():
-        return _SessionCtx()
-
     async def _fake_get_or_build_contract_async(session, project_id, root, path):
         _ = (session, project_id, root)
         return {"exports": [path]}
@@ -249,11 +227,11 @@ async def test_collect_compact_contracts_async_skips_compaction_errors(
             raise RuntimeError("compact failed")
         return {"exports": contract["exports"]}
 
-    monkeypatch.setattr(docs_service, "AsyncSessionLocal", _fake_session_local)
     monkeypatch.setattr(docs_service, "get_or_build_contract_async", _fake_get_or_build_contract_async)
     monkeypatch.setattr(docs_service, "_compact_contract", _fake_compact_contract)
 
     result = await docs_service._collect_compact_contracts_async(
+        object(),
         1,
         Path("/repo"),
         ["ok.py", "bad.py", "ok2.py"],
@@ -266,42 +244,31 @@ async def test_collect_compact_contracts_async_skips_compaction_errors(
 
 
 @pytest.mark.anyio
-async def test_collect_compact_contracts_async_runs_tasks_in_parallel(
+async def test_collect_compact_contracts_async_runs_prepare_phase_in_parallel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     active = 0
     peak_active = 0
-    entered = 0
-    gate = asyncio.Event()
 
-    class _SessionCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    def _fake_session_local():
-        return _SessionCtx()
-
-    async def _fake_get_or_build_contract_async(session, project_id, root, path):
-        nonlocal active, peak_active, entered
-        _ = (session, project_id, root)
+    async def _fake_run_fs_io_async(func, root, path, **kwargs):
+        nonlocal active, peak_active
+        _ = (func, root, kwargs)
         active += 1
         peak_active = max(peak_active, active)
-        entered += 1
-        if entered >= 2:
-            gate.set()
-        await gate.wait()
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
         active -= 1
+        return Path(f"/repo/{path}"), path
+
+    async def _fake_get_or_build_contract_async(session, project_id, root, path):
+        _ = (session, project_id, root)
         return {"exports": [path]}
 
-    monkeypatch.setattr(docs_service, "AsyncSessionLocal", _fake_session_local)
+    monkeypatch.setattr(docs_service, "run_fs_io_async", _fake_run_fs_io_async)
     monkeypatch.setattr(docs_service, "get_or_build_contract_async", _fake_get_or_build_contract_async)
     monkeypatch.setattr(docs_service, "_compact_contract", lambda contract: {"exports": contract["exports"]})
 
     result = await docs_service._collect_compact_contracts_async(
+        object(),
         1,
         Path("/repo"),
         ["a.py", "b.py", "c.py"],
@@ -319,16 +286,6 @@ async def test_collect_compact_contracts_async_respects_max_parallel(
     active = 0
     peak_active = 0
 
-    class _SessionCtx:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    def _fake_session_local():
-        return _SessionCtx()
-
     async def _fake_get_or_build_contract_async(session, project_id, root, path):
         nonlocal active, peak_active
         _ = (session, project_id, root, path)
@@ -338,10 +295,10 @@ async def test_collect_compact_contracts_async_respects_max_parallel(
         active -= 1
         return {"exports": [path]}
 
-    monkeypatch.setattr(docs_service, "AsyncSessionLocal", _fake_session_local)
     monkeypatch.setattr(docs_service, "get_or_build_contract_async", _fake_get_or_build_contract_async)
 
     await docs_service._collect_compact_contracts_async(
+        object(),
         1,
         Path("/repo"),
         ["a.py", "b.py", "c.py", "d.py"],
@@ -352,52 +309,29 @@ async def test_collect_compact_contracts_async_respects_max_parallel(
 
 
 @pytest.mark.anyio
-async def test_collect_compact_contracts_async_uses_distinct_sessions_for_parallel_calls(
+async def test_collect_compact_contracts_async_uses_single_session_for_db_phase(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    active_sessions: set[int] = set()
-    parallel_session_ids: set[int] = set()
-    gate = asyncio.Event()
-    entered = 0
+    session = object()
+    seen_sessions: set[int] = set()
 
-    class _SessionCtx:
-        def __init__(self) -> None:
-            self.session = object()
-
-        async def __aenter__(self):
-            nonlocal entered
-            session_id = id(self.session)
-            active_sessions.add(session_id)
-            parallel_session_ids.update(active_sessions)
-            entered += 1
-            if entered >= 2:
-                gate.set()
-            await gate.wait()
-            return self.session
-
-        async def __aexit__(self, exc_type, exc, tb):
-            active_sessions.discard(id(self.session))
-            return False
-
-    def _fake_session_local():
-        return _SessionCtx()
-
-    async def _fake_get_or_build_contract_async(session, project_id, root, path):
-        _ = (session, project_id, root, path)
+    async def _fake_get_or_build_contract_async(inner_session, project_id, root, path):
+        _ = (project_id, root, path)
+        seen_sessions.add(id(inner_session))
         await asyncio.sleep(0)
         return {"exports": [path]}
 
-    monkeypatch.setattr(docs_service, "AsyncSessionLocal", _fake_session_local)
     monkeypatch.setattr(docs_service, "get_or_build_contract_async", _fake_get_or_build_contract_async)
 
     await docs_service._collect_compact_contracts_async(
+        session,
         1,
         Path("/repo"),
         ["a.py", "b.py", "c.py"],
         max_parallel=3,
     )
 
-    assert len(parallel_session_ids) > 1
+    assert seen_sessions == {id(session)}
 
 
 @pytest.mark.anyio
@@ -457,11 +391,12 @@ async def test_collect_docs_enrichment_async_runs_contracts_and_api_summary(
     calls: list[str] = []
 
     async def _fake_collect_compact_contracts_async(
+        session,
         project_id: int,
         root: Path,
         contract_paths: list[str],
     ):
-        _ = (project_id, root, contract_paths)
+        _ = (session, project_id, root, contract_paths)
         calls.append("contracts")
         return [{"path": "a.py"}]
 
