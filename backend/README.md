@@ -31,12 +31,13 @@ Patch storage в `app.storage` также работает только в async
 - enqueue выполняется без `asyncio.to_thread`, `run_coroutine_threadsafe`, loop-thread глобалей и bridge-timeout логики;
 - `submit_*_async` вызывают только async producer-клиент и маппят transport-ошибки в `ExternalServiceError` с `task_id`/`queue`/`enqueue_reason`.
 
+- обработчики task queue находятся в `app.task_handlers` и вызываются ARQ worker через `execute_task_by_name_async`.
 Lifecycle соответствует единому async-паттерну:
 - один async Redis runtime на процесс: startup через `init_redis_pool_async`, cleanup через `close_redis_pool_async`;
 - producer-specific runtime для task queue отсутствует;
 - `app.main.lifespan` и ARQ worker startup/shutdown в `app.arq_worker` используют единый lifecycle ресурсов (DB/FS/CPU/external I/O/S3/OpenAI/scan runtime).
 - для ARQ cron-задач используйте явный флаг `STUBGRAPH_ARQ_ENABLE_CRON=true` только у одного worker-контейнера.
-- legacy role `worker` в `build_startup_steps/build_cleanup_steps` больше не используется; запускайте воркеры только через `arq app.arq_worker.WorkerSettings`.
+- запуск воркеров поддерживается только через `arq app.arq_worker.WorkerSettings` (runtime hooks `on_startup/on_shutdown` в `app.arq_worker`).
 - стабильность ARQ worker регулируется runtime-параметрами: `STUBGRAPH_ARQ_MAX_TRIES`, `STUBGRAPH_ARQ_JOB_TIMEOUT_SECONDS`, `STUBGRAPH_ARQ_KEEP_RESULT_SECONDS`, `STUBGRAPH_ARQ_POLL_DELAY_SECONDS`.
 
 Ожидаемая конфигурация Redis для enqueue:

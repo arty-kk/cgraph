@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from arq.cron import cron
 from arq.worker import Retry, func
 
-from .celery_tasks import execute_task_by_name_async
+from .task_handlers import execute_task_by_name_async
 from .config import settings
 from .infra.runtime_lifecycle import build_cleanup_steps, build_startup_steps
 from .logging import get_logger

@@ -30,7 +30,6 @@ def build_startup_steps(*, role: str) -> list[LifecycleStep]:
         ("init_external_io_runtime", init_external_io_runtime),
     ]
 
-
     if (settings.storage_backend or "local").strip().lower() == "s3":
         steps.append(("init_s3_runtime", init_s3_runtime))
     if settings.openai_api_key:
@@ -53,7 +52,7 @@ def build_cleanup_steps(*, role: str) -> list[LifecycleStep]:
     if role == "worker":
         raise RuntimeError(
             "Legacy worker lifecycle role is not supported after ARQ migration; "
-            "ARQ worker handles startup/shutdown via app.arq_worker hooks"
+            "start workers with `arq app.arq_worker.WorkerSettings`"
         )
 
     steps: list[LifecycleStep] = [
