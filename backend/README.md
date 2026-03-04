@@ -37,7 +37,7 @@ Lifecycle соответствует единому async-паттерну:
 - producer-specific runtime для task queue отсутствует;
 - `app.main.lifespan` и ARQ worker startup/shutdown в `app.arq_worker` используют единый lifecycle ресурсов (DB/FS/CPU/external I/O/S3/OpenAI/scan runtime).
 - для ARQ cron-задач используйте явный флаг `STUBGRAPH_ARQ_ENABLE_CRON=true` только у одного worker-контейнера.
-- запуск воркеров поддерживается только через `arq app.arq_worker.WorkerSettings` (runtime hooks `on_startup/on_shutdown` в `app.arq_worker`).
+- legacy/sync worker runtime удалён окончательно; поддерживается только запуск `arq app.arq_worker.WorkerSettings` через runtime hooks `on_startup/on_shutdown` в `app.arq_worker`.
 - стабильность ARQ worker регулируется runtime-параметрами: `STUBGRAPH_ARQ_MAX_TRIES`, `STUBGRAPH_ARQ_JOB_TIMEOUT_SECONDS`, `STUBGRAPH_ARQ_KEEP_RESULT_SECONDS`, `STUBGRAPH_ARQ_POLL_DELAY_SECONDS`.
 
 Ожидаемая конфигурация Redis для enqueue:
