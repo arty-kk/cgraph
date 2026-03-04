@@ -388,7 +388,8 @@ async def test_build_api_summary_async_uses_run_cpu_io_async(
 async def test_collect_docs_enrichment_async_runs_contracts_and_api_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[str] = []
+    events: list[str] = []
+    contracts_done = asyncio.Event()
 
     async def _fake_collect_compact_contracts_async(
         session,
@@ -397,12 +398,18 @@ async def test_collect_docs_enrichment_async_runs_contracts_and_api_summary(
         contract_paths: list[str],
     ):
         _ = (session, project_id, root, contract_paths)
-        calls.append("contracts")
+        events.append("contracts:start")
+        await asyncio.sleep(0)
+        contracts_done.set()
+        events.append("contracts:end")
         return [{"path": "a.py"}]
 
     async def _fake_build_api_summary_async(session, project_id: int):
         _ = (session, project_id)
-        calls.append("api")
+        events.append("api:start")
+        assert contracts_done.is_set()
+        await asyncio.sleep(0)
+        events.append("api:end")
         return {"counts": {"routes": 1, "calls": 2, "includes": 0}}
 
     monkeypatch.setattr(
@@ -421,7 +428,7 @@ async def test_collect_docs_enrichment_async_runs_contracts_and_api_summary(
 
     assert contracts == [{"path": "a.py"}]
     assert api_summary == {"counts": {"routes": 1, "calls": 2, "includes": 0}}
-    assert calls == ["contracts", "api"]
+    assert events == ["contracts:start", "contracts:end", "api:start", "api:end"]
 
 
 @pytest.mark.anyio

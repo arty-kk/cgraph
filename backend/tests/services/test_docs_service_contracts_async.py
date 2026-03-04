@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -47,3 +48,63 @@ def test_collect_compact_contracts_async_does_not_open_session_per_item() -> Non
     end = source.index("\n\ndef _build_run_hints", start)
     body = source[start:end]
     assert "AsyncSessionLocal" not in body
+
+
+@pytest.mark.anyio
+async def test_collect_docs_enrichment_async_avoids_parallel_session_execute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _NoParallelExecuteSession:
+        def __init__(self) -> None:
+            self.in_execute = False
+
+        async def execute(self, _query):
+            if self.in_execute:
+                raise RuntimeError("parallel execute is not allowed")
+            self.in_execute = True
+            events.append("execute:start")
+            try:
+                await asyncio.sleep(0)
+                events.append("execute:end")
+                return object()
+            finally:
+                self.in_execute = False
+
+    async def _fake_collect_compact_contracts_async(session, project_id, root, contract_paths):
+        _ = (project_id, root, contract_paths)
+        events.append("contracts:start")
+        await session.execute("contracts")
+        events.append("contracts:end")
+        return [{"path": "a.py"}]
+
+    async def _fake_build_api_summary_async(session, project_id):
+        _ = project_id
+        events.append("api:start")
+        await session.execute("api")
+        events.append("api:end")
+        return {"counts": {"routes": 1, "calls": 2, "includes": 0}}
+
+    monkeypatch.setattr(docs_service, "_collect_compact_contracts_async", _fake_collect_compact_contracts_async)
+    monkeypatch.setattr(docs_service, "_build_api_summary_async", _fake_build_api_summary_async)
+
+    contracts, api_summary = await docs_service._collect_docs_enrichment_async(
+        _NoParallelExecuteSession(),
+        1,
+        Path("/repo"),
+        ["a.py"],
+    )
+
+    assert contracts == [{"path": "a.py"}]
+    assert api_summary == {"counts": {"routes": 1, "calls": 2, "includes": 0}}
+    assert events == [
+        "contracts:start",
+        "execute:start",
+        "execute:end",
+        "contracts:end",
+        "api:start",
+        "execute:start",
+        "execute:end",
+        "api:end",
+    ]

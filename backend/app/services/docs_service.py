@@ -1227,10 +1227,9 @@ async def _collect_docs_enrichment_async(
     ``session`` lifecycle is managed by the caller; this function must be
     awaited before leaving the corresponding ``async with`` session context.
     """
-    return await asyncio.gather(
-        _collect_compact_contracts_async(session, project_id, root, contract_paths),
-        _build_api_summary_async(session, project_id),
-    )
+    contracts = await _collect_compact_contracts_async(session, project_id, root, contract_paths)
+    api_summary = await _build_api_summary_async(session, project_id)
+    return contracts, api_summary
 
 
 async def _collect_outline_and_key_files_async(
