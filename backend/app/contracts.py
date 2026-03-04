@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import delete, select
 
 from .errors import PathValidationError
-from .infra.fs_runtime import run_fs_io_async
 from .indexers import pick_indexer
+from .infra.cpu_runtime import run_cpu_io_async
+from .infra.fs_runtime import run_fs_io_async
 from .models import ModuleContract
 from .resolve import resolve_spec
 from .utils import resolve_under_root, sha256_file
@@ -20,7 +21,14 @@ MAX_CONTRACT_SYMBOLS = 400
 MAX_CONTRACT_IMPORTS = 2000
 
 
-def _build_contract_payload(project_root: Path, rel_norm: str, p: Path, file_text: str) -> dict:
+def _build_contract_payload_cpu(
+    project_root_str: str,
+    rel_norm: str,
+    abs_path_str: str,
+    file_text: str,
+) -> dict:
+    _ = project_root_str
+    p = Path(abs_path_str)
     idx = pick_indexer(rel_norm)
     exports = idx.parse_exports(p, file_text)
     exports_set = {str(x) for x in exports if isinstance(x, str)}
@@ -33,13 +41,7 @@ def _build_contract_payload(project_root: Path, rel_norm: str, p: Path, file_tex
             continue
         kind = str(getattr(imp, "kind", "") or "import")
         raw = str(getattr(imp, "raw", "") or "")
-        resolved = None
-        if kind != "runtime_dynamic":
-            try:
-                resolved = resolve_spec(project_root, rel_norm, spec)
-            except Exception:
-                resolved = None
-        imports.append({"spec": spec, "kind": kind, "raw": raw, "resolved_path": resolved})
+        imports.append({"spec": spec, "kind": kind, "raw": raw, "resolved_path": None})
 
     symbols_raw = []
     try:
@@ -83,6 +85,24 @@ def _build_contract_payload(project_root: Path, rel_norm: str, p: Path, file_tex
     }
 
 
+def _resolve_contract_imports(project_root: Path, rel_norm: str, imports: list[dict]) -> list[dict]:
+    resolved_imports: list[dict] = []
+    for imp in imports[:MAX_CONTRACT_IMPORTS]:
+        spec = str(imp.get("spec") or "")
+        if not spec:
+            continue
+        kind = str(imp.get("kind") or "import")
+        raw = str(imp.get("raw") or "")
+        resolved = None
+        if kind != "runtime_dynamic":
+            try:
+                resolved = resolve_spec(project_root, rel_norm, spec)
+            except Exception:
+                resolved = None
+        resolved_imports.append({"spec": spec, "kind": kind, "raw": raw, "resolved_path": resolved})
+    return resolved_imports
+
+
 def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
     exists = path.exists()
     return exists, bool(exists and path.is_file())
@@ -118,19 +138,33 @@ async def _read_text_async(path: Path) -> str:
     )
 
 
-async def _build_contract_payload_async(
-    project_root: Path,
+async def _build_contract_payload_cpu_async(
+    project_root_str: str,
     rel_norm: str,
-    p: Path,
+    abs_path_str: str,
     file_text: str,
 ) -> dict:
+    return await run_cpu_io_async(
+        _build_contract_payload_cpu,
+        project_root_str,
+        rel_norm,
+        abs_path_str,
+        file_text,
+        operation="contracts.build_payload_cpu",
+    )
+
+
+async def _resolve_contract_imports_async(
+    project_root: Path,
+    rel_norm: str,
+    imports: list[dict],
+) -> list[dict]:
     return await run_fs_io_async(
-        _build_contract_payload,
+        _resolve_contract_imports,
         project_root,
         rel_norm,
-        p,
-        file_text,
-        operation="contracts.build_payload",
+        imports,
+        operation="contracts.resolve_imports",
     )
 
 
@@ -193,7 +227,17 @@ async def get_or_build_contract_async(
                 return data
 
     file_text = await _read_text_async(p)
-    contract = await _build_contract_payload_async(project_root, rel_norm, p, file_text)
+    contract = await _build_contract_payload_cpu_async(
+        str(project_root),
+        rel_norm,
+        str(p),
+        file_text,
+    )
+    contract["imports"] = await _resolve_contract_imports_async(
+        project_root,
+        rel_norm,
+        contract.get("imports") or [],
+    )
 
     contract_json = json.dumps(contract, ensure_ascii=False)
     stmt = (

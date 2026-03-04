@@ -59,3 +59,12 @@ Lifecycle соответствует единому async-паттерну:
 Сопутствующие параметры окружения:
 - `STUBGRAPH_SCAN_STAGE_BATCH_SIZE` — размер батча в FS/read/parse стадиях;
 - `STUBGRAPH_SCAN_STAGE_MAX_PARALLEL` — общий лимит параллелизма scan runtime и размер consumer-пула.
+
+## Contracts async runtime model
+
+`get_or_build_contract_async` в `app.contracts` разделён на явные стадии:
+- FS runtime (`run_fs_io_async`): `resolve_path`, `resolve_under_root`, `exists/is_file`, `sha256`, `read_text`, и enrichment импортов через `resolve_spec`;
+- CPU runtime (`run_cpu_io_async`): только parse/нормализация `exports`/`imports`/`symbols`/`module_doc` и сборка payload.
+
+Почему так: CPU runtime работает через process pool и требует process-контракт (top-level importable callable + pickle-safe args/result), поэтому в CPU-этап передаются строковые значения пути (`project_root_str`, `rel_norm`, `abs_path_str`) и примитивные структуры без thread-affine объектов.
+
