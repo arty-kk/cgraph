@@ -411,6 +411,7 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
     captured: dict[str, object] = {}
     collect_batch_sizes: list[int] = []
     queue_sizes: list[int] = []
+    created_consumer_names: list[str] = []
 
     async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
         _ = precomputed_stats, batch_size, max_parallel
@@ -468,7 +469,17 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
             super().__init__(*args, **kwargs)
             queue_sizes.append(self.maxsize)
 
+    original_create_task = scan.asyncio.create_task
+
+    def _create_task_probe(coro, *, name=None, context=None):
+        if isinstance(name, str) and name.startswith("scan-consumer-"):
+            created_consumer_names.append(name)
+        if context is None:
+            return original_create_task(coro, name=name)
+        return original_create_task(coro, name=name, context=context)
+
     monkeypatch.setattr(scan.asyncio, "Queue", _QueueProbe)
+    monkeypatch.setattr(scan.asyncio, "create_task", _create_task_probe)
 
     result = await scan.scan_project_async(1, 2, Path("/repo"))
 
@@ -482,9 +493,71 @@ async def test_scan_project_async_large_streamed_paths_keeps_contract(monkeypatc
     assert verify_calls["removed"] == [["gone.py"]]
     assert captured["rel_paths"] == expected_changed
     assert set(captured["precomputed_stats"].keys()) == set(expected_changed)
+    assert all(captured["precomputed_stats"][rel] == (21, 21) for rel in changed_by_stat)
+    assert all(captured["precomputed_stats"][rel] == (20, 20) for rel in changed_by_hash)
     assert collect_batch_sizes[:10] == [64, 64, 64, 64, 64, 64, 64, 64, 64, 24]
     assert captured["queue_sizes"] == [4]
+    assert created_consumer_names == [
+        "scan-consumer-1-0",
+        "scan-consumer-1-1",
+        "scan-consumer-1-2",
+        "scan-consumer-1-3",
+    ]
 
+
+
+
+@pytest.mark.anyio
+async def test_scan_project_async_starts_multiple_consumers_when_parallelism_is_high(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _Session:
+        async def execute(self, *_args, **_kwargs):
+            return _Result([])
+
+        async def commit(self):
+            return None
+
+    created_consumer_names: list[str] = []
+    original_create_task = scan.asyncio.create_task
+
+    def _create_task_probe(coro, *, name=None, context=None):
+        if isinstance(name, str) and name.startswith("scan-consumer-"):
+            created_consumer_names.append(name)
+        if context is None:
+            return original_create_task(coro, name=name)
+        return original_create_task(coro, name=name, context=context)
+
+    async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        await asyncio.sleep(0)
+        return [scan.FileStatResult(rel, True, True, True, 1, 1) for rel in rel_paths]
+
+    async def _fake_scan_files(_project_id, _org_id, _project_root, rel_paths, precomputed_stats=None, scan_metrics=None):
+        _ = rel_paths, precomputed_stats, scan_metrics
+        return {"updated_nodes": 0, "updated_edges": 0, "removed": 0}
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(scan, "iter_code_files", lambda root: (root / f"f{i}.py" for i in range(12)))
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
+    monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_max_parallel", 3)
+    monkeypatch.setattr(scan.asyncio, "create_task", _create_task_probe)
+
+    await scan.scan_project_async(7, 8, Path("/repo"))
+
+    assert len(created_consumer_names) == 3
+    assert created_consumer_names == [
+        "scan-consumer-7-0",
+        "scan-consumer-7-1",
+        "scan-consumer-7-2",
+    ]
 
 @pytest.mark.anyio
 async def test_scan_project_async_streams_batches_before_full_fs_walk_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -714,7 +787,7 @@ async def test_scan_project_async_cancelled_scan_does_not_leave_pipeline_tasks(m
     monkeypatch.setattr(scan, "_collect_file_stats_async", _slow_collect)
     monkeypatch.setattr(scan, "scan_files_async", _fake_scan_files)
     monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 2)
-    monkeypatch.setattr(scan.settings, "scan_stage_max_parallel", 2)
+    monkeypatch.setattr(scan.settings, "scan_stage_max_parallel", 3)
 
     task = asyncio.create_task(scan.scan_project_async(999, 1, Path("/repo")))
     await asyncio.sleep(0.08)

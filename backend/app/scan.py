@@ -1040,19 +1040,28 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         candidate_set: set[str] = set()
         candidates: list[str] = []
         candidate_stats: dict[str, tuple[int, int]] = {}
+        candidate_lock = asyncio.Lock()
         hash_verify_max_bytes = int(
             settings.scan_hash_verify_max_file_bytes or settings.snapshot_max_file_bytes
         )
 
-        def _mark_candidate(rel: str, mtime_ns: int, size: int) -> None:
-            if rel not in candidate_set:
-                candidate_set.add(rel)
-                candidates.append(rel)
-            candidate_stats[rel] = (int(mtime_ns), int(size))
-
-        async def _process_path_batch(rel_batch: list[str]) -> None:
+        async def _process_path_batch(
+            rel_batch: list[str],
+        ) -> tuple[set[str], list[str], dict[str, tuple[int, int]]]:
             if not rel_batch:
-                return
+                return set(), [], {}
+
+            local_seen_paths = set(rel_batch)
+            local_candidate_set: set[str] = set()
+            local_candidates: list[str] = []
+            local_candidate_stats: dict[str, tuple[int, int]] = {}
+
+            def _mark_candidate(rel: str, mtime_ns: int, size: int) -> None:
+                if rel not in local_candidate_set:
+                    local_candidate_set.add(rel)
+                    local_candidates.append(rel)
+                local_candidate_stats[rel] = (int(mtime_ns), int(size))
+
             stat_results = await _collect_file_stats_async(
                 project_root,
                 rel_batch,
@@ -1097,6 +1106,8 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                         _mark_candidate(item.rel, item.mtime_ns, item.size)
                 await asyncio.sleep(0)
 
+            return local_seen_paths, local_candidates, local_candidate_stats
+
         runtime = get_scan_runtime()
         queue_size = max(1, runtime.queue_size)
         producer_started = time.monotonic()
@@ -1107,6 +1118,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
         )
         sentinel = object()
         path_queue: asyncio.Queue[list[str] | object] = asyncio.Queue(maxsize=queue_size)
+        consumer_count = max(1, runtime.max_parallel)
 
         async def _produce_paths_async() -> None:
             try:
@@ -1123,7 +1135,8 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                     scan_metrics["producer"]["paths"] += len(rel_batch)
                     await path_queue.put(rel_batch)
             finally:
-                await path_queue.put(sentinel)
+                for _ in range(consumer_count):
+                    await path_queue.put(sentinel)
                 scan_metrics["producer"]["duration_s"] = (
                     scan_metrics["producer"].get("duration_s", 0.0)
                     + time.monotonic()
@@ -1137,21 +1150,31 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                     if rel_batch is sentinel:
                         return
                     assert isinstance(rel_batch, list)
-                    for rel in rel_batch:
-                        seen_paths.add(rel)
-                    await _process_path_batch(rel_batch)
+                    local_seen, local_candidates, local_candidate_stats = await _process_path_batch(
+                        rel_batch
+                    )
+                    async with candidate_lock:
+                        seen_paths.update(local_seen)
+                        for rel in local_candidates:
+                            if rel not in candidate_set:
+                                candidate_set.add(rel)
+                                candidates.append(rel)
+                        candidate_stats.update(local_candidate_stats)
                 finally:
                     path_queue.task_done()
 
         producer_task = asyncio.create_task(_produce_paths_async(), name=f"scan-producer-{project_id}")
-        consumer_task = asyncio.create_task(_consume_paths_async(), name=f"scan-consumer-{project_id}")
+        consumer_tasks = [
+            asyncio.create_task(_consume_paths_async(), name=f"scan-consumer-{project_id}-{idx}")
+            for idx in range(consumer_count)
+        ]
         try:
-            await asyncio.gather(producer_task, consumer_task)
+            await asyncio.gather(producer_task, *consumer_tasks)
         finally:
-            for task in (producer_task, consumer_task):
+            for task in (producer_task, *consumer_tasks):
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(producer_task, consumer_task, return_exceptions=True)
+            await asyncio.gather(producer_task, *consumer_tasks, return_exceptions=True)
 
         removed = sorted(existing_keys - seen_paths)
         sorted_candidates = sorted(candidates)
