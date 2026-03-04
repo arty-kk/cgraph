@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from sqlalchemy import literal, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ...contracts import get_or_build_contract_async
 from ...graph_traversal import neighbors_limited_recursive_cte_async
@@ -58,14 +59,6 @@ async def _run_seed_fs_io_async(fn: Any, *args: Any, **kwargs: Any) -> Any:
         return await run_fs_io_async(fn, *args, operation="agentic.seed_context.fs", **kwargs)
 
 
-async def _run_seed_db_op_async(
-    semaphore: asyncio.Semaphore,
-    op: Callable[[], Awaitable[Any]],
-) -> Any:
-    async with semaphore:
-        return await op()
-
-
 def _resolve_and_read_seed_file_sync(
     root: Path,
     target_rel: str,
@@ -113,45 +106,39 @@ async def _neighbors_limited_async(
 
 
 async def _load_contract_async(
-    session: AsyncSession,
     project_id: int,
     root: Path,
     target_norm: str,
     *,
-    db_semaphore: asyncio.Semaphore,
+    session_factory: Callable[[], Any],
 ) -> dict:
     try:
-        return await _run_seed_db_op_async(
-            db_semaphore,
-            lambda: get_or_build_contract_async(session, project_id, root, target_norm),
-        )
+        async with session_factory() as session:
+            return await get_or_build_contract_async(session, project_id, root, target_norm)
     except Exception:
         return {}
 
 
 async def _load_target_node_metrics_async(
-    session: AsyncSession,
     project_id: int,
     target_norm: str,
     *,
-    db_semaphore: asyncio.Semaphore,
+    session_factory: Callable[[], Any],
 ) -> dict:
     try:
-        node = (
-            (
-                await _run_seed_db_op_async(
-                    db_semaphore,
-                    lambda: session.execute(
+        async with session_factory() as session:
+            node = (
+                (
+                    await session.execute(
                         select(FileNode).where(
                             FileNode.project_id == project_id,
                             FileNode.path == target_norm,
                         )
-                    ),
+                    )
                 )
+                .scalars()
+                .first()
             )
-            .scalars()
-            .first()
-        )
     except Exception:
         return {}
     if not node:
@@ -169,11 +156,10 @@ async def _load_target_node_metrics_async(
 
 
 async def _load_api_hints_async(
-    session: AsyncSession,
     project_id: int,
     target_norm: str,
     *,
-    db_semaphore: asyncio.Semaphore,
+    session_factory: Callable[[], Any],
 ) -> tuple[list[dict], list[dict]]:
     routes_in_file: list[dict] = []
     calls_in_file: list[dict] = []
@@ -202,12 +188,8 @@ async def _load_api_hints_async(
             .order_by(ApiCall.path.asc())
             .limit(20)
         )
-        rows = (
-            await _run_seed_db_op_async(
-                db_semaphore,
-                lambda: session.execute(union_all(routes_stmt, calls_stmt)),
-            )
-        ).all()
+        async with session_factory() as session:
+            rows = (await session.execute(union_all(routes_stmt, calls_stmt))).all()
         for row in rows:
             if hasattr(row, "_mapping"):
                 kind = row._mapping.get("kind")
@@ -246,35 +228,29 @@ async def _load_api_hints_async(
 
 
 async def _load_outbound_hint_async(
-    session: AsyncSession,
     project_id: int,
     target_norm: str,
     out_depth: int,
     *,
-    db_semaphore: asyncio.Semaphore,
+    session_factory: Callable[[], Any],
 ) -> list[str]:
-    return await _run_seed_db_op_async(
-        db_semaphore,
-        lambda: _neighbors_limited_async(
+    async with session_factory() as session:
+        return await _neighbors_limited_async(
             session, project_id, target_norm, direction="out", depth=out_depth, limit=200
-        ),
-    )
+        )
 
 
 async def _load_inbound_hint_async(
-    session: AsyncSession,
     project_id: int,
     target_norm: str,
     in_depth: int,
     *,
-    db_semaphore: asyncio.Semaphore,
+    session_factory: Callable[[], Any],
 ) -> list[str]:
-    return await _run_seed_db_op_async(
-        db_semaphore,
-        lambda: _neighbors_limited_async(
+    async with session_factory() as session:
+        return await _neighbors_limited_async(
             session, project_id, target_norm, direction="in", depth=in_depth, limit=200
-        ),
-    )
+        )
 
 
 def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
@@ -296,7 +272,11 @@ async def _seed_context_async(
     depth: int,
     *,
     max_file_chars: int,
+    session_factory: Callable[[], Any] | None = None,
 ) -> dict:
+    _ = session
+    if session_factory is None:
+        session_factory = AsyncSessionLocal
     max_file_chars = max(1, min(int(max_file_chars), 200_000))
     target_norm, target_text = await _run_seed_fs_io_async(
         _resolve_and_read_seed_file_sync,
@@ -307,7 +287,6 @@ async def _seed_context_async(
 
     out_depth = max(0, min(depth, 6))
     in_depth = max(0, min(depth, 2))
-    db_semaphore = asyncio.Semaphore(1)
     (
         contract_result,
         node_metrics_result,
@@ -315,17 +294,13 @@ async def _seed_context_async(
         outbound_result,
         inbound_result,
     ) = await asyncio.gather(
-        _load_contract_async(session, project_id, root, target_norm, db_semaphore=db_semaphore),
+        _load_contract_async(project_id, root, target_norm, session_factory=session_factory),
         _load_target_node_metrics_async(
-            session, project_id, target_norm, db_semaphore=db_semaphore
+            project_id, target_norm, session_factory=session_factory
         ),
-        _load_api_hints_async(session, project_id, target_norm, db_semaphore=db_semaphore),
-        _load_outbound_hint_async(
-            session, project_id, target_norm, out_depth, db_semaphore=db_semaphore
-        ),
-        _load_inbound_hint_async(
-            session, project_id, target_norm, in_depth, db_semaphore=db_semaphore
-        ),
+        _load_api_hints_async(project_id, target_norm, session_factory=session_factory),
+        _load_outbound_hint_async(project_id, target_norm, out_depth, session_factory=session_factory),
+        _load_inbound_hint_async(project_id, target_norm, in_depth, session_factory=session_factory),
         return_exceptions=True,
     )
 

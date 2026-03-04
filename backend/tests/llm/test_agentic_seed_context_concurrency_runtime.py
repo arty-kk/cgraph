@@ -10,6 +10,9 @@ from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from sqlalchemy import text
+
+from app.async_db import AsyncSessionLocal
 from app.llm import agentic
 from app.llm.agentic import context as agentic_context
 
@@ -28,6 +31,102 @@ class _EmptyResult:
 class _SessionStub:
     async def execute(self, _query, _params=None):
         return _EmptyResult()
+
+
+
+
+class _SessionStubContext:
+    async def __aenter__(self):
+        return _SessionStub()
+
+    async def __aexit__(self, *_exc):
+        return False
+
+
+def _session_stub_factory():
+    return _SessionStubContext()
+
+class _DbTracker:
+    def __init__(self) -> None:
+        self.created = 0
+        self.entered = 0
+        self.exited = 0
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self._lock = asyncio.Lock()
+
+
+class _FakeDbSession:
+    def __init__(self, tracker: _DbTracker) -> None:
+        self._tracker = tracker
+
+    async def execute(self, _query, _params=None):
+        async with self._tracker._lock:
+            self._tracker.in_flight += 1
+            self._tracker.max_in_flight = max(self._tracker.max_in_flight, self._tracker.in_flight)
+        await asyncio.sleep(0.05)
+        async with self._tracker._lock:
+            self._tracker.in_flight -= 1
+        return _EmptyResult()
+
+
+class _FakeSessionContext:
+    def __init__(self, tracker: _DbTracker):
+        self._tracker = tracker
+        self._session = _FakeDbSession(tracker)
+
+    async def __aenter__(self):
+        async with self._tracker._lock:
+            self._tracker.entered += 1
+        return self._session
+
+    async def __aexit__(self, *_exc):
+        async with self._tracker._lock:
+            self._tracker.exited += 1
+        return False
+
+
+class _FakeSessionFactory:
+    def __init__(self, tracker: _DbTracker) -> None:
+        self._tracker = tracker
+
+    def __call__(self):
+        self._tracker.created += 1
+        return _FakeSessionContext(self._tracker)
+
+
+class _ManagedRealSessionFactory:
+    def __init__(self) -> None:
+        self.entered = 0
+        self.exited = 0
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self._lock = asyncio.Lock()
+
+    def __call__(self):
+        factory = self
+
+        class _Ctx:
+            def __init__(self) -> None:
+                self._ctx = AsyncSessionLocal()
+
+            async def __aenter__(self):
+                session = await self._ctx.__aenter__()
+                async with factory._lock:
+                    factory.entered += 1
+                    factory.in_flight += 1
+                    factory.max_in_flight = max(factory.max_in_flight, factory.in_flight)
+                return session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                try:
+                    return await self._ctx.__aexit__(exc_type, exc, tb)
+                finally:
+                    async with factory._lock:
+                        factory.exited += 1
+                        factory.in_flight -= 1
+
+        return _Ctx()
 
 
 class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase):
@@ -57,6 +156,7 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
                     f"f{i % 24}.txt",
                     depth=1,
                     max_file_chars=2_000,
+                    session_factory=_session_stub_factory,
                 )
 
             hb_task = asyncio.create_task(_heartbeat())
@@ -107,6 +207,7 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
                     f"f{i % 12}.txt",
                     depth=1,
                     max_file_chars=200,
+                    session_factory=_session_stub_factory,
                 )
 
             with patch("app.llm.agentic.context.run_fs_io_async", side_effect=_instrumented_run_fs_io_async):
@@ -116,7 +217,6 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
                 )
 
         self.assertLessEqual(max_in_flight, limit)
-
 
     async def test_seed_context_runs_independent_branches_concurrently(self) -> None:
         async def _slow_contract(*_args, **_kwargs):
@@ -155,6 +255,7 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
                 "f0.txt",
                 depth=2,
                 max_file_chars=200,
+                session_factory=_session_stub_factory,
             )
             elapsed = time.perf_counter() - started
 
@@ -181,6 +282,7 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
                 "f0.txt",
                 depth=3,
                 max_file_chars=200,
+                session_factory=_session_stub_factory,
             )
 
         self.assertEqual(
@@ -200,6 +302,80 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
             "Lists are truncated hints. Use get_neighbors() to expand.",
         )
 
+    async def test_seed_context_concurrent_calls_use_isolated_db_sessions(self) -> None:
+        tracker = _DbTracker()
+
+        async def _fake_contract(_session, _project_id, _root, _target_norm):
+            await asyncio.sleep(0.05)
+            return {"kind": "contract"}
+
+        async def _fake_neighbors(_session, _project_id, _start, **_kwargs):
+            await asyncio.sleep(0.05)
+            return ["n"]
+
+        async def _run_once() -> dict:
+            return await agentic._seed_context_async(
+                _SessionStub(),
+                1,
+                Path("."),
+                "f0.txt",
+                depth=2,
+                max_file_chars=200,
+                session_factory=_FakeSessionFactory(tracker),
+            )
+
+        with (
+            patch("app.llm.agentic.context._run_seed_fs_io_async", return_value=("f0.txt", "")),
+            patch("app.llm.agentic.context.get_or_build_contract_async", side_effect=_fake_contract),
+            patch("app.llm.agentic.context._neighbors_limited_async", side_effect=_fake_neighbors),
+        ):
+            started = time.perf_counter()
+            rows = await asyncio.gather(*[_run_once() for _ in range(12)])
+            elapsed = time.perf_counter() - started
+
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(tracker.created, 60)
+        self.assertEqual(tracker.entered, 60)
+        self.assertEqual(tracker.exited, 60)
+        self.assertGreaterEqual(tracker.max_in_flight, 8)
+        self.assertLess(elapsed, 1.2)
+
+    async def test_seed_context_real_sessions_release_after_burst(self) -> None:
+        factory = _ManagedRealSessionFactory()
+
+        async def _fake_contract(session, _project_id, _root, _target_norm):
+            await session.execute(text("SELECT 1"))
+            return {"kind": "contract"}
+
+        async def _fake_neighbors(session, _project_id, _start, **_kwargs):
+            await session.execute(text("SELECT 1"))
+            return ["ok"]
+
+        async def _run_once(i: int) -> dict:
+            return await agentic._seed_context_async(
+                _SessionStub(),
+                1,
+                Path("."),
+                f"f{i}.txt",
+                depth=1,
+                max_file_chars=120,
+                session_factory=factory,
+            )
+
+        try:
+            with (
+                patch("app.llm.agentic.context._run_seed_fs_io_async", return_value=("f.txt", "")),
+                patch("app.llm.agentic.context.get_or_build_contract_async", side_effect=_fake_contract),
+                patch("app.llm.agentic.context._neighbors_limited_async", side_effect=_fake_neighbors),
+            ):
+                await asyncio.gather(*[_run_once(i) for i in range(20)])
+        except Exception as exc:
+            self.skipTest(f"Real AsyncSessionLocal DB unavailable: {exc}")
+
+        self.assertEqual(factory.entered, factory.exited)
+        self.assertEqual(factory.in_flight, 0)
+        self.assertGreaterEqual(factory.max_in_flight, 2)
+
     async def test_seed_context_handles_missing_and_oversized_files(self) -> None:
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -212,6 +388,7 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
                 "missing.txt",
                 depth=1,
                 max_file_chars=100,
+                session_factory=_session_stub_factory,
             )
             big = await agentic._seed_context_async(
                 _SessionStub(),
@@ -220,6 +397,7 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
                 "big.txt",
                 depth=1,
                 max_file_chars=128,
+                session_factory=_session_stub_factory,
             )
 
         self.assertEqual(missing["target_path"], "missing.txt")
