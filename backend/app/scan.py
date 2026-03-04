@@ -110,6 +110,58 @@ def _compute_symbol_meta_for_embedding(
     return tuple(_symbol_chunks(text, symbols))
 
 
+def _build_edges_from_cached_imports_sync(
+    project_root_str: str,
+    parsed_batch: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    project_root = Path(project_root_str)
+    normalized_edges: list[dict[str, str]] = []
+    dedup_keys: set[tuple[str, str, str]] = set()
+
+    for parsed in parsed_batch:
+        if not isinstance(parsed, dict):
+            continue
+        rel = str(parsed.get("rel") or "")
+        if not rel:
+            continue
+
+        for imp in parsed.get("cached_imports") or []:
+            if not isinstance(imp, dict):
+                continue
+            spec = str(imp.get("spec") or "").strip()
+            if not spec:
+                continue
+            kind = str(imp.get("kind") or "import")
+            if kind == "runtime_dynamic":
+                continue
+            try:
+                dst_raw = resolve_spec(project_root, rel, spec)
+            except Exception:
+                dst_raw = None
+            if not dst_raw:
+                continue
+            try:
+                _abs_dst, dst = resolve_under_root(project_root, str(dst_raw))
+            except Exception:
+                continue
+            if not dst or dst == rel:
+                continue
+            key = (rel, dst, kind)
+            if key in dedup_keys:
+                continue
+            dedup_keys.add(key)
+            normalized_edges.append(
+                {
+                    "src_path": rel,
+                    "dst_path": dst,
+                    "kind": kind,
+                    "raw": str(imp.get("raw") or ""),
+                }
+            )
+
+    return normalized_edges
+
+
 def _today_utc():
     from datetime import datetime, timezone
 
@@ -1428,9 +1480,16 @@ async def _prepare_scan_files_async(
             scan_metrics["parse"]["files"] += len(parsed_batch)
 
         embedding_candidates: list[EmbeddingTaskCandidate] = []
+        cached_import_records: list[dict[str, object]] = []
 
         for parsed in parsed_batch:
             rel = str(parsed["rel"])
+            cached_import_records.append(
+                {
+                    "rel": rel,
+                    "cached_imports": parsed.get("cached_imports") or [],
+                }
+            )
             snapshot[rel] = FileSnapshot(
                 mtime_ns=int(parsed["stat_mtime_ns"]),
                 size=int(parsed["stat_size"]),
@@ -1484,37 +1543,26 @@ async def _prepare_scan_files_async(
                                 )
                             )
 
-            for imp in parsed.get("cached_imports") or []:
-                if not isinstance(imp, dict):
-                    continue
-                spec = str(imp.get("spec") or "").strip()
-                if not spec:
-                    continue
-                kind = str(imp.get("kind") or "import")
-                if kind == "runtime_dynamic":
-                    continue
-                try:
-                    dst_raw = resolve_spec(project_root, rel, spec)
-                except Exception:
-                    dst_raw = None
-                if not dst_raw:
-                    continue
-                try:
-                    _abs_dst, dst = resolve_under_root(project_root, str(dst_raw))
-                except Exception:
-                    continue
-                if not dst or dst == rel:
-                    continue
-                raw = str(imp.get("raw") or "")
-                key = (rel, dst, kind)
-                if key not in edge_map:
-                    edge_map[key] = FileEdge(
-                        project_id=project_id,
-                        src_path=rel,
-                        dst_path=dst,
-                        kind=kind,
-                        raw=raw,
-                    )
+        normalized_edges = await _run_scan_cpu_batch(
+            _build_edges_from_cached_imports_sync,
+            str(project_root),
+            cached_import_records,
+            operation="scan.cpu.cached_import_edges",
+        )
+        for edge in normalized_edges:
+            rel = str(edge.get("src_path") or "")
+            dst = str(edge.get("dst_path") or "")
+            kind = str(edge.get("kind") or "import")
+            raw = str(edge.get("raw") or "")
+            key = (rel, dst, kind)
+            if key not in edge_map:
+                edge_map[key] = FileEdge(
+                    project_id=project_id,
+                    src_path=rel,
+                    dst_path=dst,
+                    kind=kind,
+                    raw=raw,
+                )
 
         if embedding_candidates:
             client = get_async_openai_client()
