@@ -33,7 +33,9 @@ async def test_normalize_project_root_async_uses_fs_runtime(
 
 
 @pytest.mark.anyio
-async def test_consume_queued_task_payload_dispatches_by_task_name(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_consume_queued_task_payload_dispatches_by_task_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     received: dict[str, object] = {}
 
     async def _fake_scan(job_id: str, project_id: int, org_id: int) -> None:
@@ -52,6 +54,74 @@ async def test_consume_queued_task_payload_dispatches_by_task_name(monkeypatch: 
     await task_handlers.consume_queued_task_payload_async(json.dumps(payload, ensure_ascii=False))
 
     assert received["scan"] == ("job-1", 11, 22)
+
+
+@pytest.mark.anyio
+async def test_consume_queued_task_payload_uses_cpu_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    async def _fake_cpu_runtime(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return "stubgraph.scan", ["job-1", 11, 22]
+
+    received: dict[str, object] = {}
+
+    async def _fake_execute(task_name: str, args: list[object]) -> str:
+        received["task_name"] = task_name
+        received["args"] = args
+        return "ok"
+
+    monkeypatch.setattr(task_handlers, "run_cpu_io_async", _fake_cpu_runtime)
+    monkeypatch.setattr(task_handlers, "execute_task_by_name_async", _fake_execute)
+
+    result = await task_handlers.consume_queued_task_payload_async("{\"body\":\"[]\"}")
+
+    assert result == "ok"
+    assert calls["func"] is task_handlers._decode_task_payload
+    assert calls["args"] == ('{"body":"[]"}',)
+    assert calls["kwargs"] == {"operation": "task_handlers.decode_task_payload"}
+    assert received == {"task_name": "stubgraph.scan", "args": ["job-1", 11, 22]}
+
+
+def test_decode_task_payload_rejects_too_large_raw_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(task_handlers, "_task_payload_raw_max_bytes", lambda: 10)
+
+    with pytest.raises(RuntimeError, match="Task payload exceeds raw size limit"):
+        task_handlers._decode_task_payload("x" * 11)
+
+
+def test_decode_task_payload_rejects_invalid_payload_format() -> None:
+    with pytest.raises(RuntimeError, match="Task payload root must be object"):
+        task_handlers._decode_task_payload("[1, 2, 3]")
+
+
+def test_decode_task_payload_rejects_invalid_base64_body() -> None:
+    payload = {
+        "body": "***",
+        "headers": {"task": "stubgraph.scan"},
+        "properties": {"body_encoding": "base64"},
+    }
+
+    with pytest.raises(RuntimeError, match="Task payload body base64 is invalid"):
+        task_handlers._decode_task_payload(json.dumps(payload, ensure_ascii=False))
+
+
+def test_decode_task_payload_rejects_too_large_decoded_base64_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(task_handlers, "_task_payload_body_max_bytes", lambda: 2)
+    payload = {
+        "body": base64.b64encode(b"[1,2,3]").decode("ascii"),
+        "headers": {"task": "stubgraph.scan"},
+        "properties": {"body_encoding": "base64"},
+    }
+
+    with pytest.raises(RuntimeError, match="Task payload body exceeds decoded size limit"):
+        task_handlers._decode_task_payload(json.dumps(payload, ensure_ascii=False))
 
 
 @pytest.mark.anyio

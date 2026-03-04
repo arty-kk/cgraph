@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .async_db import AsyncSessionLocal
+from .config import settings
+from .infra.cpu_runtime import run_cpu_io_async
 from .infra.fs_runtime import run_fs_io_async
 from .infra.redis_client import get_async_redis_client, init_redis_pool_async
 from .logging import get_logger
@@ -20,6 +23,17 @@ from .services.task_service import TaskRequest, run_task_async
 from .utils import normalize_project_root
 
 logger = get_logger("stubgraph.task_handlers")
+
+_TASK_PAYLOAD_RAW_MAX_BYTES = 1_000_000
+_TASK_PAYLOAD_BODY_MAX_BYTES = 5_000_000
+
+
+def _task_payload_raw_max_bytes() -> int:
+    return max(1, int(settings.task_payload_raw_max_bytes or _TASK_PAYLOAD_RAW_MAX_BYTES))
+
+
+def _task_payload_body_max_bytes() -> int:
+    return max(1, int(settings.task_payload_body_max_bytes or _TASK_PAYLOAD_BODY_MAX_BYTES))
 
 
 async def _set_job_status_async(
@@ -156,17 +170,49 @@ async def execute_task_by_name_async(task_name: str, args: list[Any]) -> Any:
     return None
 
 
-def _decode_task_payload(payload_raw: str) -> tuple[str, list[Any]]:
+def _decode_task_payload(payload_raw: str | bytes) -> tuple[str, list[Any]]:
+    max_raw_size = _task_payload_raw_max_bytes()
+    if isinstance(payload_raw, bytes):
+        if len(payload_raw) > max_raw_size:
+            raise RuntimeError("Task payload exceeds raw size limit")
+        try:
+            payload_raw = payload_raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("Task payload bytes must be valid UTF-8") from exc
+    elif isinstance(payload_raw, str):
+        if len(payload_raw.encode("utf-8")) > max_raw_size:
+            raise RuntimeError("Task payload exceeds raw size limit")
+    else:
+        raise RuntimeError("Task payload must be str")
+
     payload = json.loads(payload_raw)
-    task_name = str(payload.get("headers", {}).get("task") or "")
+    if not isinstance(payload, dict):
+        raise RuntimeError("Task payload root must be object")
+    headers = payload.get("headers")
+    properties = payload.get("properties")
+    if headers is None:
+        headers = {}
+    if properties is None:
+        properties = {}
+    if not isinstance(headers, dict):
+        raise RuntimeError("Task payload headers must be object")
+    if not isinstance(properties, dict):
+        raise RuntimeError("Task payload properties must be object")
+
+    task_name = str(headers.get("task") or "")
     body = payload.get("body")
-    body_encoding = payload.get("properties", {}).get("body_encoding")
+    body_encoding = properties.get("body_encoding")
     if not task_name:
         raise RuntimeError("Task payload missing task header")
     if not isinstance(body, str):
         raise RuntimeError("Task payload body must be str")
     if body_encoding == "base64":
-        body_bytes = base64.b64decode(body.encode("ascii"))
+        try:
+            body_bytes = base64.b64decode(body.encode("ascii"), validate=True)
+        except (UnicodeEncodeError, binascii.Error) as exc:
+            raise RuntimeError("Task payload body base64 is invalid") from exc
+        if len(body_bytes) > _task_payload_body_max_bytes():
+            raise RuntimeError("Task payload body exceeds decoded size limit")
         body_data = json.loads(body_bytes.decode("utf-8"))
     else:
         body_data = json.loads(body)
@@ -179,8 +225,16 @@ def _decode_task_payload(payload_raw: str) -> tuple[str, list[Any]]:
     return task_name, args
 
 
-async def consume_queued_task_payload_async(payload_raw: str) -> Any:
-    task_name, args = _decode_task_payload(payload_raw)
+async def _decode_task_payload_async(payload_raw: str | bytes) -> tuple[str, list[Any]]:
+    return await run_cpu_io_async(
+        _decode_task_payload,
+        payload_raw,
+        operation="task_handlers.decode_task_payload",
+    )
+
+
+async def consume_queued_task_payload_async(payload_raw: str | bytes) -> Any:
+    task_name, args = await _decode_task_payload_async(payload_raw)
     return await execute_task_by_name_async(task_name, args)
 
 
