@@ -16,6 +16,7 @@ from ..config import settings
 from ..errors import BadRequestError, ForbiddenError, LockedError, NotFoundError
 from ..graph import compute_graph_metrics_async
 from ..infra.cache import cache_get_json_async, cache_invalidate_prefix_async, cache_set_json_async
+from ..infra.cpu_runtime import run_cpu_io_async
 from ..infra.fs_runtime import run_fs_io_async
 from ..infra.external_io_runtime import run_openai_io_async
 from ..llm.client import get_async_openai_client
@@ -97,35 +98,41 @@ async def _delete_patch_blobs_async(
 
 
 async def _delete_snapshots_async(
-    snapshot_payloads: list[tuple[RepoSnapshot, dict]],
+    snapshot_payloads: list[tuple[str, str, dict]],
     *,
     max_parallel: int = 4,
-) -> list[tuple[RepoSnapshot, dict, Exception]]:
+) -> list[tuple[str, str, dict, Exception]]:
     if not snapshot_payloads:
         return []
 
     semaphore = asyncio.Semaphore(max(1, int(max_parallel)))
 
     async def _delete_one(
-        snap: RepoSnapshot,
+        content_sha256: str,
+        archive_name: str,
         payload: dict,
-    ) -> tuple[RepoSnapshot, dict, Exception] | None:
+    ) -> tuple[str, str, dict, Exception] | None:
         async with semaphore:
             try:
                 await delete_snapshot_async(snapshot_meta_from_dict(payload))
             except Exception as exc:  # noqa: BLE001
-                return snap, payload, exc
+                return content_sha256, archive_name, payload, exc
             return None
 
-    rows = await asyncio.gather(*[_delete_one(snap, payload) for snap, payload in snapshot_payloads])
+    rows = await asyncio.gather(
+        *[
+            _delete_one(content_sha256, archive_name, payload)
+            for content_sha256, archive_name, payload in snapshot_payloads
+        ]
+    )
     return [row for row in rows if row is not None]
 
 
-def _extract_patch_blob_shas(runs) -> set[str]:
+def _extract_patch_blob_shas(result_json_rows: list[str | None]) -> set[str]:
     shas: set[str] = set()
-    for run in runs:
+    for result_json in result_json_rows:
         try:
-            data = json.loads(getattr(run, "result_json", None) or "{}")
+            data = json.loads(result_json or "{}")
         except Exception:
             data = {}
         if not isinstance(data, dict):
@@ -139,7 +146,7 @@ def _extract_patch_blob_shas(runs) -> set[str]:
 
 
 async def _extract_patch_blob_shas_async(runs) -> set[str]:
-    return await run_fs_io_async(_extract_patch_blob_shas, runs, operation="project.extract_patch_blob_shas")
+    return await run_cpu_io_async(_extract_patch_blob_shas, runs, operation="project.extract_patch_blob_shas")
 
 
 async def load_patch_blob_ref_counts_async(
@@ -182,22 +189,24 @@ async def load_patch_blob_ref_counts_async(
     return counts
 
 
-def _parse_snapshot_storage_payloads(snapshots) -> list[tuple[RepoSnapshot, dict]]:
-    payloads: list[tuple[RepoSnapshot, dict]] = []
-    for snap in snapshots:
+def _parse_snapshot_storage_payloads(
+    snapshots: list[tuple[str, str, str | None]],
+) -> list[tuple[str, str, dict]]:
+    payloads: list[tuple[str, str, dict]] = []
+    for content_sha256, archive_name, storage_json in snapshots:
         try:
-            payload = json.loads(getattr(snap, "storage_json", None) or "{}")
+            payload = json.loads(storage_json or "{}")
         except Exception:
             payload = {}
         if isinstance(payload, dict):
-            payloads.append((snap, payload))
+            payloads.append((content_sha256, archive_name, payload))
     return payloads
 
 
 async def _parse_snapshot_storage_payloads_async(
     snapshots,
-) -> list[tuple[RepoSnapshot, dict]]:
-    return await run_fs_io_async(
+) -> list[tuple[str, str, dict]]:
+    return await run_cpu_io_async(
         _parse_snapshot_storage_payloads,
         snapshots,
         operation="project.parse_snapshot_payloads",
@@ -205,19 +214,19 @@ async def _parse_snapshot_storage_payloads_async(
 
 
 async def _collect_delete_artifacts_async(
-    runs,
-    snapshots,
-) -> tuple[set[str], list[tuple[RepoSnapshot, dict]]]:
+    run_result_json_rows: list[str | None],
+    snapshots: list[tuple[str, str, str | None]],
+) -> tuple[set[str], list[tuple[str, str, dict]]]:
     return await asyncio.gather(
-        _extract_patch_blob_shas_async(runs),
+        _extract_patch_blob_shas_async(run_result_json_rows),
         _parse_snapshot_storage_payloads_async(snapshots),
     )
 
 
 async def _delete_project_artifacts_async(
     shas: set[str],
-    snapshot_payloads: list[tuple[RepoSnapshot, dict]],
-) -> tuple[list[tuple[str, Exception]], list[tuple[RepoSnapshot, dict, Exception]]]:
+    snapshot_payloads: list[tuple[str, str, dict]],
+) -> tuple[list[tuple[str, Exception]], list[tuple[str, str, dict, Exception]]]:
     return await asyncio.gather(
         _delete_patch_blobs_async(shas),
         _delete_snapshots_async(snapshot_payloads),
@@ -266,6 +275,12 @@ async def _load_snapshot_ref_counts_async(
         if isinstance(sha, str) and sha:
             counts[sha] = int(count or 0)
     return counts
+
+
+# FS runtime — только для real FS/Path/context-bound операций;
+# CPU runtime — для pickle-safe вычислений и data-shaping.
+
+
 def _as_int(value, default: int = 0) -> int:
     try:
         return int(value)
@@ -278,6 +293,41 @@ def _as_float(value, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _row_get(row: object, key: str, default=None):
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def _normalize_file_node_rows(rows) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for row in rows:
+        normalized.append(
+            {
+                "path": _row_get(row, "path"),
+                "language": _row_get(row, "language"),
+                "loc": _row_get(row, "loc"),
+                "complexity": _row_get(row, "complexity"),
+                "fan_in": _row_get(row, "fan_in"),
+                "fan_out": _row_get(row, "fan_out"),
+                "scc_id": _row_get(row, "scc_id"),
+                "status": _row_get(row, "status"),
+            }
+        )
+    return normalized
+
+
+def _normalize_file_edge_rows(rows) -> list[dict[str, object]]:
+    return [
+        {
+            "src_path": _row_get(row, "src_path"),
+            "dst_path": _row_get(row, "dst_path"),
+            "kind": _row_get(row, "kind"),
+        }
+        for row in rows
+    ]
 
 
 def _cosine_similarity_local(vec_a: list[float], vec_b: list[float]) -> float:
@@ -505,7 +555,7 @@ async def _score_semantic_rows_async(
     chunk_size: int,
     step: int,
 ) -> tuple[int, list[dict]]:
-    return await run_fs_io_async(
+    return await run_cpu_io_async(
         _score_semantic_rows,
         rows,
         query_embedding=query_embedding,
@@ -576,7 +626,7 @@ async def _find_text_matches_in_payload_async(
     start_count: int,
     truncated_flag: bool,
 ) -> tuple[list[dict], bool]:
-    return await run_fs_io_async(
+    return await run_cpu_io_async(
         _find_text_matches_in_payload,
         payload,
         needle=needle,
@@ -593,15 +643,15 @@ async def _find_text_matches_in_payload_async(
 
 def _build_graph_node_payload(nodes) -> tuple[list[dict], list[str]]:
     def risk_value(node) -> float:
-        complexity = _as_float(getattr(node, "complexity", 0), 0.0)
-        fan_in = _as_float(getattr(node, "fan_in", 0), 0.0)
-        fan_out = _as_float(getattr(node, "fan_out", 0), 0.0)
+        complexity = _as_float(_row_get(node, "complexity", 0), 0.0)
+        fan_in = _as_float(_row_get(node, "fan_in", 0), 0.0)
+        fan_out = _as_float(_row_get(node, "fan_out", 0), 0.0)
         return (0.3 * complexity) + (0.7 * fan_in) + (0.1 * fan_out)
 
     node_payload: list[dict] = []
     node_paths: list[str] = []
     for node in nodes:
-        path = node.path if isinstance(node.path, str) else ""
+        path = _row_get(node, "path") if isinstance(_row_get(node, "path"), str) else ""
         if not path:
             continue
         node_paths.append(path)
@@ -610,13 +660,13 @@ def _build_graph_node_payload(nodes) -> tuple[list[dict], list[str]]:
                 "id": path,
                 "label": path.rsplit("/", 1)[-1],
                 "path": path,
-                "language": node.language,
-                "loc": _as_int(getattr(node, "loc", 0), 0),
-                "complexity": _as_float(getattr(node, "complexity", 0), 0.0),
-                "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
-                "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
-                "scc_id": _as_int(getattr(node, "scc_id", -1), -1),
-                "status": node.status,
+                "language": _row_get(node, "language"),
+                "loc": _as_int(_row_get(node, "loc", 0), 0),
+                "complexity": _as_float(_row_get(node, "complexity", 0), 0.0),
+                "fan_in": _as_int(_row_get(node, "fan_in", 0), 0),
+                "fan_out": _as_int(_row_get(node, "fan_out", 0), 0),
+                "scc_id": _as_int(_row_get(node, "scc_id", -1), -1),
+                "status": _row_get(node, "status"),
                 "risk": risk_value(node),
             }
         )
@@ -624,7 +674,7 @@ def _build_graph_node_payload(nodes) -> tuple[list[dict], list[str]]:
 
 
 async def _build_graph_node_payload_async(nodes) -> tuple[list[dict], list[str]]:
-    return await run_fs_io_async(_build_graph_node_payload, nodes, operation="project.build_graph_nodes")
+    return await run_cpu_io_async(_build_graph_node_payload, nodes, operation="project.build_graph_nodes")
 
 
 def _build_graph_edge_payload(
@@ -636,18 +686,18 @@ def _build_graph_edge_payload(
     edge_payload: list[dict] = []
     for edge in edges:
         if not (
-            isinstance(edge.src_path, str)
-            and edge.src_path
-            and isinstance(edge.dst_path, str)
-            and edge.dst_path
+            isinstance(_row_get(edge, "src_path"), str)
+            and _row_get(edge, "src_path")
+            and isinstance(_row_get(edge, "dst_path"), str)
+            and _row_get(edge, "dst_path")
         ):
             continue
         if effective_limit is not None and (
-            edge.src_path not in node_set or edge.dst_path not in node_set
+            _row_get(edge, "src_path") not in node_set or _row_get(edge, "dst_path") not in node_set
         ):
             continue
         edge_payload.append(
-            {"source": edge.src_path, "target": edge.dst_path, "kind": edge.kind}
+            {"source": _row_get(edge, "src_path"), "target": _row_get(edge, "dst_path"), "kind": _row_get(edge, "kind")}
         )
 
     edge_payload.sort(key=lambda item: (item["source"], item["target"], item.get("kind") or ""))
@@ -660,7 +710,7 @@ async def _build_graph_edge_payload_async(
     effective_limit: int | None,
     node_set: set[str],
 ) -> list[dict]:
-    return await run_fs_io_async(
+    return await run_cpu_io_async(
         _build_graph_edge_payload,
         edges,
         effective_limit=effective_limit,
@@ -676,23 +726,23 @@ def _build_local_graph_payload(
     nodes_set: set[str],
 ) -> tuple[list[dict], list[dict]]:
     def risk_value(node: FileNode) -> float:
-        complexity = _as_float(getattr(node, "complexity", 0), 0.0)
-        fan_in = _as_float(getattr(node, "fan_in", 0), 0.0)
-        fan_out = _as_float(getattr(node, "fan_out", 0), 0.0)
+        complexity = _as_float(_row_get(node, "complexity", 0), 0.0)
+        fan_in = _as_float(_row_get(node, "fan_in", 0), 0.0)
+        fan_out = _as_float(_row_get(node, "fan_out", 0), 0.0)
         return (0.3 * complexity) + (0.7 * fan_in) + (0.1 * fan_out)
 
     node_payload = [
         {
-            "id": node.path,
-            "label": node.path.rsplit("/", 1)[-1],
-            "path": node.path,
-            "language": node.language,
-            "loc": _as_int(getattr(node, "loc", 0), 0),
-            "complexity": _as_float(getattr(node, "complexity", 0), 0.0),
-            "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
-            "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
-            "scc_id": _as_int(getattr(node, "scc_id", -1), -1),
-            "status": node.status,
+            "id": _row_get(node, "path"),
+            "label": str(_row_get(node, "path") or "").rsplit("/", 1)[-1],
+            "path": _row_get(node, "path"),
+            "language": _row_get(node, "language"),
+            "loc": _as_int(_row_get(node, "loc", 0), 0),
+            "complexity": _as_float(_row_get(node, "complexity", 0), 0.0),
+            "fan_in": _as_int(_row_get(node, "fan_in", 0), 0),
+            "fan_out": _as_int(_row_get(node, "fan_out", 0), 0),
+            "scc_id": _as_int(_row_get(node, "scc_id", -1), -1),
+            "status": _row_get(node, "status"),
             "risk": risk_value(node),
         }
         for node in node_rows
@@ -711,7 +761,7 @@ async def _build_local_graph_payload_async(
     edge_set: set[tuple[str, str, str]],
     nodes_set: set[str],
 ) -> tuple[list[dict], list[dict]]:
-    return await run_fs_io_async(
+    return await run_cpu_io_async(
         _build_local_graph_payload,
         node_rows,
         edge_set,
@@ -723,24 +773,24 @@ async def _build_local_graph_payload_async(
 def _build_project_files_payload(rows, *, limit: int) -> tuple[list[dict], bool, str | None]:
     def _risk(node: FileNode) -> float:
         return (
-            (0.3 * _as_float(getattr(node, "complexity", 0), 0.0))
-            + (0.7 * _as_float(getattr(node, "fan_in", 0), 0.0))
-            + (0.1 * _as_float(getattr(node, "fan_out", 0), 0.0))
+            (0.3 * _as_float(_row_get(node, "complexity", 0), 0.0))
+            + (0.7 * _as_float(_row_get(node, "fan_in", 0), 0.0))
+            + (0.1 * _as_float(_row_get(node, "fan_out", 0), 0.0))
         )
 
     files = [
         {
-            "path": node.path,
-            "language": node.language,
-            "loc": _as_int(getattr(node, "loc", 0), 0),
-            "complexity": _as_int(getattr(node, "complexity", 0), 0),
-            "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
-            "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
-            "status": node.status,
+            "path": _row_get(node, "path"),
+            "language": _row_get(node, "language"),
+            "loc": _as_int(_row_get(node, "loc", 0), 0),
+            "complexity": _as_int(_row_get(node, "complexity", 0), 0),
+            "fan_in": _as_int(_row_get(node, "fan_in", 0), 0),
+            "fan_out": _as_int(_row_get(node, "fan_out", 0), 0),
+            "status": _row_get(node, "status"),
             "risk": _risk(node),
         }
         for node in rows
-        if isinstance(node.path, str) and node.path
+        if isinstance(_row_get(node, "path"), str) and _row_get(node, "path")
     ]
 
     truncated = len(files) > limit
@@ -749,7 +799,7 @@ def _build_project_files_payload(rows, *, limit: int) -> tuple[list[dict], bool,
 
 
 async def _build_project_files_payload_async(rows, *, limit: int) -> tuple[list[dict], bool, str | None]:
-    return await run_fs_io_async(
+    return await run_cpu_io_async(
         _build_project_files_payload,
         rows,
         limit=limit,
@@ -785,32 +835,32 @@ def _build_project_tree_payload(
         )
 
     def add_file(node: FileNode) -> None:
-        if node.path in seen:
+        if _row_get(node, "path") in seen:
             return
-        seen.add(node.path)
+        seen.add(_row_get(node, "path"))
         entries.append(
             {
                 "type": "file",
-                "path": node.path,
-                "name": node.path.split("/")[-1],
+                "path": _row_get(node, "path"),
+                "name": str(_row_get(node, "path") or "").split("/")[-1],
                 "file": {
-                    "path": node.path,
-                    "language": node.language,
-                    "loc": _as_int(getattr(node, "loc", 0), 0),
-                    "complexity": _as_int(getattr(node, "complexity", 0), 0),
-                    "fan_in": _as_int(getattr(node, "fan_in", 0), 0),
-                    "fan_out": _as_int(getattr(node, "fan_out", 0), 0),
-                    "status": node.status,
-                    "risk": (0.3 * _as_float(getattr(node, "complexity", 0), 0.0))
-                    + (0.7 * _as_float(getattr(node, "fan_in", 0), 0.0))
-                    + (0.1 * _as_float(getattr(node, "fan_out", 0), 0.0)),
+                    "path": _row_get(node, "path"),
+                    "language": _row_get(node, "language"),
+                    "loc": _as_int(_row_get(node, "loc", 0), 0),
+                    "complexity": _as_int(_row_get(node, "complexity", 0), 0),
+                    "fan_in": _as_int(_row_get(node, "fan_in", 0), 0),
+                    "fan_out": _as_int(_row_get(node, "fan_out", 0), 0),
+                    "status": _row_get(node, "status"),
+                    "risk": (0.3 * _as_float(_row_get(node, "complexity", 0), 0.0))
+                    + (0.7 * _as_float(_row_get(node, "fan_in", 0), 0.0))
+                    + (0.1 * _as_float(_row_get(node, "fan_out", 0), 0.0)),
                 },
             }
         )
 
     scanned_rows = rows[:scan_limit]
     for row in scanned_rows:
-        path = row.path if isinstance(row.path, str) else ""
+        path = _row_get(row, "path") if isinstance(_row_get(row, "path"), str) else ""
         if not path:
             continue
         rel = path
@@ -860,7 +910,7 @@ async def _build_project_tree_payload_async(
     scan_limit: int,
     has_more_rows: bool,
 ) -> tuple[list[dict], str | None, bool]:
-    return await run_fs_io_async(
+    return await run_cpu_io_async(
         _build_project_tree_payload,
         rows,
         prefix_norm=prefix_norm,
@@ -989,12 +1039,20 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                 .scalars()
                 .all()
             )
-            snapshot_payloads: list[tuple[RepoSnapshot, dict]] = []
-            shas, parsed_snapshot_payloads = await _collect_delete_artifacts_async(runs, snapshots)
+            run_result_json_rows = [getattr(run, "result_json", None) for run in runs]
+            snapshot_rows = [
+                (str(getattr(snap, "content_sha256", "") or ""), str(getattr(snap, "archive_name", "") or ""), getattr(snap, "storage_json", None))
+                for snap in snapshots
+            ]
+            snapshot_payloads: list[tuple[str, str, dict]] = []
+            shas, parsed_snapshot_payloads = await _collect_delete_artifacts_async(
+                run_result_json_rows,
+                snapshot_rows,
+            )
             snapshot_shas = {
-                str(snap.content_sha256)
-                for snap, _ in parsed_snapshot_payloads
-                if isinstance(snap.content_sha256, str) and snap.content_sha256
+                content_sha256
+                for content_sha256, _, _ in parsed_snapshot_payloads
+                if isinstance(content_sha256, str) and content_sha256
             }
             shared_counts = await _load_snapshot_ref_counts_async(session, project_id, snapshot_shas)
             patch_shared_counts = await load_patch_blob_ref_counts_async(
@@ -1003,10 +1061,10 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                 exclude_project_id=project_id,
             )
             shas = {sha for sha in shas if int(patch_shared_counts.get(sha, 0)) == 0}
-            for snap, payload in parsed_snapshot_payloads:
-                if int(shared_counts.get(str(snap.content_sha256), 0)) > 0:
+            for content_sha256, archive_name, payload in parsed_snapshot_payloads:
+                if int(shared_counts.get(str(content_sha256), 0)) > 0:
                     continue
-                snapshot_payloads.append((snap, payload))
+                snapshot_payloads.append((content_sha256, archive_name, payload))
             await session.execute(delete(FileEdge).where(FileEdge.project_id == project_id))
             await session.execute(delete(FileNode).where(FileNode.project_id == project_id))
             await session.execute(delete(ModuleContract).where(ModuleContract.project_id == project_id))
@@ -1060,22 +1118,22 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                 )
             )
 
-        for snap, payload, exc in snapshot_errors:
+        for snapshot_sha, archive_name, payload, exc in snapshot_errors:
             logger.warning(
                 "Snapshot delete failed",
                 extra={
                     "project_id": project_id,
-                    "snapshot_sha": snap.content_sha256,
-                    "archive_name": snap.archive_name,
+                    "snapshot_sha": snapshot_sha,
+                    "archive_name": archive_name,
                     "error": str(exc),
                 },
             )
             cache_rows.append(
                 (
-                    ["project_delete_failed", "snapshot", snap.content_sha256],
+                    ["project_delete_failed", "snapshot", snapshot_sha],
                     {
                         "project_id": project_id,
-                        "archive_name": snap.archive_name,
+                        "archive_name": archive_name,
                         "storage": payload.get("storage"),
                         "error": str(exc),
                     },
@@ -1127,7 +1185,10 @@ async def list_project_files_async(
     total = int(total_row[0] if isinstance(total_row, (tuple, list)) else total_row)
     rows = list((await session.execute(base.order_by(FileNode.path).limit(int(limit) + 1))).scalars().all())
 
-    files, truncated, next_cursor = await _build_project_files_payload_async(rows, limit=limit)
+    files, truncated, next_cursor = await _build_project_files_payload_async(
+        _normalize_file_node_rows(rows),
+        limit=limit,
+    )
     return {
         "files": files,
         "meta": {
@@ -1178,7 +1239,7 @@ async def list_project_tree_entries_async(
     has_more_rows = len(rows) > scan_limit
 
     entries, next_cursor, truncated = await _build_project_tree_payload_async(
-        rows,
+        _normalize_file_node_rows(rows),
         prefix_norm=prefix_norm,
         limit=limit,
         scan_limit=scan_limit,
@@ -1406,7 +1467,7 @@ async def load_graph_async(
             .all()
         )
 
-    node_payload, node_paths = await _build_graph_node_payload_async(nodes)
+    node_payload, node_paths = await _build_graph_node_payload_async(_normalize_file_node_rows(nodes))
 
     node_set = set(node_paths)
     edges: list[FileEdge] = []
@@ -1432,12 +1493,12 @@ async def load_graph_async(
                 .all()
             )
             for edge in rows:
-                dst = edge.dst_path if isinstance(edge.dst_path, str) else ""
+                dst = edge.dst_path if isinstance(_row_get(edge, "dst_path"), str) else ""
                 if dst and dst in node_set:
                     edges.append(edge)
 
     edge_payload = await _build_graph_edge_payload_async(
-        edges,
+        _normalize_file_edge_rows(edges),
         effective_limit=effective_limit,
         node_set=node_set,
     )
@@ -1543,7 +1604,7 @@ async def load_local_graph_async(
     )
 
     node_payload, edge_payload = await _build_local_graph_payload_async(
-        node_rows,
+        _normalize_file_node_rows(node_rows),
         edge_set,
         nodes_set,
     )
@@ -1684,7 +1745,7 @@ async def search_project_semantic_async(
             context={"reason": "no_embeddings"},
         )
 
-    rows = (
+    rows_raw = (
         await session.execute(
             select(
                 FileChunkEmbedding.path,
@@ -1699,6 +1760,17 @@ async def search_project_semantic_async(
             .limit(int(max_candidates))
         )
     ).all()
+    rows = [
+        (
+            row[0] if isinstance(row, (tuple, list)) and len(row) > 0 else None,
+            row[1] if isinstance(row, (tuple, list)) and len(row) > 1 else None,
+            row[2] if isinstance(row, (tuple, list)) and len(row) > 2 else None,
+            row[3] if isinstance(row, (tuple, list)) and len(row) > 3 else None,
+            row[4] if isinstance(row, (tuple, list)) and len(row) > 4 else None,
+            row[5] if isinstance(row, (tuple, list)) and len(row) > 5 else None,
+        )
+        for row in rows_raw
+    ]
 
     try:
         client = get_async_openai_client()
