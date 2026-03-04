@@ -24,13 +24,24 @@ class ExternalIORuntime:
     long_semaphore: asyncio.Semaphore
     storage_sdk_semaphore: asyncio.Semaphore
     storage_sdk_executor: ThreadPoolExecutor
+    loop: asyncio.AbstractEventLoop
     short_limit: int
     long_limit: int
     storage_sdk_limit: int
 
 
 _external_io_runtime: ExternalIORuntime | None = None
-_external_io_runtime_lock = asyncio.Lock()
+_external_io_runtime_lock: asyncio.Lock | None = None
+_external_io_runtime_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_external_io_runtime_lock() -> asyncio.Lock:
+    global _external_io_runtime_lock, _external_io_runtime_lock_loop
+    loop = asyncio.get_running_loop()
+    if _external_io_runtime_lock is None or _external_io_runtime_lock_loop is not loop:
+        _external_io_runtime_lock = asyncio.Lock()
+        _external_io_runtime_lock_loop = loop
+    return _external_io_runtime_lock
 
 
 def _openai_short_limit() -> int:
@@ -50,9 +61,10 @@ def _storage_sdk_limit() -> int:
 
 async def init_external_io_runtime() -> None:
     global _external_io_runtime
-    async with _external_io_runtime_lock:
+    async with _get_external_io_runtime_lock():
         if _external_io_runtime is not None:
             return
+        loop = asyncio.get_running_loop()
         short_limit = _openai_short_limit()
         long_limit = _openai_long_limit()
         storage_sdk_limit = _storage_sdk_limit()
@@ -64,6 +76,7 @@ async def init_external_io_runtime() -> None:
                 max_workers=storage_sdk_limit,
                 thread_name_prefix="storage-sdk-io",
             ),
+            loop=loop,
             short_limit=short_limit,
             long_limit=long_limit,
             storage_sdk_limit=storage_sdk_limit,
@@ -71,9 +84,44 @@ async def init_external_io_runtime() -> None:
 
 
 async def _get_external_io_runtime() -> ExternalIORuntime:
+    global _external_io_runtime
     if _external_io_runtime is None:
         await init_external_io_runtime()
     runtime = _external_io_runtime
+    current_loop = asyncio.get_running_loop()
+    if runtime is not None and runtime.loop is current_loop:
+        return runtime
+
+    old_runtime: ExternalIORuntime | None = None
+    async with _get_external_io_runtime_lock():
+        runtime = _external_io_runtime
+        if runtime is not None and runtime.loop is current_loop:
+            return runtime
+        old_runtime = runtime
+        short_limit = _openai_short_limit()
+        long_limit = _openai_long_limit()
+        storage_sdk_limit = _storage_sdk_limit()
+        runtime = ExternalIORuntime(
+            short_semaphore=asyncio.Semaphore(short_limit),
+            long_semaphore=asyncio.Semaphore(long_limit),
+            storage_sdk_semaphore=asyncio.Semaphore(storage_sdk_limit),
+            storage_sdk_executor=ThreadPoolExecutor(
+                max_workers=storage_sdk_limit,
+                thread_name_prefix="storage-sdk-io",
+            ),
+            loop=current_loop,
+            short_limit=short_limit,
+            long_limit=long_limit,
+            storage_sdk_limit=storage_sdk_limit,
+        )
+        _external_io_runtime = runtime
+
+    if old_runtime is not None:
+        await current_loop.run_in_executor(
+            None,
+            partial(old_runtime.storage_sdk_executor.shutdown, wait=True, cancel_futures=False),
+        )
+
     if runtime is None:
         raise RuntimeError("External I/O runtime is not initialized")
     return runtime
@@ -82,7 +130,7 @@ async def _get_external_io_runtime() -> ExternalIORuntime:
 async def close_external_io_runtime() -> None:
     global _external_io_runtime
     runtime: ExternalIORuntime | None
-    async with _external_io_runtime_lock:
+    async with _get_external_io_runtime_lock():
         runtime = _external_io_runtime
         _external_io_runtime = None
     if runtime is None:
