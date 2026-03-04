@@ -11,15 +11,16 @@ from sqlmodel import select
 
 from .async_db import AsyncSessionLocal
 from .contracts import get_or_build_contract_async
-from .infra.fs_runtime import run_fs_io_async
+from .graph_traversal import neighbors_limited_recursive_cte_async
 from .infra.cache import (
     cache_get_json_async,
     cache_mget_json_async,
     cache_mset_json_async,
     cache_set_json_async,
 )
+from .infra.fs_runtime import run_fs_io_async
 from .logging import get_logger
-from .models import FileEdge, FileNode
+from .models import FileNode
 
 logger = get_logger("stubgraph.context_pack")
 
@@ -29,54 +30,6 @@ class PackedContext:
     target_path: str
     files: list[dict]
     graph: dict
-
-
-async def _neighbors_async(
-    session: AsyncSession,
-    project_id: int,
-    start: str,
-    depth: int,
-    direction: str = "out",
-) -> list[str]:
-    if depth <= 0:
-        return []
-
-    visited: set[str] = {start}
-    ordered: list[str] = []
-    frontier: list[str] = [start]
-    for _ in range(depth):
-        if not frontier:
-            break
-        if direction == "in":
-            rows = (
-                await session.execute(
-                    select(FileEdge.src_path, FileEdge.dst_path)
-                    .where(FileEdge.project_id == project_id, FileEdge.dst_path.in_(frontier))
-                    .order_by(FileEdge.src_path, FileEdge.dst_path)
-                )
-            ).all()
-        else:
-            rows = (
-                await session.execute(
-                    select(FileEdge.src_path, FileEdge.dst_path)
-                    .where(FileEdge.project_id == project_id, FileEdge.src_path.in_(frontier))
-                    .order_by(FileEdge.src_path, FileEdge.dst_path)
-                )
-            ).all()
-        nxt: list[str] = []
-        for src, dst in rows:
-            src_val = src if isinstance(src, str) else ""
-            dst_val = dst if isinstance(dst, str) else ""
-            candidate = src_val if direction == "in" else dst_val
-            if not candidate:
-                continue
-            if candidate in visited:
-                continue
-            visited.add(candidate)
-            ordered.append(candidate)
-            nxt.append(candidate)
-        frontier = nxt
-    return ordered
 
 
 def _read_file(path: Path, max_chars: int) -> str:
@@ -103,7 +56,9 @@ async def pack_context_async(
     *,
     session: AsyncSession | None = None,
 ) -> PackedContext:
-    project_root = await run_fs_io_async(project_root.resolve, operation="context_pack.resolve_root")
+    project_root = await run_fs_io_async(
+        project_root.resolve, operation="context_pack.resolve_root"
+    )
     cache_hits = {"file": 0, "contract": 0}
     io_semaphore = asyncio.Semaphore(8)
     hash_by_path: dict[str, str] = {}
@@ -141,7 +96,9 @@ async def pack_context_async(
             contract = (
                 cached_contract
                 if isinstance(cached_contract, dict)
-                else await get_or_build_contract_async(active_session, project_id, project_root, path)
+                else await get_or_build_contract_async(
+                    active_session, project_id, project_root, path
+                )
             )
             if isinstance(cached_contract, dict):
                 cache_hits["contract"] += 1
@@ -209,7 +166,9 @@ async def pack_context_async(
         await cache_mset_json_async(set_entries)
         return cached_by_path
 
-    async def _get_contracts_cached_batch(paths: list[str]) -> dict[str, tuple[dict | None, list[str]]]:
+    async def _get_contracts_cached_batch(
+        paths: list[str],
+    ) -> dict[str, tuple[dict | None, list[str]]]:
         keys_by_path: dict[str, list[str]] = {}
         cache_keys: list[list[str]] = []
         for path in paths:
@@ -253,9 +212,21 @@ async def pack_context_async(
         return result
 
     async def _run() -> PackedContext:
-        out_deps = await _neighbors_async(active_session, project_id, target_rel, depth, direction="out")
+        out_deps = await neighbors_limited_recursive_cte_async(
+            active_session,
+            project_id,
+            target_rel,
+            direction="out",
+            depth=depth,
+        )
         in_depth = max(0, min(depth, 2))
-        in_deps = await _neighbors_async(active_session, project_id, target_rel, in_depth, direction="in")
+        in_deps = await neighbors_limited_recursive_cte_async(
+            active_session,
+            project_id,
+            target_rel,
+            direction="in",
+            depth=in_depth,
+        )
 
         def _uniq(seq: list[str]) -> list[str]:
             seen: set[str] = set()
@@ -279,7 +250,10 @@ async def pack_context_async(
                 .limit(200)
             )
         ).all()
-        candidates = [r[0] if isinstance(r, (tuple, list)) else getattr(r, "path", "") for r in nodes]
+        candidates = [
+            r[0] if isinstance(r, (tuple, list)) else getattr(r, "path", "")
+            for r in nodes
+        ]
         candidates = [
             c
             for c in candidates
