@@ -137,6 +137,14 @@ class Settings(BaseSettings):
         alias="STUBGRAPH_TASK_QUEUE_PRODUCER_WORKERS",
     )
     task_queue_default: str = Field(default="medium", alias="STUBGRAPH_TASK_QUEUE_DEFAULT")
+    task_payload_raw_max_bytes: int = Field(
+        default=1_000_000,
+        alias="STUBGRAPH_TASK_PAYLOAD_RAW_MAX_BYTES",
+    )
+    task_payload_body_max_bytes: int = Field(
+        default=5_000_000,
+        alias="STUBGRAPH_TASK_PAYLOAD_BODY_MAX_BYTES",
+    )
     worker_runtime_concurrency: int = Field(
         default=3,
         alias="STUBGRAPH_WORKER_RUNTIME_CONCURRENCY",
