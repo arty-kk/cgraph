@@ -1439,3 +1439,211 @@ async def test_scan_cpu_heavy_batch_does_not_block_fs_batch(monkeypatch: pytest.
     assert cpu_result == "cpu"
     assert fs_result == "fs"
     assert events["fs_finished"] < events["cpu_finished"]
+
+
+@pytest.mark.anyio
+async def test_prepare_scan_files_async_builds_edges_via_cpu_runtime_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Session:
+        async def execute(self, _stmt, _params=None):
+            class _Rows:
+                def all(self):
+                    return []
+
+            return _Rows()
+
+    async def _fake_collect(_root, rel_paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        return [scan.FileStatResult(rel=rel, exists=True, is_file=True, is_supported=True, mtime_ns=1, size=10) for rel in rel_paths]
+
+    async def _fake_read(_root, batch_paths, stats_map, max_file_bytes, max_parallel=8):
+        _ = stats_map, max_file_bytes, max_parallel
+        return [scan.FileReadResult(rel=rel, text="import x", mtime_ns=1, size=10, oversized=False) for rel in batch_paths]
+
+    async def _fake_parse(project_id, _project_root, file_batch):
+        rows = []
+        for item in file_batch:
+            rows.append(
+                {
+                    "rel": item.rel,
+                    "stat_mtime": 0.0,
+                    "stat_mtime_ns": item.mtime_ns,
+                    "stat_size": item.size,
+                    "file_hash": f"h-{item.rel}",
+                    "snapshot_kind": "content",
+                    "node_row": {"project_id": project_id, "path": item.rel},
+                    "search_row": {"project_id": project_id, "path": item.rel, "content": item.text or ""},
+                    "cached_imports": [{"spec": "pkg.mod", "kind": "import", "raw": "import pkg.mod"}],
+                    "route_rows": [],
+                    "call_rows": [],
+                    "include_rows": [],
+                    "route_contract_rows": [],
+                    "call_meta_rows": [],
+                    "ts_type_rows": [],
+                    "text": item.text,
+                }
+            )
+        return rows
+
+    cpu_operations: list[str] = []
+
+    async def _fake_cpu(sync_fn, *args, operation: str):
+        cpu_operations.append(operation)
+        if operation == "scan.cpu.cached_import_edges":
+            return [
+                {
+                    "src_path": "a.py",
+                    "dst_path": "pkg/mod.py",
+                    "kind": "import",
+                    "raw": "import pkg.mod",
+                }
+            ]
+        return sync_fn(*args)
+
+    def _fail_resolve_spec(*_args, **_kwargs):
+        raise AssertionError("resolve_spec must not be called from async prepare loop")
+
+    async def _fake_entitlement(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
+    monkeypatch.setattr(scan, "_read_file_batch_async", _fake_read)
+    monkeypatch.setattr(scan, "_parse_index_batch_async", _fake_parse)
+    monkeypatch.setattr(scan, "_run_scan_cpu_batch", _fake_cpu)
+    monkeypatch.setattr(scan, "resolve_spec", _fail_resolve_spec)
+    monkeypatch.setattr(scan, "get_entitlement_bool_async", _fake_entitlement)
+
+    prepared = await scan._prepare_scan_files_async(
+        _Session(),
+        1,
+        1,
+        Path("/repo"),
+        ["a.py"],
+        precomputed_stats={"a.py": (1, 10)},
+    )
+
+    assert cpu_operations.count("scan.cpu.cached_import_edges") == 1
+    assert ("a.py", "pkg/mod.py", "import") in prepared.edge_map
+
+
+def test_build_edges_from_cached_imports_sync_mixed_imports_dedup() -> None:
+    project_root = Path("/tmp/stubgraph-edge-test")
+    parsed_batch = [
+        {
+            "rel": "src/a.py",
+            "cached_imports": [
+                {"spec": "./b", "kind": "import", "raw": "import ./b"},
+                {"spec": "pkg.mod", "kind": "import", "raw": "import pkg.mod"},
+                {"spec": "dyn", "kind": "runtime_dynamic", "raw": "import('dyn')"},
+                {"spec": "./b", "kind": "import", "raw": "import ./b duplicate"},
+            ],
+        }
+    ]
+
+    original_resolve_spec = scan.resolve_spec
+    original_resolve_under_root = scan.resolve_under_root
+
+    def _fake_resolve_spec(_root, rel, spec):
+        mapping = {
+            ("src/a.py", "./b"): "src/b.py",
+            ("src/a.py", "pkg.mod"): "pkg/mod.py",
+            ("src/a.py", "dyn"): "pkg/dyn.py",
+        }
+        return mapping.get((rel, spec))
+
+    def _fake_resolve_under_root(_root, dst_raw):
+        return (project_root / dst_raw, dst_raw)
+
+    try:
+        scan.resolve_spec = _fake_resolve_spec
+        scan.resolve_under_root = _fake_resolve_under_root
+        edges = scan._build_edges_from_cached_imports_sync(str(project_root), parsed_batch)
+    finally:
+        scan.resolve_spec = original_resolve_spec
+        scan.resolve_under_root = original_resolve_under_root
+
+    assert edges == [
+        {
+            "src_path": "src/a.py",
+            "dst_path": "src/b.py",
+            "kind": "import",
+            "raw": "import ./b",
+        },
+        {
+            "src_path": "src/a.py",
+            "dst_path": "pkg/mod.py",
+            "kind": "import",
+            "raw": "import pkg.mod",
+        },
+    ]
+
+
+@pytest.mark.anyio
+async def test_scan_files_async_parallel_smoke_keeps_base_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Session:
+        async def execute(self, _stmt, _params=None):
+            class _Rows:
+                def all(self):
+                    return []
+
+            return _Rows()
+
+        async def commit(self):
+            return None
+
+    tmp_root = Path("/tmp/stubgraph-scan-parallel")
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    for idx in range(4):
+        (tmp_root / f"f{idx}.py").write_text("print('ok')\n", encoding="utf-8")
+
+    async def _fake_prepare(_session, project_id, _org_id, _project_root, rel_paths, **_kwargs):
+        edge_map = {
+            (rel, "shared.py", "import"): scan.FileEdge(
+                project_id=project_id,
+                src_path=rel,
+                dst_path="shared.py",
+                kind="import",
+                raw="import shared",
+            )
+            for rel in rel_paths
+        }
+        return scan.PreparedScanData(
+            present=list(rel_paths),
+            removed=[],
+            node_rows=[{"path": rel} for rel in rel_paths],
+            edge_map=edge_map,
+            search_rows=[],
+            route_rows=[],
+            call_rows=[],
+            include_rows=[],
+            route_contract_rows=[],
+            call_meta_rows=[],
+            ts_type_rows=[],
+            embedding_rows=[],
+            embedding_paths_to_delete=[],
+            removed_edge_neighbors=set(),
+            snapshot={},
+        )
+
+    async def _fake_write(*_args, **_kwargs):
+        return None
+
+    async def _fake_verify(*_args, **_kwargs):
+        return (True, "")
+
+    monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
+    monkeypatch.setattr(scan, "project_lock_async", lambda *_args, **_kwargs: _NoopLock())
+    monkeypatch.setattr(scan, "_prepare_scan_files_async", _fake_prepare)
+    monkeypatch.setattr(scan, "_write_scan_files_async", _fake_write)
+    monkeypatch.setattr(scan, "_verify_scan_snapshot_async", _fake_verify)
+
+    async def _one_run(i: int):
+        return await asyncio.wait_for(
+            scan.scan_files_async(i + 1, 1, tmp_root, ["f0.py", "f1.py", "f2.py"]),
+            timeout=1.0,
+        )
+
+    results = await asyncio.gather(*[_one_run(i) for i in range(8)])
+
+    assert all(item.get("aborted") is not True for item in results)
+    assert all(item["updated_nodes"] == 3 for item in results)
+    assert all(item["updated_edges"] == 3 for item in results)
