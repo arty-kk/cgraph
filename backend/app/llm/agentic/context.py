@@ -85,6 +85,8 @@ async def _neighbors_limited_async(
         direction=direction,
         depth=depth,
         limit=limit,
+        max_depth=6,
+        max_limit=2000,
     )
 
 

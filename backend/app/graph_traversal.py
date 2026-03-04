@@ -11,14 +11,29 @@ async def neighbors_limited_recursive_cte_async(
     *,
     direction: str,
     depth: int,
-    limit: int,
+    limit: int | None = None,
+    max_depth: int | None = None,
+    max_limit: int | None = None,
 ) -> list[str]:
-    if depth <= 0 or limit <= 0:
+    if depth <= 0:
         return []
-    depth = max(0, min(depth, 6))
-    limit = max(1, min(limit, 2000))
+    if limit is not None and limit <= 0:
+        return []
+    if max_depth is not None:
+        depth = max(0, min(depth, max_depth))
+    else:
+        depth = max(0, depth)
+    if max_limit is not None:
+        if limit is None:
+            limit = max_limit
+        else:
+            limit = max(1, min(limit, max_limit))
+    elif limit is not None:
+        limit = max(1, limit)
     from_col = "dst_path" if direction == "in" else "src_path"
     to_col = "src_path" if direction == "in" else "dst_path"
+
+    limit_clause = "LIMIT :limit" if limit is not None else ""
 
     query = text(
         f"""
@@ -50,7 +65,7 @@ async def neighbors_limited_recursive_cte_async(
         FROM ranked
         WHERE rn = 1
         ORDER BY depth ASC, path_sort ASC, node ASC
-        LIMIT :limit
+        {limit_clause}
         """
     )
     rows = (
@@ -60,8 +75,7 @@ async def neighbors_limited_recursive_cte_async(
                 "project_id": project_id,
                 "start": start,
                 "depth": depth,
-                "limit": limit,
-            },
+            } | ({"limit": limit} if limit is not None else {}),
         )
     ).all()
     out: list[str] = []
@@ -69,4 +83,4 @@ async def neighbors_limited_recursive_cte_async(
         val = row[0] if isinstance(row, (tuple, list)) else row
         if isinstance(val, str) and val:
             out.append(val)
-    return out[:limit]
+    return out[:limit] if limit is not None else out

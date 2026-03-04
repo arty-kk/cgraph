@@ -218,7 +218,6 @@ async def pack_context_async(
             target_rel,
             direction="out",
             depth=depth,
-            limit=2000,
         )
         in_depth = max(0, min(depth, 2))
         in_deps = await neighbors_limited_recursive_cte_async(
@@ -227,7 +226,6 @@ async def pack_context_async(
             target_rel,
             direction="in",
             depth=in_depth,
-            limit=2000,
         )
 
         def _uniq(seq: list[str]) -> list[str]:

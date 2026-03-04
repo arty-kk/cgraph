@@ -279,7 +279,6 @@ async def test_pack_context_neighbors_use_recursive_cte_single_roundtrip_per_dir
 
     traversal_sql = [sql for sql in session.execute_calls if "WITH RECURSIVE walk" in sql]
     assert len(traversal_sql) == 2
-    assert all("LIMIT :limit" in sql for sql in traversal_sql)
     assert not any(
         "fileedge.src_path IN" in sql or "fileedge.dst_path IN" in sql
         for sql in session.execute_calls
