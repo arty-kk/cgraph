@@ -46,3 +46,16 @@ Lifecycle соответствует единому async-паттерну:
 ## Background task notes
 
 - `stubgraph.routing_calibration`: устранена причина падения фоновой задачи из-за `NameError` (`asyncio` теперь импортируется в `app.services.routing_calibration_service`).
+
+
+## Scan pipeline runtime
+
+`scan_project_async` использует producer/consumer pipeline:
+- producer потоково читает пути из FS и кладёт батчи в bounded queue;
+- количество consumer worker'ов равно `get_scan_runtime().max_parallel` (runtime-параметр `STUBGRAPH_SCAN_STAGE_MAX_PARALLEL`);
+- для корректного завершения producer публикует sentinel для **каждого** consumer, поэтому worker'ы не зависают на `queue.get()`;
+- consumer-этап только вычисляет кандидаты/статистики (`changed`/`nodes`/`removed`, `precomputed_stats`, `scan_metrics`), а запись в БД выполняется позднее через `scan_files_async`/`_write_scan_files_async`.
+
+Сопутствующие параметры окружения:
+- `STUBGRAPH_SCAN_STAGE_BATCH_SIZE` — размер батча в FS/read/parse стадиях;
+- `STUBGRAPH_SCAN_STAGE_MAX_PARALLEL` — общий лимит параллелизма scan runtime и размер consumer-пула.
