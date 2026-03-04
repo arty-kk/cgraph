@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+from sqlalchemy import literal, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -42,6 +43,14 @@ async def _run_seed_fs_io_async(fn: Any, *args: Any, **kwargs: Any) -> Any:
     semaphore = await _seed_fs_semaphore_async()
     async with semaphore:
         return await run_fs_io_async(fn, *args, operation="agentic.seed_context.fs", **kwargs)
+
+
+async def _run_seed_db_op_async(
+    semaphore: asyncio.Semaphore,
+    op: Callable[[], Awaitable[Any]],
+) -> Any:
+    async with semaphore:
+        return await op()
 
 
 def _resolve_and_read_seed_file_sync(
@@ -90,6 +99,171 @@ async def _neighbors_limited_async(
     )
 
 
+async def _load_contract_async(
+    session: AsyncSession,
+    project_id: int,
+    root: Path,
+    target_norm: str,
+    *,
+    db_semaphore: asyncio.Semaphore,
+) -> dict:
+    try:
+        return await _run_seed_db_op_async(
+            db_semaphore,
+            lambda: get_or_build_contract_async(session, project_id, root, target_norm),
+        )
+    except Exception:
+        return {}
+
+
+async def _load_target_node_metrics_async(
+    session: AsyncSession,
+    project_id: int,
+    target_norm: str,
+    *,
+    db_semaphore: asyncio.Semaphore,
+) -> dict:
+    try:
+        node = (
+            (
+                await _run_seed_db_op_async(
+                    db_semaphore,
+                    lambda: session.execute(
+                        select(FileNode).where(
+                            FileNode.project_id == project_id,
+                            FileNode.path == target_norm,
+                        )
+                    ),
+                )
+            )
+            .scalars()
+            .first()
+        )
+    except Exception:
+        return {}
+    if not node:
+        return {}
+    return {
+        "path": node.path,
+        "language": node.language,
+        "loc": node.loc,
+        "complexity": node.complexity,
+        "fan_in": node.fan_in,
+        "fan_out": node.fan_out,
+        "scc_id": node.scc_id,
+        "status": node.status,
+    }
+
+
+async def _load_api_hints_async(
+    session: AsyncSession,
+    project_id: int,
+    target_norm: str,
+    *,
+    db_semaphore: asyncio.Semaphore,
+) -> tuple[list[dict], list[dict]]:
+    routes_in_file: list[dict] = []
+    calls_in_file: list[dict] = []
+    try:
+        routes_stmt = (
+            select(
+                literal("route").label("kind"),
+                ApiRoute.method.label("method"),
+                ApiRoute.path.label("path"),
+                ApiRoute.handler_name.label("name"),
+                ApiRoute.lineno.label("lineno"),
+            )
+            .where(ApiRoute.project_id == project_id, ApiRoute.source_path == target_norm)
+            .order_by(ApiRoute.path.asc())
+            .limit(20)
+        )
+        calls_stmt = (
+            select(
+                literal("call").label("kind"),
+                ApiCall.method.label("method"),
+                ApiCall.path.label("path"),
+                ApiCall.client.label("name"),
+                ApiCall.lineno.label("lineno"),
+            )
+            .where(ApiCall.project_id == project_id, ApiCall.source_path == target_norm)
+            .order_by(ApiCall.path.asc())
+            .limit(20)
+        )
+        rows = (
+            await _run_seed_db_op_async(
+                db_semaphore,
+                lambda: session.execute(union_all(routes_stmt, calls_stmt)),
+            )
+        ).all()
+        for row in rows:
+            if hasattr(row, "_mapping"):
+                kind = row._mapping.get("kind")
+                method = row._mapping.get("method")
+                path = row._mapping.get("path")
+                name = row._mapping.get("name")
+                lineno = row._mapping.get("lineno")
+            elif isinstance(row, (tuple, list)) and len(row) >= 5:
+                kind, method, path, name, lineno = row[0], row[1], row[2], row[3], row[4]
+            else:
+                continue
+            if kind == "route":
+                routes_in_file.append(
+                    {
+                        "method": method,
+                        "path": path,
+                        "handler_name": name,
+                        "lineno": int(lineno or 0),
+                    }
+                )
+                continue
+            if kind == "call":
+                calls_in_file.append(
+                    {
+                        "method": method,
+                        "path": path,
+                        "client": name,
+                        "lineno": int(lineno or 0),
+                    }
+                )
+    except Exception:
+        return [], []
+    routes_in_file.sort(key=lambda row: str(row.get("path") or ""))
+    calls_in_file.sort(key=lambda row: str(row.get("path") or ""))
+    return routes_in_file, calls_in_file
+
+
+async def _load_outbound_hint_async(
+    session: AsyncSession,
+    project_id: int,
+    target_norm: str,
+    out_depth: int,
+    *,
+    db_semaphore: asyncio.Semaphore,
+) -> list[str]:
+    return await _run_seed_db_op_async(
+        db_semaphore,
+        lambda: _neighbors_limited_async(
+            session, project_id, target_norm, direction="out", depth=out_depth, limit=200
+        ),
+    )
+
+
+async def _load_inbound_hint_async(
+    session: AsyncSession,
+    project_id: int,
+    target_norm: str,
+    in_depth: int,
+    *,
+    db_semaphore: asyncio.Semaphore,
+) -> list[str]:
+    return await _run_seed_db_op_async(
+        db_semaphore,
+        lambda: _neighbors_limited_async(
+            session, project_id, target_norm, direction="in", depth=in_depth, limit=200
+        ),
+    )
+
+
 def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
     tokens = [t for t in _FTS_TOKEN_RE.findall(q or "") if t]
     if not tokens:
@@ -118,104 +292,44 @@ async def _seed_context_async(
         max_file_chars=max_file_chars,
     )
 
-    try:
-        contract = await get_or_build_contract_async(session, project_id, root, target_norm)
-    except Exception:
-        contract = {}
-
-    node = (
-        (
-            await session.execute(
-                select(FileNode).where(
-                    FileNode.project_id == project_id,
-                    FileNode.path == target_norm,
-                )
-            )
-        )
-        .scalars()
-        .first()
-    )
-    node_metrics = (
-        {
-            "path": node.path,
-            "language": node.language,
-            "loc": node.loc,
-            "complexity": node.complexity,
-            "fan_in": node.fan_in,
-            "fan_out": node.fan_out,
-            "scc_id": node.scc_id,
-            "status": node.status,
-        }
-        if node
-        else {}
-    )
-
-    routes_in_file: list[dict] = []
-    calls_in_file: list[dict] = []
-    try:
-        rr = (
-            (
-                await session.execute(
-                    select(
-                        ApiRoute.method,
-                        ApiRoute.path,
-                        ApiRoute.handler_name,
-                        ApiRoute.lineno,
-                    )
-                    .where(
-                        ApiRoute.project_id == project_id,
-                        ApiRoute.source_path == target_norm,
-                    )
-                    .order_by(ApiRoute.path.asc())
-                    .limit(20)
-                )
-            )
-            .all()
-        )
-        for row in rr:
-            if isinstance(row, (tuple, list)) and len(row) >= 4:
-                routes_in_file.append(
-                    {
-                        "method": row[0],
-                        "path": row[1],
-                        "handler_name": row[2],
-                        "lineno": int(row[3] or 0),
-                    }
-                )
-
-        cc = (
-            (
-                await session.execute(
-                    select(ApiCall.method, ApiCall.path, ApiCall.client, ApiCall.lineno)
-                    .where(ApiCall.project_id == project_id, ApiCall.source_path == target_norm)
-                    .order_by(ApiCall.path.asc())
-                    .limit(20)
-                )
-            )
-            .all()
-        )
-        for row in cc:
-            if isinstance(row, (tuple, list)) and len(row) >= 4:
-                calls_in_file.append(
-                    {
-                        "method": row[0],
-                        "path": row[1],
-                        "client": row[2],
-                        "lineno": int(row[3] or 0),
-                    }
-                )
-    except Exception:
-        routes_in_file = []
-        calls_in_file = []
-
     out_depth = max(0, min(depth, 6))
     in_depth = max(0, min(depth, 2))
-    outbound = await _neighbors_limited_async(
-        session, project_id, target_norm, direction="out", depth=out_depth, limit=200
+    db_semaphore = asyncio.Semaphore(1)
+    (
+        contract_result,
+        node_metrics_result,
+        api_hints_result,
+        outbound_result,
+        inbound_result,
+    ) = await asyncio.gather(
+        _load_contract_async(session, project_id, root, target_norm, db_semaphore=db_semaphore),
+        _load_target_node_metrics_async(
+            session, project_id, target_norm, db_semaphore=db_semaphore
+        ),
+        _load_api_hints_async(session, project_id, target_norm, db_semaphore=db_semaphore),
+        _load_outbound_hint_async(
+            session, project_id, target_norm, out_depth, db_semaphore=db_semaphore
+        ),
+        _load_inbound_hint_async(
+            session, project_id, target_norm, in_depth, db_semaphore=db_semaphore
+        ),
+        return_exceptions=True,
     )
-    inbound = await _neighbors_limited_async(
-        session, project_id, target_norm, direction="in", depth=in_depth, limit=200
-    )
+
+    contract = contract_result if isinstance(contract_result, dict) else {}
+    node_metrics = node_metrics_result if isinstance(node_metrics_result, dict) else {}
+    routes_in_file: list[dict] = []
+    calls_in_file: list[dict] = []
+    if isinstance(api_hints_result, tuple) and len(api_hints_result) == 2:
+        routes_in_file, calls_in_file = api_hints_result
+
+    if isinstance(outbound_result, Exception):
+        raise outbound_result
+    outbound = outbound_result if isinstance(outbound_result, list) else []
+
+    if isinstance(inbound_result, Exception):
+        raise inbound_result
+    inbound = inbound_result if isinstance(inbound_result, list) else []
 
     return {
         "target_path": target_norm,
