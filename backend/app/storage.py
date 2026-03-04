@@ -24,7 +24,17 @@ from .utils import sha256_text
 
 logger = get_logger("stubgraph.storage")
 
-_S3_SIGNED_URL_SEMAPHORE = asyncio.Semaphore(settings.s3_presign_concurrency_limit)
+_S3_SIGNED_URL_SEMAPHORE: asyncio.Semaphore | None = None
+_S3_SIGNED_URL_SEMAPHORE_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _get_s3_signed_url_semaphore() -> asyncio.Semaphore:
+    global _S3_SIGNED_URL_SEMAPHORE, _S3_SIGNED_URL_SEMAPHORE_LOOP
+    loop = asyncio.get_running_loop()
+    if _S3_SIGNED_URL_SEMAPHORE is None or _S3_SIGNED_URL_SEMAPHORE_LOOP is not loop:
+        _S3_SIGNED_URL_SEMAPHORE = asyncio.Semaphore(settings.s3_presign_concurrency_limit)
+        _S3_SIGNED_URL_SEMAPHORE_LOOP = loop
+    return _S3_SIGNED_URL_SEMAPHORE
 
 
 class StorageError(RuntimeError):
@@ -82,7 +92,7 @@ def _s3_signed_url(bucket: str, key: str) -> str | None:
 
 
 async def _s3_signed_url_async(bucket: str, key: str) -> str | None:
-    async with _S3_SIGNED_URL_SEMAPHORE:
+    async with _get_s3_signed_url_semaphore():
         try:
             return await run_storage_sdk_io_async(_s3_signed_url, bucket, key)
         except Exception as exc:  # noqa: BLE001

@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -167,8 +168,54 @@ async def test_storage_sdk_runtime_shutdown_executor_and_reinit(
 
     await external_io_runtime.init_external_io_runtime()
     runtime_after_reinit = await external_io_runtime._get_external_io_runtime()
-    assert runtime_after_reinit.storage_sdk_executor is not runtime_before_close.storage_sdk_executor
+    assert (
+        runtime_after_reinit.storage_sdk_executor
+        is not runtime_before_close.storage_sdk_executor
+    )
 
     assert await external_io_runtime.run_storage_sdk_io_async(lambda: 1) == 1
+
+    await external_io_runtime.close_external_io_runtime()
+
+
+@pytest.mark.anyio
+async def test_external_io_runtime_reinit_on_loop_change_and_concurrent_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(external_io_runtime.settings, "storage_sdk_io_concurrency", 2)
+    await external_io_runtime.close_external_io_runtime()
+
+    runtime_main = await external_io_runtime._get_external_io_runtime()
+    executor_main = runtime_main.storage_sdk_executor
+
+    from_thread: dict[str, object] = {}
+
+    def _thread_runner() -> None:
+        async def _run() -> None:
+            runtime_thread = await external_io_runtime._get_external_io_runtime()
+            from_thread["runtime"] = runtime_thread
+            from_thread["executor"] = runtime_thread.storage_sdk_executor
+            values = await asyncio.gather(
+                *[
+                    external_io_runtime.run_storage_sdk_io_async(lambda value=idx: value)
+                    for idx in range(4)
+                ]
+            )
+            from_thread["values"] = values
+
+        asyncio.run(_run())
+
+    worker = threading.Thread(target=_thread_runner)
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    runtime_after = await external_io_runtime._get_external_io_runtime()
+
+    assert from_thread["runtime"] is not runtime_main
+    assert from_thread["executor"] is not executor_main
+    assert runtime_after is not from_thread["runtime"]
+    assert executor_main._shutdown is True
+    assert from_thread["values"] == [0, 1, 2, 3]
 
     await external_io_runtime.close_external_io_runtime()

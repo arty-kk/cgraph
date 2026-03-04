@@ -42,7 +42,17 @@ class FsRuntime:
 
 
 _fs_runtime: FsRuntime | None = None
-_fs_runtime_lock = asyncio.Lock()
+_fs_runtime_lock: asyncio.Lock | None = None
+_fs_runtime_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_fs_runtime_lock() -> asyncio.Lock:
+    global _fs_runtime_lock, _fs_runtime_lock_loop
+    loop = asyncio.get_running_loop()
+    if _fs_runtime_lock is None or _fs_runtime_lock_loop is not loop:
+        _fs_runtime_lock = asyncio.Lock()
+        _fs_runtime_lock_loop = loop
+    return _fs_runtime_lock
 
 
 def _fs_max_workers() -> int:
@@ -57,7 +67,7 @@ def _fs_max_concurrency() -> int:
 
 async def init_fs_runtime() -> None:
     global _fs_runtime
-    async with _fs_runtime_lock:
+    async with _get_fs_runtime_lock():
         if _fs_runtime is not None:
             return
         loop = asyncio.get_running_loop()
@@ -82,7 +92,7 @@ async def _get_fs_runtime() -> FsRuntime:
         return runtime
 
     old_runtime: FsRuntime | None = None
-    async with _fs_runtime_lock:
+    async with _get_fs_runtime_lock():
         runtime = _fs_runtime
         if runtime is not None and runtime.loop is current_loop:
             return runtime
@@ -108,13 +118,16 @@ async def _get_fs_runtime() -> FsRuntime:
 
 async def close_fs_runtime() -> None:
     global _fs_runtime
-    async with _fs_runtime_lock:
+    async with _get_fs_runtime_lock():
         runtime = _fs_runtime
         _fs_runtime = None
     if runtime is None:
         return
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, partial(runtime.executor.shutdown, wait=True, cancel_futures=True))
+    await loop.run_in_executor(
+        None,
+        partial(runtime.executor.shutdown, wait=True, cancel_futures=True),
+    )
 
 
 async def run_fs_io_async(

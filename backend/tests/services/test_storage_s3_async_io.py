@@ -179,6 +179,7 @@ async def test_s3_signed_url_async_respects_semaphore_limit(
     fake = _BlockingS3()
     monkeypatch.setattr(storage, "get_s3_client", lambda: fake)
     monkeypatch.setattr(storage, "_S3_SIGNED_URL_SEMAPHORE", asyncio.Semaphore(limit))
+    monkeypatch.setattr(storage, "_S3_SIGNED_URL_SEMAPHORE_LOOP", asyncio.get_running_loop())
 
     urls = await asyncio.gather(
         *[storage._s3_signed_url_async("bucket", f"patches/{idx}.diff") for idx in range(8)]
@@ -186,6 +187,37 @@ async def test_s3_signed_url_async_respects_semaphore_limit(
 
     assert all(url == "https://signed/bucket/key" for url in urls)
     assert max_seen <= limit
+
+
+@pytest.mark.anyio
+async def test_s3_signed_url_semaphore_reinit_after_loop_change_and_concurrency_kept() -> None:
+    storage._S3_SIGNED_URL_SEMAPHORE = None
+    storage._S3_SIGNED_URL_SEMAPHORE_LOOP = None
+
+    sem_main = storage._get_s3_signed_url_semaphore()
+    main_loop = asyncio.get_running_loop()
+
+    thread_data: dict[str, object] = {}
+
+    def _thread_runner() -> None:
+        async def _run() -> None:
+            sem_thread = storage._get_s3_signed_url_semaphore()
+            thread_data["sem"] = sem_thread
+            thread_data["loop"] = storage._S3_SIGNED_URL_SEMAPHORE_LOOP
+
+        asyncio.run(_run())
+
+    worker = threading.Thread(target=_thread_runner)
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    sem_after = storage._get_s3_signed_url_semaphore()
+
+    assert sem_main is not thread_data["sem"]
+    assert thread_data["loop"] is not main_loop
+    assert sem_after is not thread_data["sem"]
+    assert storage._S3_SIGNED_URL_SEMAPHORE_LOOP is main_loop
 
 
 @pytest.mark.anyio

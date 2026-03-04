@@ -19,7 +19,18 @@ from ...utils import resolve_under_root
 _FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 _SEED_FS_SEMAPHORE: asyncio.Semaphore | None = None
-_SEED_FS_SEMAPHORE_LOCK = asyncio.Lock()
+_SEED_FS_SEMAPHORE_LOOP: asyncio.AbstractEventLoop | None = None
+_SEED_FS_SEMAPHORE_LOCK: asyncio.Lock | None = None
+_SEED_FS_SEMAPHORE_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _get_seed_fs_semaphore_lock() -> asyncio.Lock:
+    global _SEED_FS_SEMAPHORE_LOCK, _SEED_FS_SEMAPHORE_LOCK_LOOP
+    loop = asyncio.get_running_loop()
+    if _SEED_FS_SEMAPHORE_LOCK is None or _SEED_FS_SEMAPHORE_LOCK_LOOP is not loop:
+        _SEED_FS_SEMAPHORE_LOCK = asyncio.Lock()
+        _SEED_FS_SEMAPHORE_LOCK_LOOP = loop
+    return _SEED_FS_SEMAPHORE_LOCK
 
 
 def _seed_fs_limit() -> int:
@@ -29,13 +40,15 @@ def _seed_fs_limit() -> int:
 
 
 async def _seed_fs_semaphore_async() -> asyncio.Semaphore:
-    global _SEED_FS_SEMAPHORE
+    global _SEED_FS_SEMAPHORE, _SEED_FS_SEMAPHORE_LOOP
+    loop = asyncio.get_running_loop()
     sem = _SEED_FS_SEMAPHORE
-    if sem is not None:
+    if sem is not None and _SEED_FS_SEMAPHORE_LOOP is loop:
         return sem
-    async with _SEED_FS_SEMAPHORE_LOCK:
-        if _SEED_FS_SEMAPHORE is None:
+    async with _get_seed_fs_semaphore_lock():
+        if _SEED_FS_SEMAPHORE is None or _SEED_FS_SEMAPHORE_LOOP is not loop:
             _SEED_FS_SEMAPHORE = asyncio.Semaphore(_seed_fs_limit())
+            _SEED_FS_SEMAPHORE_LOOP = loop
         return _SEED_FS_SEMAPHORE
 
 
