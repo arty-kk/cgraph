@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="redis://localhost:6379/0", alias="STUBGRAPH_REDIS_URL")
     cache_enabled: bool = Field(default=True, alias="STUBGRAPH_CACHE_ENABLED")
     cache_default_ttl_seconds: int = Field(default=300, alias="STUBGRAPH_CACHE_DEFAULT_TTL_SECONDS")
+    cache_entry_max_bytes: int = Field(default=1_000_000, alias="STUBGRAPH_CACHE_ENTRY_MAX_BYTES")
     cache_invalidate_batch_size: int = Field(
         default=1000,
         alias="STUBGRAPH_CACHE_INVALIDATE_BATCH_SIZE",
@@ -441,6 +442,8 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_AUTH_API_KEY_TTL_DAYS должен быть положительным")
         if self.cache_default_ttl_seconds <= 0:
             raise ValueError("STUBGRAPH_CACHE_DEFAULT_TTL_SECONDS должен быть положительным")
+        if self.cache_entry_max_bytes <= 0:
+            raise ValueError("STUBGRAPH_CACHE_ENTRY_MAX_BYTES должен быть положительным")
         if self.cache_invalidate_batch_size <= 0:
             raise ValueError("STUBGRAPH_CACHE_INVALIDATE_BATCH_SIZE должен быть положительным")
         if self.rate_limit_requests_per_minute <= 0:
