@@ -118,6 +118,39 @@ async def test_cache_get_json_async_returns_none_on_invalid_json(monkeypatch: py
 
 
 @pytest.mark.anyio
+async def test_cache_json_operations_use_cpu_offload(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _AsyncClient(get_payload='{"ok": 1}')
+
+    async def _mget(keys):
+        _ = keys
+        return ['{"m": 1}', '{"n": 2}']
+
+    client.mget = _mget  # type: ignore[attr-defined]
+    calls: list[str] = []
+
+    async def _fake_run_cpu_io_async(fn, *args, operation=None, **kwargs):
+        _ = kwargs
+        calls.append(operation or fn.__name__)
+        return fn(*args)
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_default_ttl_seconds", 60)
+    monkeypatch.setattr(cache.settings, "cache_entry_max_bytes", 10_000)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
+    monkeypatch.setattr(cache, "run_cpu_io_async", _fake_run_cpu_io_async)
+
+    assert await cache.cache_get_json_async(["k"]) == {"ok": 1}
+    await cache.cache_set_json_async(["k"], {"x": 1})
+    assert await cache.cache_mget_json_async([["a"], ["b"]]) == [{"m": 1}, {"n": 2}]
+    await cache.cache_mset_json_async([(["a"], {"x": 1}), (["b"], {"x": 2})])
+
+    assert "cache.deserialize_get" in calls
+    assert "cache.serialize_set" in calls
+    assert "cache.deserialize_mget" in calls
+    assert "cache.serialize_mset" in calls
+
+
+@pytest.mark.anyio
 async def test_cache_async_uses_shared_client_for_concurrent_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -297,3 +330,35 @@ async def test_cache_mset_json_async_writes_batch_with_pipeline(
     assert len(client.pipeline_setex_batches) == 1
     assert [item[0] for item in client.pipeline_setex_batches[0]] == ["stubgraph:k1", "stubgraph:k2"]
     assert [item[1] for item in client.pipeline_setex_batches[0]] == [30, 30]
+
+
+@pytest.mark.anyio
+async def test_cache_set_json_async_skips_oversized_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _AsyncClient()
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_default_ttl_seconds", 60)
+    monkeypatch.setattr(cache.settings, "cache_entry_max_bytes", 8)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
+
+    await cache.cache_set_json_async(["k"], {"payload": "0123456789"})
+
+    assert client.setex_calls == []
+
+
+@pytest.mark.anyio
+async def test_cache_mset_json_async_skips_oversized_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _AsyncClient()
+
+    monkeypatch.setattr(cache.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache.settings, "cache_default_ttl_seconds", 60)
+    monkeypatch.setattr(cache.settings, "cache_entry_max_bytes", 14)
+    monkeypatch.setattr(cache, "get_async_redis_client", lambda: client)
+
+    await cache.cache_mset_json_async(
+        [(["small"], {"v": 1}), (["big"], {"payload": "0123456789"})],
+        ttl_seconds=30,
+    )
+
+    assert len(client.pipeline_setex_batches) == 1
+    assert client.pipeline_setex_batches[0] == [("stubgraph:small", 30, '{"v": 1}')]
