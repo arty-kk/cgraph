@@ -565,11 +565,7 @@ async def read_semantic_candidate_files_async(
         return {}
 
     worker_count = max(1, int(max_parallel))
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    for path in selected_paths:
-        queue.put_nowait(path)
-    for _ in range(worker_count):
-        queue.put_nowait(None)
+    queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=worker_count)
 
     file_cache: dict[str, str] = {}
 
@@ -598,9 +594,38 @@ async def read_semantic_candidate_files_async(
             finally:
                 queue.task_done()
 
-    workers = [asyncio.create_task(_worker()) for _ in range(worker_count)]
-    await queue.join()
-    await asyncio.gather(*workers)
+    async def _producer() -> None:
+        for path in selected_paths:
+            await queue.put(path)
+        for _ in range(worker_count):
+            await queue.put(None)
+
+    producer_task = asyncio.create_task(_producer())
+    worker_tasks = [asyncio.create_task(_worker()) for _ in range(worker_count)]
+    all_tasks: list[asyncio.Task[None]] = [producer_task, *worker_tasks]
+
+    try:
+        done, pending = await asyncio.wait(all_tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+        first_error: BaseException | None = None
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                first_error = exc
+                break
+
+        if first_error is not None:
+            raise first_error
+
+        if pending:
+            await asyncio.gather(*pending)
+    except BaseException:
+        producer_task.cancel()
+        for task in worker_tasks:
+            task.cancel()
+        await asyncio.gather(producer_task, *worker_tasks, return_exceptions=True)
+        raise
+
     return file_cache
 
 
