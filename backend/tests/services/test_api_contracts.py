@@ -1,3 +1,4 @@
+import inspect
 import io
 import sys
 import zipfile
@@ -12,7 +13,8 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from app.async_db import AsyncSessionLocal
 from app.models import OrgMembership, User
 from app.services.auth_service import bootstrap_user_async, create_session_async
-from tests.services.db_helpers import ensure_async_postgres
+
+pytest_plugins = ("tests.services.db_helpers",)
 
 
 @pytest.fixture
@@ -75,7 +77,14 @@ async def test_health_includes_request_id(api_client_context) -> None:
     client, _, _ = api_client_context
     response = client.get("/health")
     assert response.status_code == 200
+    assert response.json() == {"ok": True}
     assert response.headers.get("X-Request-ID")
+
+
+def test_health_handler_is_async_coroutine_function() -> None:
+    from app.main import health
+
+    assert inspect.iscoroutinefunction(health)
 
 
 @pytest.mark.anyio
