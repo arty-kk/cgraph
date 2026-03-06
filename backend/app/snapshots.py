@@ -20,7 +20,33 @@ from .utils import sha256_file
 
 logger = get_logger("stubgraph.snapshots")
 
-_SNAPSHOT_S3_IO_SEMAPHORE = asyncio.Semaphore(settings.snapshot_s3_concurrency)
+_SNAPSHOT_S3_IO_SEMAPHORE: asyncio.Semaphore | None = None
+_SNAPSHOT_S3_IO_SEMAPHORE_LOOP: asyncio.AbstractEventLoop | None = None
+_SNAPSHOT_S3_IO_SEMAPHORE_LOCK: asyncio.Lock | None = None
+_SNAPSHOT_S3_IO_SEMAPHORE_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _get_snapshot_s3_io_semaphore_lock() -> asyncio.Lock:
+    global _SNAPSHOT_S3_IO_SEMAPHORE_LOCK, _SNAPSHOT_S3_IO_SEMAPHORE_LOCK_LOOP
+    loop = asyncio.get_running_loop()
+    if _SNAPSHOT_S3_IO_SEMAPHORE_LOCK is None or _SNAPSHOT_S3_IO_SEMAPHORE_LOCK_LOOP is not loop:
+        _SNAPSHOT_S3_IO_SEMAPHORE_LOCK = asyncio.Lock()
+        _SNAPSHOT_S3_IO_SEMAPHORE_LOCK_LOOP = loop
+    return _SNAPSHOT_S3_IO_SEMAPHORE_LOCK
+
+
+async def _get_snapshot_s3_io_semaphore() -> asyncio.Semaphore:
+    global _SNAPSHOT_S3_IO_SEMAPHORE, _SNAPSHOT_S3_IO_SEMAPHORE_LOOP
+    loop = asyncio.get_running_loop()
+    async with _get_snapshot_s3_io_semaphore_lock():
+        if _SNAPSHOT_S3_IO_SEMAPHORE is None or _SNAPSHOT_S3_IO_SEMAPHORE_LOOP is not loop:
+            concurrency = max(1, int(settings.snapshot_s3_concurrency))
+            _SNAPSHOT_S3_IO_SEMAPHORE = asyncio.Semaphore(concurrency)
+            _SNAPSHOT_S3_IO_SEMAPHORE_LOOP = loop
+    semaphore = _SNAPSHOT_S3_IO_SEMAPHORE
+    if semaphore is None:
+        raise SnapshotError("Failed to initialize snapshot S3 I/O semaphore")
+    return semaphore
 
 
 class SnapshotError(RuntimeError):
@@ -216,7 +242,7 @@ def _resolve_root_and_get_state(
 async def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: Path) -> None:
     if not meta.bucket or not meta.key:
         raise SnapshotError("Missing S3 snapshot metadata")
-    async with _SNAPSHOT_S3_IO_SEMAPHORE:
+    async with (await _get_snapshot_s3_io_semaphore()):
         resp = await get_s3_client().get_object(Bucket=meta.bucket, Key=meta.key)
     body = resp.get("Body")
     if body is None:
@@ -226,7 +252,7 @@ async def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: P
         buffered = 0
         flush_threshold = 4 * 1024 * 1024
         while True:
-            async with _SNAPSHOT_S3_IO_SEMAPHORE:
+            async with (await _get_snapshot_s3_io_semaphore()):
                 chunk = await body.read(1024 * 1024)
             if not chunk:
                 break
@@ -322,7 +348,7 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
                 part_number, chunk = item
                 if pipeline_error is not None:
                     continue
-                async with _SNAPSHOT_S3_IO_SEMAPHORE:
+                async with (await _get_snapshot_s3_io_semaphore()):
                     resp = await client.upload_part(
                         Bucket=bucket,
                         Key=key,
@@ -339,7 +365,9 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
             finally:
                 queue.task_done()
 
-    def _validated_sorted_parts(upload_parts: list[dict[str, str | int]]) -> list[dict[str, str | int]]:
+    def _validated_sorted_parts(
+        upload_parts: list[dict[str, str | int]],
+    ) -> list[dict[str, str | int]]:
         if not upload_parts:
             raise SnapshotError("Multipart upload produced no parts")
         sorted_parts = sorted(upload_parts, key=lambda item: int(item["PartNumber"]))
@@ -353,7 +381,7 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
         return sorted_parts
 
     try:
-        async with _SNAPSHOT_S3_IO_SEMAPHORE:
+        async with (await _get_snapshot_s3_io_semaphore()):
             create_resp = await client.create_multipart_upload(Bucket=bucket, Key=key)
             upload_id = create_resp.get("UploadId")
             if not upload_id:
@@ -409,7 +437,7 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
 
         validated_parts = _validated_sorted_parts(parts)
 
-        async with _SNAPSHOT_S3_IO_SEMAPHORE:
+        async with (await _get_snapshot_s3_io_semaphore()):
             await client.complete_multipart_upload(
                 Bucket=bucket,
                 Key=key,
@@ -419,7 +447,7 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
     except BaseException:
         if upload_id:
             try:
-                async with _SNAPSHOT_S3_IO_SEMAPHORE:
+                async with (await _get_snapshot_s3_io_semaphore()):
                     await client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to abort multipart upload", extra={"reason": str(exc)})
@@ -509,7 +537,11 @@ def _path_exists_and_is_dir(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_dir_async(path: Path) -> tuple[bool, bool]:
-    return await run_fs_io_async(_path_exists_and_is_dir, path, operation="snapshots.path.exists_dir")
+    return await run_fs_io_async(
+        _path_exists_and_is_dir,
+        path,
+        operation="snapshots.path.exists_dir",
+    )
 
 
 async def _unlink_if_exists_async(path: Path) -> None:
@@ -557,7 +589,11 @@ async def delete_project_snapshot_root_async(root_path: str | Path) -> None:
     if not _is_project_snapshot_root(root_dir):
         return
     if exists and is_dir:
-        await run_fs_io_async(_clear_dir_and_rmdir, root_dir, operation="snapshots.dir.clear_rmdir")
+        await run_fs_io_async(
+            _clear_dir_and_rmdir,
+            root_dir,
+            operation="snapshots.dir.clear_rmdir",
+        )
 
 
 async def delete_snapshot_async(meta: SnapshotMeta) -> None:
@@ -579,7 +615,11 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
         snapshot_exists, snapshot_is_dir = await _path_exists_and_is_dir_async(snapshot_dir)
 
         if snapshot_exists and snapshot_is_dir:
-            await run_fs_io_async(_clear_dir_and_rmdir, snapshot_dir, operation="snapshots.dir.clear_rmdir")
+            await run_fs_io_async(
+                _clear_dir_and_rmdir,
+                snapshot_dir,
+                operation="snapshots.dir.clear_rmdir",
+            )
         else:
             archive_path = _local_archive_path(meta.sha256, meta.archive_ext)
             unlink_archive_task = asyncio.create_task(_unlink_if_exists_async(archive_path))
