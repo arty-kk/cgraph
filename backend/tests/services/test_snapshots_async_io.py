@@ -2,6 +2,7 @@ import asyncio
 import builtins
 import io
 import sys
+import threading
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -72,6 +73,8 @@ class _FakeS3:
         self.upload_targets: dict[str, tuple[str, str]] = {}
         self.deleted: list[tuple[str, str]] = []
         self._upload_counter = 0
+        self._active_upload_parts = 0
+        self.max_active_upload_parts = 0
 
     async def get_object(self, *, Bucket: str, Key: str):
         return {"Body": _AsyncBody(self.objects[(Bucket, Key)])}
@@ -83,12 +86,33 @@ class _FakeS3:
         self.upload_targets[upload_id] = (Bucket, Key)
         return {"UploadId": upload_id}
 
-    async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+    async def upload_part(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        UploadId: str,
+        PartNumber: int,
+        Body: bytes,
+    ):
         assert self.upload_targets[UploadId] == (Bucket, Key)
-        self.multipart[UploadId][PartNumber] = Body
-        return {"ETag": f"etag-{PartNumber}"}
+        self._active_upload_parts += 1
+        self.max_active_upload_parts = max(self.max_active_upload_parts, self._active_upload_parts)
+        try:
+            await asyncio.sleep(0.01)
+            self.multipart[UploadId][PartNumber] = Body
+            return {"ETag": f"etag-{PartNumber}"}
+        finally:
+            self._active_upload_parts = max(0, self._active_upload_parts - 1)
 
-    async def complete_multipart_upload(self, *, Bucket: str, Key: str, UploadId: str, MultipartUpload: dict):
+    async def complete_multipart_upload(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        UploadId: str,
+        MultipartUpload: dict,
+    ):
         _ = MultipartUpload
         parts = self.multipart.pop(UploadId)
         data = b"".join(parts[idx] for idx in sorted(parts))
@@ -192,7 +216,10 @@ async def test_store_snapshot_upload_buffers_chunk_writes() -> None:
 
 
 @pytest.mark.anyio
-async def test_download_snapshot_archive_from_s3_streams_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_download_snapshot_archive_from_s3_streams_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake = _FakeS3()
     fake.objects[("bucket", "snapshots/sha/repo.zip")] = b"abcdef"
     monkeypatch.setattr(snapshots, "get_s3_client", lambda: fake)
@@ -250,10 +277,110 @@ async def test_download_snapshot_archive_from_s3_cleans_partial_on_error(
 
 
 @pytest.mark.anyio
-async def test_snapshot_s3_concurrent_upload_download_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_download_snapshot_archive_from_s3_respects_concurrency_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TrackingBody:
+        def __init__(self, payload: bytes, state: dict[str, int]):
+            self._payload = payload
+            self._offset = 0
+            self._state = state
+
+        async def read(self, size: int):
+            self._state["active"] += 1
+            self._state["max_active"] = max(self._state["max_active"], self._state["active"])
+            try:
+                await asyncio.sleep(0.01)
+                chunk = self._payload[self._offset : self._offset + size]
+                self._offset += len(chunk)
+                return chunk
+            finally:
+                self._state["active"] = max(0, self._state["active"] - 1)
+
+        async def close(self) -> None:
+            return None
+
+    state = {"active": 0, "max_active": 0}
+
+    class _TrackingS3:
+        async def get_object(self, *, Bucket: str, Key: str):
+            _ = Bucket, Key
+            return {"Body": _TrackingBody(b"abcdef", state)}
+
+    monkeypatch.setattr(snapshots, "get_s3_client", lambda: _TrackingS3())
+
+    original_limit = settings.snapshot_s3_concurrency
+    settings.snapshot_s3_concurrency = 1
+    snapshots._SNAPSHOT_S3_IO_SEMAPHORE = None
+    snapshots._SNAPSHOT_S3_IO_SEMAPHORE_LOOP = None
+
+    meta = snapshots.SnapshotMeta(
+        storage="s3",
+        sha256="sha",
+        archive_name="repo.zip",
+        archive_ext=".zip",
+        size=6,
+        file="snapshots/sha/archive.zip",
+        root_dir="snapshots/sha/repo",
+        bucket="bucket",
+        key="snapshots/sha/repo.zip",
+    )
+    out_a = tmp_path / "archive-a.zip"
+    out_b = tmp_path / "archive-b.zip"
+
+    try:
+        await asyncio.gather(
+            snapshots._download_snapshot_archive_from_s3(meta, out_a),
+            snapshots._download_snapshot_archive_from_s3(meta, out_b),
+        )
+    finally:
+        settings.snapshot_s3_concurrency = original_limit
+
+    assert state["max_active"] <= 1
+    assert out_a.read_bytes() == b"abcdef"
+    assert out_b.read_bytes() == b"abcdef"
+
+
+def test_get_snapshot_s3_io_semaphore_recreated_for_new_event_loop() -> None:
+    snapshots._SNAPSHOT_S3_IO_SEMAPHORE = None
+    snapshots._SNAPSHOT_S3_IO_SEMAPHORE_LOOP = None
+    snapshots._SNAPSHOT_S3_IO_SEMAPHORE_LOCK = None
+    snapshots._SNAPSHOT_S3_IO_SEMAPHORE_LOCK_LOOP = None
+
+    semaphores: list[asyncio.Semaphore] = []
+    semaphores_lock = threading.Lock()
+    errors: list[BaseException] = []
+    errors_lock = threading.Lock()
+
+    def _worker() -> None:
+        try:
+            semaphore = asyncio.run(snapshots._get_snapshot_s3_io_semaphore())
+            with semaphores_lock:
+                semaphores.append(semaphore)
+        except BaseException as exc:  # noqa: BLE001
+            with errors_lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert len(semaphores) == 2
+    assert semaphores[0] is not semaphores[1]
+
+
+@pytest.mark.anyio
+async def test_snapshot_s3_concurrent_upload_download_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     original_dir = settings.db_dir
     original_backend = settings.storage_backend
     original_bucket = settings.s3_bucket
+    original_s3_concurrency = settings.snapshot_s3_concurrency
     fake = _FakeS3()
     monkeypatch.setattr(snapshots, "get_s3_client", lambda: fake)
 
@@ -262,22 +389,32 @@ async def test_snapshot_s3_concurrent_upload_download_delete(monkeypatch: pytest
             settings.db_dir = Path(tmpdir)
             settings.storage_backend = "s3"
             settings.s3_bucket = "bucket"
+            settings.snapshot_s3_concurrency = 2
+            snapshots._SNAPSHOT_S3_IO_SEMAPHORE = None
+            snapshots._SNAPSHOT_S3_IO_SEMAPHORE_LOOP = None
 
             uploads = [_Upload(_zip_payload(f"content-{idx}")) for idx in range(4)]
             metas = await asyncio.gather(
-                *[snapshots.store_snapshot_upload(upload, f"repo-{idx}.zip") for idx, upload in enumerate(uploads)]
+                *[
+                    snapshots.store_snapshot_upload(upload, f"repo-{idx}.zip")
+                    for idx, upload in enumerate(uploads)
+                ]
             )
 
-            roots = await asyncio.gather(*[snapshots.prepare_snapshot_root_async(meta) for meta in metas])
+            roots = await asyncio.gather(
+                *[snapshots.prepare_snapshot_root_async(meta) for meta in metas]
+            )
             for idx, root in enumerate(roots):
                 assert (root / "repo" / "README.md").read_text(encoding="utf-8") == f"content-{idx}"
 
             await asyncio.gather(*[snapshots.delete_snapshot_async(meta) for meta in metas])
             assert len(fake.deleted) == len(metas)
+            assert fake.max_active_upload_parts <= settings.snapshot_s3_concurrency
     finally:
         settings.db_dir = original_dir
         settings.storage_backend = original_backend
         settings.s3_bucket = original_bucket
+        settings.snapshot_s3_concurrency = original_s3_concurrency
 
 
 @pytest.mark.anyio
@@ -302,7 +439,10 @@ async def test_snapshot_fs_ops_use_runtime(monkeypatch: pytest.MonkeyPatch) -> N
             settings.db_dir = Path(tmpdir)
             settings.storage_backend = "local"
 
-            meta = await snapshots.store_snapshot_upload(_Upload(_zip_payload("runtime")), "repo.zip")
+            meta = await snapshots.store_snapshot_upload(
+                _Upload(_zip_payload("runtime")),
+                "repo.zip",
+            )
             root = await snapshots.prepare_snapshot_root_async(meta)
             assert (root / "repo" / "README.md").read_text(encoding="utf-8") == "runtime"
             await snapshots.delete_snapshot_async(meta)
@@ -317,7 +457,9 @@ async def test_snapshot_fs_ops_use_runtime(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.anyio
-async def test_store_snapshot_upload_aborts_multipart_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_store_snapshot_upload_aborts_multipart_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     original_dir = settings.db_dir
     original_backend = settings.storage_backend
     original_bucket = settings.s3_bucket
@@ -327,7 +469,15 @@ async def test_store_snapshot_upload_aborts_multipart_on_error(monkeypatch: pyte
             super().__init__()
             self.abort_calls = 0
 
-        async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+        async def upload_part(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            UploadId: str,
+            PartNumber: int,
+            Body: bytes,
+        ):
             _ = Bucket, Key, UploadId, Body
             if PartNumber == 1:
                 raise RuntimeError("upload failed")
@@ -371,7 +521,10 @@ async def test_snapshot_parallel_mixed_pipeline(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(snapshots, "get_s3_client", lambda: fake)
 
     async def _pipeline(idx: int) -> None:
-        meta = await snapshots.store_snapshot_upload(_Upload(_zip_payload(f"mix-{idx}")), f"repo-{idx}.zip")
+        meta = await snapshots.store_snapshot_upload(
+            _Upload(_zip_payload(f"mix-{idx}")),
+            f"repo-{idx}.zip",
+        )
         root = await snapshots.prepare_snapshot_root_async(meta)
         assert (root / "repo" / "README.md").read_text(encoding="utf-8") == f"mix-{idx}"
         await snapshots.delete_snapshot_async(meta)
@@ -391,7 +544,9 @@ async def test_snapshot_parallel_mixed_pipeline(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.anyio
-async def test_snapshot_backpressure_stress_parallel_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_snapshot_backpressure_stress_parallel_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     original_dir = settings.db_dir
     original_backend = settings.storage_backend
     original_bucket = settings.s3_bucket
@@ -399,7 +554,10 @@ async def test_snapshot_backpressure_stress_parallel_pipeline(monkeypatch: pytes
     monkeypatch.setattr(snapshots, "get_s3_client", lambda: fake)
 
     async def _pipeline(idx: int) -> None:
-        meta = await snapshots.store_snapshot_upload(_Upload(_zip_payload(f"stress-{idx}")), f"repo-{idx}.zip")
+        meta = await snapshots.store_snapshot_upload(
+            _Upload(_zip_payload(f"stress-{idx}")),
+            f"repo-{idx}.zip",
+        )
         archive_path = Path(settings.db_dir) / meta.file
         archive_path.unlink(missing_ok=True)
 
@@ -424,7 +582,10 @@ async def test_snapshot_backpressure_stress_parallel_pipeline(monkeypatch: pytes
 
 
 @pytest.mark.anyio
-async def test_upload_archive_to_s3_bounded_concurrency(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_upload_archive_to_s3_bounded_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     original_concurrency = settings.snapshot_s3_concurrency
 
     class _SlowS3(_FakeS3):
@@ -433,7 +594,15 @@ async def test_upload_archive_to_s3_bounded_concurrency(monkeypatch: pytest.Monk
             self.in_flight = 0
             self.max_in_flight = 0
 
-        async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+        async def upload_part(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            UploadId: str,
+            PartNumber: int,
+            Body: bytes,
+        ):
             self.in_flight += 1
             self.max_in_flight = max(self.max_in_flight, self.in_flight)
             try:
@@ -465,9 +634,20 @@ async def test_upload_archive_to_s3_bounded_concurrency(monkeypatch: pytest.Monk
 
 
 @pytest.mark.anyio
-async def test_upload_archive_to_s3_validates_and_sorts_parts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_upload_archive_to_s3_validates_and_sorts_parts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     class _OutOfOrderS3(_FakeS3):
-        async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+        async def upload_part(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            UploadId: str,
+            PartNumber: int,
+            Body: bytes,
+        ):
             await asyncio.sleep(0.03 if PartNumber % 2 == 0 else 0.0)
             return await super().upload_part(
                 Bucket=Bucket,
@@ -477,7 +657,14 @@ async def test_upload_archive_to_s3_validates_and_sorts_parts(monkeypatch: pytes
                 Body=Body,
             )
 
-        async def complete_multipart_upload(self, *, Bucket: str, Key: str, UploadId: str, MultipartUpload: dict):
+        async def complete_multipart_upload(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            UploadId: str,
+            MultipartUpload: dict,
+        ):
             parts = MultipartUpload["Parts"]
             assert parts
             assert [part["PartNumber"] for part in parts] == list(range(1, len(parts) + 1))
@@ -499,14 +686,25 @@ async def test_upload_archive_to_s3_validates_and_sorts_parts(monkeypatch: pytes
 
 
 @pytest.mark.anyio
-async def test_upload_archive_to_s3_cancellation_aborts_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_upload_archive_to_s3_cancellation_aborts_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     class _BlockingS3(_FakeS3):
         def __init__(self):
             super().__init__()
             self.abort_calls = 0
             self.started = asyncio.Event()
 
-        async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+        async def upload_part(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            UploadId: str,
+            PartNumber: int,
+            Body: bytes,
+        ):
             _ = Bucket, Key, UploadId, PartNumber, Body
             self.started.set()
             await asyncio.sleep(1)
@@ -522,7 +720,13 @@ async def test_upload_archive_to_s3_cancellation_aborts_once(monkeypatch: pytest
     archive_path = tmp_path / "cancel.bin"
     archive_path.write_bytes(_multipart_payload(parts=2))
 
-    task = asyncio.create_task(snapshots._upload_archive_to_s3(archive_path, "bucket", "snapshots/sha/cancel.bin"))
+    task = asyncio.create_task(
+        snapshots._upload_archive_to_s3(
+            archive_path,
+            "bucket",
+            "snapshots/sha/cancel.bin",
+        )
+    )
     await fake.started.wait()
     task.cancel()
 
@@ -614,7 +818,15 @@ async def test_upload_archive_to_s3_closes_stream_on_failure_or_cancel(
             super().__init__()
             self.started = asyncio.Event()
 
-        async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+        async def upload_part(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            UploadId: str,
+            PartNumber: int,
+            Body: bytes,
+        ):
             _ = Bucket, Key, UploadId, PartNumber, Body
             self.started.set()
             if mode == "error":
@@ -630,9 +842,19 @@ async def test_upload_archive_to_s3_closes_stream_on_failure_or_cancel(
 
     if mode == "error":
         with pytest.raises(RuntimeError, match="transient"):
-            await snapshots._upload_archive_to_s3(archive_path, "bucket", f"snapshots/sha/fd-{mode}.bin")
+            await snapshots._upload_archive_to_s3(
+                archive_path,
+                "bucket",
+                f"snapshots/sha/fd-{mode}.bin",
+            )
     else:
-        task = asyncio.create_task(snapshots._upload_archive_to_s3(archive_path, "bucket", f"snapshots/sha/fd-{mode}.bin"))
+        task = asyncio.create_task(
+            snapshots._upload_archive_to_s3(
+                archive_path,
+                "bucket",
+                f"snapshots/sha/fd-{mode}.bin",
+            )
+        )
         await fake.started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -651,7 +873,9 @@ async def test_upload_archive_to_s3_closes_stream_on_failure_or_cancel(
 
 
 @pytest.mark.anyio
-async def test_snapshot_parallel_pipeline_with_retry_and_no_hanging_multipart(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_snapshot_parallel_pipeline_with_retry_and_no_hanging_multipart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     original_dir = settings.db_dir
     original_backend = settings.storage_backend
     original_bucket = settings.s3_bucket
@@ -661,7 +885,15 @@ async def test_snapshot_parallel_pipeline_with_retry_and_no_hanging_multipart(mo
             super().__init__()
             self.failures: dict[str, int] = {}
 
-        async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+        async def upload_part(
+            self,
+            *,
+            Bucket: str,
+            Key: str,
+            UploadId: str,
+            PartNumber: int,
+            Body: bytes,
+        ):
             await asyncio.sleep(0.01)
             fail_key = f"{Bucket}/{Key}"
             if PartNumber == 1 and self.failures.get(fail_key, 0) == 0:
@@ -709,7 +941,15 @@ async def test_snapshot_parallel_pipeline_with_retry_and_no_hanging_multipart(mo
                     self.abort_calls = 0
                     self.started = asyncio.Event()
 
-                async def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes):
+                async def upload_part(
+                    self,
+                    *,
+                    Bucket: str,
+                    Key: str,
+                    UploadId: str,
+                    PartNumber: int,
+                    Body: bytes,
+                ):
                     _ = Bucket, Key, UploadId, PartNumber, Body
                     self.started.set()
                     raise RuntimeError("forced multipart failure")
@@ -726,7 +966,11 @@ async def test_snapshot_parallel_pipeline_with_retry_and_no_hanging_multipart(mo
             failed_archive.write_bytes(_multipart_payload(parts=2))
 
             with pytest.raises(RuntimeError, match="forced multipart failure"):
-                await snapshots._upload_archive_to_s3(failed_archive, "bucket", "snapshots/sha/failed.bin")
+                await snapshots._upload_archive_to_s3(
+                    failed_archive,
+                    "bucket",
+                    "snapshots/sha/failed.bin",
+                )
 
             await asyncio.sleep(0)
             worker_tasks = [
