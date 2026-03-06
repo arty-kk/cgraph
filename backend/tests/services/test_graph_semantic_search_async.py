@@ -124,43 +124,98 @@ async def test_search_semantic_async_keeps_sorting_and_meta_contract(
 
 
 @pytest.mark.anyio
-async def test_read_semantic_candidate_files_async_has_bounded_concurrency(
+async def test_read_semantic_candidate_files_async_has_bounded_concurrency_and_backpressure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     max_parallel = 3
-    rel_paths = [f"f{i}.py" for i in range(25)]
+    rel_paths = [f"f{i}.py" for i in range(80)]
 
     in_flight = 0
     peak_in_flight = 0
     lock = asyncio.Lock()
+    started_reads = asyncio.Event()
+    release_reads = asyncio.Event()
+    producer_finished = asyncio.Event()
+    heartbeat_ticks = 0
+    stop_heartbeat = asyncio.Event()
 
     async def _fake_run_fs_io_async(fn, *args, **kwargs):
         nonlocal in_flight, peak_in_flight
         async with lock:
             in_flight += 1
             peak_in_flight = max(peak_in_flight, in_flight)
-        await asyncio.sleep(0.002)
+            if in_flight >= max_parallel:
+                started_reads.set()
+        await release_reads.wait()
         kwargs.pop("operation", None)
         result = fn(*args, **kwargs)
         async with lock:
             in_flight -= 1
         return result
 
+    async def _heartbeat() -> None:
+        nonlocal heartbeat_ticks
+        while not stop_heartbeat.is_set():
+            heartbeat_ticks += 1
+            await asyncio.sleep(0)
+
     monkeypatch.setattr(graph, "run_fs_io_async", _fake_run_fs_io_async)
 
-    result = await graph.read_semantic_candidate_files_async(
-        tmp_path,
-        rel_paths,
-        max_parallel=max_parallel,
-        max_rel_path_length=512,
-        max_chars=64,
-    )
+    async def _run_read() -> dict[str, str]:
+        result = await graph.read_semantic_candidate_files_async(
+            tmp_path,
+            rel_paths,
+            max_parallel=max_parallel,
+            max_rel_path_length=512,
+            max_chars=64,
+        )
+        producer_finished.set()
+        return result
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
+    read_task = asyncio.create_task(_run_read())
+
+    await started_reads.wait()
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert not producer_finished.is_set()
+    assert heartbeat_ticks > 0
+
+    release_reads.set()
+    result = await read_task
+
+    stop_heartbeat.set()
+    await heartbeat_task
 
     assert peak_in_flight <= max_parallel
     assert set(result.keys()) == set(rel_paths)
     assert all(payload == "" for payload in result.values())
 
+
+@pytest.mark.anyio
+async def test_read_semantic_candidate_files_async_cancels_workers_on_producer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _BoomQueue(asyncio.Queue):
+        async def put(self, item):
+            if item == "boom.py":
+                raise RuntimeError("producer failed")
+            await super().put(item)
+
+    monkeypatch.setattr(graph.asyncio, "Queue", _BoomQueue)
+
+    with pytest.raises(RuntimeError, match="producer failed"):
+        await graph.read_semantic_candidate_files_async(
+            tmp_path,
+            ["ok.py", "boom.py", "after.py"],
+            max_parallel=2,
+            max_rel_path_length=512,
+            max_chars=64,
+        )
 
 @pytest.mark.anyio
 async def test_read_semantic_candidate_files_async_keeps_dedup_and_dict_contract(
