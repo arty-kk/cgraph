@@ -36,7 +36,9 @@ async def lifespan(_: FastAPI):
             await initializer()
         yield
     finally:
-        cleanup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = build_cleanup_steps(role="api")
+        cleanup_steps: list[tuple[str, Callable[[], Awaitable[Any]]]] = (
+            build_cleanup_steps(role="api")
+        )
         for name, cleanup in cleanup_steps:
             try:
                 await cleanup()
@@ -133,5 +135,5 @@ app.include_router(config_router, prefix="/api/v1")
 
 
 @app.get("/health")
-def health():
+async def health():
     return {"ok": True}
