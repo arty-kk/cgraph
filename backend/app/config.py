@@ -75,13 +75,21 @@ class Settings(BaseSettings):
         default=4,
         alias="STUBGRAPH_SNAPSHOT_S3_CONCURRENCY",
     )
-    fs_runtime_max_workers: int = Field(
+    fs_runtime_interactive_max_workers: int = Field(
         default=8,
-        alias="STUBGRAPH_FS_RUNTIME_MAX_WORKERS",
+        alias="STUBGRAPH_FS_RUNTIME_INTERACTIVE_MAX_WORKERS",
     )
-    fs_runtime_max_concurrency: int = Field(
+    fs_runtime_interactive_max_concurrency: int = Field(
         default=32,
-        alias="STUBGRAPH_FS_RUNTIME_MAX_CONCURRENCY",
+        alias="STUBGRAPH_FS_RUNTIME_INTERACTIVE_MAX_CONCURRENCY",
+    )
+    fs_runtime_bulk_max_workers: int = Field(
+        default=8,
+        alias="STUBGRAPH_FS_RUNTIME_BULK_MAX_WORKERS",
+    )
+    fs_runtime_bulk_max_concurrency: int = Field(
+        default=32,
+        alias="STUBGRAPH_FS_RUNTIME_BULK_MAX_CONCURRENCY",
     )
     cpu_runtime_max_workers: int = Field(
         default=8,

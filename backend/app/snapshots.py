@@ -264,6 +264,7 @@ async def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: P
                     archive_path,
                     chunks,
                     operation="snapshots.archive.append_chunks",
+                    lane="bulk",
                 )
                 chunks.clear()
                 buffered = 0
@@ -273,6 +274,7 @@ async def _download_snapshot_archive_from_s3(meta: SnapshotMeta, archive_path: P
                 archive_path,
                 chunks,
                 operation="snapshots.archive.append_chunks",
+                lane="bulk",
             )
     except Exception:
         await _cleanup_path_async(archive_path)
@@ -322,7 +324,12 @@ def _close_archive_read_stream(stream) -> None:
 
 
 async def _cleanup_path_async(path: Path) -> None:
-    await run_fs_io_async(path.unlink, missing_ok=True, operation="snapshots.path.unlink")
+    await run_fs_io_async(
+        path.unlink,
+        missing_ok=True,
+        operation="snapshots.path.unlink",
+        lane="bulk",
+    )
 
 
 async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> None:
@@ -397,6 +404,7 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
             _open_archive_read_stream,
             archive_path,
             operation="snapshots.archive.open_read_stream",
+            lane="bulk",
         )
         workers = [asyncio.create_task(_upload_worker()) for _ in range(concurrency)]
         producer_part_number = 1
@@ -410,6 +418,7 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
                     stream,
                     chunk_size,
                     operation="snapshots.archive.read_chunks",
+                    lane="bulk",
                 )
                 if not chunk_batch:
                     break
@@ -424,6 +433,7 @@ async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> No
                 _close_archive_read_stream,
                 stream,
                 operation="snapshots.archive.close_read_stream",
+                lane="bulk",
             )
             shutdown_task = asyncio.create_task(_shutdown_workers(workers))
             try:
@@ -469,6 +479,7 @@ async def _ensure_local_snapshot_archive(meta: SnapshotMeta) -> Path:
     exists = await run_fs_io_async(
         archive_path.exists,
         operation="snapshots.archive.exists",
+        lane="bulk",
     )
     if not exists and meta.storage == "s3":
         await _download_snapshot_archive_from_s3(meta, archive_path)
@@ -501,6 +512,7 @@ async def _ensure_archive_and_extract(
         root_dir,
         marker_path,
         operation="snapshots.extract.archive",
+        lane="bulk",
     )
 
 
@@ -541,6 +553,7 @@ async def _path_exists_and_is_dir_async(path: Path) -> tuple[bool, bool]:
         _path_exists_and_is_dir,
         path,
         operation="snapshots.path.exists_dir",
+        lane="bulk",
     )
 
 
@@ -553,11 +566,17 @@ async def prepare_snapshot_root_async(meta: SnapshotMeta) -> Path:
         _resolve_root_and_get_state,
         settings.db_dir / meta.root_dir,
         operation="snapshots.root.resolve_state",
+        lane="bulk",
     )
     if has_any_files:
         if marker_exists:
             return root_dir
-        await run_fs_io_async(_clear_dir_contents, root_dir, operation="snapshots.dir.clear")
+        await run_fs_io_async(
+            _clear_dir_contents,
+            root_dir,
+            operation="snapshots.dir.clear",
+            lane="bulk",
+        )
 
     await _ensure_archive_and_extract(
         meta,
@@ -576,6 +595,7 @@ async def prepare_project_snapshot_root_async(meta: SnapshotMeta) -> Path:
         shared_root,
         project_root,
         operation="snapshots.project.clone",
+        lane="bulk",
     )
     return project_root
 
@@ -585,6 +605,7 @@ async def delete_project_snapshot_root_async(root_path: str | Path) -> None:
         _resolve_path_and_dir_state,
         Path(root_path),
         operation="snapshots.path.resolve_state",
+        lane="bulk",
     )
     if not _is_project_snapshot_root(root_dir):
         return
@@ -593,6 +614,7 @@ async def delete_project_snapshot_root_async(root_path: str | Path) -> None:
             _clear_dir_and_rmdir,
             root_dir,
             operation="snapshots.dir.clear_rmdir",
+            lane="bulk",
         )
 
 
@@ -619,6 +641,7 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
                 _clear_dir_and_rmdir,
                 snapshot_dir,
                 operation="snapshots.dir.clear_rmdir",
+                lane="bulk",
             )
         else:
             archive_path = _local_archive_path(meta.sha256, meta.archive_ext)
@@ -628,6 +651,7 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
                     _resolve_and_clear_dir_if_exists,
                     settings.db_dir / meta.root_dir,
                     operation="snapshots.dir.resolve_clear_if_exists",
+                    lane="bulk",
                 )
             finally:
                 await unlink_archive_task
@@ -644,6 +668,7 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
         parents=True,
         exist_ok=True,
         operation="snapshots.tmp.mkdir",
+        lane="bulk",
     )
 
     ext = _archive_ext(archive_name)
@@ -674,6 +699,7 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
                     tmp_path,
                     chunks,
                     operation="snapshots.archive.append_chunks",
+                    lane="bulk",
                 )
                 chunks.clear()
                 buffered = 0
@@ -684,6 +710,7 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
                 tmp_path,
                 chunks,
                 operation="snapshots.archive.append_chunks",
+                lane="bulk",
             )
     except Exception:
         await _cleanup_path_async(tmp_path)
@@ -700,6 +727,7 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
         parents=True,
         exist_ok=True,
         operation="snapshots.root.mkdir",
+        lane="bulk",
     )
     archive_path = _local_archive_path(sha, ext)
 
@@ -710,6 +738,7 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
         total,
         sha,
         operation="snapshots.archive.finalize",
+        lane="bulk",
     )
 
     backend = _ensure_storage_backend()

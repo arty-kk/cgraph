@@ -825,6 +825,7 @@ async def _collect_key_files_async(root: Path, project_paths: list[str]) -> tupl
         root,
         project_paths,
         operation="docs_service.collect_key_files",
+        lane="interactive",
     )
 
 
@@ -936,6 +937,7 @@ async def _collect_compact_contracts_async(
                     path,
                     max_length=settings.max_rel_path_chars,
                     operation="docs_service.prepare_contract_path",
+                    lane="interactive",
                 )
                 return rel_norm
             except PathValidationError:
@@ -1248,6 +1250,7 @@ async def _normalize_project_root_async(root_path: str, *, max_length: int) -> P
         root_path,
         max_length=max_length,
         operation="docs_service.normalize_project_root",
+        lane="interactive",
     )
 
 async def build_project_docs_async(project_id: int, org_id: int) -> dict:

@@ -305,6 +305,7 @@ async def test_normalize_project_root_async_uses_run_fs_io_async(monkeypatch):
     assert calls["kwargs"] == {
         "max_length": 111,
         "operation": "task_service.normalize_project_root",
+        "lane": "interactive",
     }
 
 

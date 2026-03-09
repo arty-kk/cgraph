@@ -29,7 +29,7 @@ async def test_resolve_under_root_async_uses_fs_runtime(monkeypatch: pytest.Monk
     assert result == (Path("/repo/a.py"), "a.py")
     assert calls["func"] is nodes.resolve_under_root
     assert calls["args"] == (Path("/repo"), "a.py")
-    assert calls["kwargs"] == {"max_length": 120, "operation": "nodes.resolve_under_root"}
+    assert calls["kwargs"] == {"max_length": 120, "operation": "nodes.resolve_under_root", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -74,7 +74,7 @@ async def test_path_exists_and_is_file_async_uses_fs_runtime(
     assert result == (True, True)
     assert calls["func"] is nodes._path_exists_and_is_file
     assert calls["args"] == (Path("/repo/a.py"),)
-    assert calls["kwargs"] == {"operation": "nodes.path_is_file"}
+    assert calls["kwargs"] == {"operation": "nodes.path_is_file", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -132,7 +132,7 @@ async def test_path_exists_and_is_dir_async_uses_fs_runtime(
     assert result == (True, True)
     assert calls["func"] is nodes._path_exists_and_is_dir
     assert calls["args"] == (Path("/repo/dir"),)
-    assert calls["kwargs"] == {"operation": "nodes.path_is_dir"}
+    assert calls["kwargs"] == {"operation": "nodes.path_is_dir", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -200,7 +200,7 @@ async def test_normalize_project_root_async_uses_fs_runtime(monkeypatch: pytest.
     assert result == Path("/repo")
     assert calls["func"] is nodes.normalize_project_root
     assert calls["args"] == ("/repo",)
-    assert calls["kwargs"] == {"max_length": nodes.settings.max_root_path_chars, "operation": "nodes.normalize_root"}
+    assert calls["kwargs"] == {"max_length": nodes.settings.max_root_path_chars, "operation": "nodes.normalize_root", "lane": "interactive"}
 
 
 @pytest.mark.anyio

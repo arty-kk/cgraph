@@ -122,7 +122,7 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
         async def commit(self):
             self.commits += 1
 
-        async def execute(self, stmt):
+        async def execute(self, stmt, *_args, **_kwargs):
             _ = stmt
             return None
 
@@ -213,7 +213,7 @@ async def test_path_exists_and_is_file_async_uses_run_fs_io_async(monkeypatch):
     assert result == (True, True)
     assert calls["func"] is task_service._path_exists_and_is_file
     assert calls["args"] == (Path("/tmp/a.py"),)
-    assert calls["kwargs"] == {"operation": "task_service.path_exists_and_is_file"}
+    assert calls["kwargs"] == {"operation": "task_service.path_exists_and_is_file", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -260,6 +260,7 @@ async def test_task_service_async_wrappers_use_run_fs_io_async(monkeypatch):
     assert len(calls) == 1
     assert calls[0][0] is task_service.apply_unified_diff
     assert calls[0][2]["operation"] == "task_service.apply_unified_diff"
+    assert calls[0][2]["lane"] == "interactive"
 
 
 @pytest.mark.anyio
@@ -303,7 +304,7 @@ async def test_resolve_under_root_async_uses_run_fs_io_async(monkeypatch):
     assert result == (Path("/tmp/a.py"), "a.py")
     assert calls["func"] is task_service.resolve_under_root
     assert calls["args"] == (Path("/tmp"), "a.py")
-    assert calls["kwargs"] == {"max_length": 120, "operation": "task_service.resolve_under_root"}
+    assert calls["kwargs"] == {"max_length": 120, "operation": "task_service.resolve_under_root", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -347,7 +348,7 @@ async def test_run_task_impl_async_uses_async_orchestrator_calls(monkeypatch, tm
     )
 
     class _Session:
-        async def execute(self, stmt):
+        async def execute(self, stmt, *_args, **_kwargs):
             _ = stmt
             class _Result:
                 def scalars(self):
@@ -356,6 +357,12 @@ async def test_run_task_impl_async_uses_async_orchestrator_calls(monkeypatch, tm
                     return []
                 def one(self):
                     return 0
+
+                def scalar_one(self):
+                    return 0
+
+                def scalar_one_or_none(self):
+                    return None
                 def first(self):
                     return None
             return _Result()
@@ -461,7 +468,7 @@ async def test_run_task_impl_async_uses_async_agentic_calls(monkeypatch, tmp_pat
     )
 
     class _Session:
-        async def execute(self, stmt):
+        async def execute(self, stmt, *_args, **_kwargs):
             _ = stmt
             class _Result:
                 def scalars(self):
@@ -470,6 +477,12 @@ async def test_run_task_impl_async_uses_async_agentic_calls(monkeypatch, tmp_pat
                     return []
                 def one(self):
                     return 0
+
+                def scalar_one(self):
+                    return 0
+
+                def scalar_one_or_none(self):
+                    return None
                 def first(self):
                     return None
             return _Result()
@@ -588,7 +601,7 @@ async def test_run_task_impl_async_non_agentic_does_not_touch_sync_get_session(
     )
 
     class _Session:
-        async def execute(self, stmt):
+        async def execute(self, stmt, *_args, **_kwargs):
             _ = stmt
 
             class _Result:
@@ -603,6 +616,12 @@ async def test_run_task_impl_async_non_agentic_does_not_touch_sync_get_session(
 
                 def one(self):
                     return 0
+
+                def scalar_one(self):
+                    return 0
+
+                def scalar_one_or_none(self):
+                    return None
 
             return _Result()
 
@@ -691,7 +710,7 @@ async def test_run_task_impl_async_reuses_session_for_graph_scan_enqueue(monkeyp
     )
 
     class _Session:
-        async def execute(self, stmt):
+        async def execute(self, stmt, *_args, **_kwargs):
             _ = stmt
 
             class _Result:
@@ -706,6 +725,12 @@ async def test_run_task_impl_async_reuses_session_for_graph_scan_enqueue(monkeyp
 
                 def one(self):
                     return 0
+
+                def scalar_one(self):
+                    return 0
+
+                def scalar_one_or_none(self):
+                    return None
 
             return _Result()
 

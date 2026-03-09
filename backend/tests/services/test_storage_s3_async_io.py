@@ -225,12 +225,12 @@ async def test_presign_load_does_not_increase_fs_runtime_queue_depth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = _FakeS3()
-    original_workers = settings.fs_runtime_max_workers
-    original_concurrency = settings.fs_runtime_max_concurrency
+    original_workers = settings.fs_runtime_interactive_max_workers
+    original_concurrency = settings.fs_runtime_interactive_max_concurrency
 
     monkeypatch.setattr(storage, "get_s3_client", lambda: fake)
-    settings.fs_runtime_max_workers = 1
-    settings.fs_runtime_max_concurrency = 1
+    settings.fs_runtime_interactive_max_workers = 1
+    settings.fs_runtime_interactive_max_concurrency = 1
 
     await fs_runtime.close_fs_runtime()
     await fs_runtime.init_fs_runtime()
@@ -245,15 +245,15 @@ async def test_presign_load_does_not_increase_fs_runtime_queue_depth(
                 for idx in range(presign_tasks)
             ],
             *[
-                fs_runtime.run_fs_io_async(time.sleep, 0.03, operation="test.fs_load")
+                fs_runtime.run_fs_io_async(time.sleep, 0.03, operation="test.fs_load", lane="interactive")
                 for _ in range(fs_tasks)
             ],
         )
 
         runtime = fs_runtime._fs_runtime
         assert runtime is not None
-        assert runtime.peak_queue_depth <= fs_tasks
+        assert runtime.interactive.peak_queue_depth <= fs_tasks
     finally:
         await fs_runtime.close_fs_runtime()
-        settings.fs_runtime_max_workers = original_workers
-        settings.fs_runtime_max_concurrency = original_concurrency
+        settings.fs_runtime_interactive_max_workers = original_workers
+        settings.fs_runtime_interactive_max_concurrency = original_concurrency
