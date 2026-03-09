@@ -29,7 +29,7 @@ async def test_read_text_if_file_async_uses_fs_runtime(monkeypatch: pytest.Monke
     assert result == "payload"
     assert called["func"] is project_service._read_text_if_file
     assert called["args"] == (Path("/tmp/test.txt"), 123)
-    assert called["kwargs"] == {"operation": "project.read_text_if_file"}
+    assert called["kwargs"] == {"operation": "project.read_text_if_file", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -53,7 +53,7 @@ async def test_resolve_under_root_async_uses_fs_runtime(monkeypatch: pytest.Monk
     assert result == (Path("/repo/a.py"), "a.py")
     assert called["func"] is project_service.resolve_under_root
     assert called["args"] == (Path("/repo"), "a.py")
-    assert called["kwargs"] == {"max_length": 120, "operation": "project.resolve_under_root"}
+    assert called["kwargs"] == {"max_length": 120, "operation": "project.resolve_under_root", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -122,6 +122,7 @@ async def test_resolve_and_read_text_under_root_async_uses_fs_runtime(monkeypatc
         "max_rel_path_length": 111,
         "max_chars": 222,
         "operation": "project.resolve_and_read",
+        "lane": "interactive",
     }
 
 
@@ -1210,7 +1211,7 @@ async def test_normalize_project_root_async_uses_fs_runtime(monkeypatch: pytest.
     assert result == Path("/repo")
     assert calls["func"] is project_service.normalize_project_root
     assert calls["args"] == ("/repo",)
-    assert calls["kwargs"] == {"max_length": project_service.settings.max_root_path_chars, "operation": "project.normalize_root"}
+    assert calls["kwargs"] == {"max_length": project_service.settings.max_root_path_chars, "operation": "project.normalize_root", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -1566,13 +1567,13 @@ async def test_cpu_runtime_receives_pickle_safe_arguments(monkeypatch: pytest.Mo
 
 @pytest.mark.anyio
 async def test_project_service_cpu_pipeline_does_not_increase_fs_queue_depth(monkeypatch: pytest.MonkeyPatch) -> None:
-    orig_fs_workers = settings.fs_runtime_max_workers
-    orig_fs_concurrency = settings.fs_runtime_max_concurrency
+    orig_fs_workers = settings.fs_runtime_interactive_max_workers
+    orig_fs_concurrency = settings.fs_runtime_interactive_max_concurrency
     orig_cpu_workers = settings.cpu_runtime_max_workers
     orig_cpu_concurrency = settings.cpu_runtime_max_concurrency
 
-    settings.fs_runtime_max_workers = 1
-    settings.fs_runtime_max_concurrency = 1
+    settings.fs_runtime_interactive_max_workers = 1
+    settings.fs_runtime_interactive_max_concurrency = 1
     settings.cpu_runtime_max_workers = 2
     settings.cpu_runtime_max_concurrency = 4
 
@@ -1597,18 +1598,18 @@ async def test_project_service_cpu_pipeline_does_not_increase_fs_queue_depth(mon
                 for _ in range(cpu_tasks)
             ],
             *[
-                fs_runtime.run_fs_io_async(time.sleep, 0.03, operation="test.fs_load")
+                fs_runtime.run_fs_io_async(time.sleep, 0.03, operation="test.fs_load", lane="interactive")
                 for _ in range(fs_tasks)
             ],
         )
         runtime = fs_runtime._fs_runtime
         assert runtime is not None
-        assert runtime.peak_queue_depth <= fs_tasks
+        assert runtime.interactive.peak_queue_depth <= fs_tasks
     finally:
         await fs_runtime.close_fs_runtime()
         await cpu_runtime.close_cpu_runtime()
-        settings.fs_runtime_max_workers = orig_fs_workers
-        settings.fs_runtime_max_concurrency = orig_fs_concurrency
+        settings.fs_runtime_interactive_max_workers = orig_fs_workers
+        settings.fs_runtime_interactive_max_concurrency = orig_fs_concurrency
         settings.cpu_runtime_max_workers = orig_cpu_workers
         settings.cpu_runtime_max_concurrency = orig_cpu_concurrency
 

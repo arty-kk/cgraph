@@ -92,7 +92,7 @@ async def close_scan_runtime() -> None:
 
 
 async def _run_scan_fs_batch(sync_fn, *args, operation: str):
-    return await run_fs_io_async(sync_fn, *args, operation=operation)
+    return await run_fs_io_async(sync_fn, *args, operation=operation, lane="bulk")
 
 
 async def _run_scan_cpu_batch(sync_fn, *args, operation: str):
@@ -1167,6 +1167,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
             _create_code_file_batch_cursor,
             project_root,
             operation="scan.fs.stream_paths",
+            lane="bulk",
         )
         sentinel = object()
         path_queue: asyncio.Queue[list[str] | object] = asyncio.Queue(maxsize=queue_size)
@@ -1180,6 +1181,7 @@ async def scan_project_async(project_id: int, org_id: int, project_root: Path) -
                         cursor,
                         runtime.batch_size,
                         operation="scan.fs.stream_paths",
+                        lane="bulk",
                     )
                     if not rel_batch:
                         break

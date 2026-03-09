@@ -47,7 +47,7 @@ async def test_collect_key_files_async_uses_run_fs_io_async(monkeypatch: pytest.
     assert result == ([{"path": "README.md"}], {"makefiles": []})
     assert calls["func"] is docs_service._collect_key_files
     assert calls["args"] == (Path("/repo"), ["README.md"])
-    assert calls["kwargs"] == {"operation": "docs_service.collect_key_files"}
+    assert calls["kwargs"] == {"operation": "docs_service.collect_key_files", "lane": "interactive"}
 
 
 @pytest.mark.anyio
@@ -538,6 +538,7 @@ async def test_normalize_project_root_async_uses_run_fs_io_async(monkeypatch: py
     assert calls["kwargs"] == {
         "max_length": 321,
         "operation": "docs_service.normalize_project_root",
+        "lane": "interactive",
     }
 
 

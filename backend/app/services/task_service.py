@@ -114,6 +114,7 @@ async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
         _path_exists_and_is_file,
         path,
         operation="task_service.path_exists_and_is_file",
+        lane="interactive",
     )
 
 
@@ -129,6 +130,7 @@ async def _resolve_under_root_async(
         rel_path,
         max_length=max_length,
         operation="task_service.resolve_under_root",
+        lane="interactive",
     )
 
 
@@ -155,6 +157,7 @@ async def _apply_unified_diff_async(
         allowed_rel_paths=allowed_rel_paths,
         allow_new_files=allow_new_files,
         operation="task_service.apply_unified_diff",
+        lane="interactive",
     )
 
 
@@ -207,6 +210,7 @@ async def _normalize_project_root_async(root_path: str, *, max_length: int) -> P
         root_path,
         max_length=max_length,
         operation="task_service.normalize_project_root",
+        lane="interactive",
     )
 
 

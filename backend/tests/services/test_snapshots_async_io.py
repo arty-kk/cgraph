@@ -423,9 +423,11 @@ async def test_snapshot_fs_ops_use_runtime(monkeypatch: pytest.MonkeyPatch) -> N
     original_backend = settings.storage_backend
 
     operations: list[str] = []
+    lanes: list[str] = []
 
-    async def _fake_run_fs_io_async(fn, *args, operation=None, **kwargs):
+    async def _fake_run_fs_io_async(fn, *args, operation=None, lane="interactive", **kwargs):
         operations.append(operation or "")
+        lanes.append(lane)
         return fn(*args, **kwargs)
 
     async def _forbid_to_thread(*_args, **_kwargs):
@@ -454,6 +456,7 @@ async def test_snapshot_fs_ops_use_runtime(monkeypatch: pytest.MonkeyPatch) -> N
     assert "snapshots.archive.append_chunks" in operations
     assert "snapshots.extract.archive" in operations
     assert "snapshots.dir.clear_rmdir" in operations
+    assert lanes and set(lanes) == {"bulk"}
 
 
 @pytest.mark.anyio
@@ -754,6 +757,7 @@ async def test_upload_archive_to_s3_uses_runtime_open_read_close_ops(
     tmp_path: Path,
 ) -> None:
     operations: list[str] = []
+    lanes: list[str] = []
     opened_streams: list[io.BufferedReader] = []
     open_helper_calls = 0
 
@@ -769,9 +773,10 @@ async def test_upload_archive_to_s3_uses_runtime_open_read_close_ops(
     def _forbid_path_open(self: Path, *_args, **_kwargs):
         raise AssertionError("direct Path.open usage is forbidden in upload hot-path")
 
-    async def _tracking_run_fs_io_async(fn, *args, operation=None, **kwargs):
+    async def _tracking_run_fs_io_async(fn, *args, operation=None, lane="interactive", **kwargs):
         operations.append(operation or "")
-        return await original_run_fs_io_async(fn, *args, operation=operation, **kwargs)
+        lanes.append(lane)
+        return await original_run_fs_io_async(fn, *args, operation=operation, lane=lane, **kwargs)
 
     archive_path = tmp_path / "hot-path.bin"
     archive_path.write_bytes(_multipart_payload(parts=3))
@@ -789,8 +794,10 @@ async def test_upload_archive_to_s3_uses_runtime_open_read_close_ops(
     assert "snapshots.archive.close_read_stream" in operations
     assert operations.count("snapshots.archive.open_read_stream") == 1
     assert operations.count("snapshots.archive.close_read_stream") == 1
+    assert lanes and set(lanes) == {"bulk"}
     assert open_helper_calls == 1
     assert opened_streams and all(stream.closed for stream in opened_streams)
+    assert lanes and set(lanes) == {"bulk"}
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("mode", ["error", "cancel"])
@@ -800,13 +807,15 @@ async def test_upload_archive_to_s3_closes_stream_on_failure_or_cancel(
     mode: str,
 ) -> None:
     operations: list[str] = []
+    lanes: list[str] = []
     opened_streams: list[io.BufferedReader] = []
 
     original_run_fs_io_async = snapshots.run_fs_io_async
 
-    async def _tracking_run_fs_io_async(fn, *args, operation=None, **kwargs):
+    async def _tracking_run_fs_io_async(fn, *args, operation=None, lane="interactive", **kwargs):
         operations.append(operation or "")
-        result = await original_run_fs_io_async(fn, *args, operation=operation, **kwargs)
+        lanes.append(lane)
+        result = await original_run_fs_io_async(fn, *args, operation=operation, lane=lane, **kwargs)
         if operation == "snapshots.archive.open_read_stream":
             opened_streams.append(result)
         return result

@@ -36,7 +36,7 @@ def _get_seed_fs_semaphore_lock() -> asyncio.Lock:
 
 def _seed_fs_limit() -> int:
     llm_limit = max(1, int(settings.llm_agentic_fs_ops_concurrency))
-    runtime_limit = max(1, int(getattr(settings, "fs_runtime_max_concurrency", llm_limit)))
+    runtime_limit = max(1, int(getattr(settings, "fs_runtime_interactive_max_concurrency", llm_limit)))
     return min(llm_limit, runtime_limit)
 
 

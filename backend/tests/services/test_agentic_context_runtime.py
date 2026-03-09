@@ -15,7 +15,7 @@ async def test_seed_fs_semaphore_reinit_on_loop_change_and_keeps_concurrency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(agentic_context.settings, "llm_agentic_fs_ops_concurrency", 2)
-    monkeypatch.setattr(agentic_context.settings, "fs_runtime_max_concurrency", 3)
+    monkeypatch.setattr(agentic_context.settings, "fs_runtime_interactive_max_concurrency", 3)
 
     agentic_context._SEED_FS_SEMAPHORE = None
     agentic_context._SEED_FS_SEMAPHORE_LOOP = None

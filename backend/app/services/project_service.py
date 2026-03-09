@@ -362,7 +362,7 @@ def _read_text_if_file(path, max_chars: int) -> str | None:
 
 
 async def _read_text_if_file_async(path, max_chars: int) -> str | None:
-    return await run_fs_io_async(_read_text_if_file, path, max_chars, operation="project.read_text_if_file")
+    return await run_fs_io_async(_read_text_if_file, path, max_chars, operation="project.read_text_if_file", lane="interactive")
 
 
 async def _resolve_under_root_async(root, rel_path: str, *, max_length: int):
@@ -372,6 +372,7 @@ async def _resolve_under_root_async(root, rel_path: str, *, max_length: int):
         rel_path,
         max_length=max_length,
         operation="project.resolve_under_root",
+        lane="interactive",
     )
 
 
@@ -381,6 +382,7 @@ async def _normalize_project_root_async(root_path: str) -> Path:
         root_path,
         max_length=settings.max_root_path_chars,
         operation="project.normalize_root",
+        lane="interactive",
     )
 
 
@@ -420,6 +422,7 @@ async def _resolve_and_read_text_under_root_async(
         max_rel_path_length=max_rel_path_length,
         max_chars=max_chars,
         operation="project.resolve_and_read",
+        lane="interactive",
     )
 
 

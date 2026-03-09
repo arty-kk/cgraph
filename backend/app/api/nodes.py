@@ -67,23 +67,23 @@ def _read_text_limited(path: str, max_chars: int | None) -> tuple[str, bool]:
     return chunk, truncated
 
 async def _read_text_limited_async(path: str, max_chars: int | None) -> tuple[str, bool]:
-    return await run_fs_io_async(_read_text_limited, path, max_chars, operation="nodes.read_text_limited")
+    return await run_fs_io_async(_read_text_limited, path, max_chars, operation="nodes.read_text_limited", lane="interactive")
 
 
 async def _write_text_async(path: Path, content: str) -> None:
-    await run_fs_io_async(path.write_text, content, encoding="utf-8", operation="nodes.write_text")
+    await run_fs_io_async(path.write_text, content, encoding="utf-8", operation="nodes.write_text", lane="interactive")
 
 
 async def _mkdir_async(path: Path) -> None:
-    await run_fs_io_async(path.mkdir, parents=True, exist_ok=True, operation="nodes.mkdir")
+    await run_fs_io_async(path.mkdir, parents=True, exist_ok=True, operation="nodes.mkdir", lane="interactive")
 
 
 async def _rename_async(src: Path, dst: Path) -> None:
-    await run_fs_io_async(src.rename, dst, operation="nodes.rename")
+    await run_fs_io_async(src.rename, dst, operation="nodes.rename", lane="interactive")
 
 
 async def _unlink_async(path: Path) -> None:
-    await run_fs_io_async(path.unlink, operation="nodes.unlink")
+    await run_fs_io_async(path.unlink, operation="nodes.unlink", lane="interactive")
 
 
 async def _scan_files_async(project_id: int, org_id: int, root: Path, rel_paths: list[str]):
@@ -106,7 +106,7 @@ async def _update_graph_metrics_incremental_async(
 
 
 async def _path_exists_async(path: Path) -> bool:
-    return await run_fs_io_async(path.exists, operation="nodes.path_exists")
+    return await run_fs_io_async(path.exists, operation="nodes.path_exists", lane="interactive")
 
 
 def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
@@ -115,7 +115,7 @@ def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_file_async(path: Path) -> tuple[bool, bool]:
-    return await run_fs_io_async(_path_exists_and_is_file, path, operation="nodes.path_is_file")
+    return await run_fs_io_async(_path_exists_and_is_file, path, operation="nodes.path_is_file", lane="interactive")
 
 
 def _path_exists_and_is_dir(path: Path) -> tuple[bool, bool]:
@@ -124,7 +124,7 @@ def _path_exists_and_is_dir(path: Path) -> tuple[bool, bool]:
 
 
 async def _path_exists_and_is_dir_async(path: Path) -> tuple[bool, bool]:
-    return await run_fs_io_async(_path_exists_and_is_dir, path, operation="nodes.path_is_dir")
+    return await run_fs_io_async(_path_exists_and_is_dir, path, operation="nodes.path_is_dir", lane="interactive")
 
 
 async def _ensure_existing_file_async(path: Path, rel_norm: str) -> None:
@@ -143,6 +143,7 @@ async def _normalize_project_root_async(root_path: str) -> Path:
         root_path,
         max_length=settings.max_root_path_chars,
         operation="nodes.normalize_root",
+        lane="interactive",
     )
 
 async def _resolve_under_root_async(
@@ -157,6 +158,7 @@ async def _resolve_under_root_async(
         path,
         max_length=max_length,
         operation="nodes.resolve_under_root",
+        lane="interactive",
     )
 
 
