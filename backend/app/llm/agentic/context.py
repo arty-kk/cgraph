@@ -65,6 +65,7 @@ def _resolve_and_read_seed_file_sync(
     *,
     max_file_chars: int,
 ) -> tuple[str, str]:
+    limit = max(1, min(int(max_file_chars), 200_000))
     abs_target, target_norm = resolve_under_root(
         root, target_rel, max_length=settings.max_rel_path_chars
     )
@@ -75,10 +76,10 @@ def _resolve_and_read_seed_file_sync(
     if not stat_result or not abs_target.is_file():
         return target_norm, ""
     try:
-        target_text = abs_target.read_text(encoding="utf-8", errors="replace")
+        with open(abs_target, encoding="utf-8", errors="replace") as file_obj:
+            target_text = file_obj.read(limit + 1)
     except Exception:
         return target_norm, ""
-    limit = max(1, min(int(max_file_chars), 200_000))
     if len(target_text) > limit:
         target_text = target_text[:limit]
     return target_norm, target_text
