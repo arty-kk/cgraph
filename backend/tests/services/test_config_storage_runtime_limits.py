@@ -92,3 +92,26 @@ def test_arq_runtime_limits_must_be_valid(monkeypatch: pytest.MonkeyPatch) -> No
 
     with pytest.raises(ValueError, match="STUBGRAPH_ARQ_JOB_TIMEOUT_SECONDS"):
         Settings()
+
+
+def test_semantic_and_context_pack_read_concurrency_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STUBGRAPH_SEMANTIC_CANDIDATE_READ_CONCURRENCY", "6")
+    monkeypatch.setenv("STUBGRAPH_CONTEXT_PACK_READ_CONCURRENCY", "7")
+
+    cfg = Settings()
+
+    assert cfg.semantic_candidate_read_concurrency == 6
+    assert cfg.context_pack_read_concurrency == 7
+
+
+def test_semantic_and_context_pack_read_concurrency_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STUBGRAPH_SEMANTIC_CANDIDATE_READ_CONCURRENCY", "0")
+    with pytest.raises(ValueError, match="STUBGRAPH_SEMANTIC_CANDIDATE_READ_CONCURRENCY"):
+        Settings()
+
+    monkeypatch.setenv("STUBGRAPH_SEMANTIC_CANDIDATE_READ_CONCURRENCY", "1")
+    monkeypatch.setenv("STUBGRAPH_CONTEXT_PACK_READ_CONCURRENCY", "0")
+    with pytest.raises(ValueError, match="STUBGRAPH_CONTEXT_PACK_READ_CONCURRENCY"):
+        Settings()

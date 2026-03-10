@@ -74,9 +74,27 @@ class _CacheClient:
 
 
 @pytest.mark.anyio
-async def test_pack_context_cache_runtime_concurrency_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("configured_read", "configured_fs_max", "expected_effective"),
+    [
+        (0, 8, 1),
+        (200, 3, 3),
+    ],
+)
+async def test_pack_context_cache_runtime_concurrency_smoke(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_read: int,
+    configured_fs_max: int,
+    expected_effective: int,
+) -> None:
     session = _Session()
     cache_client = _CacheClient()
+    captured: dict[str, int] = {}
+    real_semaphore = asyncio.Semaphore
+
+    def _capture_semaphore(value: int):
+        captured["value"] = int(value)
+        return real_semaphore(value)
 
     async def _read_file_async(path: Path, max_chars: int) -> str:
         await asyncio.sleep(0.004)
@@ -98,6 +116,13 @@ async def test_pack_context_cache_runtime_concurrency_smoke(monkeypatch: pytest.
     monkeypatch.setattr(cache_module.settings, "cache_entry_max_bytes", 10_000)
     monkeypatch.setattr(cache_module, "get_async_redis_client", lambda: cache_client)
     monkeypatch.setattr(cache_module, "run_cpu_io_async", _fake_run_cpu_io_async)
+    monkeypatch.setattr(context_pack.asyncio, "Semaphore", _capture_semaphore)
+    monkeypatch.setattr(context_pack.settings, "context_pack_read_concurrency", configured_read)
+    monkeypatch.setattr(
+        context_pack.settings,
+        "fs_runtime_interactive_max_concurrency",
+        configured_fs_max,
+    )
 
     ticks = 0
     stop = asyncio.Event()
@@ -135,3 +160,4 @@ async def test_pack_context_cache_runtime_concurrency_smoke(monkeypatch: pytest.
     assert len(packed) == 20
     assert ticks >= 3
     assert elapsed < 5
+    assert captured["value"] == expected_effective
