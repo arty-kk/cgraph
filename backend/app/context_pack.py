@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from .async_db import AsyncSessionLocal
+from .config import settings
 from .contracts import get_or_build_contract_async
 from .graph_traversal import neighbors_limited_recursive_cte_async
 from .infra.cache import (
@@ -60,7 +61,14 @@ async def pack_context_async(
         project_root.resolve, operation="context_pack.resolve_root"
     )
     cache_hits = {"file": 0, "contract": 0}
-    io_semaphore = asyncio.Semaphore(8)
+    effective_context_pack_read_concurrency = max(
+        1,
+        min(
+            int(getattr(settings, "context_pack_read_concurrency", 8)),
+            int(getattr(settings, "fs_runtime_interactive_max_concurrency", 32)),
+        ),
+    )
+    io_semaphore = asyncio.Semaphore(effective_context_pack_read_concurrency)
     hash_by_path: dict[str, str] = {}
 
     async def _read_file_cached(path: str, max_chars: int) -> str:

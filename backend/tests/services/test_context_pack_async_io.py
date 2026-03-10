@@ -371,3 +371,67 @@ async def test_pack_context_neighbors_use_recursive_cte_single_roundtrip_per_dir
         for sql in session.execute_calls
     )
     assert packed.graph["outbound"] == ["dep_a.py", "dep_b.py"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("configured_read", "configured_fs_max", "expected"),
+    [
+        (0, 7, 1),
+        (50, 4, 4),
+        (3, 9, 3),
+    ],
+)
+async def test_pack_context_uses_effective_read_concurrency_for_semaphore(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_read: int,
+    configured_fs_max: int,
+    expected: int,
+) -> None:
+    session = _Session()
+    captured: dict[str, int] = {}
+    real_semaphore = asyncio.Semaphore
+
+    def _capture_semaphore(value: int):
+        captured["value"] = int(value)
+        return real_semaphore(value)
+
+    async def _read_file_async(path: Path, max_chars: int) -> str:
+        return (path.name + "\n")[:max_chars]
+
+    async def _cache_get_json_async(_parts):
+        return None
+
+    async def _cache_set_json_async(_parts, _payload, **_kwargs):
+        return None
+
+    async def _cache_mget_json_async(parts_list):
+        return [None for _ in parts_list]
+
+    async def _cache_mset_json_async(_entries, **_kwargs):
+        return None
+
+    async def _contract_async(_session, _project_id, _root, path):
+        return {"exports": ["Foo"] if path == "target.py" else [], "path": path}
+
+    monkeypatch.setattr(context_pack.asyncio, "Semaphore", _capture_semaphore)
+    monkeypatch.setattr(context_pack, "_read_file_async", _read_file_async)
+    monkeypatch.setattr(context_pack, "cache_get_json_async", _cache_get_json_async)
+    monkeypatch.setattr(context_pack, "cache_set_json_async", _cache_set_json_async)
+    monkeypatch.setattr(context_pack, "cache_mget_json_async", _cache_mget_json_async)
+    monkeypatch.setattr(context_pack, "cache_mset_json_async", _cache_mset_json_async)
+    monkeypatch.setattr(context_pack, "get_or_build_contract_async", _contract_async)
+    monkeypatch.setattr(context_pack.settings, "context_pack_read_concurrency", configured_read)
+    monkeypatch.setattr(context_pack.settings, "fs_runtime_interactive_max_concurrency", configured_fs_max)
+
+    packed = await context_pack.pack_context_async(
+        project_id=1,
+        project_root=Path("."),
+        target_rel="target.py",
+        depth=1,
+        dep_mode="contracts",
+        session=session,
+    )
+
+    assert packed.target_path == "target.py"
+    assert captured["value"] == expected

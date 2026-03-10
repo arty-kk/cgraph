@@ -83,6 +83,14 @@ class Settings(BaseSettings):
         default=32,
         alias="STUBGRAPH_FS_RUNTIME_INTERACTIVE_MAX_CONCURRENCY",
     )
+    semantic_candidate_read_concurrency: int = Field(
+        default=8,
+        alias="STUBGRAPH_SEMANTIC_CANDIDATE_READ_CONCURRENCY",
+    )
+    context_pack_read_concurrency: int = Field(
+        default=8,
+        alias="STUBGRAPH_CONTEXT_PACK_READ_CONCURRENCY",
+    )
     fs_runtime_bulk_max_workers: int = Field(
         default=8,
         alias="STUBGRAPH_FS_RUNTIME_BULK_MAX_WORKERS",
@@ -432,6 +440,10 @@ class Settings(BaseSettings):
             raise ValueError("STUBGRAPH_SNAPSHOT_DISK_CONCURRENCY должен быть >= 1")
         if self.snapshot_s3_concurrency < 1:
             raise ValueError("STUBGRAPH_SNAPSHOT_S3_CONCURRENCY должен быть >= 1")
+        if self.semantic_candidate_read_concurrency < 1:
+            raise ValueError("STUBGRAPH_SEMANTIC_CANDIDATE_READ_CONCURRENCY должен быть >= 1")
+        if self.context_pack_read_concurrency < 1:
+            raise ValueError("STUBGRAPH_CONTEXT_PACK_READ_CONCURRENCY должен быть >= 1")
         if not isinstance(self.allow_local_root_path, bool):
             raise ValueError("STUBGRAPH_ALLOW_LOCAL_ROOT_PATH должен быть булевым")
         if not isinstance(self.redis_url, str) or not self.redis_url.strip():

@@ -273,3 +273,42 @@ async def test_read_semantic_candidate_files_async_handles_per_item_exceptions(
         "bad-2.py": "",
         "ok2.py": "payload:ok2.py",
     }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("configured_read", "configured_fs_max", "expected"),
+    [
+        (0, 6, 1),
+        (99, 5, 5),
+        (4, 9, 4),
+    ],
+)
+async def test_search_semantic_async_passes_effective_read_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    configured_read: int,
+    configured_fs_max: int,
+    expected: int,
+) -> None:
+    (tmp_path / "a.py").write_text("alpha\n", encoding="utf-8")
+    session = _Session(total_candidates=1, rows=[("a.py", 0, "[1.0, 0.0]", "", 0, 0)])
+
+    received: dict[str, int] = {}
+
+    async def _fake_read_candidates(_root, paths, *, max_parallel, max_rel_path_length, max_chars):
+        _ = max_rel_path_length, max_chars
+        received["max_parallel"] = max_parallel
+        return {path: "alpha" for path in paths}
+
+    monkeypatch.setattr(graph, "get_async_openai_client", lambda: _Client())
+    monkeypatch.setattr(graph, "read_semantic_candidate_files_async", _fake_read_candidates)
+    monkeypatch.setattr(graph.settings, "embeddings_enabled", True)
+    monkeypatch.setattr(graph.settings, "openai_api_key", "test")
+    monkeypatch.setattr(graph.settings, "semantic_candidate_read_concurrency", configured_read)
+    monkeypatch.setattr(graph.settings, "fs_runtime_interactive_max_concurrency", configured_fs_max)
+
+    result = await graph.search_semantic_async(session, 1, tmp_path, "q")
+
+    assert "results" in result
+    assert received["max_parallel"] == expected

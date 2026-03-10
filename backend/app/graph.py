@@ -748,10 +748,18 @@ async def search_semantic_async(
         seen_candidate_paths.add(path)
         candidate_paths.append(path)
 
+    effective_semantic_candidate_read_concurrency = max(
+        1,
+        min(
+            int(getattr(settings, "semantic_candidate_read_concurrency", 8)),
+            int(getattr(settings, "fs_runtime_interactive_max_concurrency", 32)),
+        ),
+    )
+
     file_cache = await read_semantic_candidate_files_async(
         root,
         candidate_paths,
-        max_parallel=8,
+        max_parallel=effective_semantic_candidate_read_concurrency,
         max_rel_path_length=int(settings.max_rel_path_chars),
         max_chars=int(settings.embeddings_max_file_chars),
     )
