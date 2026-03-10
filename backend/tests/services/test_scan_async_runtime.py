@@ -1442,7 +1442,7 @@ async def test_scan_cpu_heavy_batch_does_not_block_fs_batch(monkeypatch: pytest.
 
 
 @pytest.mark.anyio
-async def test_prepare_scan_files_async_builds_edges_via_cpu_runtime_only(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_prepare_scan_files_async_resolves_cached_imports_in_fs_stage_only(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Session:
         async def execute(self, _stmt, _params=None):
             class _Rows:
@@ -1484,23 +1484,33 @@ async def test_prepare_scan_files_async_builds_edges_via_cpu_runtime_only(monkey
             )
         return rows
 
+    fs_operations: list[str] = []
     cpu_operations: list[str] = []
+    active_operation: str | None = None
+
+    async def _fake_fs(sync_fn, *args, operation: str):
+        nonlocal active_operation
+        fs_operations.append(operation)
+        previous = active_operation
+        active_operation = operation
+        try:
+            return sync_fn(*args)
+        finally:
+            active_operation = previous
 
     async def _fake_cpu(sync_fn, *args, operation: str):
         cpu_operations.append(operation)
-        if operation == "scan.cpu.cached_import_edges":
-            return [
-                {
-                    "src_path": "a.py",
-                    "dst_path": "pkg/mod.py",
-                    "kind": "import",
-                    "raw": "import pkg.mod",
-                }
-            ]
         return sync_fn(*args)
 
-    def _fail_resolve_spec(*_args, **_kwargs):
-        raise AssertionError("resolve_spec must not be called from async prepare loop")
+    def _resolve_spec_only_from_fs(_root, rel, spec):
+        assert active_operation == "scan.fs.cached_import_resolve"
+        if rel == "a.py" and spec == "pkg.mod":
+            return "pkg/mod.py"
+        return None
+
+    def _resolve_under_root_only_from_fs(_root, dst_raw):
+        assert active_operation == "scan.fs.cached_import_resolve"
+        return (Path("/repo") / dst_raw, dst_raw)
 
     async def _fake_entitlement(*_args, **_kwargs):
         return False
@@ -1508,8 +1518,10 @@ async def test_prepare_scan_files_async_builds_edges_via_cpu_runtime_only(monkey
     monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
     monkeypatch.setattr(scan, "_read_file_batch_async", _fake_read)
     monkeypatch.setattr(scan, "_parse_index_batch_async", _fake_parse)
+    monkeypatch.setattr(scan, "_run_scan_fs_batch", _fake_fs)
     monkeypatch.setattr(scan, "_run_scan_cpu_batch", _fake_cpu)
-    monkeypatch.setattr(scan, "resolve_spec", _fail_resolve_spec)
+    monkeypatch.setattr(scan, "resolve_spec", _resolve_spec_only_from_fs)
+    monkeypatch.setattr(scan, "resolve_under_root", _resolve_under_root_only_from_fs)
     monkeypatch.setattr(scan, "get_entitlement_bool_async", _fake_entitlement)
 
     prepared = await scan._prepare_scan_files_async(
@@ -1521,11 +1533,12 @@ async def test_prepare_scan_files_async_builds_edges_via_cpu_runtime_only(monkey
         precomputed_stats={"a.py": (1, 10)},
     )
 
-    assert cpu_operations.count("scan.cpu.cached_import_edges") == 1
+    assert fs_operations.count("scan.fs.cached_import_resolve") == 1
+    assert "scan.cpu.cached_import_edges" not in cpu_operations
     assert ("a.py", "pkg/mod.py", "import") in prepared.edge_map
 
 
-def test_build_edges_from_cached_imports_sync_mixed_imports_dedup() -> None:
+def test_resolve_cached_imports_fs_sync_and_aggregate_mixed_imports_dedup() -> None:
     project_root = Path("/tmp/stubgraph-edge-test")
     parsed_batch = [
         {
@@ -1556,10 +1569,33 @@ def test_build_edges_from_cached_imports_sync_mixed_imports_dedup() -> None:
     try:
         scan.resolve_spec = _fake_resolve_spec
         scan.resolve_under_root = _fake_resolve_under_root
-        edges = scan._build_edges_from_cached_imports_sync(str(project_root), parsed_batch)
+        resolved = scan._resolve_cached_imports_fs_sync(str(project_root), parsed_batch)
     finally:
         scan.resolve_spec = original_resolve_spec
         scan.resolve_under_root = original_resolve_under_root
+
+    assert resolved == [
+        {
+            "src_path": "src/a.py",
+            "dst_path": "src/b.py",
+            "kind": "import",
+            "raw": "import ./b",
+        },
+        {
+            "src_path": "src/a.py",
+            "dst_path": "pkg/mod.py",
+            "kind": "import",
+            "raw": "import pkg.mod",
+        },
+        {
+            "src_path": "src/a.py",
+            "dst_path": "src/b.py",
+            "kind": "import",
+            "raw": "import ./b duplicate",
+        },
+    ]
+
+    edges = scan._aggregate_cached_import_edges_sync(resolved)
 
     assert edges == [
         {
@@ -1577,8 +1613,9 @@ def test_build_edges_from_cached_imports_sync_mixed_imports_dedup() -> None:
     ]
 
 
+
 @pytest.mark.anyio
-async def test_scan_files_async_parallel_smoke_keeps_base_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_scan_files_async_parallel_smoke_keeps_base_metrics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class _Session:
         async def execute(self, _stmt, _params=None):
             class _Rows:
@@ -1590,39 +1627,10 @@ async def test_scan_files_async_parallel_smoke_keeps_base_metrics(monkeypatch: p
         async def commit(self):
             return None
 
-    tmp_root = Path("/tmp/stubgraph-scan-parallel")
-    tmp_root.mkdir(parents=True, exist_ok=True)
-    for idx in range(4):
-        (tmp_root / f"f{idx}.py").write_text("print('ok')\n", encoding="utf-8")
-
-    async def _fake_prepare(_session, project_id, _org_id, _project_root, rel_paths, **_kwargs):
-        edge_map = {
-            (rel, "shared.py", "import"): scan.FileEdge(
-                project_id=project_id,
-                src_path=rel,
-                dst_path="shared.py",
-                kind="import",
-                raw="import shared",
-            )
-            for rel in rel_paths
-        }
-        return scan.PreparedScanData(
-            present=list(rel_paths),
-            removed=[],
-            node_rows=[{"path": rel} for rel in rel_paths],
-            edge_map=edge_map,
-            search_rows=[],
-            route_rows=[],
-            call_rows=[],
-            include_rows=[],
-            route_contract_rows=[],
-            call_meta_rows=[],
-            ts_type_rows=[],
-            embedding_rows=[],
-            embedding_paths_to_delete=[],
-            removed_edge_neighbors=set(),
-            snapshot={},
-        )
+    rel_paths = [f"f{idx}.py" for idx in range(48)]
+    (tmp_path / "shared.py").write_text("VALUE = 1\n", encoding="utf-8")
+    for rel in rel_paths:
+        (tmp_path / rel).write_text("import shared\n", encoding="utf-8")
 
     async def _fake_write(*_args, **_kwargs):
         return None
@@ -1630,20 +1638,49 @@ async def test_scan_files_async_parallel_smoke_keeps_base_metrics(monkeypatch: p
     async def _fake_verify(*_args, **_kwargs):
         return (True, "")
 
+    async def _fake_entitlement(*_args, **_kwargs):
+        return False
+
     monkeypatch.setattr(scan, "AsyncSessionLocal", lambda: _AsyncSessionCtx(_Session()))
     monkeypatch.setattr(scan, "project_lock_async", lambda *_args, **_kwargs: _NoopLock())
-    monkeypatch.setattr(scan, "_prepare_scan_files_async", _fake_prepare)
     monkeypatch.setattr(scan, "_write_scan_files_async", _fake_write)
     monkeypatch.setattr(scan, "_verify_scan_snapshot_async", _fake_verify)
+    monkeypatch.setattr(scan, "get_entitlement_bool_async", _fake_entitlement)
+
+    fs_counters = {"cached_import_resolve": 0}
+    cpu_counters = {"parse_batch": 0}
+
+    async def _fs_probe(sync_fn, *args, operation: str, lane: str = "bulk"):
+        _ = lane
+        if operation == "scan.fs.cached_import_resolve":
+            fs_counters["cached_import_resolve"] += 1
+        return sync_fn(*args)
+
+    async def _cpu_probe(sync_fn, *args, operation: str):
+        if operation == "scan.cpu.parse_batch":
+            cpu_counters["parse_batch"] += 1
+        assert operation != "scan.cpu.cached_import_edges"
+        return sync_fn(*args)
+
+    monkeypatch.setattr(scan, "run_fs_io_async", _fs_probe)
+    monkeypatch.setattr(scan, "run_cpu_io_async", _cpu_probe)
+
+    timeout_s = 2.0
 
     async def _one_run(i: int):
         return await asyncio.wait_for(
-            scan.scan_files_async(i + 1, 1, tmp_root, ["f0.py", "f1.py", "f2.py"]),
-            timeout=1.0,
+            scan.scan_files_async(i + 1, 1, tmp_path, rel_paths),
+            timeout=timeout_s,
         )
 
-    results = await asyncio.gather(*[_one_run(i) for i in range(8)])
+    started = time.monotonic()
+    results = await asyncio.gather(*[_one_run(i) for i in range(6)])
+    elapsed = time.monotonic() - started
 
+    assert elapsed < timeout_s
     assert all(item.get("aborted") is not True for item in results)
-    assert all(item["updated_nodes"] == 3 for item in results)
-    assert all(item["updated_edges"] == 3 for item in results)
+    assert all(item["updated_nodes"] == len(rel_paths) for item in results)
+    assert all(item["updated_edges"] > 0 for item in results)
+    assert fs_counters["cached_import_resolve"] > 0
+    assert cpu_counters["parse_batch"] > 0
+
