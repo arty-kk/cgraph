@@ -405,6 +405,24 @@ class TestAgenticSeedContextConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(big["target_path"], "big.txt")
         self.assertEqual(len(big["target_file"]["content"]), 128)
 
+    async def test_seed_context_returns_empty_content_for_directory_target(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "nested").mkdir()
+
+            directory_target = await agentic._seed_context_async(
+                _SessionStub(),
+                1,
+                root,
+                "nested",
+                depth=1,
+                max_file_chars=100,
+                session_factory=_session_stub_factory,
+            )
+
+        self.assertEqual(directory_target["target_path"], "nested")
+        self.assertEqual(directory_target["target_file"]["content"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
