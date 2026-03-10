@@ -110,13 +110,12 @@ def _compute_symbol_meta_for_embedding(
     return tuple(_symbol_chunks(text, symbols))
 
 
-def _build_edges_from_cached_imports_sync(
+def _resolve_cached_imports_fs_sync(
     project_root_str: str,
     parsed_batch: list[dict[str, object]],
 ) -> list[dict[str, str]]:
     project_root = Path(project_root_str)
-    normalized_edges: list[dict[str, str]] = []
-    dedup_keys: set[tuple[str, str, str]] = set()
+    resolved_imports: list[dict[str, str]] = []
 
     for parsed in parsed_batch:
         if not isinstance(parsed, dict):
@@ -146,11 +145,7 @@ def _build_edges_from_cached_imports_sync(
                 continue
             if not dst or dst == rel:
                 continue
-            key = (rel, dst, kind)
-            if key in dedup_keys:
-                continue
-            dedup_keys.add(key)
-            normalized_edges.append(
+            resolved_imports.append(
                 {
                     "src_path": rel,
                     "dst_path": dst,
@@ -159,6 +154,32 @@ def _build_edges_from_cached_imports_sync(
                 }
             )
 
+    return resolved_imports
+
+
+def _aggregate_cached_import_edges_sync(resolved_imports: list[dict[str, str]]) -> list[dict[str, str]]:
+    normalized_edges: list[dict[str, str]] = []
+    dedup_keys: set[tuple[str, str, str]] = set()
+    for item in resolved_imports:
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("src_path") or "")
+        dst = str(item.get("dst_path") or "")
+        kind = str(item.get("kind") or "import")
+        if not rel or not dst:
+            continue
+        key = (rel, dst, kind)
+        if key in dedup_keys:
+            continue
+        dedup_keys.add(key)
+        normalized_edges.append(
+            {
+                "src_path": rel,
+                "dst_path": dst,
+                "kind": kind,
+                "raw": str(item.get("raw") or ""),
+            }
+        )
     return normalized_edges
 
 
@@ -1545,12 +1566,13 @@ async def _prepare_scan_files_async(
                                 )
                             )
 
-        normalized_edges = await _run_scan_cpu_batch(
-            _build_edges_from_cached_imports_sync,
+        resolved_imports = await _run_scan_fs_batch(
+            _resolve_cached_imports_fs_sync,
             str(project_root),
             cached_import_records,
-            operation="scan.cpu.cached_import_edges",
+            operation="scan.fs.cached_import_resolve",
         )
+        normalized_edges = _aggregate_cached_import_edges_sync(resolved_imports)
         for edge in normalized_edges:
             rel = str(edge.get("src_path") or "")
             dst = str(edge.get("dst_path") or "")
