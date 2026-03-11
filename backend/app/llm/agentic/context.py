@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy import literal, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from ...async_db import AsyncSessionLocal
 from ...config import settings
 from ...contracts import get_or_build_contract_async
 from ...graph_traversal import neighbors_limited_recursive_cte_async
@@ -107,39 +106,35 @@ async def _neighbors_limited_async(
 
 
 async def _load_contract_async(
+    session: AsyncSession,
     project_id: int,
     root: Path,
     target_norm: str,
-    *,
-    session_factory: Callable[[], Any],
 ) -> dict:
     try:
-        async with session_factory() as session:
-            return await get_or_build_contract_async(session, project_id, root, target_norm)
+        return await get_or_build_contract_async(session, project_id, root, target_norm)
     except Exception:
         return {}
 
 
 async def _load_target_node_metrics_async(
+    session: AsyncSession,
     project_id: int,
     target_norm: str,
-    *,
-    session_factory: Callable[[], Any],
 ) -> dict:
     try:
-        async with session_factory() as session:
-            node = (
-                (
-                    await session.execute(
-                        select(FileNode).where(
-                            FileNode.project_id == project_id,
-                            FileNode.path == target_norm,
-                        )
+        node = (
+            (
+                await session.execute(
+                    select(FileNode).where(
+                        FileNode.project_id == project_id,
+                        FileNode.path == target_norm,
                     )
                 )
-                .scalars()
-                .first()
             )
+            .scalars()
+            .first()
+        )
     except Exception:
         return {}
     if not node:
@@ -157,10 +152,9 @@ async def _load_target_node_metrics_async(
 
 
 async def _load_api_hints_async(
+    session: AsyncSession,
     project_id: int,
     target_norm: str,
-    *,
-    session_factory: Callable[[], Any],
 ) -> tuple[list[dict], list[dict]]:
     routes_in_file: list[dict] = []
     calls_in_file: list[dict] = []
@@ -189,8 +183,7 @@ async def _load_api_hints_async(
             .order_by(ApiCall.path.asc())
             .limit(20)
         )
-        async with session_factory() as session:
-            rows = (await session.execute(union_all(routes_stmt, calls_stmt))).all()
+        rows = (await session.execute(union_all(routes_stmt, calls_stmt))).all()
         for row in rows:
             if hasattr(row, "_mapping"):
                 kind = row._mapping.get("kind")
@@ -229,29 +222,25 @@ async def _load_api_hints_async(
 
 
 async def _load_outbound_hint_async(
+    session: AsyncSession,
     project_id: int,
     target_norm: str,
     out_depth: int,
-    *,
-    session_factory: Callable[[], Any],
 ) -> list[str]:
-    async with session_factory() as session:
-        return await _neighbors_limited_async(
-            session, project_id, target_norm, direction="out", depth=out_depth, limit=200
-        )
+    return await _neighbors_limited_async(
+        session, project_id, target_norm, direction="out", depth=out_depth, limit=200
+    )
 
 
 async def _load_inbound_hint_async(
+    session: AsyncSession,
     project_id: int,
     target_norm: str,
     in_depth: int,
-    *,
-    session_factory: Callable[[], Any],
 ) -> list[str]:
-    async with session_factory() as session:
-        return await _neighbors_limited_async(
-            session, project_id, target_norm, direction="in", depth=in_depth, limit=200
-        )
+    return await _neighbors_limited_async(
+        session, project_id, target_norm, direction="in", depth=in_depth, limit=200
+    )
 
 
 def _fts_query_from_substring(q: str, *, max_tokens: int = 12) -> str | None:
@@ -273,11 +262,7 @@ async def _seed_context_async(
     depth: int,
     *,
     max_file_chars: int,
-    session_factory: Callable[[], Any] | None = None,
 ) -> dict:
-    _ = session
-    if session_factory is None:
-        session_factory = AsyncSessionLocal
     max_file_chars = max(1, min(int(max_file_chars), 200_000))
     target_norm, target_text = await _run_seed_fs_io_async(
         _resolve_and_read_seed_file_sync,
@@ -288,37 +273,11 @@ async def _seed_context_async(
 
     out_depth = max(0, min(depth, 6))
     in_depth = max(0, min(depth, 2))
-    (
-        contract_result,
-        node_metrics_result,
-        api_hints_result,
-        outbound_result,
-        inbound_result,
-    ) = await asyncio.gather(
-        _load_contract_async(project_id, root, target_norm, session_factory=session_factory),
-        _load_target_node_metrics_async(
-            project_id, target_norm, session_factory=session_factory
-        ),
-        _load_api_hints_async(project_id, target_norm, session_factory=session_factory),
-        _load_outbound_hint_async(project_id, target_norm, out_depth, session_factory=session_factory),
-        _load_inbound_hint_async(project_id, target_norm, in_depth, session_factory=session_factory),
-        return_exceptions=True,
-    )
-
-    contract = contract_result if isinstance(contract_result, dict) else {}
-    node_metrics = node_metrics_result if isinstance(node_metrics_result, dict) else {}
-    routes_in_file: list[dict] = []
-    calls_in_file: list[dict] = []
-    if isinstance(api_hints_result, tuple) and len(api_hints_result) == 2:
-        routes_in_file, calls_in_file = api_hints_result
-
-    if isinstance(outbound_result, Exception):
-        raise outbound_result
-    outbound = outbound_result if isinstance(outbound_result, list) else []
-
-    if isinstance(inbound_result, Exception):
-        raise inbound_result
-    inbound = inbound_result if isinstance(inbound_result, list) else []
+    contract = await _load_contract_async(session, project_id, root, target_norm)
+    node_metrics = await _load_target_node_metrics_async(session, project_id, target_norm)
+    routes_in_file, calls_in_file = await _load_api_hints_async(session, project_id, target_norm)
+    outbound = await _load_outbound_hint_async(session, project_id, target_norm, out_depth)
+    inbound = await _load_inbound_hint_async(session, project_id, target_norm, in_depth)
 
     return {
         "target_path": target_norm,
