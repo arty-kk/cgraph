@@ -15,6 +15,7 @@ async def test_worker_settings_registers_stubgraph_tasks() -> None:
 
     assert "stubgraph.scan" in names
     assert "stubgraph.docs" in names
+    assert "stubgraph.snapshot_import" in names
     assert "stubgraph.run_task" in names
     assert "stubgraph.mutation_indexing" in names
 

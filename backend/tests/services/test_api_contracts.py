@@ -1,6 +1,7 @@
 import inspect
 import io
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -63,7 +64,24 @@ async def api_client_context(ensure_async_postgres):
     )
     if response.status_code != 200:
         pytest.skip("Unable to create snapshot project for contract tests")
-    return client, headers, response.json().get("id")
+    payload = response.json()
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        pytest.skip("Snapshot import task was not enqueued")
+    project_id = None
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        status_response = client.get(f"/api/tasks/status/{task_id}", headers=headers)
+        if status_response.status_code != 200:
+            pytest.skip("Unable to inspect snapshot import task status")
+        status_payload = status_response.json()
+        if status_payload.get("status") == "succeeded":
+            project_id = status_payload.get("result", {}).get("project_id")
+            break
+        time.sleep(0.1)
+    if not isinstance(project_id, int):
+        pytest.skip("Snapshot import task did not finish in time")
+    return client, headers, project_id
 
 
 def _assert_task_envelope(payload: dict) -> None:
@@ -178,3 +196,22 @@ async def test_run_scan_docs_endpoints_return_task_envelope(api_client_context) 
     )
     assert docs_response.status_code == 200
     _assert_task_envelope(docs_response.json())
+
+
+@pytest.mark.anyio
+async def test_create_project_from_snapshot_returns_task_envelope(api_client_context) -> None:
+    client, headers, _ = api_client_context
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("repo/main.py", "print('ok')")
+    buffer.seek(0)
+
+    response = client.post(
+        "/api/projects/from-snapshot",
+        data={"name": "contract-snapshot-task"},
+        files={"archive": ("repo.zip", buffer, "application/zip")},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    _assert_task_envelope(response.json())

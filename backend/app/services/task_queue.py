@@ -474,6 +474,43 @@ async def submit_docs_async(project_id: int, org_id: int) -> tuple[str, str]:
     return task_id, "pending"
 
 
+async def submit_snapshot_import_async(
+    name: str,
+    archive_name: str,
+    staged_path: str,
+    org_id: int,
+) -> tuple[str, str]:
+    payload = {"name": name, "archive_name": archive_name, "staged_path": staged_path}
+    idempotency_key = await _idempotency_key_async("snapshot_import", org_id, payload)
+    async with AsyncSessionLocal() as session:
+        existing = await _find_existing_job_async(session, org_id, idempotency_key)
+        if existing:
+            return existing
+
+        task_id, created = await _create_job_async(
+            session,
+            "snapshot_import",
+            org_id=org_id,
+            queue="medium",
+            idempotency_key=idempotency_key,
+        )
+        if created:
+            await _enqueue_with_error_mapping_async(
+                session=session,
+                task_name="stubgraph.snapshot_import",
+                args=[task_id, name, archive_name, staged_path, org_id],
+                queue="medium",
+                task_id=task_id,
+            )
+            return task_id, "pending"
+
+    async with AsyncSessionLocal() as session:
+        existing = await _find_existing_job_async(session, org_id, idempotency_key)
+        if existing:
+            return existing
+    return task_id, "pending"
+
+
 async def submit_mutation_indexing_async(
     project_id: int,
     org_id: int,

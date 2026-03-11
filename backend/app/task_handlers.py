@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,11 +16,17 @@ from .infra.redis_client import get_async_redis_client, init_redis_pool_async
 from .logging import get_logger
 from .models import Project, TaskJob
 from .services.docs_service import build_project_docs_async
+from .services.project_service import create_project_from_snapshot_async
 from .services.file_mutation_service import run_mutation_indexing_async
 from .services.project_service import _scan_and_update_graph_async
 from .services.routing_calibration_service import calibrate_routing_policy_thresholds_async
 from .services.task_queue import cleanup_completed_jobs_async
 from .services.task_service import TaskRequest, run_task_async
+from .snapshots import (
+    delete_snapshot_async,
+    delete_staged_snapshot_upload_async,
+    store_snapshot_upload_from_path_async,
+)
 from .utils import normalize_project_root
 
 logger = get_logger("stubgraph.task_handlers")
@@ -92,6 +99,72 @@ async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
     await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
 
 
+async def _snapshot_import_task_async(
+    job_id: str,
+    name: str,
+    archive_name: str,
+    staged_path: str,
+    org_id: int,
+) -> None:
+    await _set_job_status_async(job_id, "running", org_id=org_id)
+    meta = None
+    project = None
+
+    async def _cleanup_snapshot_on_failure_async() -> None:
+        if meta is None:
+            return
+        try:
+            await delete_snapshot_async(meta)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(
+                "Snapshot cleanup failed after import error",
+                extra={"job_id": job_id, "reason": str(cleanup_exc)},
+            )
+
+    try:
+        meta = await store_snapshot_upload_from_path_async(staged_path, archive_name)
+        async with AsyncSessionLocal() as session:
+            project = await create_project_from_snapshot_async(session, name, meta, org_id)
+    except asyncio.CancelledError as exc:
+        logger.warning("Snapshot import task cancelled", extra={"job_id": job_id})
+        await _cleanup_snapshot_on_failure_async()
+        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Snapshot import task failed", extra={"job_id": job_id})
+        await _cleanup_snapshot_on_failure_async()
+        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
+        return
+    finally:
+        try:
+            await delete_staged_snapshot_upload_async(staged_path)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(
+                "Staged snapshot cleanup failed",
+                extra={"job_id": job_id, "reason": str(cleanup_exc)},
+            )
+
+    if meta is None or project is None:
+        await _set_job_status_async(
+            job_id,
+            "failed",
+            org_id=org_id,
+            error="Snapshot import failed",
+        )
+        return
+
+    await _set_job_status_async(
+        job_id,
+        "succeeded",
+        org_id=org_id,
+        result={
+            "project_id": project.id,
+            "name": project.name,
+            "snapshot_label": meta.archive_name,
+        },
+    )
+
+
 async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
     await _set_job_status_async(job_id, "running", org_id=org_id)
     try:
@@ -155,6 +228,7 @@ async def _routing_calibration_task_async() -> dict:
 _TASK_DISPATCH: dict[str, Any] = {
     "stubgraph.scan": _scan_task_async,
     "stubgraph.docs": _docs_task_async,
+    "stubgraph.snapshot_import": _snapshot_import_task_async,
     "stubgraph.run_task": _run_task_job_async,
     "stubgraph.mutation_indexing": _mutation_indexing_task_async,
 }

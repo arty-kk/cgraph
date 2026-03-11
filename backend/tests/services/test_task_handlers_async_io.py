@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -142,3 +143,208 @@ async def test_scan_task_async_marks_failed_when_business_coroutine_raises(
     await task_handlers._scan_task_async("job", 1, 1)
 
     assert statuses == ["running", "failed"]
+
+
+@pytest.mark.anyio
+async def test_snapshot_import_task_async_tracks_lifecycle_and_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statuses: list[tuple[str, dict[str, object]]] = []
+    staged_paths: list[str] = []
+
+    async def _fake_set_job_status_async(_job_id: str, status: str, **kwargs) -> None:
+        statuses.append((status, kwargs))
+
+    class _Project:
+        id = 73
+        name = "snapshot-project"
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    async def _fake_store_snapshot_upload_from_path_async(path: str, archive_name: str):
+        _ = path
+        assert archive_name == "repo.zip"
+        return type("Meta", (), {"archive_name": "repo.zip"})()
+
+    async def _fake_create_project_from_snapshot_async(session, name: str, meta, org_id: int):
+        _ = (session, meta)
+        assert name == "snapshot-project"
+        assert org_id == 12
+        return _Project()
+
+    async def _fake_delete_staged_snapshot_upload_async(path: str) -> None:
+        staged_paths.append(path)
+
+    monkeypatch.setattr(task_handlers, "_set_job_status_async", _fake_set_job_status_async)
+    monkeypatch.setattr(task_handlers, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(
+        task_handlers,
+        "store_snapshot_upload_from_path_async",
+        _fake_store_snapshot_upload_from_path_async,
+    )
+    monkeypatch.setattr(
+        task_handlers,
+        "create_project_from_snapshot_async",
+        _fake_create_project_from_snapshot_async,
+    )
+    monkeypatch.setattr(
+        task_handlers,
+        "delete_staged_snapshot_upload_async",
+        _fake_delete_staged_snapshot_upload_async,
+    )
+
+    await task_handlers._snapshot_import_task_async(
+        "job-1",
+        "snapshot-project",
+        "repo.zip",
+        "/tmp/staged.zip",
+        12,
+    )
+
+    assert [status for status, _ in statuses] == ["running", "succeeded"]
+    assert statuses[1][1]["result"] == {
+        "project_id": 73,
+        "name": "snapshot-project",
+        "snapshot_label": "repo.zip",
+    }
+    assert staged_paths == ["/tmp/staged.zip"]
+
+
+@pytest.mark.anyio
+async def test_snapshot_import_task_async_cleans_snapshot_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statuses: list[str] = []
+    cleanup_calls: list[str] = []
+
+    async def _fake_set_job_status_async(_job_id: str, status: str, **_kwargs) -> None:
+        statuses.append(status)
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    meta = type("Meta", (), {"archive_name": "repo.zip"})()
+
+    async def _fake_store_snapshot_upload_from_path_async(path: str, archive_name: str):
+        _ = (path, archive_name)
+        return meta
+
+    async def _fake_create_project_from_snapshot_async(session, name: str, _meta, org_id: int):
+        _ = (session, name, _meta, org_id)
+        raise RuntimeError("db failure")
+
+    async def _fake_delete_snapshot_async(cleanup_meta) -> None:
+        assert cleanup_meta is meta
+        cleanup_calls.append("snapshot")
+
+    async def _fake_delete_staged_snapshot_upload_async(path: str) -> None:
+        _ = path
+        cleanup_calls.append("staged")
+
+    monkeypatch.setattr(task_handlers, "_set_job_status_async", _fake_set_job_status_async)
+    monkeypatch.setattr(task_handlers, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(
+        task_handlers,
+        "store_snapshot_upload_from_path_async",
+        _fake_store_snapshot_upload_from_path_async,
+    )
+    monkeypatch.setattr(
+        task_handlers,
+        "create_project_from_snapshot_async",
+        _fake_create_project_from_snapshot_async,
+    )
+    monkeypatch.setattr(task_handlers, "delete_snapshot_async", _fake_delete_snapshot_async)
+    monkeypatch.setattr(
+        task_handlers,
+        "delete_staged_snapshot_upload_async",
+        _fake_delete_staged_snapshot_upload_async,
+    )
+
+    await task_handlers._snapshot_import_task_async(
+        "job-2",
+        "snapshot-project",
+        "repo.zip",
+        "/tmp/staged.zip",
+        12,
+    )
+
+    assert statuses == ["running", "failed"]
+    assert cleanup_calls == ["snapshot", "staged"]
+
+
+@pytest.mark.anyio
+async def test_snapshot_import_task_async_cleans_snapshot_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statuses: list[str] = []
+    cleanup_calls: list[str] = []
+
+    async def _fake_set_job_status_async(_job_id: str, status: str, **_kwargs) -> None:
+        statuses.append(status)
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    meta = type("Meta", (), {"archive_name": "repo.zip"})()
+
+    async def _fake_store_snapshot_upload_from_path_async(path: str, archive_name: str):
+        _ = (path, archive_name)
+        return meta
+
+    async def _fake_create_project_from_snapshot_async(session, name: str, _meta, org_id: int):
+        _ = (session, name, _meta, org_id)
+        raise asyncio.CancelledError("cancelled")
+
+    async def _fake_delete_snapshot_async(cleanup_meta) -> None:
+        assert cleanup_meta is meta
+        cleanup_calls.append("snapshot")
+
+    async def _fake_delete_staged_snapshot_upload_async(path: str) -> None:
+        _ = path
+        cleanup_calls.append("staged")
+
+    monkeypatch.setattr(task_handlers, "_set_job_status_async", _fake_set_job_status_async)
+    monkeypatch.setattr(task_handlers, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(
+        task_handlers,
+        "store_snapshot_upload_from_path_async",
+        _fake_store_snapshot_upload_from_path_async,
+    )
+    monkeypatch.setattr(
+        task_handlers,
+        "create_project_from_snapshot_async",
+        _fake_create_project_from_snapshot_async,
+    )
+    monkeypatch.setattr(task_handlers, "delete_snapshot_async", _fake_delete_snapshot_async)
+    monkeypatch.setattr(
+        task_handlers,
+        "delete_staged_snapshot_upload_async",
+        _fake_delete_staged_snapshot_upload_async,
+    )
+
+    await task_handlers._snapshot_import_task_async(
+        "job-3",
+        "snapshot-project",
+        "repo.zip",
+        "/tmp/staged.zip",
+        12,
+    )
+
+    assert statuses == ["running", "failed"]
+    assert cleanup_calls == ["snapshot", "staged"]
