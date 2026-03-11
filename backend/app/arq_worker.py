@@ -35,6 +35,21 @@ async def run_docs(ctx: dict, job_id: str, project_id: int, org_id: int) -> None
     await _run_task_async("stubgraph.docs", [job_id, project_id, org_id])
 
 
+async def run_snapshot_import(
+    ctx: dict,
+    job_id: str,
+    name: str,
+    archive_name: str,
+    staged_path: str,
+    org_id: int,
+) -> None:
+    _ = ctx
+    await _run_task_async(
+        "stubgraph.snapshot_import",
+        [job_id, name, archive_name, staged_path, org_id],
+    )
+
+
 async def run_task_job(
     ctx: dict,
     job_id: str,
@@ -82,6 +97,11 @@ def _build_worker_functions() -> list:
     return [
         func(run_scan, name="stubgraph.scan", max_tries=settings.arq_max_tries),
         func(run_docs, name="stubgraph.docs", max_tries=settings.arq_max_tries),
+        func(
+            run_snapshot_import,
+            name="stubgraph.snapshot_import",
+            max_tries=settings.arq_max_tries,
+        ),
         func(run_task_job, name="stubgraph.run_task", max_tries=settings.arq_max_tries),
         func(
             run_mutation_indexing,

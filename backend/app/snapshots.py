@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import shutil
 import tarfile
@@ -330,6 +329,10 @@ async def _cleanup_path_async(path: Path) -> None:
         operation="snapshots.path.unlink",
         lane="bulk",
     )
+
+
+def _file_size_and_sha256(path: Path) -> tuple[int, str]:
+    return int(path.stat().st_size), sha256_file(path)
 
 
 async def _upload_archive_to_s3(archive_path: Path, bucket: str, key: str) -> None:
@@ -660,7 +663,7 @@ async def delete_snapshot_async(meta: SnapshotMeta) -> None:
             await s3_delete_task
 
 
-async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
+async def stage_snapshot_upload_async(upload_file, archive_name: str) -> Path:
     await upload_file.seek(0)
     tmp_dir = settings.db_dir / "snapshots" / "tmp"
     await run_fs_io_async(
@@ -675,7 +678,6 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
     tmp_path = tmp_dir / f"{uuid4().hex}{ext}"
 
     total = 0
-    hasher = hashlib.sha256()
     chunks: list[bytes] = []
     buffered = 0
     flush_threshold = 4 * 1024 * 1024
@@ -690,7 +692,6 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
                     "Архив слишком большой",
                     context={"max_bytes": settings.snapshot_max_bytes, "size": total},
                 )
-            hasher.update(chunk)
             chunks.append(chunk)
             buffered += len(chunk)
             if buffered >= flush_threshold:
@@ -720,7 +721,65 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
         await _cleanup_path_async(tmp_path)
         raise BadRequestError("Архив пустой")
 
-    sha = hasher.hexdigest()
+    return tmp_path
+
+
+async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
+    tmp_path = await stage_snapshot_upload_async(upload_file, archive_name)
+    return await store_snapshot_upload_from_path_async(tmp_path, archive_name)
+
+
+async def store_snapshot_upload_from_path_async(
+    source_path: str | Path,
+    archive_name: str,
+) -> SnapshotMeta:
+    source = Path(source_path)
+    ext = _archive_ext(archive_name)
+    total, sha = await run_fs_io_async(
+        _file_size_and_sha256,
+        source,
+        operation="snapshots.archive.size_sha",
+        lane="bulk",
+    )
+    if total <= 0:
+        raise BadRequestError("Архив пустой")
+    if total > settings.snapshot_max_bytes:
+        raise BadRequestError(
+            "Архив слишком большой",
+            context={"max_bytes": settings.snapshot_max_bytes, "size": total},
+        )
+    tmp_dir = settings.db_dir / "snapshots" / "tmp"
+    await run_fs_io_async(
+        tmp_dir.mkdir,
+        parents=True,
+        exist_ok=True,
+        operation="snapshots.tmp.mkdir",
+        lane="bulk",
+    )
+    tmp_path = tmp_dir / f"{uuid4().hex}{ext}"
+    await run_fs_io_async(
+        source.replace,
+        tmp_path,
+        operation="snapshots.tmp.move_for_finalize",
+        lane="bulk",
+    )
+    return await _finalize_snapshot_temp_async(
+        tmp_path=tmp_path,
+        archive_name=archive_name,
+        archive_ext=ext,
+        total=total,
+        sha=sha,
+    )
+
+
+async def _finalize_snapshot_temp_async(
+    *,
+    tmp_path: Path,
+    archive_name: str,
+    archive_ext: str,
+    total: int,
+    sha: str,
+) -> SnapshotMeta:
     root_dir = _snapshot_dir(sha)
     await run_fs_io_async(
         root_dir.mkdir,
@@ -729,7 +788,7 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
         operation="snapshots.root.mkdir",
         lane="bulk",
     )
-    archive_path = _local_archive_path(sha, ext)
+    archive_path = _local_archive_path(sha, archive_ext)
 
     await run_fs_io_async(
         _finalize_local_archive,
@@ -758,10 +817,14 @@ async def store_snapshot_upload(upload_file, archive_name: str) -> SnapshotMeta:
         storage=backend,
         sha256=sha,
         archive_name=archive_name,
-        archive_ext=ext,
+        archive_ext=archive_ext,
         size=total,
         file=str(archive_path.relative_to(settings.db_dir)),
         root_dir=str((root_dir / "repo").relative_to(settings.db_dir)),
         bucket=bucket,
         key=key,
     )
+
+
+async def delete_staged_snapshot_upload_async(path: str | Path) -> None:
+    await _cleanup_path_async(Path(path))

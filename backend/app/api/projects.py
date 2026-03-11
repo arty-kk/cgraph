@@ -12,9 +12,6 @@ from ..services.docs_service import get_latest_project_doc_async
 from ..services.project_service import (
     create_project_async,
 )
-from ..services.project_service import (
-    create_project_from_snapshot_async,
-)
 from ..services.project_service import delete_project_async
 from ..services.project_service import (
     get_file_dependencies_async,
@@ -30,7 +27,8 @@ from ..services.project_service import (
     search_project_text_async,
 )
 from ..services.task_queue import submit_docs_async
-from ..snapshots import store_snapshot_upload
+from ..services.task_queue import submit_snapshot_import_async
+from ..snapshots import delete_staged_snapshot_upload_async, stage_snapshot_upload_async
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -78,7 +76,7 @@ async def create_project(request: Request, body: CreateProject):
     return _project_response(project)
 
 
-@router.post("/from-snapshot")
+@router.post("/from-snapshot", response_model=TaskStatusEnvelope)
 async def create_project_from_snapshot(
     request: Request,
     name: str = Form(...),
@@ -87,13 +85,21 @@ async def create_project_from_snapshot(
     archive_name = archive.filename or ""
     _, org_id, _ = await require_org_context_async(request, min_role="member")
     try:
-        meta = await store_snapshot_upload(archive, archive_name)
+        staged_path = await stage_snapshot_upload_async(archive, archive_name)
     except BadRequestError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise BadRequestError("Не удалось сохранить архив", context={"reason": str(exc)}) from exc
-    project = await create_project_from_snapshot_async(request.state.db_session, name, meta, org_id)
-    return _project_response(project, snapshot_label=archive_name)
+    try:
+        task_id, status = await submit_snapshot_import_async(name, archive_name, str(staged_path), org_id)
+    except Exception:
+        try:
+            await delete_staged_snapshot_upload_async(staged_path)
+        except Exception:
+            # Сохраняем исходную ошибку enqueue; cleanup ретраится в фоновых janitor-процессах.
+            pass
+        raise
+    return {"task_id": task_id, "status": status}
 
 
 @router.delete("/{project_id}")

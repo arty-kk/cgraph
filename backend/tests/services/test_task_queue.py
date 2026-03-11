@@ -14,6 +14,7 @@ from app.errors import ExternalServiceError
 from app.models import TaskJob
 from app.services.task_queue import (
     get_scan_idempotency_key_async,
+    submit_snapshot_import_async,
     submit_mutation_indexing_async,
     submit_run_async,
     submit_scan_async,
@@ -182,3 +183,41 @@ async def test_submit_run_async_marks_job_failed_when_enqueue_fails():
     assert job.status == "failed"
     assert job.error == "queue unavailable"
     assert job.completed_at is not None
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("ensure_async_postgres")
+async def test_submit_snapshot_import_async_reuses_existing_job():
+    job_id = uuid4().hex
+    org_id = 8801
+    idempotency_key = f"snapshot-import-existing-{uuid4().hex}"
+    now = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as session:
+        session.add(
+            TaskJob(
+                id=job_id,
+                org_id=org_id,
+                status="pending",
+                queue="medium",
+                idempotency_key=idempotency_key,
+                result_json=None,
+                error=None,
+                created_at=now,
+                updated_at=now,
+                completed_at=None,
+            )
+        )
+        await session.commit()
+
+    from unittest.mock import patch
+
+    with patch("app.services.task_queue._idempotency_key", return_value=idempotency_key):
+        returned_id, status = await submit_snapshot_import_async(
+            name="snapshot-project",
+            archive_name="repo.zip",
+            staged_path="/tmp/staged.zip",
+            org_id=org_id,
+        )
+
+    assert returned_id == job_id
+    assert status == "pending"

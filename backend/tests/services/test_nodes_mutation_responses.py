@@ -68,7 +68,24 @@ def _create_project(client: TestClient, headers: dict) -> int:
     )
     if response.status_code != 200:
         pytest.skip("Unable to create snapshot project for mutation response tests")
-    return int(response.json().get("id"))
+    task_id = response.json().get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        pytest.skip("Snapshot import task was not enqueued")
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        status_response = client.get(f"/api/tasks/status/{task_id}", headers=headers)
+        if status_response.status_code != 200:
+            pytest.skip("Unable to inspect snapshot import task status")
+        payload = status_response.json()
+        if payload.get("status") == "succeeded":
+            project_id = payload.get("result", {}).get("project_id")
+            if isinstance(project_id, int):
+                return project_id
+            break
+        time.sleep(0.1)
+
+    pytest.skip("Snapshot import task did not finish in time")
 
 
 @pytest.mark.anyio
