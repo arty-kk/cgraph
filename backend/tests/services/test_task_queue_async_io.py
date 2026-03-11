@@ -78,10 +78,59 @@ class _FakeDbSession:
 
 
 @pytest.mark.anyio
-async def test_idempotency_key_async_runs_inline() -> None:
-    key = await task_queue._idempotency_key_async("scan", 7, {"project_id": 42})
+async def test_idempotency_key_async_uses_cpu_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
 
-    assert key == task_queue._idempotency_key("scan", 7, {"project_id": 42})
+    async def _fake_run_cpu_io_async(fn, *args, operation=None, **kwargs):
+        calls.append({"fn": fn, "args": args, "kwargs": kwargs, "operation": operation})
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(task_queue, "run_cpu_io_async", _fake_run_cpu_io_async)
+
+    payload = {"project_id": 42}
+    key = await task_queue._idempotency_key_async("scan", 7, payload)
+
+    assert key == task_queue._idempotency_key("scan", 7, payload)
+    assert calls == [
+        {
+            "fn": task_queue._idempotency_key,
+            "args": ("scan", 7, payload),
+            "kwargs": {},
+            "operation": "task_queue.idempotency_key",
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_idempotency_key_async_concurrent_is_deterministic_and_keeps_loop_responsive() -> None:
+    same_payload = {"project_id": 42, "filters": {"lang": "py", "paths": ["a", "b"]}}
+    different_payload = {"project_id": 42, "filters": {"lang": "py", "paths": ["a", "c"]}}
+
+    ticks = 0
+    stop = asyncio.Event()
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while not stop.is_set():
+            ticks += 1
+            await asyncio.sleep(0.001)
+
+    ticker_task = asyncio.create_task(_ticker())
+    try:
+        same_a, same_b, different = await asyncio.gather(
+            task_queue._idempotency_key_async("scan", 7, same_payload),
+            task_queue._idempotency_key_async("scan", 7, same_payload),
+            task_queue._idempotency_key_async("scan", 7, different_payload),
+        )
+    finally:
+        stop.set()
+        await ticker_task
+
+    assert same_a == same_b
+    assert different != same_a
+    assert same_a == task_queue._idempotency_key("scan", 7, same_payload)
+    assert different == task_queue._idempotency_key("scan", 7, different_payload)
+    assert ticks > 0
 
 
 @pytest.mark.anyio
@@ -139,6 +188,89 @@ async def test_submit_docs_async_uses_async_idempotency_key(monkeypatch):
     }
 
 
+
+
+@pytest.mark.anyio
+async def test_submit_run_async_uses_string_idempotency_key_for_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_keys: list[str] = []
+
+    async def _fake_idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
+        _ = (kind, org_id, payload)
+        return "run-key"
+
+    async def _fake_find_existing_job_id_async(session, org_id: int, idempotency_key: str):
+        _ = (session, org_id)
+        captured_keys.append(idempotency_key)
+        return "existing-run-job"
+
+    monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency_key_async)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
+    monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _fake_find_existing_job_id_async)
+
+    task_id = await task_queue.submit_run_async(project_id=21, org_id=3, payload={"q": "x"})
+
+    assert task_id == "existing-run-job"
+    assert captured_keys == ["run-key"]
+
+
+@pytest.mark.anyio
+async def test_submit_snapshot_import_async_uses_string_idempotency_key_for_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_keys: list[str] = []
+
+    async def _fake_idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
+        _ = (kind, org_id, payload)
+        return "snapshot-key"
+
+    async def _fake_find_existing_job_async(session, org_id: int, idempotency_key: str):
+        _ = (session, org_id)
+        captured_keys.append(idempotency_key)
+        return "existing-snapshot-job", "running"
+
+    monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency_key_async)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
+    monkeypatch.setattr(task_queue, "_find_existing_job_async", _fake_find_existing_job_async)
+
+    result = await task_queue.submit_snapshot_import_async(
+        name="repo",
+        archive_name="repo.zip",
+        staged_path="/tmp/repo.zip",
+        org_id=3,
+    )
+
+    assert result == ("existing-snapshot-job", "running")
+    assert captured_keys == ["snapshot-key"]
+
+
+@pytest.mark.anyio
+async def test_submit_mutation_indexing_async_uses_string_idempotency_key_for_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_keys: list[str] = []
+
+    async def _fake_idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
+        _ = (kind, org_id, payload)
+        return "mutation-key"
+
+    async def _fake_find_existing_job_async(session, org_id: int, idempotency_key: str):
+        _ = (session, org_id)
+        captured_keys.append(idempotency_key)
+        return "existing-mutation-job", "running"
+
+    monkeypatch.setattr(task_queue, "_idempotency_key_async", _fake_idempotency_key_async)
+    monkeypatch.setattr(task_queue, "AsyncSessionLocal", lambda: _FakeSessionContext())
+    monkeypatch.setattr(task_queue, "_find_existing_job_async", _fake_find_existing_job_async)
+
+    result = await task_queue.submit_mutation_indexing_async(
+        project_id=8,
+        org_id=3,
+        rel_paths=["repo/a.py"],
+        operation="update_file",
+    )
+
+    assert result == ("existing-mutation-job", "running")
+    assert captured_keys == ["mutation-key"]
 
 
 @pytest.mark.anyio

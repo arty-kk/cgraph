@@ -18,6 +18,7 @@ from ..async_db import AsyncSessionLocal
 from ..config import settings
 from ..errors import BadRequestError, ExternalServiceError
 from ..infra.arq_client import get_arq_pool_async
+from ..infra.cpu_runtime import run_cpu_io_async
 from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
@@ -161,7 +162,13 @@ def _idempotency_key(kind: str, org_id: int, payload: dict) -> str:
 
 
 async def _idempotency_key_async(kind: str, org_id: int, payload: dict) -> str:
-    return _idempotency_key(kind, org_id, payload)
+    return await run_cpu_io_async(
+        _idempotency_key,
+        kind,
+        org_id,
+        payload,
+        operation="task_queue.idempotency_key",
+    )
 
 
 async def get_scan_idempotency_key_async(org_id: int, project_id: int) -> str:
