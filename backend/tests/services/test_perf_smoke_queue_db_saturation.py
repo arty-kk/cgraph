@@ -8,6 +8,7 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.services import task_queue
+from app import task_handlers
 
 
 @pytest.mark.anyio
@@ -122,4 +123,57 @@ async def test_high_concurrency_docs_and_run_workloads_keep_event_loop_progress(
 
     elapsed = time.perf_counter() - started
     assert ticks >= 15
+    assert elapsed < 2
+
+
+@pytest.mark.anyio
+async def test_handler_session_scoping_smoke_keeps_concurrent_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    async def _fake_set_job_status_async(_session, _job_id: str, _status: str, **_kwargs) -> None:
+        await asyncio.sleep(0)
+
+    async def _fake_scan(_project_id: int, _org_id: int) -> dict[str, bool]:
+        await asyncio.sleep(0.01)
+        return {"ok": True}
+
+    monkeypatch.setattr(task_handlers, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(task_handlers, "_set_job_status_async", _fake_set_job_status_async)
+    monkeypatch.setattr(task_handlers, "_scan_and_update_graph_async", _fake_scan)
+
+    ticks = 0
+    stop = asyncio.Event()
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while not stop.is_set():
+            ticks += 1
+            await asyncio.sleep(0.002)
+
+    ticker = asyncio.create_task(_ticker())
+    started = time.perf_counter()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                *[
+                    task_handlers._scan_task_async(f"job-{i}", i, 1)
+                    for i in range(30)
+                ]
+            ),
+            timeout=5,
+        )
+    finally:
+        stop.set()
+        await ticker
+
+    elapsed = time.perf_counter() - started
+    assert ticks >= 5
     assert elapsed < 2
