@@ -323,6 +323,33 @@ def test_seed_context_async_avoids_direct_sync_fs_calls() -> None:
     assert "_run_seed_fs_io_async" in call_names
 
 
+def test_seed_context_async_has_no_session_fallback_or_local_factory() -> None:
+    context_path = Path("backend/app/llm/agentic/context.py")
+    source = context_path.read_text(encoding="utf-8")
+    marker = "async def _seed_context_async"
+    assert marker in source
+    chunk = source.split(marker, 1)[1].split("\n\n", 1)[0]
+    assert "AsyncSessionLocal" not in chunk
+    assert "session is None" not in chunk
+    assert "session_factory" not in chunk
+
+
+def test_seed_context_async_avoids_asyncio_gather_for_db_branches() -> None:
+    context_path = Path("backend/app/llm/agentic/context.py")
+    module = _load_ast(context_path)
+    fn_nodes = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    fn = fn_nodes["_seed_context_async"]
+    for call in [n for n in ast.walk(fn) if isinstance(n, ast.Call)]:
+        if isinstance(call.func, ast.Attribute):
+            if isinstance(call.func.value, ast.Name) and call.func.value.id == "asyncio" and call.func.attr == "gather":
+                raise AssertionError("_seed_context_async must not use asyncio.gather for DB branches")
+
+
+
 def test_search_text_cpu_async_uses_cpu_runtime_not_asyncio_to_thread() -> None:
     module = _load_ast(TOOLS_PATH)
     fn_nodes = {
