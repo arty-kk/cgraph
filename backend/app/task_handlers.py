@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from .async_db import AsyncSessionLocal
 from .config import settings
 from .infra.cpu_runtime import run_cpu_io_async
@@ -44,6 +46,7 @@ def _task_payload_body_max_bytes() -> int:
 
 
 async def _set_job_status_async(
+    session: AsyncSession,
     job_id: str,
     status: str,
     *,
@@ -52,51 +55,52 @@ async def _set_job_status_async(
     error: str | None = None,
 ) -> None:
     now = datetime.now(timezone.utc)
-    async with AsyncSessionLocal() as session:
-        job = await session.get(TaskJob, job_id)
-        if not job:
-            if org_id is None:
-                raise RuntimeError("org_id обязателен для создания задачи")
-            job = TaskJob(id=job_id, org_id=org_id, status=status)
-            session.add(job)
-        job.status = status
-        job.updated_at = now
-        if status == "running" and job.queue == "heavy":
-            await _touch_inflight_async(job.id)
-        if status in {"succeeded", "failed"}:
-            job.completed_at = now
-            if job.queue == "heavy":
-                await _decrement_inflight_async(job.id)
-        if error is not None:
-            job.error = error
-        if result is not None:
-            job.result_json = json.dumps(result, ensure_ascii=False)
+    job = await session.get(TaskJob, job_id)
+    if not job:
+        if org_id is None:
+            raise RuntimeError("org_id обязателен для создания задачи")
+        job = TaskJob(id=job_id, org_id=org_id, status=status)
         session.add(job)
-        await session.commit()
-        if status in {"succeeded", "failed"}:
-            await cleanup_completed_jobs_async(session)
+    job.status = status
+    job.updated_at = now
+    if status == "running" and job.queue == "heavy":
+        await _touch_inflight_async(job.id)
+    if status in {"succeeded", "failed"}:
+        job.completed_at = now
+        if job.queue == "heavy":
+            await _decrement_inflight_async(job.id)
+    if error is not None:
+        job.error = error
+    if result is not None:
+        job.result_json = json.dumps(result, ensure_ascii=False)
+    session.add(job)
+    await session.commit()
+    if status in {"succeeded", "failed"}:
+        await cleanup_completed_jobs_async(session)
 
 
 async def _scan_task_async(job_id: str, project_id: int, org_id: int) -> None:
-    await _set_job_status_async(job_id, "running", org_id=org_id)
-    try:
-        result = await _scan_and_update_graph_async(project_id, org_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Scan task failed", extra={"job_id": job_id})
-        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
-        return
-    await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
+    async with AsyncSessionLocal() as session:
+        await _set_job_status_async(session, job_id, "running", org_id=org_id)
+        try:
+            result = await _scan_and_update_graph_async(project_id, org_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Scan task failed", extra={"job_id": job_id})
+            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            return
+        await _set_job_status_async(session, job_id, "succeeded", org_id=org_id, result=result)
 
 
 async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
-    await _set_job_status_async(job_id, "running", org_id=org_id)
-    try:
-        result = await build_project_docs_async(project_id, org_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Docs task failed", extra={"job_id": job_id})
-        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
-        return
-    await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
+    async with AsyncSessionLocal() as session:
+        await _set_job_status_async(session, job_id, "running", org_id=org_id)
+        try:
+            result = await build_project_docs_async(project_id, org_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Docs task failed", extra={"job_id": job_id})
+            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            return
+        await _set_job_status_async(session, job_id, "succeeded", org_id=org_id, result=result)
 
 
 async def _snapshot_import_task_async(
@@ -106,7 +110,8 @@ async def _snapshot_import_task_async(
     staged_path: str,
     org_id: int,
 ) -> None:
-    await _set_job_status_async(job_id, "running", org_id=org_id)
+    async with AsyncSessionLocal() as session:
+        await _set_job_status_async(session, job_id, "running", org_id=org_id)
     meta = None
     project = None
 
@@ -128,12 +133,14 @@ async def _snapshot_import_task_async(
     except asyncio.CancelledError as exc:
         logger.warning("Snapshot import task cancelled", extra={"job_id": job_id})
         await _cleanup_snapshot_on_failure_async()
-        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
+        async with AsyncSessionLocal() as session:
+            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
         return
     except Exception as exc:  # noqa: BLE001
         logger.exception("Snapshot import task failed", extra={"job_id": job_id})
         await _cleanup_snapshot_on_failure_async()
-        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
+        async with AsyncSessionLocal() as session:
+            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
         return
     finally:
         try:
@@ -145,39 +152,44 @@ async def _snapshot_import_task_async(
             )
 
     if meta is None or project is None:
-        await _set_job_status_async(
-            job_id,
-            "failed",
-            org_id=org_id,
-            error="Snapshot import failed",
-        )
+        async with AsyncSessionLocal() as session:
+            await _set_job_status_async(
+                session,
+                job_id,
+                "failed",
+                org_id=org_id,
+                error="Snapshot import failed",
+            )
         return
 
-    await _set_job_status_async(
-        job_id,
-        "succeeded",
-        org_id=org_id,
-        result={
-            "project_id": project.id,
-            "name": project.name,
-            "snapshot_label": meta.archive_name,
-        },
-    )
+    async with AsyncSessionLocal() as session:
+        await _set_job_status_async(
+            session,
+            job_id,
+            "succeeded",
+            org_id=org_id,
+            result={
+                "project_id": project.id,
+                "name": project.name,
+                "snapshot_label": meta.archive_name,
+            },
+        )
 
 
 async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload: dict) -> None:
-    await _set_job_status_async(job_id, "running", org_id=org_id)
-    try:
-        provided = payload.get("provided_fields")
-        if isinstance(provided, list):
-            payload["provided_fields"] = set(provided)
-        request = TaskRequest(**payload)
-        result = await run_task_async(project_id, org_id, request)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Run task failed", extra={"job_id": job_id})
-        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
-        return
-    await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
+    async with AsyncSessionLocal() as session:
+        await _set_job_status_async(session, job_id, "running", org_id=org_id)
+        try:
+            provided = payload.get("provided_fields")
+            if isinstance(provided, list):
+                payload["provided_fields"] = set(provided)
+            request = TaskRequest(**payload)
+            result = await run_task_async(project_id, org_id, request)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Run task failed", extra={"job_id": job_id})
+            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            return
+        await _set_job_status_async(session, job_id, "succeeded", org_id=org_id, result=result)
 
 
 async def _mutation_indexing_task_async(
@@ -187,11 +199,11 @@ async def _mutation_indexing_task_async(
     rel_paths: list[str],
     operation: str,
 ) -> None:
-    await _set_job_status_async(job_id, "running", org_id=org_id)
     root = await _resolve_project_root_async(project_id, org_id)
-    try:
-        str_paths = [str(path) for path in rel_paths]
-        async with AsyncSessionLocal() as session:
+    async with AsyncSessionLocal() as session:
+        await _set_job_status_async(session, job_id, "running", org_id=org_id)
+        try:
+            str_paths = [str(path) for path in rel_paths]
             result = await run_mutation_indexing_async(
                 session,
                 project_id=project_id,
@@ -199,22 +211,23 @@ async def _mutation_indexing_task_async(
                 root=root,
                 rel_paths=str_paths,
             )
-        result["operation"] = str(operation)
-        result["rel_paths"] = str_paths
-        if result.get("aborted"):
-            await _set_job_status_async(
-                job_id,
-                "failed",
-                org_id=org_id,
-                error="Mutation indexing aborted",
-                result=result,
-            )
+            result["operation"] = str(operation)
+            result["rel_paths"] = str_paths
+            if result.get("aborted"):
+                await _set_job_status_async(
+                    session,
+                    job_id,
+                    "failed",
+                    org_id=org_id,
+                    error="Mutation indexing aborted",
+                    result=result,
+                )
+                return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Mutation indexing task failed", extra={"job_id": job_id})
+            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
             return
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Mutation indexing task failed", extra={"job_id": job_id})
-        await _set_job_status_async(job_id, "failed", org_id=org_id, error=str(exc))
-        return
-    await _set_job_status_async(job_id, "succeeded", org_id=org_id, result=result)
+        await _set_job_status_async(session, job_id, "succeeded", org_id=org_id, result=result)
 
 
 async def _routing_calibration_task_async() -> dict:

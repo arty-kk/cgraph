@@ -21,28 +21,30 @@ from tests.services.db_helpers import ensure_async_postgres  # noqa: F401
 class _FakeRedisClient:
     def __init__(self):
         self.members: set[str] = set()
+        self.keys_seen: list[str] = []
 
     async def eval(self, script, numkeys, key, limit, job_id):
         _ = (script, numkeys, key)
+        self.keys_seen.append(str(key))
         if len(self.members) >= int(limit):
             return 0, len(self.members)
         self.members.add(job_id)
         return 1, len(self.members)
 
     async def srem(self, key, value):
-        _ = key
+        self.keys_seen.append(str(key))
         self.members.discard(value)
 
     async def scard(self, key):
-        _ = key
+        self.keys_seen.append(str(key))
         return len(self.members)
 
     async def delete(self, key):
-        _ = key
+        self.keys_seen.append(str(key))
         self.members.clear()
 
     async def sadd(self, key, *values):
-        _ = key
+        self.keys_seen.append(str(key))
         self.members.update(values)
 
 
@@ -203,6 +205,48 @@ async def test_submit_run_to_execute_updates_job_status(monkeypatch):
 
     assert job is not None
     assert job.status == "succeeded"
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("ensure_async_postgres")
+@pytest.mark.parametrize("should_fail", [False, True])
+async def test_submit_run_handler_terminal_transition_keeps_heavy_inflight_key_consistent(
+    monkeypatch: pytest.MonkeyPatch,
+    should_fail: bool,
+) -> None:
+    redis_client = _FakeRedisClient()
+    monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: redis_client)
+    monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 10)
+    monkeypatch.setattr(task_handlers, "get_async_redis_client", lambda: redis_client)
+
+    async def _fake_init_redis_pool_async() -> None:
+        return None
+
+    monkeypatch.setattr(task_handlers, "init_redis_pool_async", _fake_init_redis_pool_async)
+
+    async def _immediate_enqueue(task_name, *, args, queue):
+        _ = queue
+        if task_name == "stubgraph.run_task":
+            await task_handlers.execute_task_by_name_async("stubgraph.run_task", list(args))
+
+    async def _fake_run_task_async(_project_id, _org_id, _request):
+        if should_fail:
+            raise RuntimeError("forced failure")
+        return {"ok": True}
+
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _immediate_enqueue)
+    monkeypatch.setattr(task_handlers, "run_task_async", _fake_run_task_async)
+
+    task_id = await submit_run_async(project_id=2, org_id=42, payload={"query": "x"})
+
+    async with AsyncSessionLocal() as session:
+        job = await session.get(TaskJob, task_id)
+
+    assert job is not None
+    assert job.status == ("failed" if should_fail else "succeeded")
+    assert task_id not in redis_client.members
+    assert "stubgraph:queue:heavy:inflight" in redis_client.keys_seen
+    assert set(redis_client.keys_seen) == {"stubgraph:queue:heavy:inflight"}
 
 
 @pytest.mark.anyio
