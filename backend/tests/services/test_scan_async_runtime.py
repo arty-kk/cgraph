@@ -1356,6 +1356,37 @@ def test_scan_module_does_not_use_asyncio_to_thread_in_scan_paths() -> None:
                 offenders.append(f"{scan_path}:{node.lineno}")
     assert not offenders, "scan module must not use asyncio.to_thread in async scan paths"
 
+def test_prepare_scan_files_async_does_not_call_cached_import_aggregator_directly() -> None:
+    scan_path = Path(__file__).resolve().parents[2] / "app" / "scan.py"
+    tree = ast.parse(scan_path.read_text(encoding="utf-8"), filename=str(scan_path))
+
+    prepare_node = None
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_prepare_scan_files_async":
+            prepare_node = node
+            break
+
+    assert prepare_node is not None, "_prepare_scan_files_async must exist"
+
+    direct_calls: list[int] = []
+    cpu_wrapped_calls: list[int] = []
+
+    for node in ast.walk(prepare_node):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "_aggregate_cached_import_edges_sync":
+            direct_calls.append(node.lineno)
+        if isinstance(node.func, ast.Name) and node.func.id == "_run_scan_cpu_batch" and node.args:
+            fn_arg = node.args[0]
+            if isinstance(fn_arg, ast.Name) and fn_arg.id == "_aggregate_cached_import_edges_sync":
+                for kw in node.keywords:
+                    if kw.arg == "operation" and isinstance(kw.value, ast.Constant) and kw.value.value == "scan.cpu.cached_import_edges":
+                        cpu_wrapped_calls.append(node.lineno)
+
+    assert not direct_calls, "_prepare_scan_files_async must not call _aggregate_cached_import_edges_sync directly"
+    assert cpu_wrapped_calls, "_prepare_scan_files_async must route cached import edge aggregation via CPU runtime"
+
+
 
 @pytest.mark.anyio
 async def test_scan_runtime_routes_fs_and_cpu_operations(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1442,7 +1473,7 @@ async def test_scan_cpu_heavy_batch_does_not_block_fs_batch(monkeypatch: pytest.
 
 
 @pytest.mark.anyio
-async def test_prepare_scan_files_async_resolves_cached_imports_in_fs_stage_only(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_prepare_scan_files_async_resolves_cached_imports_in_fs_stage_and_aggregates_in_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Session:
         async def execute(self, _stmt, _params=None):
             class _Rows:
@@ -1534,7 +1565,7 @@ async def test_prepare_scan_files_async_resolves_cached_imports_in_fs_stage_only
     )
 
     assert fs_operations.count("scan.fs.cached_import_resolve") == 1
-    assert "scan.cpu.cached_import_edges" not in cpu_operations
+    assert cpu_operations.count("scan.cpu.cached_import_edges") == 1
     assert ("a.py", "pkg/mod.py", "import") in prepared.edge_map
 
 
@@ -1648,7 +1679,7 @@ async def test_scan_files_async_parallel_smoke_keeps_base_metrics(monkeypatch: p
     monkeypatch.setattr(scan, "get_entitlement_bool_async", _fake_entitlement)
 
     fs_counters = {"cached_import_resolve": 0}
-    cpu_counters = {"parse_batch": 0}
+    cpu_counters = {"parse_batch": 0, "cached_import_edges": 0}
 
     async def _fs_probe(sync_fn, *args, operation: str, lane: str = "bulk"):
         _ = lane
@@ -1659,7 +1690,8 @@ async def test_scan_files_async_parallel_smoke_keeps_base_metrics(monkeypatch: p
     async def _cpu_probe(sync_fn, *args, operation: str):
         if operation == "scan.cpu.parse_batch":
             cpu_counters["parse_batch"] += 1
-        assert operation != "scan.cpu.cached_import_edges"
+        if operation == "scan.cpu.cached_import_edges":
+            cpu_counters["cached_import_edges"] += 1
         return sync_fn(*args)
 
     monkeypatch.setattr(scan, "run_fs_io_async", _fs_probe)
@@ -1683,4 +1715,113 @@ async def test_scan_files_async_parallel_smoke_keeps_base_metrics(monkeypatch: p
     assert all(item["updated_edges"] > 0 for item in results)
     assert fs_counters["cached_import_resolve"] > 0
     assert cpu_counters["parse_batch"] > 0
+    assert cpu_counters["cached_import_edges"] > 0
 
+
+
+@pytest.mark.anyio
+async def test_prepare_scan_files_async_cached_import_edges_cpu_stage_keeps_loop_responsive(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Session:
+        async def execute(self, _stmt, _params=None):
+            class _Rows:
+                def all(self):
+                    return []
+
+            return _Rows()
+
+    rel_paths = [f"f{i}.py" for i in range(120)]
+
+    async def _fake_collect(_root, paths, precomputed_stats=None, batch_size=128, max_parallel=8):
+        _ = precomputed_stats, batch_size, max_parallel
+        return [scan.FileStatResult(rel=rel, exists=True, is_file=True, is_supported=True, mtime_ns=1, size=10) for rel in paths]
+
+    async def _fake_read(_root, batch_paths, stats_map, max_file_bytes, max_parallel=8):
+        _ = stats_map, max_file_bytes, max_parallel
+        return [scan.FileReadResult(rel=rel, text="import pkg.mod", mtime_ns=1, size=10, oversized=False) for rel in batch_paths]
+
+    async def _fake_parse(project_id, _project_root, file_batch):
+        rows = []
+        for item in file_batch:
+            rows.append(
+                {
+                    "rel": item.rel,
+                    "stat_mtime": 0.0,
+                    "stat_mtime_ns": item.mtime_ns,
+                    "stat_size": item.size,
+                    "file_hash": f"h-{item.rel}",
+                    "snapshot_kind": "content",
+                    "node_row": {"project_id": project_id, "path": item.rel},
+                    "search_row": {"project_id": project_id, "path": item.rel, "content": item.text or ""},
+                    "cached_imports": [{"spec": "pkg.mod", "kind": "import", "raw": "import pkg.mod"}],
+                    "route_rows": [],
+                    "call_rows": [],
+                    "include_rows": [],
+                    "route_contract_rows": [],
+                    "call_meta_rows": [],
+                    "ts_type_rows": [],
+                    "text": item.text,
+                }
+            )
+        return rows
+
+    fs_calls = {"cached_import_resolve": 0}
+    cpu_calls = {"cached_import_edges": 0}
+
+    async def _fake_fs(sync_fn, *args, operation: str):
+        if operation == "scan.fs.cached_import_resolve":
+            fs_calls["cached_import_resolve"] += 1
+            await asyncio.sleep(0)
+        return sync_fn(*args)
+
+    async def _fake_cpu(sync_fn, *args, operation: str):
+        if operation == "scan.cpu.cached_import_edges":
+            cpu_calls["cached_import_edges"] += 1
+            await asyncio.sleep(0.03)
+        return sync_fn(*args)
+
+    ticks = {"count": 0}
+    stop = asyncio.Event()
+
+    async def _ticker():
+        while not stop.is_set():
+            ticks["count"] += 1
+            await asyncio.sleep(0.002)
+
+    async def _fake_entitlement(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(scan.settings, "scan_stage_batch_size", 20)
+    monkeypatch.setattr(scan, "_collect_file_stats_async", _fake_collect)
+    monkeypatch.setattr(scan, "_read_file_batch_async", _fake_read)
+    monkeypatch.setattr(scan, "_parse_index_batch_async", _fake_parse)
+    monkeypatch.setattr(scan, "_run_scan_fs_batch", _fake_fs)
+    monkeypatch.setattr(scan, "_run_scan_cpu_batch", _fake_cpu)
+    monkeypatch.setattr(scan, "resolve_spec", lambda _root, _rel, _spec: "pkg/mod.py")
+    monkeypatch.setattr(scan, "resolve_under_root", lambda _root, dst_raw: (Path("/repo") / dst_raw, dst_raw))
+    monkeypatch.setattr(scan, "get_entitlement_bool_async", _fake_entitlement)
+
+    ticker_task = asyncio.create_task(_ticker())
+    started = time.monotonic()
+    try:
+        prepared = await asyncio.wait_for(
+            scan._prepare_scan_files_async(
+                _Session(),
+                1,
+                1,
+                Path("/repo"),
+                rel_paths,
+                precomputed_stats={rel: (1, 10) for rel in rel_paths},
+            ),
+            timeout=2.0,
+        )
+    finally:
+        stop.set()
+        await ticker_task
+
+    elapsed = time.monotonic() - started
+
+    assert ticks["count"] >= 20
+    assert elapsed < 2.0
+    assert fs_calls["cached_import_resolve"] > 0
+    assert cpu_calls["cached_import_edges"] > 0
+    assert prepared.edge_map

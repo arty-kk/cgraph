@@ -1572,7 +1572,11 @@ async def _prepare_scan_files_async(
             cached_import_records,
             operation="scan.fs.cached_import_resolve",
         )
-        normalized_edges = _aggregate_cached_import_edges_sync(resolved_imports)
+        normalized_edges = await _run_scan_cpu_batch(
+            _aggregate_cached_import_edges_sync,
+            resolved_imports,
+            operation="scan.cpu.cached_import_edges",
+        )
         for edge in normalized_edges:
             rel = str(edge.get("src_path") or "")
             dst = str(edge.get("dst_path") or "")
