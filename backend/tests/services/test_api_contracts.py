@@ -198,6 +198,53 @@ async def test_run_scan_docs_endpoints_return_task_envelope(api_client_context) 
     _assert_task_envelope(docs_response.json())
 
 
+def test_docs_build_dedup_returns_running_existing_task(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.main import app
+
+    client = TestClient(app)
+
+    async def _allow_request_async(_request):
+        return True
+
+    async def _fake_get_user_from_token_async(_session, _token):
+        return SimpleNamespace(id=1)
+
+    async def _fake_require_project_access_async(
+        request,
+        project_id: int,
+        min_role: str = "member",
+    ):
+        _ = (request, min_role)
+        return SimpleNamespace(id=project_id, org_id=77)
+
+    async def _fake_submit_docs_async(project_id: int, org_id: int) -> tuple[str, str]:
+        assert project_id == 42
+        assert org_id == 77
+        return "existing-doc-job", "running"
+
+    monkeypatch.setattr("app.main.allow_request_async", _allow_request_async)
+    monkeypatch.setattr("app.main.get_user_from_token_async", _fake_get_user_from_token_async)
+    async def _fake_get_request_db_session(_request):
+        return object()
+
+    monkeypatch.setattr("app.main.get_request_db_session", _fake_get_request_db_session)
+    monkeypatch.setattr(
+        "app.api.projects.require_project_access_async",
+        _fake_require_project_access_async,
+    )
+    monkeypatch.setattr("app.api.projects.submit_docs_async", _fake_submit_docs_async)
+
+    response = client.post(
+        "/api/projects/42/docs/build",
+        headers={"Authorization": "Bearer test-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"task_id": "existing-doc-job", "status": "running"}
+
+
 @pytest.mark.anyio
 async def test_create_project_from_snapshot_returns_task_envelope(api_client_context) -> None:
     client, headers, _ = api_client_context
