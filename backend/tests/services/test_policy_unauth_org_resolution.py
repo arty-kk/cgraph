@@ -4,12 +4,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlmodel import delete, select
 from starlette.requests import Request
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app import policy
+from app.async_db import AsyncSessionLocal
 from app.models import Organization
+
+from tests.services.db_helpers import ensure_async_postgres
 
 
 class _FakeDialect:
@@ -40,6 +44,7 @@ class _FakeAsyncSession:
         self.advisory_called = False
         self.select_calls = 0
         self.added: Organization | None = None
+        self.commit_calls = 0
 
     async def get(self, model, org_id: int):
         _ = model
@@ -63,7 +68,25 @@ class _FakeAsyncSession:
         if self.added is not None and self.added.id is None:
             self.added.id = 1
 
+    async def commit(self) -> None:
+        self.commit_calls += 1
+
     async def rollback(self) -> None:
+        return None
+
+
+class _FakeBeginCtx:
+    def __init__(self, session: "_FakeAsyncSessionIntegrity") -> None:
+        self._session = session
+
+    async def __aenter__(self) -> None:
+        self._session.begin_calls += 1
+        return None
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        _ = exc_type
+        _ = exc
+        _ = tb
         return None
 
 
@@ -83,6 +106,7 @@ class _FakeAsyncSessionIntegrity:
         ]
         self.flush_calls = 0
         self.rollback_calls = 0
+        self.begin_calls = 0
 
     async def get(self, model, org_id: int):
         _ = model
@@ -112,6 +136,9 @@ class _FakeAsyncSessionIntegrity:
         self.rollback_calls += 1
         self.added = []
 
+    def begin(self) -> _FakeBeginCtx:
+        return _FakeBeginCtx(self)
+
 
 @pytest.mark.anyio
 async def test_creates_org_without_advisory_lock():
@@ -125,6 +152,7 @@ async def test_creates_org_without_advisory_lock():
     assert session.select_calls == 2
     assert isinstance(session.added, Organization)
     assert session.added.slug == "personal"
+    assert session.commit_calls == 1
 
 
 @pytest.mark.anyio
@@ -138,3 +166,37 @@ async def test_reuses_personal_on_slug_conflict():
     assert len(session.persisted) == 1
     assert session.flush_calls == 1
     assert session.rollback_calls == 1
+    assert session.begin_calls == 1
+
+
+@pytest.mark.anyio
+async def test_persists_personal_between_unauth_requests(ensure_async_postgres) -> None:
+    async with AsyncSessionLocal() as cleanup_session:
+        await cleanup_session.execute(delete(Organization).where(Organization.slug == "personal"))
+        await cleanup_session.commit()
+
+    try:
+        async with AsyncSessionLocal() as first_session:
+            first_request = Request(
+                {"type": "http", "headers": [], "state": {"db_session": first_session}}
+            )
+            first_org_id = await policy._resolve_org_id_unauth_async(first_request)
+
+        async with AsyncSessionLocal() as second_session:
+            second_request = Request(
+                {"type": "http", "headers": [], "state": {"db_session": second_session}}
+            )
+            second_org_id = await policy._resolve_org_id_unauth_async(second_request)
+            all_personal = (
+                await second_session.execute(
+                    select(Organization).where(Organization.slug == "personal")
+                )
+            ).scalars().all()
+
+        assert first_org_id == second_org_id
+        assert len(all_personal) == 1
+        assert all_personal[0].id == first_org_id
+    finally:
+        async with AsyncSessionLocal() as cleanup_session:
+            await cleanup_session.execute(delete(Organization).where(Organization.slug == "personal"))
+            await cleanup_session.commit()

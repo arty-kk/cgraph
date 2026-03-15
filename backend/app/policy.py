@@ -57,13 +57,15 @@ async def _resolve_org_id_unauth_async(request: Request) -> int:
     session.add(org)
     try:
         await session.flush()
+        await session.commit()
     except IntegrityError:
         await session.rollback()
-        existing = (
-            (await session.execute(select(Organization).where(Organization.slug == "personal")))
-            .scalars()
-            .first()
-        )
+        async with session.begin():
+            existing = (
+                (await session.execute(select(Organization).where(Organization.slug == "personal")))
+                .scalars()
+                .first()
+            )
         if existing and existing.id is not None:
             return int(existing.id)
         raise
