@@ -38,6 +38,20 @@ def _require_token(request: Request) -> str:
     return token
 
 
+def _require_bearer_session_token(request: Request) -> str:
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        if token:
+            return token
+    else:
+        api_key = request.headers.get("x-api-key")
+        if isinstance(api_key, str) and api_key.strip():
+            raise BadRequestError("API-ключи не поддерживаются для этого endpoint")
+
+    raise UnauthorizedError("Требуется токен")
+
+
 @router.post("/bootstrap")
 async def bootstrap(request: Request, body: AuthCredentials):
     session = await get_request_db_session(request)
@@ -88,7 +102,7 @@ async def me(request: Request):
 
 @router.post("/api-keys")
 async def create_key(request: Request, body: ApiKeyRequest):
-    token = _require_token(request)
+    token = _require_bearer_session_token(request)
     session = await get_request_db_session(request)
     user = await get_user_from_token_async(session, token)
     raw, key = await create_api_key_async(session, user.id, body.name)
@@ -103,7 +117,7 @@ async def create_key(request: Request, body: ApiKeyRequest):
 
 @router.get("/api-keys")
 async def list_keys(request: Request):
-    token = _require_token(request)
+    token = _require_bearer_session_token(request)
     session = await get_request_db_session(request)
     user = await get_user_from_token_async(session, token)
     keys = await list_api_keys_async(session, user.id)
@@ -121,7 +135,7 @@ async def list_keys(request: Request):
 
 @router.delete("/api-keys/{key_id}")
 async def delete_key(request: Request, key_id: int):
-    token = _require_token(request)
+    token = _require_bearer_session_token(request)
     session = await get_request_db_session(request)
     user = await get_user_from_token_async(session, token)
     await revoke_api_key_async(session, user.id, key_id)
