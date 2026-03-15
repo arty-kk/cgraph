@@ -30,6 +30,7 @@ export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
   return r.data
 }
 
+/** Polling options apply only here when waiting for async task completion. */
 export async function waitForTaskResult<T>(
   payload: T | TaskStatus,
   opts: TaskPollOptions = {}
@@ -74,12 +75,11 @@ export async function waitForTaskResult<T>(
   }
 }
 
+/** Starts a task and returns its initial status; polling is handled via waitForTaskResult. */
 export async function runTask(
   projectId: number,
-  body: RunTaskBody,
-  opts: TaskPollOptions = {}
+  body: RunTaskBody
 ): Promise<TaskStatus> {
-  void opts
   const r = await api.post(`/tasks/${projectId}/run`, body)
   return r.data
 }
