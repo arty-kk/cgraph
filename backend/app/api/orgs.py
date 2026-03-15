@@ -5,7 +5,8 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
-from ..errors import BadRequestError, NotFoundError
+from ..config import settings
+from ..errors import BadRequestError, ForbiddenError, NotFoundError
 from ..models import User
 from ..policy import require_org_role_async, require_user_async
 from ..request_session import get_request_db_session
@@ -42,6 +43,8 @@ async def list_orgs(request: Request):
 @router.post("")
 async def create_org_endpoint(request: Request, body: OrgCreate):
     session = await get_request_db_session(request)
+    if not settings.auth_enabled:
+        raise ForbiddenError("Создание организации недоступно при отключенной аутентификации")
     user = await require_user_async(request)
     org = await create_org_async(session, body.name, user.id)
     return {"id": org.id, "name": org.name, "created_at": org.created_at.isoformat()}
