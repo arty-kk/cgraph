@@ -12,6 +12,19 @@ vi.mock('./client', () => ({
 
 import { runTask, waitForTaskResult } from './tasks'
 
+function assertRunTaskContract(): void {
+  const body = {
+    target_path: 'src/main.ts',
+    prompt: 'contract',
+    agentic: false,
+  } satisfies RunTaskBody
+
+  void runTask(1, body)
+  // @ts-expect-error polling options belong to waitForTaskResult, runTask accepts only 2 args
+  void runTask(1, body, { pollIntervalMs: 200 })
+}
+void assertRunTaskContract
+
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
@@ -20,6 +33,40 @@ afterEach(() => {
 })
 
 describe('tasks api polling', () => {
+
+  it('keeps polling options in waitForTaskResult and does not pass them through runTask', async () => {
+    const taskId = 'task-contract'
+    const body: RunTaskBody = {
+      target_path: 'src/main.ts',
+      prompt: 'contract',
+      agentic: false,
+    }
+    const finalResult: RunTaskResult = {
+      run_id: 101,
+      mode: 'analyze',
+      result: { ok: true },
+    }
+
+    post.mockResolvedValueOnce({ data: { task_id: taskId, status: 'pending' } satisfies TaskStatus })
+
+    get
+      .mockResolvedValueOnce({ data: { task_id: taskId, status: 'running' } satisfies TaskStatus })
+      .mockResolvedValueOnce({
+        data: { task_id: taskId, status: 'succeeded', result: finalResult } satisfies TaskStatus,
+      })
+
+    const initial = await runTask(7, body)
+    const result = await waitForTaskResult<RunTaskResult>(initial, {
+      pollIntervalMs: 200,
+      maxAttempts: 5,
+    })
+
+    expect(result).toEqual(finalResult)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith('/tasks/7/run', body)
+    expect(post.mock.calls[0]).toHaveLength(2)
+    expect(get).toHaveBeenCalledTimes(2)
+  })
   it('does a single POST /run and all next status checks via GET /tasks/status/{task_id}', async () => {
     const calls: Array<{ method: 'POST' | 'GET'; url: string }> = []
     const taskId = 'task-42'
