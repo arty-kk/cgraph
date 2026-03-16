@@ -373,41 +373,41 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
         {"project_id": project_id, "payload": payload},
     )
 
-    task_id = uuid4().hex
+    provisional_task_id = uuid4().hex
     async with AsyncSessionLocal() as session:
         existing = await _find_existing_job_id_async(session, org_id, idempotency_key)
         if existing:
             return existing
 
-        await _guard_inflight_async(session, "heavy", task_id)
+        await _guard_inflight_async(session, "heavy", provisional_task_id)
         try:
-            task_id, created = await _create_job_async(
+            job_id, created = await _create_job_async(
                 session,
                 "run_task",
                 org_id=org_id,
                 queue="heavy",
                 idempotency_key=idempotency_key,
-                task_id=task_id,
+                task_id=provisional_task_id,
             )
         except Exception:
-            await _release_inflight_async("heavy", task_id)
+            await _release_inflight_async("heavy", provisional_task_id)
             raise
 
         if not created:
-            await _release_inflight_async("heavy", task_id)
-            return task_id
+            await _release_inflight_async("heavy", provisional_task_id)
+            return job_id
         try:
             await _enqueue_with_error_mapping_async(
                 session=session,
                 task_name="stubgraph.run_task",
-                args=[task_id, project_id, org_id, payload],
+                args=[job_id, project_id, org_id, payload],
                 queue="heavy",
-                task_id=task_id,
+                task_id=job_id,
             )
         except ExternalServiceError:
-            await _release_inflight_async("heavy", task_id)
+            await _release_inflight_async("heavy", job_id)
             raise
-    return task_id
+    return job_id
 
 
 async def submit_scan_async(project_id: int, org_id: int) -> str:

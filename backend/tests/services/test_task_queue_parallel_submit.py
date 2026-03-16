@@ -50,6 +50,63 @@ class _FakeRedisClient:
 
 @pytest.mark.anyio
 @pytest.mark.usefixtures("ensure_async_postgres")
+async def test_submit_run_async_idempotency_collision_releases_provisional_inflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis_client = _FakeRedisClient()
+    monkeypatch.setattr(task_queue, "get_async_redis_client", lambda: redis_client)
+    monkeypatch.setattr(task_queue.settings, "task_queue_inflight_heavy_limit", 10)
+
+    async def _fake_enqueue(_task, *, args, queue):
+        _ = (args, queue)
+
+    monkeypatch.setattr(task_queue._async_task_producer, "enqueue_task_async", _fake_enqueue)
+
+    first_job_id = await submit_run_async(project_id=51, org_id=77, payload={"dup": True})
+
+    original_find_existing_job_id_async = task_queue._find_existing_job_id_async
+    original_create_job_async = task_queue._create_job_async
+    direct_find_calls = 0
+    in_create_job = False
+    create_results: list[tuple[str, bool]] = []
+
+    async def _forced_second_submit_find(*args, **kwargs):
+        nonlocal direct_find_calls
+        if in_create_job:
+            return await original_find_existing_job_id_async(*args, **kwargs)
+        direct_find_calls += 1
+        if direct_find_calls == 1:
+            return None
+        return await original_find_existing_job_id_async(*args, **kwargs)
+
+    async def _track_create_job(*args, **kwargs):
+        nonlocal in_create_job
+        in_create_job = True
+        try:
+            result = await original_create_job_async(*args, **kwargs)
+            create_results.append(result)
+            return result
+        finally:
+            in_create_job = False
+
+    monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _forced_second_submit_find)
+    monkeypatch.setattr(task_queue, "_create_job_async", _track_create_job)
+
+    inflight_key = "stubgraph:queue:heavy:inflight"
+    inflight_members_before_second_submit = set(redis_client.members)
+    second_job_id = await submit_run_async(project_id=51, org_id=77, payload={"dup": True})
+    inflight_members_after_second_submit = set(redis_client.members)
+
+    assert inflight_members_before_second_submit == {first_job_id}
+
+    assert second_job_id == first_job_id
+    assert inflight_members_after_second_submit == inflight_members_before_second_submit
+    assert create_results == [(first_job_id, False)]
+    assert inflight_key in redis_client.keys_seen
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("ensure_async_postgres")
 async def test_parallel_submit_is_idempotent_and_non_blocking(monkeypatch):
     async def _fake_enqueue(_task, *, args, queue):
         _ = (args, queue)
