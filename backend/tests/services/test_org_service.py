@@ -8,11 +8,11 @@ from sqlmodel import select
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.async_db import AsyncSessionLocal
-from app.errors import BadRequestError
-from app.models import OrgMembership, User
+from app.errors import BadRequestError, NotFoundError
+from app.models import Organization, OrgMembership, User
 from app.services import org_service
 
-from tests.services.db_helpers import ensure_async_postgres
+pytest_plugins = ("tests.services.db_helpers",)
 
 
 async def _create_user(label: str) -> int:
@@ -23,6 +23,16 @@ async def _create_user(label: str) -> int:
         await session.commit()
         await session.refresh(user)
         return int(user.id)
+
+
+async def _missing_org_id() -> int:
+    async with AsyncSessionLocal() as session:
+        max_org_id = (
+            (await session.execute(select(Organization.id).order_by(Organization.id.desc())))
+            .scalars()
+            .first()
+        )
+    return int(max_org_id or 0) + 1
 
 
 async def _membership(org_id: int, user_id: int):
@@ -115,3 +125,29 @@ async def test_can_remove_or_downgrade_owner_when_second_active_owner_exists(
     assert owner_one_membership is not None
     assert owner_one_membership.role == "owner"
     assert owner_one_membership.is_active is True
+
+
+@pytest.mark.anyio
+async def test_add_or_update_member_raises_not_found_for_missing_org(ensure_async_postgres) -> None:
+    user_id = await _create_user("missing_org_add")
+    org_id = await _missing_org_id()
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(NotFoundError) as exc:
+            await org_service.add_or_update_member_async(session, org_id, user_id, "member")
+
+    assert exc.value.code == "not_found"
+    assert exc.value.context == {"org_id": org_id}
+
+
+@pytest.mark.anyio
+async def test_remove_member_raises_not_found_for_missing_org(ensure_async_postgres) -> None:
+    user_id = await _create_user("missing_org_remove")
+    org_id = await _missing_org_id()
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(NotFoundError) as exc:
+            await org_service.remove_member_async(session, org_id, user_id)
+
+    assert exc.value.code == "not_found"
+    assert exc.value.context == {"org_id": org_id}
