@@ -13,8 +13,8 @@ from .auth import extract_token
 from .config import settings
 from .errors import BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError
 from .models import Organization, OrgMembership, Project, User
-from .request_session import get_request_db_session
 from .rbac import ORG_ROLES, role_at_least
+from .request_session import get_request_db_session
 
 
 async def _get_request_session(request: Request):
@@ -93,7 +93,11 @@ async def require_user_async(request: Request) -> User:
     return await get_user_from_token_async(session, token)
 
 
-async def _membership_for_user_async(request: Request, user_id: int, org_id: int) -> OrgMembership | None:
+async def _membership_for_user_async(
+    request: Request,
+    user_id: int,
+    org_id: int,
+) -> OrgMembership | None:
     session = await _get_request_session(request)
     return (
         (
@@ -113,13 +117,17 @@ async def _membership_for_user_async(request: Request, user_id: int, org_id: int
 async def _org_ids_for_user_async(request: Request, user_id: int) -> list[int]:
     session = await _get_request_session(request)
     rows = (
-        await session.execute(
-            select(OrgMembership.org_id).where(
-                OrgMembership.user_id == user_id,
-                OrgMembership.is_active.is_(True),
+        (
+            await session.execute(
+                select(OrgMembership.org_id).where(
+                    OrgMembership.user_id == user_id,
+                    OrgMembership.is_active.is_(True),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [int(r) for r in rows]
 
 
@@ -216,6 +224,10 @@ async def require_org_role_async(
     if min_role not in ORG_ROLES:
         raise BadRequestError("Некорректная роль доступа")
     if not settings.auth_enabled:
+        session = await _get_request_session(request)
+        org = await session.get(Organization, org_id)
+        if not org:
+            raise NotFoundError("Организация не найдена", context={"org_id": org_id})
         return (
             User(
                 id=0,

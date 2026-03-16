@@ -128,6 +128,9 @@ async def add_or_update_member_async(
     role = _validate_role(role)
     now = datetime.now(timezone.utc)
     async with session.begin():
+        org = await session.get(Organization, org_id)
+        if not org:
+            raise NotFoundError("Организация не найдена", context={"org_id": org_id})
         existing = (
             (
                 await session.execute(
@@ -164,6 +167,9 @@ async def add_or_update_member_async(
 
 async def remove_member_async(session: AsyncSession, org_id: int, user_id: int) -> None:
     async with session.begin():
+        org = await session.get(Organization, org_id)
+        if not org:
+            raise NotFoundError("Организация не найдена", context={"org_id": org_id})
         membership = (
             (
                 await session.execute(
