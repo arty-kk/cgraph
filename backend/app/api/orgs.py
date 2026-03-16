@@ -8,7 +8,7 @@ from sqlmodel import select
 from ..config import settings
 from ..errors import BadRequestError, ForbiddenError, NotFoundError
 from ..models import User
-from ..policy import require_org_role_async, require_user_async
+from ..policy import require_org_context_async, require_org_role_async, require_user_async
 from ..request_session import get_request_db_session
 from ..rbac import ORG_ROLES
 from ..services.org_service import (
@@ -35,6 +35,11 @@ class MemberUpsert(BaseModel):
 @router.get("")
 async def list_orgs(request: Request):
     session = await get_request_db_session(request)
+    if not settings.auth_enabled:
+        _, org_id, _ = await require_org_context_async(request)
+        org = await get_org_async(session, org_id)
+        return [{"id": org.id, "name": org.name, "created_at": org.created_at.isoformat()}]
+
     user = await require_user_async(request)
     orgs = await list_orgs_for_user_async(session, user.id)
     return [{"id": o.id, "name": o.name, "created_at": o.created_at.isoformat()} for o in orgs]

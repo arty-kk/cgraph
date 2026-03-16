@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import select
+from sqlmodel import delete, select
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
@@ -59,6 +59,27 @@ async def _count_memberships_for_user(user_id: int) -> int:
             .all()
         )
     return len(memberships)
+
+
+async def _create_org(name: str, slug: str) -> Organization:
+    org = Organization(name=name, slug=slug)
+    async with AsyncSessionLocal() as session:
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+    return org
+
+
+async def _count_orgs() -> int:
+    async with AsyncSessionLocal() as session:
+        org_ids = (await session.execute(select(Organization.id))).scalars().all()
+    return len(org_ids)
+
+
+async def _delete_all_orgs() -> None:
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(Organization))
+        await session.commit()
 
 
 @pytest.mark.anyio
@@ -120,3 +141,34 @@ async def test_add_member_returns_not_found_for_missing_org_when_auth_disabled(
         }
     }
     assert exists_after is False
+
+
+@pytest.mark.anyio
+async def test_list_orgs_returns_single_org_when_auth_disabled(
+    monkeypatch,
+    ensure_async_postgres,
+) -> None:
+    monkeypatch.setattr(orgs_api.settings, "auth_enabled", False)
+
+    await _delete_all_orgs()
+    try:
+        org = await _create_org(name="Single Org", slug="single-org")
+        org_count = await _count_orgs()
+        assert org_count == 1
+
+        with TestClient(main.app) as client:
+            response = client.get("/api/orgs")
+
+        assert response.status_code == 200
+        payload = response.json()
+
+        assert isinstance(payload, list)
+        assert len(payload) == 1
+
+        only_org = payload[0]
+        assert only_org["id"] == org.id
+        assert only_org["name"] == org.name
+        assert isinstance(only_org["created_at"], str)
+        assert only_org["created_at"] == org.created_at.isoformat()
+    finally:
+        await _delete_all_orgs()
