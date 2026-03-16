@@ -19,6 +19,7 @@ from ..models import ApiKey, BootstrapSentinel, Organization, OrgMembership, Use
 
 _BOOTSTRAP_LOCK_KEY = 104729
 _BOOTSTRAP_SENTINEL_KEY = "bootstrap"
+API_KEY_TOKEN_PREFIX_LENGTH = 8
 
 
 def _hash_password(password: str, *, salt: bytes | None = None) -> str:
@@ -279,7 +280,8 @@ async def create_api_key_async(
     session: AsyncSession, user_id: int, name: str
 ) -> tuple[str, ApiKey]:
     token, token_hash = _generate_token("api")
-    prefix = token.split("_", 1)[0]
+    token_payload = token[len("api_") :]
+    prefix = token_payload[:API_KEY_TOKEN_PREFIX_LENGTH]
     expires_at = None
     if settings.auth_api_key_ttl_days is not None:
         expires_at = datetime.now(timezone.utc) + timedelta(days=settings.auth_api_key_ttl_days)
