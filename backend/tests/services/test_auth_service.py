@@ -88,6 +88,47 @@ class TestAuthServiceAsync(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaisesRegex(UnauthorizedError, "Неверный токен"):
                         await get_user_from_token_async(fake_session, "valid-token")
 
+    async def test_create_api_key_async_uses_unique_payload_prefix(self) -> None:
+        from app.services.auth_service import (  # noqa: E402
+            API_KEY_TOKEN_PREFIX_LENGTH,
+            create_api_key_async,
+        )
+
+        class _FakeSession:
+            def __init__(self):
+                self._next_id = 1
+
+            def add(self, obj):
+                if hasattr(obj, "id"):
+                    obj.id = self._next_id
+                    self._next_id += 1
+
+            async def commit(self):
+                return None
+
+            async def refresh(self, _obj):
+                return None
+
+        fake_session = _FakeSession()
+
+        with patch(
+            "app.services.auth_service._generate_token",
+            side_effect=[
+                ("api_abcdefgh12345678", "hash-1"),
+                ("api_hgfedcba87654321", "hash-2"),
+            ],
+        ):
+            token1, key1 = await create_api_key_async(fake_session, user_id=1, name="first")
+            token2, key2 = await create_api_key_async(fake_session, user_id=1, name="second")
+
+        self.assertNotEqual(token1, token2)
+        self.assertNotEqual(key1.token_prefix, key2.token_prefix)
+
+        for key in (key1, key2):
+            self.assertNotEqual(key.token_prefix, "api")
+            self.assertEqual(len(key.token_prefix), API_KEY_TOKEN_PREFIX_LENGTH)
+
+
 
 if __name__ == "__main__":
     unittest.main()
