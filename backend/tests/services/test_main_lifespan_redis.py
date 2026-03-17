@@ -180,18 +180,14 @@ def test_lifespan_repeated_shutdown_remains_stable(monkeypatch):
 
 
 def test_db_session_dependency_skips_health(monkeypatch):
-    calls = {"enter": 0}
+    calls = {"db_session": 0}
 
-    class _Ctx:
-        async def __aenter__(self):
-            calls["enter"] += 1
-            return object()
+    async def _fake_get_request_db_session(request):
+        _ = request
+        calls["db_session"] += 1
+        return object()
 
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
-    monkeypatch.setattr(main, "AsyncSessionLocal", lambda: _Ctx())
+    monkeypatch.setattr(main, "get_request_db_session", _fake_get_request_db_session)
     monkeypatch.setattr(main, "build_startup_steps", lambda *, role: [("noop", lambda: _noop_async())])
     monkeypatch.setattr(main, "build_cleanup_steps", lambda *, role: [("noop", lambda: _noop_async())])
     monkeypatch.setattr(main.settings, "auth_enabled", False)
@@ -202,4 +198,4 @@ def test_db_session_dependency_skips_health(monkeypatch):
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert calls["enter"] == 0
+    assert calls["db_session"] == 0

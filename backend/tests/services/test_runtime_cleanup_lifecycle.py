@@ -208,8 +208,10 @@ async def test_fs_runtime_lifecycle_with_snapshot_workload() -> None:
 
             runtime = fs_runtime._fs_runtime
             assert runtime is not None
-            assert runtime.queue_depth == 0
-            assert runtime.in_flight == 0
+            assert runtime.interactive.queue_depth == 0
+            assert runtime.bulk.queue_depth == 0
+            assert runtime.interactive.in_flight == 0
+            assert runtime.bulk.in_flight == 0
 
             await fs_runtime.close_fs_runtime()
             assert fs_runtime._fs_runtime is None

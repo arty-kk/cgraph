@@ -3,13 +3,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext import asyncio as sa_asyncio
 
-from .config import settings
+from . import config
 
 
 def _async_database_url() -> str:
-    url = settings.database_url
+    url = config.settings.database_url
     if url.startswith("postgresql+psycopg://"):
         return url.replace("postgresql+psycopg://", "postgresql+psycopg_async://", 1)
     if url.startswith("postgresql://"):
@@ -17,17 +17,21 @@ def _async_database_url() -> str:
     return url
 
 
-async_engine = create_async_engine(
+async_engine = sa_asyncio.create_async_engine(
     _async_database_url(),
     echo=False,
     pool_pre_ping=True,
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_max_overflow,
-    pool_timeout=settings.db_pool_timeout_seconds,
-    pool_recycle=settings.db_pool_recycle_seconds,
+    pool_size=config.settings.db_pool_size,
+    max_overflow=config.settings.db_max_overflow,
+    pool_timeout=config.settings.db_pool_timeout_seconds,
+    pool_recycle=config.settings.db_pool_recycle_seconds,
 )
 
-AsyncSessionLocal = async_sessionmaker(async_engine, expire_on_commit=False, class_=AsyncSession)
+AsyncSessionLocal = sa_asyncio.async_sessionmaker(
+    async_engine,
+    expire_on_commit=False,
+    class_=sa_asyncio.AsyncSession,
+)
 
 
 async def init_async_db() -> None:
@@ -42,6 +46,6 @@ async def close_async_db() -> None:
     await async_engine.dispose()
 
 
-async def get_async_session() -> AsyncIterator[AsyncSession]:
+async def get_async_session() -> AsyncIterator[sa_asyncio.AsyncSession]:
     async with AsyncSessionLocal() as session:
         yield session

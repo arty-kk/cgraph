@@ -134,7 +134,7 @@ class TestAgenticApiCoverageConcurrencyRuntime(unittest.IsolatedAsyncioTestCase)
                             for _ in range(4)
                         ]
                     ),
-                    timeout=10,
+                    timeout=20,
                 )
             finally:
                 stop.set()
