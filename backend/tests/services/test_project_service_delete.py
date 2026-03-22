@@ -18,13 +18,6 @@ from app.services import project_service  # noqa: E402
 
 @pytest.mark.anyio
 async def test_load_patch_blob_ref_counts_async_handles_row_objects() -> None:
-    class _RowLike:
-        def __init__(self, run_id: int, result_json: str) -> None:
-            self._values = (run_id, result_json)
-
-        def __getitem__(self, idx: int):
-            return self._values[idx]
-
     class _Result:
         def __init__(self, rows):
             self._rows = rows
@@ -37,9 +30,8 @@ async def test_load_patch_blob_ref_counts_async_handles_row_objects() -> None:
             _ = stmt
             return _Result(
                 [
-                    _RowLike(1, json.dumps({"patch_unified_diff_meta": {"sha256": "sha-a"}})),
-                    _RowLike(2, json.dumps({"patch_unified_diff_meta": {"sha256": "sha-b"}})),
-                    _RowLike(3, json.dumps({"patch_unified_diff_meta": {"sha256": "sha-a"}})),
+                    ("sha-a", 2),
+                    ("sha-b", 1),
                 ]
             )
 
@@ -82,6 +74,7 @@ async def test_delete_project_file_errors_do_not_rollback_db(ensure_async_postgr
                     result_json=json.dumps(
                         {"patch_unified_diff_meta": {"sha256": "sha-test"}}, ensure_ascii=False
                     ),
+                    patch_blob_sha="sha-test",
                 )
                 session.add(run)
                 snapshot_payload = {
@@ -206,6 +199,7 @@ async def test_delete_project_async_keeps_shared_patch_blob(ensure_async_postgre
                     result_json=json.dumps(
                         {"patch_unified_diff_meta": {"sha256": "sha-shared"}}, ensure_ascii=False
                     ),
+                    patch_blob_sha="sha-shared",
                 )
                 run2 = AnalysisRun(
                     org_id=org_id,
@@ -217,6 +211,7 @@ async def test_delete_project_async_keeps_shared_patch_blob(ensure_async_postgre
                     result_json=json.dumps(
                         {"patch_unified_diff_meta": {"sha256": "sha-shared"}}, ensure_ascii=False
                     ),
+                    patch_blob_sha="sha-shared",
                 )
                 session.add(run1)
                 session.add(run2)
@@ -252,6 +247,75 @@ async def test_delete_project_async_keeps_shared_patch_blob(ensure_async_postgre
                     .first()
                 )
                 assert remaining_run is not None
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(AnalysisRun).where(AnalysisRun.org_id == org_id))
+            await session.execute(delete(RepoSnapshot).where(RepoSnapshot.org_id == org_id))
+            await session.execute(delete(Project).where(Project.org_id == org_id))
+            await session.commit()
+
+
+@pytest.mark.anyio
+async def test_delete_project_async_uses_db_sha_without_json_parsing(ensure_async_postgres, monkeypatch) -> None:
+    if async_engine.sync_engine.dialect.name != "postgresql":
+        pytest.skip("Postgres is required for project delete tests")
+
+    org_id = 9103
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(AnalysisRun).where(AnalysisRun.org_id == org_id))
+        await session.execute(delete(RepoSnapshot).where(RepoSnapshot.org_id == org_id))
+        await session.execute(delete(Project).where(Project.org_id == org_id))
+        await session.commit()
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            async with AsyncSessionLocal() as session:
+                project = Project(name="Delete Perf", root_path=tmpdir, org_id=org_id)
+                session.add(project)
+                await session.commit()
+                await session.refresh(project)
+                project_id = int(project.id or 0)
+
+                for idx in range(400):
+                    sha = f"sha-{idx % 25}"
+                    session.add(
+                        AnalysisRun(
+                            org_id=org_id,
+                            project_id=project_id,
+                            target_path=".",
+                            mode="test",
+                            prompt="prompt",
+                            model_used="model",
+                            result_json=json.dumps(
+                                {"patch_unified_diff_meta": {"sha256": sha}},
+                                ensure_ascii=False,
+                            ),
+                            patch_blob_sha=sha,
+                        )
+                    )
+                await session.commit()
+
+            deleted_shas: list[str] = []
+
+            async def _fake_delete_patch_blob_for_sha_async(sha: str) -> None:
+                deleted_shas.append(sha)
+
+            def _json_loads_fail(*args, **kwargs):
+                raise AssertionError("json.loads must not be used for patch sha scan")
+
+            monkeypatch.setattr(project_service.json, "loads", _json_loads_fail)
+            monkeypatch.setattr(
+                project_service,
+                "_delete_patch_blob_for_sha_async",
+                _fake_delete_patch_blob_for_sha_async,
+            )
+            monkeypatch.setattr(project_service, "delete_project_snapshot_root_async", mock.AsyncMock())
+            monkeypatch.setattr(project_service, "delete_snapshot_async", mock.AsyncMock())
+
+            async with AsyncSessionLocal() as session:
+                await project_service.delete_project_async(session, project_id, org_id)
+
+            assert sorted(deleted_shas) == [f"sha-{idx}" for idx in range(25)]
     finally:
         async with AsyncSessionLocal() as session:
             await session.execute(delete(AnalysisRun).where(AnalysisRun.org_id == org_id))
