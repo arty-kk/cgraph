@@ -6,6 +6,14 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from app.task_queues import (
+    QUEUE_HEAVY,
+    QUEUE_LIGHT,
+    QUEUE_MEDIUM,
+    TASK_QUEUE_BY_KIND,
+    TASK_QUEUES,
+)
+
 
 @pytest.mark.anyio
 async def test_worker_settings_registers_stubgraph_tasks() -> None:
@@ -21,12 +29,61 @@ async def test_worker_settings_registers_stubgraph_tasks() -> None:
 
 
 def test_worker_settings_queue_name_comes_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("STUBGRAPH_ARQ_QUEUE", "heavy")
+    monkeypatch.setenv("STUBGRAPH_ARQ_QUEUE", QUEUE_HEAVY)
     import app.arq_worker as arq_worker
 
     reloaded = importlib.reload(arq_worker)
 
-    assert reloaded.WorkerSettings.queue_name == "heavy"
+    assert reloaded.WorkerSettings.queue_name == QUEUE_HEAVY
+    assert reloaded.WorkerSettings.queue_names == (QUEUE_HEAVY,)
+
+
+def test_worker_settings_queue_names_default_to_all_supported_queues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("STUBGRAPH_ARQ_QUEUE", raising=False)
+    monkeypatch.delenv("STUBGRAPH_ARQ_QUEUES", raising=False)
+    import app.arq_worker as arq_worker
+
+    reloaded = importlib.reload(arq_worker)
+
+    assert reloaded.WorkerSettings.queue_names == TASK_QUEUES
+
+
+def test_worker_settings_queue_names_come_from_env_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("STUBGRAPH_ARQ_QUEUE", raising=False)
+    monkeypatch.setenv("STUBGRAPH_ARQ_QUEUES", ",".join(TASK_QUEUES))
+    import app.arq_worker as arq_worker
+
+    reloaded = importlib.reload(arq_worker)
+
+    assert reloaded.WorkerSettings.queue_names == TASK_QUEUES
+
+
+def test_worker_settings_single_queue_env_has_priority_over_multi_queue_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STUBGRAPH_ARQ_QUEUE", QUEUE_LIGHT)
+    monkeypatch.setenv("STUBGRAPH_ARQ_QUEUES", ",".join(TASK_QUEUES))
+    import app.arq_worker as arq_worker
+
+    reloaded = importlib.reload(arq_worker)
+
+    assert reloaded.WorkerSettings.queue_names == (QUEUE_LIGHT,)
+
+
+def test_worker_settings_ignores_unknown_queues_from_multi_queue_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("STUBGRAPH_ARQ_QUEUE", raising=False)
+    monkeypatch.setenv("STUBGRAPH_ARQ_QUEUES", "light,unknown,medium")
+    import app.arq_worker as arq_worker
+
+    reloaded = importlib.reload(arq_worker)
+
+    assert reloaded.WorkerSettings.queue_names == (QUEUE_LIGHT, QUEUE_MEDIUM)
 
 
 def test_worker_settings_cron_jobs_disabled_without_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,3 +110,25 @@ def test_worker_settings_use_arq_runtime_knobs(monkeypatch: pytest.MonkeyPatch) 
     assert reloaded.WorkerSettings.job_timeout == 120
     assert reloaded.WorkerSettings.keep_result == 30
     assert reloaded.WorkerSettings.poll_delay == 0.2
+
+
+def test_task_queue_mapping_contract_for_user_facing_tasks() -> None:
+    assert TASK_QUEUE_BY_KIND["run_task"] == QUEUE_HEAVY
+    assert TASK_QUEUE_BY_KIND["scan"] == QUEUE_MEDIUM
+    assert TASK_QUEUE_BY_KIND["docs"] == QUEUE_LIGHT
+
+
+def test_worker_queue_configuration_covers_mapped_queues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("STUBGRAPH_ARQ_QUEUE", raising=False)
+    monkeypatch.delenv("STUBGRAPH_ARQ_QUEUES", raising=False)
+    import app.arq_worker as arq_worker
+
+    reloaded = importlib.reload(arq_worker)
+    mapped_queues = set(TASK_QUEUE_BY_KIND.values())
+    covered = set(reloaded.WorkerSettings.queue_names)
+
+    if reloaded.WorkerSettings.queue_name:
+        covered.add(reloaded.WorkerSettings.queue_name)
+    assert mapped_queues.issubset(covered)

@@ -22,11 +22,15 @@ from ..infra.cpu_runtime import run_cpu_io_async
 from ..infra.redis_client import get_async_redis_client
 from ..logging import get_logger
 from ..models import TaskJob
+from ..task_queues import (
+    QUEUE_HEAVY,
+    TASK_QUEUE_BY_KIND,
+)
 from ..utils import sha256_text
 
 logger = get_logger("stubgraph.task_queue")
 
-_HEAVY_INFLIGHT_KEY = "stubgraph:queue:heavy:inflight"
+_HEAVY_INFLIGHT_KEY = f"stubgraph:queue:{QUEUE_HEAVY}:inflight"
 _ENQUEUE_TIMEOUT_SECONDS = 10.0
 _ENQUEUE_REASON_KEY = "enqueue_reason"
 
@@ -258,7 +262,7 @@ async def _guard_inflight_async(
     job_id: str | None = None,
 ) -> None:
     _ = session
-    if queue != "heavy":
+    if queue != QUEUE_HEAVY:
         return
     limit = settings.task_queue_inflight_heavy_limit
     if limit is None:
@@ -320,7 +324,7 @@ async def _guard_inflight_async(
 
 
 async def _release_inflight_async(queue: str, job_id: str) -> None:
-    if queue != "heavy":
+    if queue != QUEUE_HEAVY:
         return
     try:
         client = get_async_redis_client()
@@ -337,7 +341,7 @@ async def _reconcile_heavy_inflight_async() -> None:
                     select(func.count())
                     .select_from(TaskJob)
                     .where(
-                        TaskJob.queue == "heavy",
+                        TaskJob.queue == QUEUE_HEAVY,
                         TaskJob.status.in_(("pending", "running")),
                     )
                 )
@@ -353,7 +357,7 @@ async def _reconcile_heavy_inflight_async() -> None:
             (
                 await session.execute(
                     select(TaskJob.id).where(
-                        TaskJob.queue == "heavy",
+                        TaskJob.queue == QUEUE_HEAVY,
                         TaskJob.status.in_(("pending", "running")),
                     )
                 )
@@ -379,33 +383,34 @@ async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:
         if existing:
             return existing
 
-        await _guard_inflight_async(session, "heavy", provisional_task_id)
+        run_queue = TASK_QUEUE_BY_KIND["run_task"]
+        await _guard_inflight_async(session, run_queue, provisional_task_id)
         try:
             job_id, created = await _create_job_async(
                 session,
                 "run_task",
                 org_id=org_id,
-                queue="heavy",
+                queue=run_queue,
                 idempotency_key=idempotency_key,
                 task_id=provisional_task_id,
             )
         except Exception:
-            await _release_inflight_async("heavy", provisional_task_id)
+            await _release_inflight_async(run_queue, provisional_task_id)
             raise
 
         if not created:
-            await _release_inflight_async("heavy", provisional_task_id)
+            await _release_inflight_async(run_queue, provisional_task_id)
             return job_id
         try:
             await _enqueue_with_error_mapping_async(
                 session=session,
                 task_name="stubgraph.run_task",
                 args=[job_id, project_id, org_id, payload],
-                queue="heavy",
+                queue=run_queue,
                 task_id=job_id,
             )
         except ExternalServiceError:
-            await _release_inflight_async("heavy", job_id)
+            await _release_inflight_async(run_queue, job_id)
             raise
     return job_id
 
@@ -430,7 +435,7 @@ async def submit_scan_with_status_async(
         session,
         "scan",
         org_id=org_id,
-        queue="medium",
+        queue=TASK_QUEUE_BY_KIND["scan"],
         idempotency_key=idempotency_key,
     )
     if not created:
@@ -443,7 +448,7 @@ async def submit_scan_with_status_async(
         session=session,
         task_name="stubgraph.scan",
         args=[task_id, project_id, org_id],
-        queue="medium",
+        queue=TASK_QUEUE_BY_KIND["scan"],
         task_id=task_id,
     )
     return task_id, "pending"
@@ -461,7 +466,7 @@ async def submit_docs_async(project_id: int, org_id: int) -> tuple[str, str]:
             session,
             "docs",
             org_id=org_id,
-            queue="light",
+            queue=TASK_QUEUE_BY_KIND["docs"],
             idempotency_key=idempotency_key,
         )
         if created:
@@ -469,7 +474,7 @@ async def submit_docs_async(project_id: int, org_id: int) -> tuple[str, str]:
                 session=session,
                 task_name="stubgraph.docs",
                 args=[task_id, project_id, org_id],
-                queue="light",
+                queue=TASK_QUEUE_BY_KIND["docs"],
                 task_id=task_id,
             )
             return task_id, "pending"
@@ -498,7 +503,7 @@ async def submit_snapshot_import_async(
             session,
             "snapshot_import",
             org_id=org_id,
-            queue="medium",
+            queue=TASK_QUEUE_BY_KIND["snapshot_import"],
             idempotency_key=idempotency_key,
         )
         if created:
@@ -506,7 +511,7 @@ async def submit_snapshot_import_async(
                 session=session,
                 task_name="stubgraph.snapshot_import",
                 args=[task_id, name, archive_name, staged_path, org_id],
-                queue="medium",
+                queue=TASK_QUEUE_BY_KIND["snapshot_import"],
                 task_id=task_id,
             )
             return task_id, "pending"
@@ -540,7 +545,7 @@ async def submit_mutation_indexing_async(
             session,
             "mutation_indexing",
             org_id=org_id,
-            queue="medium",
+            queue=TASK_QUEUE_BY_KIND["mutation_indexing"],
             idempotency_key=idempotency_key,
         )
         if created:
@@ -548,7 +553,7 @@ async def submit_mutation_indexing_async(
                 session=session,
                 task_name="stubgraph.mutation_indexing",
                 args=[task_id, project_id, org_id, payload["rel_paths"], payload["operation"]],
-                queue="medium",
+                queue=TASK_QUEUE_BY_KIND["mutation_indexing"],
                 task_id=task_id,
             )
     return task_id, "pending"
