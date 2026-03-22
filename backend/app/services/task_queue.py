@@ -26,7 +26,7 @@ from ..utils import sha256_text
 
 logger = get_logger("stubgraph.task_queue")
 
-_HEAVY_INFLIGHT_KEY = "stubgraph:queue:heavy:inflight"
+HEAVY_INFLIGHT_KEY = "stubgraph:queue:heavy:inflight"
 _ENQUEUE_TIMEOUT_SECONDS = 10.0
 _ENQUEUE_REASON_KEY = "enqueue_reason"
 
@@ -285,7 +285,7 @@ async def _guard_inflight_async(
             added_raw, count_raw = await client.eval(
                 lua,
                 1,
-                _HEAVY_INFLIGHT_KEY,
+                HEAVY_INFLIGHT_KEY,
                 int(limit),
                 job_id,
             )
@@ -324,7 +324,7 @@ async def _release_inflight_async(queue: str, job_id: str) -> None:
         return
     try:
         client = get_async_redis_client()
-        await client.srem(_HEAVY_INFLIGHT_KEY, job_id)
+        await client.srem(HEAVY_INFLIGHT_KEY, job_id)
     except RedisError as exc:
         logger.warning("Failed to release inflight job", extra={"reason": str(exc)})
 
@@ -345,7 +345,7 @@ async def _reconcile_heavy_inflight_async() -> None:
             or 0
         )
         client = get_async_redis_client()
-        redis_count = int(await client.scard(_HEAVY_INFLIGHT_KEY))
+        redis_count = int(await client.scard(HEAVY_INFLIGHT_KEY))
         if redis_count == db_count:
             return
 
@@ -361,9 +361,9 @@ async def _reconcile_heavy_inflight_async() -> None:
             .scalars()
             .all()
         )
-        await client.delete(_HEAVY_INFLIGHT_KEY)
+        await client.delete(HEAVY_INFLIGHT_KEY)
         if active_ids:
-            await client.sadd(_HEAVY_INFLIGHT_KEY, *active_ids)
+            await client.sadd(HEAVY_INFLIGHT_KEY, *active_ids)
 
 
 async def submit_run_async(project_id: int, org_id: int, payload: dict) -> str:

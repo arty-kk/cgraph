@@ -14,7 +14,7 @@ from app.errors import ExternalServiceError
 from app.infra import redis_client
 from app.models import TaskJob
 from app.services import task_queue
-from app.services.task_queue import submit_run_async, submit_scan_async
+from app.services.task_queue import HEAVY_INFLIGHT_KEY, submit_run_async, submit_scan_async
 from tests.services.db_helpers import ensure_async_postgres  # noqa: F401
 
 
@@ -92,7 +92,7 @@ async def test_submit_run_async_idempotency_collision_releases_provisional_infli
     monkeypatch.setattr(task_queue, "_find_existing_job_id_async", _forced_second_submit_find)
     monkeypatch.setattr(task_queue, "_create_job_async", _track_create_job)
 
-    inflight_key = "stubgraph:queue:heavy:inflight"
+    inflight_key = HEAVY_INFLIGHT_KEY
     inflight_members_before_second_submit = set(redis_client.members)
     second_job_id = await submit_run_async(project_id=51, org_id=77, payload={"dup": True})
     inflight_members_after_second_submit = set(redis_client.members)
@@ -302,8 +302,8 @@ async def test_submit_run_handler_terminal_transition_keeps_heavy_inflight_key_c
     assert job is not None
     assert job.status == ("failed" if should_fail else "succeeded")
     assert task_id not in redis_client.members
-    assert "stubgraph:queue:heavy:inflight" in redis_client.keys_seen
-    assert set(redis_client.keys_seen) == {"stubgraph:queue:heavy:inflight"}
+    assert HEAVY_INFLIGHT_KEY in redis_client.keys_seen
+    assert set(redis_client.keys_seen) == {HEAVY_INFLIGHT_KEY}
 
 
 @pytest.mark.anyio

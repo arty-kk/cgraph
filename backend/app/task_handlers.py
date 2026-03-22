@@ -22,7 +22,7 @@ from .services.project_service import create_project_from_snapshot_async
 from .services.file_mutation_service import run_mutation_indexing_async
 from .services.project_service import _scan_and_update_graph_async
 from .services.routing_calibration_service import calibrate_routing_policy_thresholds_async
-from .services.task_queue import cleanup_completed_jobs_async
+from .services.task_queue import HEAVY_INFLIGHT_KEY, cleanup_completed_jobs_async
 from .services.task_service import TaskRequest, run_task_async
 from .snapshots import (
     delete_snapshot_async,
@@ -353,14 +353,12 @@ async def _normalize_project_root_async(root_path: str) -> Path:
 
 
 async def _touch_inflight_async(job_id: str) -> None:
-    key = "stubgraph:queue:heavy:inflight"
     await init_redis_pool_async()
     client = get_async_redis_client()
-    await client.sadd(key, job_id)
+    await client.sadd(HEAVY_INFLIGHT_KEY, job_id)
 
 
 async def _decrement_inflight_async(job_id: str) -> None:
-    key = "stubgraph:queue:heavy:inflight"
     await init_redis_pool_async()
     client = get_async_redis_client()
-    await client.srem(key, job_id)
+    await client.srem(HEAVY_INFLIGHT_KEY, job_id)
