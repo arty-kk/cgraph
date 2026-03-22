@@ -13,6 +13,7 @@ from .config import settings
 from .infra.runtime_lifecycle import build_cleanup_steps, build_startup_steps
 from .logging import get_logger
 from .services.routing_calibration_service import calibrate_routing_policy_thresholds_async
+from .task_queues import TASK_QUEUES
 
 logger = get_logger("stubgraph.arq_worker")
 
@@ -119,12 +120,33 @@ def _build_cron_jobs() -> list[object]:
     return [cron(run_routing_calibration, minute={m % 60 for m in range(0, 60, interval)})]
 
 
+def _resolve_queue_name() -> str:
+    return os.getenv("STUBGRAPH_ARQ_QUEUE", settings.task_queue_default)
+
+
+def _resolve_queue_names(queue_name: str) -> tuple[str, ...]:
+    if os.getenv("STUBGRAPH_ARQ_QUEUE"):
+        return (queue_name,)
+
+    queue_names_raw = os.getenv("STUBGRAPH_ARQ_QUEUES")
+    if queue_names_raw:
+        queue_names = tuple(
+            queue
+            for queue in (item.strip() for item in queue_names_raw.split(","))
+            if queue in TASK_QUEUES
+        )
+        if queue_names:
+            return queue_names
+    return TASK_QUEUES
+
+
 class WorkerSettings:
     functions = _build_worker_functions()
     cron_jobs = _build_cron_jobs()
     on_startup = on_startup
     on_shutdown = on_shutdown
-    queue_name = os.getenv("STUBGRAPH_ARQ_QUEUE", settings.task_queue_default)
+    queue_name = _resolve_queue_name()
+    queue_names = _resolve_queue_names(queue_name)
     max_jobs = settings.worker_runtime_concurrency
     job_timeout = settings.arq_job_timeout_seconds
     keep_result = settings.arq_keep_result_seconds
