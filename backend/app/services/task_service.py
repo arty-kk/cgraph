@@ -2045,6 +2045,14 @@ async def _run_task_impl_async(
         telemetry_payload["stages"] = list(stage_telemetry)
         retrieval_settings["telemetry"] = telemetry_payload
 
+    patch_blob_sha: str | None = None
+    if isinstance(result_for_db, dict):
+        meta = result_for_db.get("patch_unified_diff_meta")
+        if isinstance(meta, dict):
+            raw_sha = meta.get("sha256")
+            if isinstance(raw_sha, str) and raw_sha:
+                patch_blob_sha = raw_sha
+
     run = AnalysisRun(
         org_id=org_id,
         project_id=project_id,
@@ -2058,6 +2066,7 @@ async def _run_task_impl_async(
         retrieval_settings_json=json.dumps(retrieval_settings, ensure_ascii=False),
         apply_patch=bool(request.apply_patch),
         allowed_patch_paths_json=allowed_patch_paths_json,
+        patch_blob_sha=patch_blob_sha,
         result_json=json.dumps(result_for_db, ensure_ascii=False),
     )
     session.add(run)
@@ -2325,19 +2334,15 @@ async def delete_run_async(
             "Запуск не найден",
             context={"run_id": run_id, "project_id": project_id},
         )
-    data = await _json_loads_or_async(run.result_json, {})
-    if isinstance(data, dict):
-        meta = data.get("patch_unified_diff_meta")
-        if isinstance(meta, dict):
-            sha = meta.get("sha256")
-            if isinstance(sha, str) and sha:
-                counts = await load_patch_blob_ref_counts_async(
-                    session,
-                    {sha},
-                    exclude_run_id=run_id,
-                )
-                if int(counts.get(sha, 0)) == 0:
-                    await _delete_patch_blob_for_sha_async(sha)
+    sha = getattr(run, "patch_blob_sha", None)
+    if isinstance(sha, str) and sha:
+        counts = await load_patch_blob_ref_counts_async(
+            session,
+            {sha},
+            exclude_run_id=run_id,
+        )
+        if int(counts.get(sha, 0)) == 0:
+            await _delete_patch_blob_for_sha_async(sha)
     await session.delete(run)
     await session.commit()
     return {"ok": True}

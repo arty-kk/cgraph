@@ -128,27 +128,6 @@ async def _delete_snapshots_async(
     return [row for row in rows if row is not None]
 
 
-def _extract_patch_blob_shas(result_json_rows: list[str | None]) -> set[str]:
-    shas: set[str] = set()
-    for result_json in result_json_rows:
-        try:
-            data = json.loads(result_json or "{}")
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            continue
-        meta = data.get("patch_unified_diff_meta")
-        if isinstance(meta, dict):
-            sha = meta.get("sha256")
-            if isinstance(sha, str) and sha:
-                shas.add(sha)
-    return shas
-
-
-async def _extract_patch_blob_shas_async(runs) -> set[str]:
-    return await run_cpu_io_async(_extract_patch_blob_shas, runs, operation="project.extract_patch_blob_shas")
-
-
 async def load_patch_blob_ref_counts_async(
     session: AsyncSession,
     shas: set[str],
@@ -160,20 +139,30 @@ async def load_patch_blob_ref_counts_async(
     if not selected:
         return {}
 
-    stmt = select(AnalysisRun.id, AnalysisRun.result_json).where(AnalysisRun.result_json.is_not(None))
+    stmt = (
+        select(AnalysisRun.patch_blob_sha, func.count())
+        .where(
+            AnalysisRun.patch_blob_sha.is_not(None),
+            AnalysisRun.patch_blob_sha.in_(selected),
+        )
+        .group_by(AnalysisRun.patch_blob_sha)
+    )
     if exclude_run_id is not None:
         stmt = stmt.where(AnalysisRun.id != exclude_run_id)
     if exclude_project_id is not None:
         stmt = stmt.where(AnalysisRun.project_id != exclude_project_id)
 
-    rows = (await session.execute(stmt)).all()
     counts = {sha: 0 for sha in selected}
-    selected_set = set(selected)
-    for row in rows:
-        try:
-            result_json = row[1]
-        except Exception:
-            continue
+    rows = (await session.execute(stmt)).all()
+    for sha, count in rows:
+        if isinstance(sha, str) and sha in counts:
+            counts[sha] = int(count or 0)
+    return counts
+
+
+def _extract_patch_blob_shas(result_json_rows: list[str | None]) -> set[str]:
+    shas: set[str] = set()
+    for result_json in result_json_rows:
         try:
             data = json.loads(result_json or "{}")
         except Exception:
@@ -184,9 +173,17 @@ async def load_patch_blob_ref_counts_async(
         if not isinstance(meta, dict):
             continue
         sha = meta.get("sha256")
-        if isinstance(sha, str) and sha and sha in selected_set:
-            counts[sha] = counts.get(sha, 0) + 1
-    return counts
+        if isinstance(sha, str) and sha:
+            shas.add(sha)
+    return shas
+
+
+async def _extract_patch_blob_shas_async(result_json_rows) -> set[str]:
+    return await run_cpu_io_async(
+        _extract_patch_blob_shas,
+        result_json_rows,
+        operation="project.extract_patch_blob_shas",
+    )
 
 
 def _parse_snapshot_storage_payloads(
@@ -1028,9 +1025,13 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
             if not project:
                 raise NotFoundError("Проект не найден", context={"project_id": project_id})
             project_root_path = project.root_path
-            runs = list(
+            run_blob_shas = set(
                 (
-                    await session.execute(select(AnalysisRun).where(AnalysisRun.project_id == project_id))
+                    await session.execute(
+                        select(AnalysisRun.patch_blob_sha)
+                        .where(AnalysisRun.project_id == project_id)
+                        .distinct()
+                    )
                 )
                 .scalars()
                 .all()
@@ -1042,16 +1043,13 @@ async def delete_project_async(session: AsyncSession, project_id: int, org_id: i
                 .scalars()
                 .all()
             )
-            run_result_json_rows = [getattr(run, "result_json", None) for run in runs]
             snapshot_rows = [
                 (str(getattr(snap, "content_sha256", "") or ""), str(getattr(snap, "archive_name", "") or ""), getattr(snap, "storage_json", None))
                 for snap in snapshots
             ]
             snapshot_payloads: list[tuple[str, str, dict]] = []
-            shas, parsed_snapshot_payloads = await _collect_delete_artifacts_async(
-                run_result_json_rows,
-                snapshot_rows,
-            )
+            parsed_snapshot_payloads = await _parse_snapshot_storage_payloads_async(snapshot_rows)
+            shas = {sha for sha in run_blob_shas if isinstance(sha, str) and sha}
             snapshot_shas = {
                 content_sha256
                 for content_sha256, _, _ in parsed_snapshot_payloads

@@ -199,6 +199,7 @@ class AnalysisRun(SQLModel, table=True):
     applied_json: Optional[str] = Field(default=None)
     allowed_patch_paths_json: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    patch_blob_sha: Optional[str] = Field(default=None, index=True)
     result_json: str
 
 

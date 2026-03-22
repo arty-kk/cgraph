@@ -99,6 +99,7 @@ async def test_delete_run_async_deletes_blob_via_async_helper(monkeypatch):
         id=101,
         project_id=77,
         org_id=55,
+        patch_blob_sha="sha-del",
         result_json=json.dumps({"patch_unified_diff_meta": {"sha256": "sha-del"}}),
     )
     session = _FakeAsyncSession(run)
@@ -140,6 +141,7 @@ async def test_delete_run_async_keeps_shared_blob(monkeypatch):
         id=102,
         project_id=77,
         org_id=55,
+        patch_blob_sha="sha-shared",
         result_json=json.dumps({"patch_unified_diff_meta": {"sha256": "sha-shared"}}),
     )
     session = _FakeAsyncSession(run)
@@ -169,6 +171,41 @@ async def test_delete_run_async_keeps_shared_blob(monkeypatch):
 
     assert result == {"ok": True}
     assert calls == []
+    assert session.deleted == [run]
+    assert session.committed is True
+
+
+@pytest.mark.anyio
+async def test_delete_run_async_does_not_parse_result_json_for_blob_sha(monkeypatch):
+    run = SimpleNamespace(
+        id=103,
+        project_id=77,
+        org_id=55,
+        patch_blob_sha="sha-fast",
+        result_json='{"invalid_json":',
+    )
+    session = _FakeAsyncSession(run)
+
+    async def _fake_load_patch_blob_ref_counts_async(_session, shas, *, exclude_run_id=None, exclude_project_id=None):
+        _ = (_session, exclude_project_id)
+        assert shas == {"sha-fast"}
+        assert exclude_run_id == 103
+        return {"sha-fast": 1}
+
+    async def _fail_json_loads_or_async(raw, fallback):
+        _ = (raw, fallback)
+        raise AssertionError("delete_run_async must not parse result_json for sha lookup")
+
+    monkeypatch.setattr(
+        task_service,
+        "load_patch_blob_ref_counts_async",
+        _fake_load_patch_blob_ref_counts_async,
+    )
+    monkeypatch.setattr(task_service, "_json_loads_or_async", _fail_json_loads_or_async)
+
+    result = await task_service.delete_run_async(session, 77, 55, 103)
+
+    assert result == {"ok": True}
     assert session.deleted == [run]
     assert session.committed is True
 
