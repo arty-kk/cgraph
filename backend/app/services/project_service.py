@@ -967,18 +967,32 @@ async def create_project_from_snapshot_async(
 ) -> Project:
     root = await prepare_project_snapshot_root_async(meta)
     root = await _normalize_project_root_async(str(root))
-    async with session.begin():
-        project = Project(name=name, root_path=str(root), org_id=org_id)
-        session.add(project)
-        await session.flush()
-        snapshot = RepoSnapshot(
-            org_id=org_id,
-            project_id=project.id,
-            content_sha256=meta.sha256,
-            archive_name=meta.archive_name,
-            storage_json=json.dumps(asdict(meta), ensure_ascii=False),
+    try:
+        async with session.begin():
+            project = Project(name=name, root_path=str(root), org_id=org_id)
+            session.add(project)
+            await session.flush()
+            snapshot = RepoSnapshot(
+                org_id=org_id,
+                project_id=project.id,
+                content_sha256=meta.sha256,
+                archive_name=meta.archive_name,
+                storage_json=json.dumps(asdict(meta), ensure_ascii=False),
+            )
+            session.add(snapshot)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Snapshot project create failed; cleaning up prepared project root",
+            extra={"reason": str(exc)},
         )
-        session.add(snapshot)
+        try:
+            await delete_project_snapshot_root_async(root)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to cleanup prepared snapshot project root",
+                extra={"reason": str(cleanup_exc)},
+            )
+        raise
     await session.refresh(project)
     return project
 
