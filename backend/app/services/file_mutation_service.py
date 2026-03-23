@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..graph import update_graph_metrics_incremental_async
@@ -43,9 +42,21 @@ class RollbackResult:
 
 
 def removed_neighbors(reindexed: object) -> list[str] | None:
-    if isinstance(reindexed, dict):
-        value = reindexed.get("removed_edge_neighbors")
-        return value if isinstance(value, list) else value
+    if not isinstance(reindexed, dict):
+        return None
+
+    value = reindexed.get("removed_edge_neighbors")
+    if not isinstance(value, list):
+        return None
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, str) and item and item not in seen:
+            normalized.append(item)
+            seen.add(item)
+    if normalized:
+        return normalized
     return None
 
 

@@ -197,6 +197,110 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
 
 
 @pytest.mark.anyio
+async def test_apply_patch_and_record_async_normalizes_removed_neighbors(monkeypatch):
+    class _Run:
+        applied_json = None
+
+    class _Session:
+        def __init__(self):
+            self.run = _Run()
+            self.commits = 0
+
+        async def get(self, model, run_id):
+            _ = (model, run_id)
+            return self.run
+
+        def add(self, item):
+            _ = item
+
+        async def commit(self):
+            self.commits += 1
+
+        async def execute(self, stmt, *_args, **_kwargs):
+            _ = stmt
+            return None
+
+    class _Lock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    captured: dict[str, object] = {}
+
+    async def _fake_update_graph_metrics_incremental_async(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return None
+
+    monkeypatch.setattr(task_service, "project_lock_async", lambda *_args, **_kwargs: _Lock())
+    async def _fake_parse_diff_paths_async(*_args, **_kwargs):
+        return ["a.py"]
+
+    monkeypatch.setattr(task_service, "_parse_diff_paths_async", _fake_parse_diff_paths_async)
+    monkeypatch.setattr(task_service, "apply_unified_diff", lambda *args, **kwargs: ["a.py"])
+    async def _fake_scan_files_async(*_args, **_kwargs):
+        return {
+            "aborted": False,
+            "removed_edge_neighbors": ["ok.py", "", 123, None, "ok.py"],
+        }
+
+    monkeypatch.setattr(
+        task_service,
+        "scan_files_async",
+        _fake_scan_files_async,
+    )
+    monkeypatch.setattr(
+        task_service,
+        "update_graph_metrics_incremental_async",
+        _fake_update_graph_metrics_incremental_async,
+    )
+    async def _fake_resolve_under_root_async(_root, rel_path, *, max_length):
+        _ = max_length
+        return Path("/tmp/a.py"), rel_path
+
+    monkeypatch.setattr(
+        task_service,
+        "_resolve_under_root_async",
+        _fake_resolve_under_root_async,
+    )
+    async def _fake_path_exists_and_is_file_async(_path):
+        return True, True
+
+    monkeypatch.setattr(
+        task_service,
+        "_path_exists_and_is_file_async",
+        _fake_path_exists_and_is_file_async,
+    )
+    async def _fake_get_or_build_contract_async(_session, _project_id, _root, rel_path):
+        return {"path": rel_path}
+
+    monkeypatch.setattr(
+        task_service,
+        "get_or_build_contract_async",
+        _fake_get_or_build_contract_async,
+    )
+
+    session = _Session()
+    result = await task_service._apply_patch_and_record_async(
+        session,
+        project_id=7,
+        org_id=8,
+        run_id=9,
+        root=Path("/tmp"),
+        patch_text="diff --git a/a.py b/a.py\n",
+        allowed_patch_paths={"a.py"},
+        allow_out_of_context_patch=False,
+    )
+
+    assert result is not None
+    assert captured["args"] == (session, 7, ["a.py"])
+    assert captured["kwargs"] == {"removed_edge_neighbors": ["ok.py"]}
+
+
+@pytest.mark.anyio
 async def test_path_exists_and_is_file_async_uses_run_fs_io_async(monkeypatch):
     calls: dict[str, object] = {}
 

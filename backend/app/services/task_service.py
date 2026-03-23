@@ -104,6 +104,25 @@ GRAPH_NOT_READY_WARNING = "graph not built"
 logger = get_logger("stubgraph.api")
 
 
+def _normalize_removed_edge_neighbors(reindexed: object) -> list[str] | None:
+    if not isinstance(reindexed, dict):
+        return None
+
+    value = reindexed.get("removed_edge_neighbors")
+    if not isinstance(value, list):
+        return None
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, str) and item and item not in seen:
+            normalized.append(item)
+            seen.add(item)
+    if normalized:
+        return normalized
+    return None
+
+
 def _path_exists_and_is_file(path: Path) -> tuple[bool, bool]:
     exists = path.exists()
     return exists, exists and path.is_file()
@@ -556,9 +575,9 @@ async def _apply_patch_and_record_async(
                 ):
                     applied["reindex_aborted"] = True
                 else:
-                    removed_edge_neighbors = None
-                    if isinstance(applied.get("reindexed"), dict):
-                        removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
+                    removed_edge_neighbors = _normalize_removed_edge_neighbors(
+                        applied.get("reindexed")
+                    )
                     await _update_graph_metrics_incremental_async(
                         session,
                         project_id,
