@@ -199,10 +199,10 @@ async def _mutation_indexing_task_async(
     rel_paths: list[str],
     operation: str,
 ) -> None:
-    root = await _resolve_project_root_async(project_id, org_id)
     async with AsyncSessionLocal() as session:
         await _set_job_status_async(session, job_id, "running", org_id=org_id)
         try:
+            root = await _resolve_project_root_async(project_id, org_id, session=session)
             str_paths = [str(path) for path in rel_paths]
             result = await run_mutation_indexing_async(
                 session,
@@ -336,12 +336,23 @@ async def consume_worker_queue_once_async(*, queue: str, timeout_seconds: int = 
     return True
 
 
-async def _resolve_project_root_async(project_id: int, org_id: int) -> Path:
-    async with AsyncSessionLocal() as session:
-        project = await session.get(Project, project_id)
-        if not project or project.org_id != org_id:
-            raise RuntimeError("Проект не найден")
-        return await _normalize_project_root_async(project.root_path)
+async def _resolve_project_root_async(
+    project_id: int,
+    org_id: int,
+    *,
+    session: AsyncSession | None = None,
+) -> Path:
+    if session is None:
+        async with AsyncSessionLocal() as owned_session:
+            project = await owned_session.get(Project, project_id)
+            if not project or project.org_id != org_id:
+                raise RuntimeError("Проект не найден")
+            return await _normalize_project_root_async(project.root_path)
+
+    project = await session.get(Project, project_id)
+    if not project or project.org_id != org_id:
+        raise RuntimeError("Проект не найден")
+    return await _normalize_project_root_async(project.root_path)
 
 
 async def _normalize_project_root_async(root_path: str) -> Path:

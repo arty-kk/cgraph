@@ -147,6 +147,37 @@ async def test_scan_task_async_marks_failed_when_business_coroutine_raises(
 
 
 @pytest.mark.anyio
+async def test_mutation_indexing_task_async_marks_failed_when_project_root_resolve_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_calls: list[tuple[str, dict[str, object]]] = []
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    async def _fake_set_job_status_async(_session, _job_id: str, status: str, **kwargs) -> None:
+        status_calls.append((status, kwargs))
+
+    async def _boom_root(_project_id: int, _org_id: int, *, session=None) -> Path:
+        _ = session
+        raise RuntimeError("project not found")
+
+    monkeypatch.setattr(task_handlers, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(task_handlers, "_set_job_status_async", _fake_set_job_status_async)
+    monkeypatch.setattr(task_handlers, "_resolve_project_root_async", _boom_root)
+
+    await task_handlers._mutation_indexing_task_async("job", 44, 5, ["a.py"], "upsert")
+
+    assert [status for status, _ in status_calls] == ["running", "failed"]
+    assert status_calls[1][1]["error"] == "project not found"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("handler_name", "handler_args", "result_payload"),
     [
@@ -195,7 +226,8 @@ async def test_target_handlers_use_single_session_per_run(
     async def _fake_mutation(*_args, **_kwargs) -> dict[str, object]:
         return dict(result_payload)
 
-    async def _fake_root(_project_id: int, _org_id: int) -> Path:
+    async def _fake_root(_project_id: int, _org_id: int, *, session=None) -> Path:
+        _ = session
         return Path("/repo")
 
     monkeypatch.setattr(task_handlers, "_scan_and_update_graph_async", _fake_scan)
