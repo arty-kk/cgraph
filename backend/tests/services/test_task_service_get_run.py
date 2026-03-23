@@ -319,7 +319,7 @@ async def test_apply_run_patch_async_does_not_call_get_run_patch_async(monkeypat
 
     result = await task_service.apply_run_patch_async(_Session(), 77, 55, 101)
 
-    assert result == {"applied": {"modified": ["a.py"]}}
+    assert result == {"status": "success", "applied": {"status": "success", "modified": ["a.py"]}}
 
 
 @pytest.mark.anyio

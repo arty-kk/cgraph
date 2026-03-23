@@ -516,6 +516,27 @@ async def _apply_patch_and_record_async(
     allow_out_of_context_patch: bool,
 ) -> dict | None:
     applied: dict | None = None
+
+    async def _mark_patched_nodes_async(modified_paths: list[str]) -> None:
+        if not modified_paths:
+            return
+        patched_nodes = (
+            (
+                await session.execute(
+                    select(FileNode).where(
+                        FileNode.project_id == project_id,
+                        FileNode.path.in_(modified_paths),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for node in patched_nodes:
+            node.status = "patched"
+            session.add(node)
+        await session.commit()
+
     try:
         if not isinstance(patch_text, str) or not patch_text.strip():
             raise PatchApplyError("Empty or missing patch_unified_diff")
@@ -533,6 +554,7 @@ async def _apply_patch_and_record_async(
 
             if blocked_paths:
                 applied = {
+                    "status": "failed",
                     "error": ("Patch затрагивает файлы вне контекста: " + ", ".join(blocked_paths)),
                     "blocked_paths": blocked_paths,
                     "blocked_reason": "out_of_context",
@@ -545,26 +567,39 @@ async def _apply_patch_and_record_async(
                     allow_new_files=bool(getattr(settings, "patch_allow_new_files", False)),
                 )
                 modified = sorted(set(modified))
-                applied = {"modified": modified}
+                applied = {"status": "success", "modified": modified}
 
         if applied and "modified" in applied:
             modified = list(applied.get("modified") or [])
             try:
                 applied["reindexed"] = await _scan_files_async(project_id, org_id, root, modified)
-                if isinstance(applied.get("reindexed"), dict) and applied["reindexed"].get(
-                    "aborted"
+            except Exception as error:  # noqa: BLE001
+                applied["status"] = "partial"
+                applied["reindex_error"] = str(error)
+                await _mark_patched_nodes_async(modified)
+            else:
+                if (
+                    isinstance(applied.get("reindexed"), dict)
+                    and applied["reindexed"].get("aborted")
                 ):
+                    applied["status"] = "partial"
                     applied["reindex_aborted"] = True
+                    await _mark_patched_nodes_async(modified)
                 else:
                     removed_edge_neighbors = None
                     if isinstance(applied.get("reindexed"), dict):
                         removed_edge_neighbors = applied["reindexed"].get("removed_edge_neighbors")
-                    await _update_graph_metrics_incremental_async(
-                        session,
-                        project_id,
-                        modified,
-                        removed_edge_neighbors=removed_edge_neighbors,
-                    )
+                    try:
+                        await _update_graph_metrics_incremental_async(
+                            session,
+                            project_id,
+                            modified,
+                            removed_edge_neighbors=removed_edge_neighbors,
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        applied["status"] = "partial"
+                        applied["reindex_error"] = str(error)
+                        await _mark_patched_nodes_async(modified)
 
                 updated_contracts: list[str] = []
                 removed_contracts: list[str] = []
@@ -603,32 +638,13 @@ async def _apply_patch_and_record_async(
                     )
                     await session.commit()
                     applied["contracts_removed"] = removed_contracts
-            except Exception as error:  # noqa: BLE001
-                applied["reindex_error"] = str(error)
-
-                patched_nodes = (
-                    (
-                        await session.execute(
-                            select(FileNode).where(
-                                FileNode.project_id == project_id,
-                                FileNode.path.in_(modified),
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                for node in patched_nodes:
-                    node.status = "patched"
-                    session.add(node)
-                await session.commit()
     except ProjectLockTimeout as exc:
         raise LockedError(
             "Проект сейчас занят, повторите позже",
             context={"project_id": project_id},
         ) from exc
     except PatchApplyError as error:
-        applied = {"error": str(error)}
+        applied = {"status": "failed", "error": str(error)}
 
     if applied is not None:
         run_update = await session.get(AnalysisRun, run_id)
@@ -2322,7 +2338,16 @@ async def apply_run_patch_async(
         allowed_patch_paths,
         allow_out_of_context_patch=False,
     )
-    return {"applied": applied}
+    status = "failed"
+    if isinstance(applied, dict):
+        raw_status = applied.get("status")
+        if raw_status in {"success", "failed", "partial"}:
+            status = raw_status
+        else:
+            if "modified" in applied and not applied.get("error"):
+                status = "partial" if applied.get("reindex_error") else "success"
+            applied["status"] = status
+    return {"status": status, "applied": applied}
 
 
 async def delete_run_async(
