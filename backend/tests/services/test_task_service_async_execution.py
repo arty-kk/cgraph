@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -194,6 +195,92 @@ async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monk
     assert result["contracts_updated"] == ["a.py"]
     assert calls == {"path_state": 1, "contract_async": 1}
     assert session.commits == 1
+
+
+@pytest.mark.anyio
+async def test_apply_patch_and_record_async_marks_partial_status_when_scan_fails(monkeypatch):
+    class _Run:
+        applied_json = None
+
+    class _Node:
+        status = "ok"
+
+    class _ScalarResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return self._rows
+
+    class _ExecuteResult:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def scalars(self):
+            return _ScalarResult(self._rows)
+
+    class _Session:
+        def __init__(self):
+            self.run = _Run()
+            self.node = _Node()
+            self.commits = 0
+
+        async def get(self, model, run_id):
+            _ = (model, run_id)
+            return self.run
+
+        async def execute(self, stmt, *_args, **_kwargs):
+            _ = stmt
+            return _ExecuteResult([self.node])
+
+        def add(self, item):
+            _ = item
+
+        async def commit(self):
+            self.commits += 1
+
+    class _Lock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    async def _fake_parse_diff_paths_async(root, patch_text):
+        _ = (root, patch_text)
+        return ["a.py"]
+
+    async def _fake_scan_files_async(*_args, **_kwargs):
+        raise RuntimeError("scan boom")
+
+    monkeypatch.setattr(task_service, "project_lock_async", lambda *_args, **_kwargs: _Lock())
+    monkeypatch.setattr(task_service, "_parse_diff_paths_async", _fake_parse_diff_paths_async)
+    monkeypatch.setattr(task_service, "apply_unified_diff", lambda *args, **kwargs: ["a.py"])
+    monkeypatch.setattr(task_service, "scan_files_async", _fake_scan_files_async)
+
+    session = _Session()
+    result = await task_service._apply_patch_and_record_async(
+        session,
+        project_id=7,
+        org_id=8,
+        run_id=9,
+        root=Path("/tmp"),
+        patch_text="diff --git a/a.py b/a.py\n",
+        allowed_patch_paths={"a.py"},
+        allow_out_of_context_patch=False,
+    )
+
+    assert result is not None
+    assert result["status"] == "partial"
+    assert result["modified"] == ["a.py"]
+    assert "scan boom" in result["reindex_error"]
+    assert session.node.status == "patched"
+
+    saved_applied = json.loads(session.run.applied_json)
+    assert saved_applied["status"] == "partial"
+    assert saved_applied["modified"] == ["a.py"]
+    assert "scan boom" in saved_applied["reindex_error"]
 
 
 @pytest.mark.anyio
