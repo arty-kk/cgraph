@@ -67,6 +67,7 @@ async def _agentic_json_call_async(
     temperature: float | None = None,
     allow_self_check_retry: bool = True,
     allow_evidence_retry: bool = True,
+    _tool_cache: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict, AgenticMeta]:
     client = get_async_openai_client()
     fmt = _normalize_responses_json_schema(schema)
@@ -90,7 +91,7 @@ async def _agentic_json_call_async(
     meta = AgenticMeta(
         fs_ops_semaphore=asyncio.Semaphore(fs_ops_limit),
     )
-    tool_cache: dict[str, dict] = {}
+    tool_cache: dict[str, dict[str, Any]] = _tool_cache if _tool_cache is not None else {}
 
     def _apply_usage_to_meta(usage: dict[str, int | None]) -> None:
         current = {
@@ -348,6 +349,7 @@ async def _agentic_json_call_async(
                             temperature=temperature,
                             allow_self_check_retry=False,
                             allow_evidence_retry=False,
+                            _tool_cache=tool_cache,
                         )
                         merged_retry_usage = merge_usage(
                             {
@@ -429,6 +431,7 @@ async def _agentic_json_call_async(
                     temperature=temperature,
                     allow_self_check_retry=False,
                     allow_evidence_retry=allow_evidence_retry,
+                    _tool_cache=tool_cache,
                 )
                 merged_retry_usage = merge_usage(
                     {
@@ -505,7 +508,7 @@ async def _agentic_json_call_async(
             try:
                 if cache_hit:
                     meta.cache_hits += 1
-                    out = tool_cache[cache_key]
+                    canonical_out = tool_cache[cache_key]
                 else:
                     out = await _dispatch_tool_async(
                         session,
@@ -516,11 +519,25 @@ async def _agentic_json_call_async(
                         args,
                         max_file_chars=eff_file,
                     )
+                    invalid_tool_output = {
+                        "ok": False,
+                        "error": {
+                            "code": "invalid_tool_output",
+                            "message": "Tool returned non-object payload",
+                        },
+                    }
                     if isinstance(out, dict):
-                        err = out.get("error") if isinstance(out, dict) else None
+                        try:
+                            canonical_out = json.loads(json.dumps(out, ensure_ascii=False))
+                        except Exception:
+                            canonical_out = invalid_tool_output
+                    else:
+                        canonical_out = invalid_tool_output
+                    if isinstance(canonical_out, dict):
+                        err = canonical_out.get("error")
                         err_code = err.get("code") if isinstance(err, dict) else None
                         if err_code != "policy_violation":
-                            tool_cache[cache_key] = out
+                            tool_cache[cache_key] = canonical_out
             except Exception:
                 duration_ms = 0.0
                 if start is not None:
@@ -540,22 +557,23 @@ async def _agentic_json_call_async(
                 )
                 raise
 
-            out_str = json.dumps(out, ensure_ascii=False)
+            out_for_model = json.loads(json.dumps(canonical_out, ensure_ascii=False))
+            out_str = json.dumps(out_for_model, ensure_ascii=False)
             response_bytes = len(out_str.encode("utf-8"))
             truncated_due_to_budget = False
             if remaining_budget >= 0 and len(out_str) > remaining_budget:
-                out, truncated_due_to_budget = _truncate_tool_output(
-                    name, out, remaining_budget=remaining_budget
+                out_for_model, truncated_due_to_budget = _truncate_tool_output(
+                    name, out_for_model, remaining_budget=remaining_budget
                 )
-                out_str = json.dumps(out, ensure_ascii=False)
+                out_str = json.dumps(out_for_model, ensure_ascii=False)
                 response_bytes = len(out_str.encode("utf-8"))
             response_chars = len(out_str)
             duration_ms = 0.0
             if start is not None:
                 duration_ms = max(0.0, (time.perf_counter() - start) * 1000.0)
-            ok_result = bool(out.get("ok") is True)
+            ok_result = bool(out_for_model.get("ok") is True)
             status = "ok" if ok_result else "error"
-            err_info = out.get("error") if isinstance(out, dict) else None
+            err_info = out_for_model.get("error") if isinstance(out_for_model, dict) else None
             err_code = err_info.get("code") if isinstance(err_info, dict) else None
             err_message = err_info.get("message") if isinstance(err_info, dict) else None
             meta.tool_trace.append(
