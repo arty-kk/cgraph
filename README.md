@@ -59,15 +59,9 @@ VITE_API_BASE_URL=http://localhost:8000
 STUBGRAPH_CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-2. Проверьте frontend Dockerfile для compose:
+2. Убедитесь, что compose использует `frontend/Dockerfile` (каноничный файл в репозитории).
 
-```bash
-test -f frontend/Dockerfile.prod && echo "ok" || echo "missing frontend/Dockerfile.prod"
-```
-
-На текущем состоянии репозитория `docker-compose.yml` ссылается на `frontend/Dockerfile.prod`, а в дереве есть `frontend/Dockerfile`. Поэтому перед запуском compose нужно сначала синхронизировать это расхождение.
-
-3. После синхронизации Dockerfile запустите сервисы:
+3. Запустите сервисы:
 
 ```bash
 docker compose up --build

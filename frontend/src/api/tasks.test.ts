@@ -137,6 +137,21 @@ describe('tasks api polling', () => {
     expect(get).toHaveBeenCalledTimes(3)
   })
 
+  it('uses structured task error payload message when task fails', async () => {
+    const taskId = 'task-failed'
+    const initial: TaskStatus = { task_id: taskId, status: 'pending' }
+    get.mockResolvedValue({
+      data: {
+        task_id: taskId,
+        status: 'failed',
+        error: 'legacy',
+        error_payload: { message: 'structured message' },
+      } satisfies TaskStatus,
+    })
+
+    await expect(waitForTaskResult<RunTaskResult>(initial)).rejects.toThrow('structured message')
+  })
+
   it('when both maxAttempts and timeoutMs are provided, fails by earlier timeoutMs limit', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2025-01-01T00:00:00Z'))

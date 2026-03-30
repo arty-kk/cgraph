@@ -15,6 +15,8 @@ class Project(SQLModel, table=True):
     org_id: int = Field(index=True)
     name: str
     root_path: str
+    graph_node_count: int = Field(default=0)
+    graph_edge_count: int = Field(default=0)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -425,6 +427,7 @@ class TaskJob(SQLModel, table=True):
     idempotency_key: str | None = Field(default=None, index=True)
     result_json: str | None = Field(default=None)
     error: str | None = Field(default=None)
+    error_json: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: datetime | None = Field(default=None, index=True)

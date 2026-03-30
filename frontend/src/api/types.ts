@@ -297,6 +297,12 @@ export type TaskStatus = {
   task_id: string
   status: 'pending' | 'running' | 'succeeded' | 'failed'
   error?: unknown
+  error_payload?: {
+    code?: string
+    message?: string
+    context?: Record<string, unknown>
+    stage?: string
+  }
   result?: unknown
 }
 

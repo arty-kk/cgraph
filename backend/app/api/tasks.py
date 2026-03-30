@@ -28,6 +28,30 @@ class TaskStatusEnvelope(BaseModel):
     task_id: str = Field(..., description="Background task identifier")
     status: Literal["pending", "running"] = Field(..., description="Task status: pending|running")
 
+
+class TaskErrorPayload(BaseModel):
+    code: str = Field(..., description="Stable error code")
+    message: str = Field(..., description="Human-readable error message")
+    context: dict[str, object] = Field(default_factory=dict, description="Error context payload")
+    stage: str = Field(..., description="Pipeline stage where the error occurred")
+
+
+class TaskStatusDetails(BaseModel):
+    task_id: str = Field(..., description="Background task identifier")
+    status: Literal["pending", "running", "succeeded", "failed"] = Field(
+        ...,
+        description="Task status: pending|running|succeeded|failed",
+    )
+    error: str | None = Field(default=None, description="Legacy flat error message")
+    error_payload: TaskErrorPayload | None = Field(
+        default=None,
+        description="Structured task failure payload",
+    )
+    result: dict | list | str | int | float | bool | None = Field(
+        default=None,
+        description="Task result payload for succeeded tasks",
+    )
+
 class RunTask(BaseModel):
     target_path: str = Field(..., description="Path relative to project root")
     prompt: str = Field(..., description="Any natural language request")
@@ -166,7 +190,7 @@ async def delete_run_endpoint(request: Request, project_id: int, run_id: int):
     return await delete_run_async(request.state.db_session, project.id, project.org_id, run_id)
 
 
-@router.get("/status/{task_id}")
+@router.get("/status/{task_id}", response_model=TaskStatusDetails)
 async def get_task_status(request: Request, task_id: str):
     _, org_id, _ = await require_org_context_async(request, min_role="viewer")
     return await describe_task_async(request.state.db_session, task_id, org_id)

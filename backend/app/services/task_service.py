@@ -790,19 +790,11 @@ async def _ensure_node_exists_async(
 
 
 async def _graph_warning_async(session: AsyncSession, project_id: int) -> str | None:
-    nodes_row = (
-        await session.execute(
-            select(func.count()).select_from(FileNode).where(FileNode.project_id == project_id)
-        )
-    ).one()
-    edges_row = (
-        await session.execute(
-            select(func.count()).select_from(FileEdge).where(FileEdge.project_id == project_id)
-        )
-    ).one()
-
-    node_count = int(nodes_row[0] if isinstance(nodes_row, (tuple, list)) else nodes_row or 0)
-    edge_count = int(edges_row[0] if isinstance(edges_row, (tuple, list)) else edges_row or 0)
+    project = await session.get(Project, project_id)
+    if project is None:
+        return GRAPH_NOT_READY_WARNING
+    node_count = int(getattr(project, "graph_node_count", 0) or 0)
+    edge_count = int(getattr(project, "graph_edge_count", 0) or 0)
 
     if node_count < MIN_GRAPH_NODES_FOR_READY or edge_count < MIN_GRAPH_EDGES_FOR_READY:
         return GRAPH_NOT_READY_WARNING
@@ -890,6 +882,56 @@ def _plan_tz_skipped(reason: str) -> dict:
     skipped = dict(PLAN_TZ_EMPTY)
     skipped["summary"] = reason
     return skipped
+
+
+async def _plan_with_usage_degraded_async(
+    stage_telemetry: list[dict[str, Any]],
+    *,
+    stage_name: str,
+    source_name: str,
+    model: str,
+    knowledge: dict[str, object],
+    prompt: str,
+    runtime_policy,
+    profile_instructions: str | None,
+    profile_temperature: float | None,
+) -> tuple[dict, str]:
+    plan_started = perf_counter()
+    try:
+        plan_tz, plan_usage = _extract_payload_and_usage(
+            await plan_task_with_usage_async(
+                knowledge,
+                prompt,
+                policy=runtime_policy,
+                instructions=profile_instructions,
+                temperature=profile_temperature,
+            )
+        )
+        _append_stage_telemetry(
+            stage_telemetry,
+            stage_name=stage_name,
+            model=model,
+            latency_ms=(perf_counter() - plan_started) * 1000,
+            retry_index=0,
+            prompt_tokens=plan_usage.get("prompt_tokens"),
+            completion_tokens=plan_usage.get("completion_tokens"),
+        )
+        return plan_tz, source_name
+    except Exception as error:  # noqa: BLE001
+        _append_stage_telemetry(
+            stage_telemetry,
+            stage_name=stage_name,
+            model=model,
+            latency_ms=(perf_counter() - plan_started) * 1000,
+            retry_index=0,
+            failure_class=error.__class__.__name__,
+        )
+        degraded = _plan_tz_skipped(
+            f"Планирование деградировано ({source_name}): {error.__class__.__name__}."
+        )
+        degraded["degraded"] = True
+        degraded["degraded_reason"] = str(error) or error.__class__.__name__
+        return degraded, f"{source_name}_degraded"
 
 
 def _raise_quality_gate_error(error: QualityGateError) -> None:
@@ -1329,37 +1371,17 @@ async def _run_task_impl_async(
                 "impacted": impacted,
                 "nodes": await _load_node_metrics_async(session, project_id, paths_for_metrics),
             }
-            plan_started = perf_counter()
-            try:
-                plan_tz, plan_usage = _extract_payload_and_usage(
-                    await plan_task_with_usage_async(
-                    knowledge,
-                    request.prompt,
-                    policy=runtime_policy,
-                    instructions=profile_instructions,
-                    temperature=profile_temperature,
-                    )
-                )
-                _append_stage_telemetry(
-                    stage_telemetry,
-                    stage_name="plan_graph",
-                    model=runtime_policy.analysis_model,
-                    latency_ms=(perf_counter() - plan_started) * 1000,
-                    retry_index=0,
-                    prompt_tokens=plan_usage.get("prompt_tokens"),
-                    completion_tokens=plan_usage.get("completion_tokens"),
-                )
-            except Exception as error:  # noqa: BLE001
-                _append_stage_telemetry(
-                    stage_telemetry,
-                    stage_name="plan_graph",
-                    model=runtime_policy.analysis_model,
-                    latency_ms=(perf_counter() - plan_started) * 1000,
-                    retry_index=0,
-                    failure_class=error.__class__.__name__,
-                )
-                _llm_http_error("plan", error)
-            plan_source = "graph"
+            plan_tz, plan_source = await _plan_with_usage_degraded_async(
+                stage_telemetry,
+                stage_name="plan_graph",
+                source_name="graph",
+                model=runtime_policy.analysis_model,
+                knowledge=knowledge,
+                prompt=request.prompt,
+                runtime_policy=runtime_policy,
+                profile_instructions=profile_instructions,
+                profile_temperature=profile_temperature,
+            )
         else:
             plan_tz = _plan_tz_skipped("Планирование пропущено: OPENAI_API_KEY не задан.")
             plan_source = "skipped"
@@ -1431,37 +1453,17 @@ async def _run_task_impl_async(
             contract_summary = await _load_contract_summary_async(session, project_id, target)
             if contract_summary is not None:
                 knowledge["contract"] = contract_summary
-            plan_started = perf_counter()
-            try:
-                plan_tz, plan_usage = _extract_payload_and_usage(
-                    await plan_task_with_usage_async(
-                    knowledge,
-                    request.prompt,
-                    policy=runtime_policy,
-                    instructions=profile_instructions,
-                    temperature=profile_temperature,
-                    )
-                )
-                _append_stage_telemetry(
-                    stage_telemetry,
-                    stage_name="plan_agentic",
-                    model=runtime_policy.analysis_model,
-                    latency_ms=(perf_counter() - plan_started) * 1000,
-                    retry_index=0,
-                    prompt_tokens=plan_usage.get("prompt_tokens"),
-                    completion_tokens=plan_usage.get("completion_tokens"),
-                )
-            except Exception as error:  # noqa: BLE001
-                _append_stage_telemetry(
-                    stage_telemetry,
-                    stage_name="plan_agentic",
-                    model=runtime_policy.analysis_model,
-                    latency_ms=(perf_counter() - plan_started) * 1000,
-                    retry_index=0,
-                    failure_class=error.__class__.__name__,
-                )
-                _llm_http_error("plan", error)
-            plan_source = "agentic"
+            plan_tz, plan_source = await _plan_with_usage_degraded_async(
+                stage_telemetry,
+                stage_name="plan_agentic",
+                source_name="agentic",
+                model=runtime_policy.analysis_model,
+                knowledge=knowledge,
+                prompt=request.prompt,
+                runtime_policy=runtime_policy,
+                profile_instructions=profile_instructions,
+                profile_temperature=profile_temperature,
+            )
             allowed_patch_paths = {target}
             retry_limit = int(getattr(settings, "llm_agentic_max_retry_per_run", 1))
             escalation_limit = int(getattr(settings, "llm_agentic_escalation_max_per_stage", 1))
@@ -1874,37 +1876,17 @@ async def _run_task_impl_async(
                 "context_omitted_paths_total": omitted_total,
                 "context_omitted_paths_truncated": omitted_total > len(omitted_sample),
             }
-            plan_started = perf_counter()
-            try:
-                plan_tz, plan_usage = _extract_payload_and_usage(
-                    await plan_task_with_usage_async(
-                    packed_dict,
-                    request.prompt,
-                    policy=runtime_policy,
-                    instructions=profile_instructions,
-                    temperature=profile_temperature,
-                    )
-                )
-                _append_stage_telemetry(
-                    stage_telemetry,
-                    stage_name="plan_pack",
-                    model=runtime_policy.analysis_model,
-                    latency_ms=(perf_counter() - plan_started) * 1000,
-                    retry_index=0,
-                    prompt_tokens=plan_usage.get("prompt_tokens"),
-                    completion_tokens=plan_usage.get("completion_tokens"),
-                )
-            except Exception as error:  # noqa: BLE001
-                _append_stage_telemetry(
-                    stage_telemetry,
-                    stage_name="plan_pack",
-                    model=runtime_policy.analysis_model,
-                    latency_ms=(perf_counter() - plan_started) * 1000,
-                    retry_index=0,
-                    failure_class=error.__class__.__name__,
-                )
-                _llm_http_error("plan", error)
-            plan_source = "pack"
+            plan_tz, plan_source = await _plan_with_usage_degraded_async(
+                stage_telemetry,
+                stage_name="plan_pack",
+                source_name="pack",
+                model=runtime_policy.analysis_model,
+                knowledge=packed_dict,
+                prompt=request.prompt,
+                runtime_policy=runtime_policy,
+                profile_instructions=profile_instructions,
+                profile_temperature=profile_temperature,
+            )
             if mode == "analyze":
                 stage_started = perf_counter()
                 try:
@@ -2378,11 +2360,34 @@ async def describe_task_async(session: AsyncSession, task_id: str, org_id: int) 
     if not job or job.org_id != org_id:
         raise NotFoundError("Задача не найдена", context={"task_id": task_id})
     result = None
+    error_payload = None
     if isinstance(job.result_json, str) and job.result_json:
         result = await _json_loads_or_async(job.result_json, None)
+    error_json = getattr(job, "error_json", None)
+    if isinstance(error_json, str) and error_json:
+        error_payload = await _json_loads_or_async(error_json, None)
     payload: dict[str, Any] = {"task_id": task_id, "status": job.status}
     if job.error:
         payload["error"] = job.error
+    if isinstance(error_payload, dict):
+        code = error_payload.get("code")
+        message = error_payload.get("message")
+        stage = error_payload.get("stage")
+        context = error_payload.get("context")
+        if (
+            isinstance(code, str)
+            and code
+            and isinstance(message, str)
+            and message
+            and isinstance(stage, str)
+            and stage
+        ):
+            payload["error_payload"] = {
+                "code": code,
+                "message": message,
+                "context": context if isinstance(context, dict) else {},
+                "stage": stage,
+            }
     if result is not None:
         payload["result"] = result
     return payload

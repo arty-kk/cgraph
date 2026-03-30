@@ -51,7 +51,11 @@ export async function waitForTaskResult<T>(
     }
 
     if (errorStatuses.has(current.status)) {
-      const err = current.error ?? 'Task failed'
+      const payloadMessage =
+        current.error_payload && typeof current.error_payload.message === 'string'
+          ? current.error_payload.message
+          : undefined
+      const err = payloadMessage ?? current.error ?? 'Task failed'
       const message = typeof err === 'string' ? err : JSON.stringify(err)
       throw new Error(message)
     }

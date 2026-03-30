@@ -104,6 +104,34 @@ async def test_enqueue_graph_scan_task_uses_async_submit(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_plan_with_usage_degraded_async_soft_fails(monkeypatch):
+    stage_telemetry: list[dict[str, object]] = []
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("plan down")
+
+    monkeypatch.setattr(task_service, "plan_task_with_usage_async", _boom)
+
+    plan_tz, plan_source = await task_service._plan_with_usage_degraded_async(
+        stage_telemetry,
+        stage_name="plan_pack",
+        source_name="pack",
+        model="gpt-test",
+        knowledge={"target_path": "a.py"},
+        prompt="do work",
+        runtime_policy=type("Policy", (), {})(),
+        profile_instructions="",
+        profile_temperature=0.0,
+    )
+
+    assert plan_source == "pack_degraded"
+    assert plan_tz.get("degraded") is True
+    assert "degraded_reason" in plan_tz
+    assert stage_telemetry[0]["stage_name"] == "plan_pack"
+    assert stage_telemetry[0]["failure_class"] == "RuntimeError"
+
+
+@pytest.mark.anyio
 async def test_apply_patch_and_record_async_builds_contracts_via_async_path(monkeypatch):
     class _Run:
         applied_json = None
@@ -626,6 +654,105 @@ async def test_run_task_impl_async_uses_async_agentic_calls(monkeypatch, tmp_pat
     await task_service._run_task_impl_async(_Session(), 1, 1, request)
 
     assert called == {"plan": 1, "agentic": 1}
+
+
+@pytest.mark.anyio
+async def test_run_task_impl_async_continues_when_plan_fails(monkeypatch, tmp_path):
+    file_path = tmp_path / "target.py"
+    file_path.write_text("print('x')\n", encoding="utf-8")
+
+    request = task_service.TaskRequest(
+        target_path="target.py",
+        prompt="analyze",
+        mode="analyze",
+        profile=None,
+        depth=1,
+        dep_mode="contracts",
+        impact_max_nodes=None,
+        impact_max_depth=None,
+        apply_patch=False,
+        allow_out_of_context_patch=False,
+        agentic=False,
+        provided_fields={"mode"},
+    )
+
+    class _Session:
+        async def execute(self, stmt, *_args, **_kwargs):
+            _ = stmt
+
+            class _Result:
+                def all(self):
+                    return []
+
+                def first(self):
+                    return None
+
+                def scalars(self):
+                    return self
+
+                def one(self):
+                    return 0
+
+                def scalar_one(self):
+                    return 0
+
+                def scalar_one_or_none(self):
+                    return None
+
+            return _Result()
+
+        def add(self, item):
+            _ = item
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, item):
+            _ = item
+            return None
+
+    async def _fake_get_project(session, project_id, org_id):
+        _ = (session, project_id, org_id)
+        return type("P", (), {"root_path": str(tmp_path)})()
+
+    async def _noop(*args, **kwargs):
+        _ = (args, kwargs)
+        return None
+
+    async def _plan_boom(*args, **kwargs):
+        _ = (args, kwargs)
+        raise RuntimeError("plan unavailable")
+
+    async def _analyze_async(*args, **kwargs):
+        _ = (args, kwargs)
+        return {
+            "summary": "ok",
+            "sources": [{"path": "target.py", "start_line": 1, "end_line": 1}],
+        }, {}
+
+    monkeypatch.setattr(task_service, "_get_project_async", _fake_get_project)
+    monkeypatch.setattr(task_service, "_ensure_node_exists_async", _noop)
+    monkeypatch.setattr(task_service, "_graph_warning_async", _noop)
+    monkeypatch.setattr(task_service, "_enqueue_graph_scan_task_async", _noop)
+    monkeypatch.setattr(task_service, "_enforce_llm_entitlements_async", _noop)
+    monkeypatch.setattr(task_service.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(task_service.settings, "cache_enabled", False)
+
+    async def _policy_async(**kwargs):
+        _ = kwargs
+        return task_service.DEFAULT_POLICY
+
+    monkeypatch.setattr(task_service, "resolve_runtime_policy_async", _policy_async)
+    monkeypatch.setattr(task_service, "plan_task_with_usage_async", _plan_boom)
+    monkeypatch.setattr(task_service, "analyze_with_usage_async", _analyze_async)
+
+    result = await task_service._run_task_impl_async(_Session(), 1, 1, request)
+
+    assert result.get("result", {}).get("summary") == "ok"
+    assert result.get("plan_source") == "pack_degraded"
 
 
 @pytest.mark.anyio
