@@ -2,266 +2,235 @@
 
 ## 0. Baseline (from audit)
 - Architecture map:
-  - Backend API: FastAPI app with middleware chain (rate limit, auth guard, request DB session lifecycle) and dual routing namespaces (`/api` and `/api/v1`). Evidence: `backend/app/main.py:65-134` (`rate_limit`, `auth_guard`, `request_db_session_lifecycle`).
-  - Domain/API surface: projects, nodes, tasks endpoints, with org/project access checks in API layer and service-layer execution. Evidence: `backend/app/api/projects.py:72-279` (`create_project`, `scan`, `get_graph`, `search_*`), `backend/app/api/nodes.py:215-260` (`contract`, `node`), `backend/app/api/tasks.py:100-171` (`run_task`, `get_task_status`).
-  - LLM orchestration: structured JSON responses through OpenAI Responses API, with parse/refusal handling and usage extraction. Evidence: `backend/app/llm/orchestrator.py:106-200` (`_json_call_with_usage_async`).
-  - Core task pipeline: `TaskRequest` serialization/enqueue -> ARQ worker job -> run execution -> run persistence -> optional patch apply. Evidence: `backend/app/services/task_service.py:245-272` (`TaskRequest`), `backend/app/services/task_service.py:2176-2182` (`enqueue_run_task_async`), `backend/app/task_handlers.py:179-193` (`_run_task_job_async`), `backend/app/services/task_service.py:922-2168` (`_run_task_impl_async`).
-  - Frontend app: React/Vite, API client interceptor normalizes `/api` prefix and injects `X-Org-ID`; UI triggers task run + polling. Evidence: `frontend/src/api/client.ts:43-71` (request interceptor), `frontend/src/api/tasks.ts:34-76` (`waitForTaskResult`).
+  - Backend entrypoint is FastAPI with middleware chain (rate limit, auth guard, request DB-session lifecycle) and duplicated router mounting for `/api` and `/api/v1` namespaces. Evidence: `backend/app/main.py:65-134#rate_limit`, `backend/app/main.py:72-97#auth_guard`, `backend/app/main.py:99-121#request_db_session_lifecycle`.
+  - Task orchestration path is API `POST /tasks/{project_id}/run` -> `enqueue_run_task_async` -> background handler `_run_task_job_async` -> runtime service `_run_task_impl_async` -> status read through `describe_task_async`. Evidence: `backend/app/api/tasks.py:124-160#run_task`, `backend/app/task_handlers.py:254-281#_run_task_job_async`, `backend/app/services/task_service.py:964-1010#_run_task_impl_async`, `backend/app/services/task_service.py:2358-2393#describe_task_async`.
+  - File mutation flow is API `nodes` write operations -> queue mutation indexing task -> frontend polling via `waitForTaskResult`. Evidence: `backend/app/api/nodes.py:343-349#update_file`, `backend/app/services/task_queue.py:526-559#submit_mutation_indexing_async`, `frontend/src/ui/useStubGraphApp.ts:1610-1665#queueMutationIndexingPoll`, `frontend/src/api/tasks.ts:34-80#waitForTaskResult`.
+  - Patch storage lifecycle is externalized in blob storage and referenced by DB `AnalysisRun.patch_blob_sha`; run deletion also drives blob deletion. Evidence: `backend/app/services/task_service.py:2335-2355#delete_run_async`, `backend/app/storage.py:234-257#delete_patch_blob_by_sha_async`.
+  - Frontend transport layer auto-prefixes `/api` and injects `X-Org-ID` from in-memory/storage selection. Evidence: `frontend/src/api/client.ts:21-27#shouldPrefixApiPath`, `frontend/src/api/client.ts:43-71`, `frontend/src/api/client.ts:75-82#setSelectedOrgId`.
 - Critical flows:
-  1. Auth/org-scoped request handling (`auth_guard`). Evidence: `backend/app/main.py:73-96`.
-  2. Create/list project in org. Evidence: `backend/app/api/projects.py:72-123`.
-  3. Project scan enqueue and async status. Evidence: `backend/app/api/projects.py:125-137`, `backend/app/services/task_queue.py:531-559` (`submit_scan_async`).
-  4. File node/contract retrieval with on-demand indexing fallback. Evidence: `backend/app/api/nodes.py:215-260` (`contract`, `node`).
-  5. LLM run submission and background execution. Evidence: `backend/app/api/tasks.py:100-136`, `backend/app/task_handlers.py:179-193`.
-  6. LLM modes (`analyze|evolve|fix|impact`) with routing and quality gate. Evidence: `backend/app/services/task_service.py:967-970`, `backend/app/services/task_service.py:1500-2032`.
-  7. Patch retrieval/apply path. Evidence: `backend/app/services/task_service.py:2292-2350`.
-  8. Frontend task polling lifecycle and timeout boundary. Evidence: `frontend/src/api/tasks.ts:34-76`.
+  1. API request admission (rate limit + auth token + DB session lifecycle). Evidence: `backend/app/main.py:65-69#rate_limit`, `backend/app/main.py:73-97#auth_guard`, `backend/app/main.py:99-121#request_db_session_lifecycle`.
+  2. Org/project authorization at task API boundary. Evidence: `backend/app/api/tasks.py:130-160#run_task`, `backend/app/api/tasks.py:193-196#get_task_status`.
+  3. Background task execution and failure serialization in worker. Evidence: `backend/app/task_handlers.py:57-80#_set_job_status_async`, `backend/app/task_handlers.py:254-281#_run_task_job_async`.
+  4. Task status contract (legacy error + structured `error_payload`). Evidence: `backend/app/api/tasks.py:39-54#TaskStatusDetails`, `backend/app/services/task_service.py:2369-2390#describe_task_async`.
+  5. LLM run preflight and graph readiness warning path. Evidence: `backend/app/services/task_service.py:992-999#_run_task_impl_async`, `backend/app/services/task_service.py:792-801#_graph_warning_async`.
+  6. Mutation indexing queueing and UI poll completion handling. Evidence: `backend/app/services/file_mutation_service.py:58-76#build_mutation_queued_response`, `frontend/src/ui/useStubGraphApp.ts:1610-1665#queueMutationIndexingPoll`.
+  7. Task polling termination logic in frontend API layer. Evidence: `frontend/src/api/tasks.ts:48-79#waitForTaskResult`.
 - Current pain points:
-  - **P0/P1-01 (delivery blocker):** docker-compose points frontend build to `Dockerfile.prod`, but repository has `frontend/Dockerfile` only. Evidence: `docker-compose.yml:197-201`, `frontend/Dockerfile:1-19`, `README.md:68-69`.
-  - **P1-02 (hot-path DB cost):** graph readiness warning performs full `COUNT(*)` on `FileNode` and `FileEdge`, and this warning is computed both during run execution and run retrieval. Evidence: `backend/app/services/task_service.py:792-809` (`_graph_warning_async`), `backend/app/services/task_service.py:952-955` (`_run_task_impl_async`), `backend/app/services/task_service.py:2235` (`get_run_async`).
-  - **P1-03 (LLM reliability/latency):** planning (`plan_task_with_usage_async`) is mandatory in all branches and failures abort the run via `_llm_http_error("plan", ...)`, increasing latency/cost and creating extra failure surface before main mode output. Evidence: `backend/app/services/task_service.py:1333-1362` (`plan_graph`), `backend/app/services/task_service.py:1434-1464` (`plan_agentic`), `backend/app/services/task_service.py:1877-1907` (`plan_pack`).
-  - **P1-04 (error-handling contract gap):** worker stores only `str(exc)` on task failure; structured error context/code from domain exceptions is dropped, while status endpoint exposes only this flattened string. Evidence: `backend/app/task_handlers.py:188-191` (`_run_task_job_async`), `backend/app/services/task_service.py:2376-2388` (`describe_task_async`).
-  - **P2-05 (regression guard weakness):** `mypy` config enables strict flags but globally disables diagnostics (`ignore_errors = true`), reducing static regression signal. Evidence: `pyproject.toml:9-17`.
-  - **P2-06 (high coupling):** single service (`task_service.py`) aggregates request validation, model routing, LLM calls, telemetry, patch storage/apply, and API payload shaping in one path (`_run_task_impl_async`), increasing change risk. Evidence: `backend/app/services/task_service.py:922-2168` (`_run_task_impl_async`).
+  - **P0 — data consistency risk in run deletion:** patch blob is deleted before DB transaction for run delete is committed; on commit failure, DB run may remain while blob is already gone. Evidence: `backend/app/services/task_service.py:2345-2354#delete_run_async`, `backend/app/storage.py:234-257#delete_patch_blob_by_sha_async`.
+  - **P1 — structured task error contract is dropped in UI polling path:** frontend transforms failed status into plain `Error(message)` and discards `error_payload.code/stage/context`, even though the type and backend payload provide these fields. Evidence: `frontend/src/api/tasks.ts:53-60#waitForTaskResult`, `frontend/src/api/types.ts:296-307#TaskStatus`, `backend/app/services/task_service.py:2372-2390#describe_task_async`.
+  - **P1 — stale documentation causes setup friction:** README still states compose points to non-existent `frontend/Dockerfile.prod`, while compose currently points to `frontend/Dockerfile`. Evidence: `README.md:126`, `docker-compose.yml:197-201`.
+  - **P2 — static typing guardrail is effectively disabled:** mypy strict warnings are configured but globally neutralized by `ignore_errors = true`. Evidence: `pyproject.toml:9-17`.
+  - **P2 — duplicated runtime contract helper increases drift risk:** `isTaskStatus` is duplicated in two frontend modules with equivalent structural checks. Evidence: `frontend/src/api/tasks.ts:19-26#isTaskStatus`, `frontend/src/ui/useStubGraphApp.ts:212-219#isTaskStatus`.
 - Constraints:
-  - Async runtime contracts are enforced by tests (no sync DB/session patterns in runtime modules). Evidence: `backend/tests/services/test_runtime_async_db_contract.py:169-182`.
-  - Frontend has explicit repo-native scripts (`lint`, `test`, `build`). Evidence: `frontend/package.json:6-12`.
-  - Backend quality tool configs exist (`ruff`, `mypy`), but no repo-local canonical test command documented for backend in root docs/config. Evidence: `pyproject.toml:1-17`, `README.md:84-108`.
+  - Project explicitly enforces async runtime boundaries with dedicated contract tests (no sync DB/session and no `threading.Lock` in async runtime modules). Evidence: `backend/tests/services/test_runtime_async_db_contract.py:169-182#test_runtime_modules_do_not_use_with_get_session_blocks`, `backend/tests/services/test_runtime_asyncio_run_contract.py:139-146#test_async_runtime_modules_do_not_use_threading_lock`.
+  - Repo-native frontend validation commands are defined in npm scripts (`lint`, `test`, `build`). Evidence: `frontend/package.json:6-12`.
+  - Backend has tool configuration for Ruff and mypy in `pyproject.toml`, but no dedicated backend script wrapper in repo root. Evidence: `pyproject.toml:1-17`.
 
 ## 1. North Star
 - UX outcomes:
-  - Reduce failed/blocked first-run flows caused by environment/deploy contract mismatch to near zero (proxy metric: successful `docker compose up --build` on clean clone).
-  - Reduce perceived run latency and unexpected plan-stage failures in LLM flows (proxy metrics: p50 run completion time; fraction of failed runs where failure stage=`plan_*`).
-  - Improve task-status clarity so UI can show actionable failure classes instead of raw text-only error strings.
+  - Reduce opaque task failures in UI: target proxy metric = 0 cases where failed task toast lacks stable `code` and `stage` when backend provided `error_payload`.
+  - Reduce onboarding friction: target proxy metric = README setup notes match actual compose contract (no false mismatch guidance).
 - Domain outcomes:
-  - Lock task execution invariants: graph readiness signal, LLM planning/execution boundaries, and patch application constraints become explicit and deterministic.
-  - Preserve single source of truth for task status/error schema across worker + API response.
+  - Enforce storage/DB consistency invariant: “an `AnalysisRun` row and its patch blob reference are removed atomically or recoverably”.
+  - Keep a single canonical task failure contract across worker -> API -> frontend consumption.
 - Engineering outcomes:
-  - Lower regression rate for task pipeline changes by restoring meaningful static checks and adding targeted contract tests around error/status payloads.
-  - Reduce risk/cost of future LLM policy changes by isolating planning stage from execution critical path.
+  - Restore static-analysis signal for changed modules by removing global type-check suppression.
+  - Reduce helper drift by converging duplicated task-status type guards to one source.
 
 ## 2. Roadmap (incremental)
 
 ### Phase 1 (Stabilize Core) - up to 10 highest-impact tasks (prioritize P0/P1)
 - Goal
-  - Remove delivery blockers and reduce correctness/performance risks in critical task/LLM path.
+  - Eliminate correctness risks in critical task lifecycle (delete consistency + failure observability).
 - Scope (what we touch / what we don’t)
-  - Touch compose/frontend build contract, task pipeline status/error contract, graph warning hot path, planning stage failure behavior.
-  - Do not change business features (`analyze|evolve|fix|impact`) semantics.
+  - Touch run deletion ordering/transaction boundaries, frontend polling error propagation, README factual mismatch.
+  - Do not change task business modes (`analyze|evolve|fix|impact`) or queue topology.
 - Deliverables (concrete changes)
-  1. Align frontend Dockerfile contract used by compose and docs (single canonical filename).
-  2. Replace repetitive `COUNT(*)` graph readiness checks with cached/project-metrics-based readiness source.
-  3. Make planning stage non-blocking for primary mode execution (fallback to `plan_tz` skipped/partial marker with telemetry).
-  4. Introduce structured task error payload persisted by worker and returned by status endpoint.
-  5. Add contract tests for (a) plan-stage degradation path, (b) structured error payload shape.
+  1. Move patch blob deletion to a safe post-commit flow (or compensating retry record) so DB and blob state cannot diverge on commit failure.
+  2. Preserve and propagate `error_payload` fields through `waitForTaskResult` consumer-facing error object.
+  3. Remove obsolete Dockerfile mismatch statement from README.
 - Dependencies
-  - 2 depends on stable place to store/read project-level graph readiness metadata.
-  - 3 depends on error/status contract decision from 4.
-- Risk & Rollback strategy
-  - Feature-flag non-blocking plan behavior; rollback by re-enabling strict blocking if regressions appear.
-  - Keep old error string field for one compatibility window while adding structured fields.
+  - Item 2 depends on keeping backend `TaskStatusDetails.error_payload` contract stable.
+  - Item 1 depends on existing `patch_blob_sha` ref-count check flow remaining unchanged.
+- Risk & Rollback strategy (if migration/contract changes are required)
+  - Keep legacy `error` message path alongside structured fields during frontend migration.
+  - For run delete flow, use feature-flagged fallback to previous order only as emergency rollback.
 - Validation (how to verify: tests/linter/commands from the repo)
-  - `npm run lint` (frontend).
-  - `npm run test` (frontend).
-  - `ruff check backend/app` (backend config present in repo).
+  - `cd frontend && npm run test`
+  - `cd frontend && npm run lint`
+  - `cd backend && pytest tests/services/test_task_service_get_run.py -q`
 
 ### Phase 2 (UX & Domain Consolidation) - up to 10 tasks
 - Goal
-  - Make task/LLM state transitions predictable in UI and domain boundaries explicit.
+  - Lock single-source-of-truth contracts for task status handling and reduce UI/API desync risk.
 - Scope (what we touch / what we don’t)
-  - Touch API task response schema, frontend task polling/error rendering, task service decomposition boundaries.
-  - Do not redesign UI information architecture or add new LLM modes.
+  - Touch frontend task-status helper reuse and typed task error handling.
+  - Do not redesign UI layout or polling cadence defaults.
 - Deliverables (concrete changes)
-  1. Formalize task status/error response schema (typed, versioned fields), consumed by frontend without string parsing.
-  2. Expose stage-level telemetry summary in status endpoint for better UX diagnostics (e.g., failed stage, retry count).
-  3. Extract `plan_*` logic into dedicated internal service/module with explicit interface to reduce coupling in `_run_task_impl_async`.
-  4. Add targeted regression tests for status transitions and stage telemetry propagation.
+  1. Extract one shared `isTaskStatus` guard/util and consume it in both polling API and app hook layers.
+  2. Add explicit UI mapping for `error_payload.code/stage` in task failure notifications.
+  3. Add regression tests for failed status with structured payload.
 - Dependencies
-  - Requires Phase 1 structured error payload and non-blocking plan behavior.
-- Risk & Rollback strategy
-  - Keep backward-compatible response fields during migration; remove legacy fields only after frontend migration.
+  - Requires Phase 1 item 2 (structured payload preservation at polling boundary).
+- Risk & Rollback strategy (if migration/contract changes are required)
+  - Keep backward compatibility for failures without `error_payload` (fallback to legacy message).
 - Validation (how to verify: tests/linter/commands from the repo)
-  - `npm run lint`.
-  - `npm run test`.
-  - `ruff check backend/app`.
+  - `cd frontend && npm run test`
+  - `cd frontend && npm run lint`
 
 ### Phase 3 (Scale & Maintainability)- up to 10 tasks (only if it truly blocks progress)
 - Goal
-  - Reduce long-term change cost in the LLM/task subsystem and restore static regression signal.
+  - Re-enable static contracts that prevent silent regressions in runtime-critical modules.
 - Scope (what we touch / what we don’t)
-  - Touch static-check policy and service modularization seams only.
-  - Do not introduce infra/platform replacements.
+  - Touch mypy policy and targeted module-level suppressions only.
+  - Do not introduce new tooling stack beyond existing pyproject configuration.
 - Deliverables (concrete changes)
-  1. Re-enable meaningful mypy checks incrementally (remove global `ignore_errors = true`, scope suppressions locally).
-  2. Split `task_service` into execution pipeline modules (validation, planning, mode execution, patch apply, persistence).
-  3. Add module-level contract tests for extracted boundaries.
+  1. Remove global `ignore_errors = true` and migrate to narrow, explicit ignores only where needed.
+  2. Add CI/local documented command for backend type-check in changed modules.
 - Dependencies
-  - Requires Phase 2 interfaces stabilized.
-- Risk & Rollback strategy
-  - Stepwise extraction with compatibility adapters; rollback by retaining old entrypoint wrapper.
+  - Should be scheduled after Phase 1 to avoid mixing logic fixes and typing debt cleanup.
+- Risk & Rollback strategy (if migration/contract changes are required)
+  - Roll out per-module and keep temporary scoped ignore blocks to avoid blocking hotfixes.
 - Validation (how to verify: tests/linter/commands from the repo)
-  - `ruff check backend/app`.
-  - `npm run lint`.
-  - `npm run test`.
+  - `cd backend && python -m mypy app`
+  - `cd backend && pytest tests/services/test_runtime_async_db_contract.py -q`
 
 ## 3. Task Specs (atomic, single-strategy)
 
 - ID: EVO-001
 - Priority: P0
-- Theme: Platform
+- Theme: Reliability
 - Problem:
-  - Compose frontend build references missing Dockerfile target, blocking default deployment flow.
+  - `delete_run_async` performs irreversible blob deletion before transaction commit of `AnalysisRun` deletion.
 - Evidence:
-  - `docker-compose.yml:197-201` (frontend build uses `dockerfile: Dockerfile.prod`), `frontend/Dockerfile:1-19` (only `Dockerfile` exists), `README.md:68-69` (documents mismatch).
+  - `backend/app/services/task_service.py:2345-2354#delete_run_async`
+  - `backend/app/storage.py:234-257#delete_patch_blob_by_sha_async`
 - Root Cause
-  - Deployment contract drift between compose and repository tree.
+  - External side effect (blob delete) is executed inside the pre-commit path of DB mutation, without commit-success guard.
 - Impact
-  - Broken first-run/dev onboarding; increased setup friction.
+  - Commit failure can leave run row pointing to already-deleted blob (corrupted read/download behavior).
 - Fix (single solution)
-  - Standardize on one Dockerfile name and update compose + docs to that canonical contract.
+  - Convert to commit-first DB deletion and execute blob delete in a post-commit step with retryable failure logging.
 - Steps
-  1. Pick canonical filename already present in repo (`frontend/Dockerfile`).
-  2. Update compose reference to canonical filename.
-  3. Update README startup notes accordingly.
+  1. Persist run deletion in DB transaction and commit.
+  2. After successful commit, attempt blob deletion when refcount permits.
+  3. On blob-delete failure, store retryable cleanup signal/log record.
 - Acceptance Criteria (verifiable)
-  - Compose file and frontend Dockerfile path are consistent.
-  - README no longer documents this mismatch as unresolved.
+  - No code path deletes patch blob before successful DB commit of run removal.
+  - Simulated DB commit failure leaves blob untouched.
 - Validation Commands (if visible in the project)
-  - `docker compose up --build` (README startup flow).
-  - `curl http://localhost:8000/health` (README health check).
+  - `cd backend && pytest tests/services/test_task_service_get_run.py -q`
 - Migration/Rollback (if needed)
-  - Rollback by restoring previous compose Dockerfile reference.
+  - Rollback by restoring previous ordering under feature flag only for emergency.
 
 - ID: EVO-002
 - Priority: P1
-- Theme: Performance
+- Theme: UX
 - Problem:
-  - Graph readiness check executes expensive count queries repeatedly on hot task paths.
+  - Frontend polling collapses structured task failure to plain `Error(message)` and drops machine-readable diagnostics.
 - Evidence:
-  - `backend/app/services/task_service.py:792-809` (`_graph_warning_async` counts both tables), `backend/app/services/task_service.py:952-955` (`_run_task_impl_async`), `backend/app/services/task_service.py:2235` (`get_run_async`).
+  - `frontend/src/api/tasks.ts:53-60#waitForTaskResult`
+  - `frontend/src/api/types.ts:296-307#TaskStatus`
+  - `backend/app/services/task_service.py:2372-2390#describe_task_async`
 - Root Cause
-  - Readiness inferred from full-table counts each call instead of maintained readiness metadata.
+  - Polling utility builds generic `Error` from message string instead of preserving `error_payload` fields.
 - Impact
-  - Unnecessary DB load and latency on frequent run/get-run operations.
+  - UI cannot reliably classify/route recovery UX by error code/stage; debugging and support become slower.
 - Fix (single solution)
-  - Compute and persist readiness in project metrics during scan/mutation updates; read that value in task service instead of issuing counts.
+  - Introduce typed `TaskFailureError` that carries `task_id`, `status`, and full `error_payload`; throw this from polling.
 - Steps
-  1. Add readiness field in project metrics update path.
-  2. Replace `_graph_warning_async` SQL counts with metrics read.
-  3. Add regression tests covering readiness transitions.
+  1. Add typed error class in frontend API module.
+  2. Populate class fields from `TaskStatus.error_payload` and legacy fallback.
+  3. Update consumers to read structured fields for notifications.
 - Acceptance Criteria (verifiable)
-  - No `COUNT(*)` queries for warning path in run/get-run flow.
-  - Warning behavior remains functionally equivalent.
+  - Failed polling throws object exposing `error_payload.code` and `error_payload.stage` when backend provided them.
+  - Legacy message-only failures still render correctly.
 - Validation Commands (if visible in the project)
-  - `ruff check backend/app`.
+  - `cd frontend && npm run test`
+  - `cd frontend && npm run lint`
 - Migration/Rollback (if needed)
-  - Fallback to old count-based logic behind temporary switch.
+  - Keep fallback to string message if consumer has not yet switched to typed error fields.
 
 - ID: EVO-003
 - Priority: P1
-- Theme: Reliability
+- Theme: Platform
 - Problem:
-  - Plan stage failure aborts full LLM run before main mode output.
+  - README documents a Dockerfile mismatch that no longer exists.
 - Evidence:
-  - `backend/app/services/task_service.py:1352-1362` (`plan_graph` failure -> `_llm_http_error`), `backend/app/services/task_service.py:1454-1464` (`plan_agentic`), `backend/app/services/task_service.py:1897-1907` (`plan_pack`).
+  - `README.md:126`
+  - `docker-compose.yml:197-201`
 - Root Cause
-  - Planning treated as hard dependency rather than auxiliary artifact.
+  - Documentation drift after compose/frontend contract was updated.
 - Impact
-  - Lower run success rate and higher latency/cost due to additional mandatory model call.
+  - False setup warnings increase onboarding/debug time and reduce trust in docs.
 - Fix (single solution)
-  - Make plan stage soft-fail: persist telemetry + skipped/failed plan marker, continue primary mode execution.
+  - Update README limitations section to reflect current compose/frontend Dockerfile contract.
 - Steps
-  1. Replace `_llm_http_error("plan", ...)` with non-fatal branch.
-  2. Mark `plan_source` and `plan_tz` as degraded with explicit reason.
-  3. Add tests ensuring analyze/evolve/fix can complete when plan call fails.
+  1. Remove obsolete mismatch statement.
+  2. Keep only verified runtime limitations.
 - Acceptance Criteria (verifiable)
-  - Primary mode result returns when plan fails.
-  - Telemetry still records plan failure class.
+  - README and compose reference the same frontend Dockerfile path.
 - Validation Commands (if visible in the project)
-  - `ruff check backend/app`.
+  - No validation commands found in repo.
 - Migration/Rollback (if needed)
-  - Feature flag for strict-plan mode rollback.
+  - Not required (docs-only correction).
 
 - ID: EVO-004
-- Priority: P1
-- Theme: Domain
+- Priority: P2
+- Theme: Reliability
 - Problem:
-  - Worker task failures lose structured error context and expose only plain string.
+  - Type-checking policy is configured but globally disabled.
 - Evidence:
-  - `backend/app/task_handlers.py:188-191` (`error=str(exc)`), `backend/app/services/task_service.py:2383-2388` (`describe_task_async` returns raw `error` string).
+  - `pyproject.toml:9-17`
 - Root Cause
-  - No typed error schema across worker persistence and API status response.
+  - Historical global suppression (`ignore_errors = true`) nullifies strictness flags.
 - Impact
-  - UI cannot reliably classify/recover from failures; diagnostics are inconsistent.
+  - Type regressions in async/runtime-sensitive code can merge without signal.
 - Fix (single solution)
-  - Persist structured error object (`code`, `message`, `context`, `stage`) and expose it in status payload while retaining legacy `error` text temporarily.
+  - Remove global ignore and gate incrementally with module-scoped suppressions only where needed.
 - Steps
-  1. Define task error schema in backend models/contracts.
-  2. Populate schema in worker exception handling.
-  3. Return schema in `describe_task_async`; update frontend consumer.
+  1. Delete `ignore_errors = true`.
+  2. Add narrow ignores in explicitly identified modules only.
+  3. Run mypy per module batch and commit fixes.
 - Acceptance Criteria (verifiable)
-  - Status payload contains stable structured error fields for failed tasks.
-  - Existing consumers continue to work during compatibility window.
+  - Mypy reports actionable diagnostics for changed modules.
 - Validation Commands (if visible in the project)
-  - `npm run test`.
+  - `cd backend && python -m mypy app`
 - Migration/Rollback (if needed)
-  - Keep legacy `error` string field until frontend rollout completes.
+  - Temporarily scope-ignore specific modules if blocking delivery.
 
 - ID: EVO-005
 - Priority: P2
-- Theme: Reliability
+- Theme: Domain
 - Problem:
-  - Static typing safety net is effectively disabled globally.
+  - Task status type guard logic is duplicated across API and app hook layers.
 - Evidence:
-  - `pyproject.toml:13-17` (`warn_*` enabled but `ignore_errors = true`).
+  - `frontend/src/api/tasks.ts:19-26#isTaskStatus`
+  - `frontend/src/ui/useStubGraphApp.ts:212-219#isTaskStatus`
 - Root Cause
-  - Historical global suppression remained after stricter options were introduced.
+  - Missing shared utility for task status narrowing.
 - Impact
-  - Type regressions can enter task/LLM pipeline unnoticed.
+  - Contract drift risk: one guard may diverge and produce inconsistent task-handling branches.
 - Fix (single solution)
-  - Remove global ignore and use targeted per-module ignores with explicit debt tracking.
+  - Extract one shared `isTaskStatus` helper in `frontend/src/api` and consume it everywhere.
 - Steps
-  1. Disable global `ignore_errors`.
-  2. Add narrow suppressions only where needed.
-  3. Gate changes with incremental module-by-module cleanup.
+  1. Create shared helper.
+  2. Replace duplicate local implementations.
+  3. Add tests for malformed and valid payloads.
 - Acceptance Criteria (verifiable)
-  - Mypy reports meaningful diagnostics on changed modules.
+  - Only one `isTaskStatus` implementation remains in frontend codebase.
 - Validation Commands (if visible in the project)
-  - `python -m mypy backend` (mypy config is defined in `pyproject.toml`).
+  - `cd frontend && npm run test`
+  - `cd frontend && npm run lint`
 - Migration/Rollback (if needed)
-  - Temporary module-scoped suppression if blocking errors appear.
-
-- ID: EVO-006
-- Priority: P2
-- Theme: Platform
-- Problem:
-  - Task execution path is highly coupled, increasing regression risk for LLM/domain changes.
-- Evidence:
-  - `backend/app/services/task_service.py:922-2168` (`_run_task_impl_async` spans validation, routing, plan, execution, persistence, patch apply).
-- Root Cause
-  - Multiple responsibilities accumulated in one method/service.
-- Impact
-  - Harder to test/change isolated behavior; higher blast radius for small edits.
-- Fix (single solution)
-  - Extract pipeline into dedicated internal modules with explicit interfaces while keeping existing public entrypoint.
-- Steps
-  1. Split into `validation`, `planning`, `execution`, `persistence`, `patch_apply` units.
-  2. Keep `run_task_async` as orchestrating façade.
-  3. Add contract tests for each unit and integrated path.
-- Acceptance Criteria (verifiable)
-  - `_run_task_impl_async` reduced to orchestration only.
-  - Unit/contract tests cover extracted boundaries.
-- Validation Commands (if visible in the project)
-  - `ruff check backend/app`.
-- Migration/Rollback (if needed)
-  - Preserve old code path behind adapter during incremental extraction.
+  - Not required.
 
 ## 4. Explicit Non-Goals
-- Do not change user-visible semantics of LLM modes (`analyze|evolve|fix|impact`) beyond reliability/perf fixes.
-- Do not add new external dependencies or model providers without direct repository evidence/need.
-- Do not redesign frontend navigation/layout.
-- Do not optimize non-hot paths without evidence.
+- We will NOT redesign LLM prompting/routing strategy; audit evidence here targets lifecycle correctness and contract propagation only.
+- We will NOT replace ARQ/Redis architecture.
+- We will NOT introduce new frontend state-management libraries.
+- We will NOT perform broad refactors outside tasks explicitly tied to audited defects above.
 
 Assumptions, missing evidence, and unverified areas:
-- Dynamic/runtime production metrics (actual p95 latency, DB query plans) are not present in repository artifacts; performance impact assertions are based on static call-path evidence only.
-- No repository-native backend test command/script was found in root docs/scripts; backend validation commands above are inferred from tool configs and may require team confirmation.
+- This plan is static-audit-only and does not include runtime profiling or production telemetry not present in repo.
+- No CI workflow files were found in-repo during this audit, so validation commands rely on scripts/config/tests visible in source tree.
