@@ -20,7 +20,7 @@ from .llm.client import get_async_openai_client
 from .infra.cpu_runtime import run_cpu_io_async
 from .infra.external_io_runtime import run_openai_io_async
 from .infra.fs_runtime import run_fs_io_async
-from .models import FileChunkEmbedding, FileEdge, FileNode
+from .models import FileChunkEmbedding, FileEdge, FileNode, Project
 from .utils import _chunk_text, resolve_under_root
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,9 @@ async def _maybe_compute_graph_metrics_async(
     background_tasks: BackgroundTasks | None,
 ) -> bool:
     node_count, edge_count = await _graph_counts_async(session, project_id)
+    await _update_project_graph_counts_async(session, project_id, node_count, edge_count)
     if background_tasks and _should_defer_graph_metrics(node_count, edge_count):
+        await session.commit()
         background_tasks.add_task(_compute_graph_metrics_background_async, project_id)
         return True
     await compute_graph_metrics_async(session, project_id)
@@ -76,6 +78,17 @@ async def _graph_counts_async(session: AsyncSession, project_id: int) -> tuple[i
         0,
     )
     return node_count, edge_count
+
+
+async def _update_project_graph_counts_async(
+    session: AsyncSession, project_id: int, node_count: int, edge_count: int
+) -> None:
+    project = await session.get(Project, project_id)
+    if project is None:
+        return
+    project.graph_node_count = _as_int(node_count, 0)
+    project.graph_edge_count = _as_int(edge_count, 0)
+    session.add(project)
 
 
 async def _read_graph_metrics_input_async(
@@ -199,7 +212,9 @@ async def compute_graph_metrics_async(
     background_tasks: BackgroundTasks | None = None,
 ) -> bool:
     node_count, edge_count = await _graph_counts_async(session, project_id)
+    await _update_project_graph_counts_async(session, project_id, node_count, edge_count)
     if background_tasks and _should_defer_graph_metrics(node_count, edge_count):
+        await session.commit()
         background_tasks.add_task(_compute_graph_metrics_background_async, project_id)
         return True
 
@@ -210,6 +225,7 @@ async def compute_graph_metrics_async(
         edge_count=edge_count,
     )
     if not graph_input["node_rows"]:
+        await session.commit()
         return False
 
     params = await run_cpu_io_async(
@@ -420,6 +436,8 @@ async def update_graph_metrics_incremental_async(
                 scc_params,
             )
 
+    node_count, edge_count = await _graph_counts_async(session, project_id)
+    await _update_project_graph_counts_async(session, project_id, node_count, edge_count)
     await session.commit()
     return False
 

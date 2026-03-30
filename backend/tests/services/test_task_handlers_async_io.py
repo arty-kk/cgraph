@@ -10,6 +10,7 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app import task_handlers
+from app.errors import BadRequestError
 
 
 @pytest.mark.anyio
@@ -178,6 +179,41 @@ async def test_mutation_indexing_task_async_marks_failed_when_project_root_resol
 
 
 @pytest.mark.anyio
+async def test_mutation_indexing_task_async_aborted_sets_structured_error_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_calls: list[tuple[str, dict[str, object]]] = []
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            _ = (exc_type, exc, tb)
+            return False
+
+    async def _fake_set_job_status_async(_session, _job_id: str, status: str, **kwargs) -> None:
+        status_calls.append((status, kwargs))
+
+    async def _fake_root(_project_id: int, _org_id: int, *, session=None) -> Path:
+        _ = session
+        return Path("/repo")
+
+    async def _fake_mutation(*_args, **_kwargs) -> dict[str, object]:
+        return {"aborted": True}
+
+    monkeypatch.setattr(task_handlers, "AsyncSessionLocal", lambda: _SessionCtx())
+    monkeypatch.setattr(task_handlers, "_set_job_status_async", _fake_set_job_status_async)
+    monkeypatch.setattr(task_handlers, "_resolve_project_root_async", _fake_root)
+    monkeypatch.setattr(task_handlers, "run_mutation_indexing_async", _fake_mutation)
+
+    await task_handlers._mutation_indexing_task_async("job", 1, 2, ["a.py"], "upsert")
+
+    assert [status for status, _ in status_calls] == ["running", "failed"]
+    assert status_calls[1][1]["error_payload"]["code"] == "mutation_indexing_aborted"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("handler_name", "handler_args", "result_payload"),
     [
@@ -307,6 +343,77 @@ async def test_set_job_status_async_preserves_terminal_fields_contract() -> None
     assert job.completed_at >= now_before
     assert job.error == "keep-me"
     assert job.result_json == '{"keep":true}'
+
+
+def test_serialize_task_error_uses_app_error_contract() -> None:
+    exc = BadRequestError("bad input", context={"field": "prompt"})
+    payload = task_handlers._serialize_task_error(exc, stage="run_task")
+    assert payload == {
+        "code": "bad_request",
+        "message": "bad input",
+        "context": {"field": "prompt"},
+        "stage": "run_task",
+    }
+
+
+def test_serialize_task_error_sanitizes_non_json_context_values() -> None:
+    exc = BadRequestError("bad input", context={"payload": object()})
+    payload = task_handlers._serialize_task_error(exc, stage="run_task")
+    assert payload["code"] == "bad_request"
+    assert payload["message"] == "bad input"
+    assert payload["stage"] == "run_task"
+    assert isinstance(payload["context"]["payload"], str)
+
+
+@pytest.mark.anyio
+async def test_set_job_status_async_serializes_non_json_error_payload() -> None:
+    job = type(
+        "Job",
+        (),
+        {
+            "id": "job-err",
+            "org_id": 1,
+            "status": "running",
+            "queue": "medium",
+            "updated_at": None,
+            "completed_at": None,
+            "error": None,
+            "error_json": None,
+            "result_json": None,
+        },
+    )()
+
+    class _Session:
+        async def get(self, _model, _job_id):
+            return job
+
+        def add(self, _value):
+            return None
+
+        async def commit(self):
+            return None
+
+    session = _Session()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(task_handlers, "cleanup_completed_jobs_async", lambda _session: asyncio.sleep(0))
+    try:
+        await task_handlers._set_job_status_async(
+            session,
+            "job-err",
+            "failed",
+            error_payload={
+                "code": "task_failed",
+                "message": "boom",
+                "context": {"raw": object()},
+                "stage": "run_task",
+            },
+        )
+    finally:
+        monkeypatch.undo()
+
+    parsed = json.loads(job.error_json or "{}")
+    assert parsed["context"]["raw"].startswith("<object object at ")
+    assert job.error == "boom"
 
 
 @pytest.mark.anyio

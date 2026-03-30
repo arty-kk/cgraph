@@ -61,6 +61,19 @@ async def test_get_run_does_not_start_scan_from_read_path(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_graph_warning_async_reads_project_counters_without_count_queries():
+    class _Session:
+        async def get(self, _model, _project_id):
+            return type("P", (), {"graph_node_count": 10, "graph_edge_count": 10})()
+
+        async def execute(self, _stmt):
+            raise AssertionError("warning path must not execute COUNT(*) queries")
+
+    warning = await task_service._graph_warning_async(_Session(), 77)
+    assert warning is None
+
+
+@pytest.mark.anyio
 async def test_get_run_patch_async_reads_blob_via_async_helper(monkeypatch):
     run = SimpleNamespace(
         id=101,
@@ -228,6 +241,56 @@ async def test_json_loads_or_async_uses_run_cpu_io_async(monkeypatch):
     assert calls["func"] is task_service._json_loads_or
     assert calls["args"] == ('{"ok":true}', {})
     assert calls["kwargs"] == {"operation": "task_service.json_loads_or"}
+
+
+@pytest.mark.anyio
+async def test_describe_task_async_returns_structured_error_payload():
+    class _Job:
+        org_id = 55
+        status = "failed"
+        error = "boom"
+        error_json = json.dumps(
+            {
+                "code": "task_failed",
+                "message": "boom",
+                "context": {"exception_type": "RuntimeError"},
+                "stage": "run_task",
+            }
+        )
+        result_json = None
+
+    class _Session:
+        async def get(self, _model, _task_id):
+            return _Job()
+
+    payload = await task_service.describe_task_async(_Session(), "task-1", 55)
+
+    assert payload["task_id"] == "task-1"
+    assert payload["status"] == "failed"
+    assert payload["error"] == "boom"
+    assert payload["error_payload"]["code"] == "task_failed"
+    assert payload["error_payload"]["stage"] == "run_task"
+
+
+@pytest.mark.anyio
+async def test_describe_task_async_ignores_malformed_error_payload_for_response_contract():
+    class _Job:
+        org_id = 55
+        status = "failed"
+        error = "boom"
+        error_json = json.dumps({"message": "boom"})  # missing required code/stage fields
+        result_json = None
+
+    class _Session:
+        async def get(self, _model, _task_id):
+            return _Job()
+
+    payload = await task_service.describe_task_async(_Session(), "task-2", 55)
+
+    assert payload["task_id"] == "task-2"
+    assert payload["status"] == "failed"
+    assert payload["error"] == "boom"
+    assert "error_payload" not in payload
 
 
 @pytest.mark.anyio

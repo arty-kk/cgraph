@@ -79,10 +79,16 @@ async def test_update_graph_metrics_incremental_async_uses_async_session_execute
         def all(self):
             return list(self._rows)
 
+        def scalar_one(self):
+            if isinstance(self._rows, list) and self._rows:
+                return self._rows[0]
+            return 0
+
     class _Session:
         def __init__(self):
             self.calls = 0
             self.commits = 0
+            self.project = type("P", (), {"graph_node_count": 0, "graph_edge_count": 0})()
 
         async def execute(self, stmt, *_args, **_kwargs):
             self.calls += 1
@@ -102,6 +108,12 @@ async def test_update_graph_metrics_incremental_async_uses_async_session_execute
         async def commit(self):
             self.commits += 1
 
+        async def get(self, _model, _project_id):
+            return self.project
+
+        def add(self, _item):
+            return None
+
     async def _fail_run_cpu_io_async(*_args, **_kwargs):
         raise AssertionError("run_cpu_io_async must not be used in incremental async DB path")
 
@@ -118,6 +130,51 @@ async def test_update_graph_metrics_incremental_async_uses_async_session_execute
     assert result is False
     assert session.calls >= 7
     assert session.commits == 1
+
+
+@pytest.mark.anyio
+async def test_maybe_compute_graph_metrics_async_updates_project_counters_when_deferred(monkeypatch):
+    class _Project:
+        graph_node_count = 0
+        graph_edge_count = 0
+
+    class _Session:
+        def __init__(self):
+            self.project = _Project()
+            self.commits = 0
+
+        async def get(self, _model, _project_id):
+            return self.project
+
+        def add(self, _item):
+            return None
+
+        async def commit(self):
+            self.commits += 1
+
+    class _BackgroundTasks:
+        def __init__(self):
+            self.calls: list[tuple[object, int]] = []
+
+        def add_task(self, fn, project_id):
+            self.calls.append((fn, project_id))
+
+    async def _fake_graph_counts_async(_session, _project_id):
+        return 11, 22
+
+    monkeypatch.setattr(graph, "_graph_counts_async", _fake_graph_counts_async)
+    monkeypatch.setattr(graph, "_should_defer_graph_metrics", lambda _n, _e: True)
+
+    session = _Session()
+    background_tasks = _BackgroundTasks()
+
+    pending = await graph._maybe_compute_graph_metrics_async(session, 5, background_tasks)
+
+    assert pending is True
+    assert session.project.graph_node_count == 11
+    assert session.project.graph_edge_count == 22
+    assert session.commits == 1
+    assert len(background_tasks.calls) == 1
 
 
 @pytest.mark.anyio

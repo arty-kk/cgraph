@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .async_db import AsyncSessionLocal
 from .config import settings
+from .errors import AppError
 from .infra.cpu_runtime import run_cpu_io_async
 from .infra.fs_runtime import run_fs_io_async
 from .infra.redis_client import get_async_redis_client, init_redis_pool_async
@@ -53,6 +54,7 @@ async def _set_job_status_async(
     org_id: int | None = None,
     result: Any | None = None,
     error: str | None = None,
+    error_payload: dict[str, Any] | None = None,
 ) -> None:
     now = datetime.now(timezone.utc)
     job = await session.get(TaskJob, job_id)
@@ -71,12 +73,52 @@ async def _set_job_status_async(
             await _decrement_inflight_async(job.id)
     if error is not None:
         job.error = error
+    if error_payload is not None:
+        job.error_json = json.dumps(_json_safe_value(error_payload), ensure_ascii=False)
+        if not job.error and isinstance(error_payload.get("message"), str):
+            job.error = error_payload["message"]
     if result is not None:
         job.result_json = json.dumps(result, ensure_ascii=False)
     session.add(job)
     await session.commit()
     if status in {"succeeded", "failed"}:
         await cleanup_completed_jobs_async(session)
+
+
+def _serialize_task_error(exc: Exception, *, stage: str) -> dict[str, Any]:
+    def _safe_value(value: Any) -> Any:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, list):
+            return [_safe_value(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): _safe_value(val) for key, val in value.items()}
+        return repr(value)
+
+    if isinstance(exc, AppError):
+        context = exc.context if isinstance(exc.context, dict) else {}
+        return {
+            "code": exc.code,
+            "message": exc.message,
+            "context": {str(k): _safe_value(v) for k, v in context.items()},
+            "stage": stage,
+        }
+    return {
+        "code": "task_failed",
+        "message": str(exc) or exc.__class__.__name__,
+        "context": {"exception_type": exc.__class__.__name__},
+        "stage": stage,
+    }
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(val) for key, val in value.items()}
+    return repr(value)
 
 
 async def _scan_task_async(job_id: str, project_id: int, org_id: int) -> None:
@@ -86,7 +128,14 @@ async def _scan_task_async(job_id: str, project_id: int, org_id: int) -> None:
             result = await _scan_and_update_graph_async(project_id, org_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Scan task failed", extra={"job_id": job_id})
-            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            await _set_job_status_async(
+                session,
+                job_id,
+                "failed",
+                org_id=org_id,
+                error=str(exc),
+                error_payload=_serialize_task_error(exc, stage="scan"),
+            )
             return
         await _set_job_status_async(session, job_id, "succeeded", org_id=org_id, result=result)
 
@@ -98,7 +147,14 @@ async def _docs_task_async(job_id: str, project_id: int, org_id: int) -> None:
             result = await build_project_docs_async(project_id, org_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Docs task failed", extra={"job_id": job_id})
-            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            await _set_job_status_async(
+                session,
+                job_id,
+                "failed",
+                org_id=org_id,
+                error=str(exc),
+                error_payload=_serialize_task_error(exc, stage="docs"),
+            )
             return
         await _set_job_status_async(session, job_id, "succeeded", org_id=org_id, result=result)
 
@@ -134,13 +190,27 @@ async def _snapshot_import_task_async(
         logger.warning("Snapshot import task cancelled", extra={"job_id": job_id})
         await _cleanup_snapshot_on_failure_async()
         async with AsyncSessionLocal() as session:
-            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            await _set_job_status_async(
+                session,
+                job_id,
+                "failed",
+                org_id=org_id,
+                error=str(exc),
+                error_payload=_serialize_task_error(exc, stage="snapshot_import"),
+            )
         return
     except Exception as exc:  # noqa: BLE001
         logger.exception("Snapshot import task failed", extra={"job_id": job_id})
         await _cleanup_snapshot_on_failure_async()
         async with AsyncSessionLocal() as session:
-            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            await _set_job_status_async(
+                session,
+                job_id,
+                "failed",
+                org_id=org_id,
+                error=str(exc),
+                error_payload=_serialize_task_error(exc, stage="snapshot_import"),
+            )
         return
     finally:
         try:
@@ -153,12 +223,19 @@ async def _snapshot_import_task_async(
 
     if meta is None or project is None:
         async with AsyncSessionLocal() as session:
+            msg = "Snapshot import failed"
             await _set_job_status_async(
                 session,
                 job_id,
                 "failed",
                 org_id=org_id,
-                error="Snapshot import failed",
+                error=msg,
+                error_payload={
+                    "code": "snapshot_import_failed",
+                    "message": msg,
+                    "context": {},
+                    "stage": "snapshot_import",
+                },
             )
         return
 
@@ -187,7 +264,14 @@ async def _run_task_job_async(job_id: str, project_id: int, org_id: int, payload
             result = await run_task_async(project_id, org_id, request)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Run task failed", extra={"job_id": job_id})
-            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            await _set_job_status_async(
+                session,
+                job_id,
+                "failed",
+                org_id=org_id,
+                error=str(exc),
+                error_payload=_serialize_task_error(exc, stage="run_task"),
+            )
             return
         await _set_job_status_async(session, job_id, "succeeded", org_id=org_id, result=result)
 
@@ -214,18 +298,32 @@ async def _mutation_indexing_task_async(
             result["operation"] = str(operation)
             result["rel_paths"] = str_paths
             if result.get("aborted"):
+                msg = "Mutation indexing aborted"
                 await _set_job_status_async(
                     session,
                     job_id,
                     "failed",
                     org_id=org_id,
-                    error="Mutation indexing aborted",
+                    error=msg,
+                    error_payload={
+                        "code": "mutation_indexing_aborted",
+                        "message": msg,
+                        "context": {"operation": str(operation), "rel_paths": str_paths},
+                        "stage": "mutation_indexing",
+                    },
                     result=result,
                 )
                 return
         except Exception as exc:  # noqa: BLE001
             logger.exception("Mutation indexing task failed", extra={"job_id": job_id})
-            await _set_job_status_async(session, job_id, "failed", org_id=org_id, error=str(exc))
+            await _set_job_status_async(
+                session,
+                job_id,
+                "failed",
+                org_id=org_id,
+                error=str(exc),
+                error_payload=_serialize_task_error(exc, stage="mutation_indexing"),
+            )
             return
         await _set_job_status_async(session, job_id, "succeeded", org_id=org_id, result=result)
 
