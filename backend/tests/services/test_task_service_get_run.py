@@ -11,8 +11,9 @@ from app.services import task_service
 
 
 class _FakeAsyncSession:
-    def __init__(self, run):
+    def __init__(self, run, *, commit_error: Exception | None = None):
         self._run = run
+        self._commit_error = commit_error
         self.deleted = []
         self.committed = False
 
@@ -24,6 +25,8 @@ class _FakeAsyncSession:
 
     async def commit(self):
         self.committed = True
+        if self._commit_error is not None:
+            raise self._commit_error
 
 
 @pytest.mark.anyio
@@ -221,6 +224,117 @@ async def test_delete_run_async_does_not_parse_result_json_for_blob_sha(monkeypa
     assert result == {"ok": True}
     assert session.deleted == [run]
     assert session.committed is True
+
+
+@pytest.mark.anyio
+async def test_delete_run_async_commit_failure_does_not_delete_blob(monkeypatch):
+    run = SimpleNamespace(
+        id=104,
+        project_id=77,
+        org_id=55,
+        patch_blob_sha="sha-commit",
+        result_json=json.dumps({"patch_unified_diff_meta": {"sha256": "sha-commit"}}),
+    )
+    session = _FakeAsyncSession(run, commit_error=RuntimeError("commit failed"))
+
+    delete_calls: list[str] = []
+
+    async def _fake_delete_patch_blob_for_sha_async(sha: str) -> None:
+        delete_calls.append(sha)
+
+    async def _fake_load_patch_blob_ref_counts_async(_session, shas, *, exclude_run_id=None, exclude_project_id=None):
+        _ = exclude_project_id
+        assert _session is session
+        assert shas == {"sha-commit"}
+        assert exclude_run_id == 104
+        return {"sha-commit": 0}
+
+    monkeypatch.setattr(task_service, "_delete_patch_blob_for_sha_async", _fake_delete_patch_blob_for_sha_async)
+    monkeypatch.setattr(task_service, "load_patch_blob_ref_counts_async", _fake_load_patch_blob_ref_counts_async)
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await task_service.delete_run_async(session, 77, 55, 104)
+
+    assert delete_calls == []
+    assert session.deleted == [run]
+    assert session.committed is True
+
+
+@pytest.mark.anyio
+async def test_delete_run_async_blob_cleanup_failure_is_logged_and_non_fatal(monkeypatch):
+    run = SimpleNamespace(
+        id=105,
+        project_id=77,
+        org_id=55,
+        patch_blob_sha="sha-cleanup",
+        result_json=json.dumps({"patch_unified_diff_meta": {"sha256": "sha-cleanup"}}),
+    )
+    session = _FakeAsyncSession(run)
+
+    async def _fake_delete_patch_blob_for_sha_async(_sha: str) -> None:
+        raise RuntimeError("blob unavailable")
+
+    async def _fake_load_patch_blob_ref_counts_async(_session, shas, *, exclude_run_id=None, exclude_project_id=None):
+        _ = (_session, shas, exclude_project_id)
+        assert exclude_run_id == 105
+        return {"sha-cleanup": 0}
+
+    warning_calls: list[dict] = []
+
+    def _fake_warning(message: str, *, extra: dict) -> None:
+        warning_calls.append({"message": message, "extra": extra})
+
+    monkeypatch.setattr(task_service, "_delete_patch_blob_for_sha_async", _fake_delete_patch_blob_for_sha_async)
+    monkeypatch.setattr(task_service, "load_patch_blob_ref_counts_async", _fake_load_patch_blob_ref_counts_async)
+    monkeypatch.setattr(task_service.logger, "warning", _fake_warning)
+
+    result = await task_service.delete_run_async(session, 77, 55, 105)
+
+    assert result == {"ok": True}
+    assert session.deleted == [run]
+    assert session.committed is True
+    assert warning_calls
+    assert warning_calls[0]["message"] == "Post-commit patch blob cleanup deferred"
+    assert warning_calls[0]["extra"]["retryable"] is True
+
+
+@pytest.mark.anyio
+async def test_delete_run_async_blob_cleanup_unsuccessful_status_is_logged(monkeypatch):
+    run = SimpleNamespace(
+        id=106,
+        project_id=77,
+        org_id=55,
+        patch_blob_sha="sha-unsuccessful",
+        result_json=json.dumps({"patch_unified_diff_meta": {"sha256": "sha-unsuccessful"}}),
+    )
+    session = _FakeAsyncSession(run)
+
+    async def _fake_delete_patch_blob_for_sha_async(_sha: str) -> bool:
+        return False
+
+    async def _fake_load_patch_blob_ref_counts_async(_session, shas, *, exclude_run_id=None, exclude_project_id=None):
+        _ = (_session, shas, exclude_project_id)
+        assert exclude_run_id == 106
+        return {"sha-unsuccessful": 0}
+
+    warning_calls: list[dict] = []
+
+    def _fake_warning(message: str, *, extra: dict) -> None:
+        warning_calls.append({"message": message, "extra": extra})
+
+    monkeypatch.setattr(task_service, "_delete_patch_blob_for_sha_async", _fake_delete_patch_blob_for_sha_async)
+    monkeypatch.setattr(task_service, "load_patch_blob_ref_counts_async", _fake_load_patch_blob_ref_counts_async)
+    monkeypatch.setattr(task_service.logger, "warning", _fake_warning)
+
+    result = await task_service.delete_run_async(session, 77, 55, 106)
+
+    assert result == {"ok": True}
+    assert session.deleted == [run]
+    assert session.committed is True
+    assert warning_calls
+    assert warning_calls[0]["message"] == "Post-commit patch blob cleanup deferred"
+    assert warning_calls[0]["extra"]["reason"] == "cleanup returned unsuccessful status"
+
 
 
 @pytest.mark.anyio

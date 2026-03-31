@@ -212,9 +212,9 @@ async def read_patch_blob_async(meta: dict) -> str:
     )
 
 
-async def delete_patch_blob_async(meta: dict | None) -> None:
+async def delete_patch_blob_async(meta: dict | None) -> bool:
     if not isinstance(meta, dict):
-        return
+        return False
     storage = (meta.get("storage") or "").strip().lower()
     if storage == "s3":
         bucket = meta.get("bucket")
@@ -222,40 +222,50 @@ async def delete_patch_blob_async(meta: dict | None) -> None:
         if isinstance(bucket, str) and isinstance(key, str):
             try:
                 await get_s3_client().delete_object(Bucket=bucket, Key=key)
+                return True
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to delete S3 patch blob", extra={"reason": str(exc)})
-        return
+                return False
+        return False
 
     sha = meta.get("sha256")
     if isinstance(sha, str) and sha:
-        await delete_patch_blob_by_sha_async(sha)
+        return await delete_patch_blob_by_sha_async(sha)
+
+    return False
 
 
-async def delete_patch_blob_by_sha_async(sha: str) -> None:
+async def delete_patch_blob_by_sha_async(sha: str) -> bool:
     if not isinstance(sha, str) or not sha:
-        return
+        return False
 
     fp = _local_patch_path(sha)
     base = Path(settings.db_dir).resolve()
     if base not in fp.parents and fp != base:
         logger.warning("Refusing to delete patch blob outside db_dir", extra={"sha": sha})
-        return
+        return False
+    local_ok = True
     try:
         await run_fs_io_async(fp.unlink, True, operation="storage.local.unlink")
     except Exception as error:  # noqa: BLE001
         logger.warning("Failed to delete patch blob", extra={"sha": sha, "reason": str(error)})
+        local_ok = False
 
     backend = _storage_backend()
     if backend != "s3":
-        return
+        return local_ok
     bucket = settings.s3_bucket
     if not bucket:
-        return
+        return local_ok
     key = _s3_patch_key(sha)
+    s3_ok = True
     try:
         await get_s3_client().delete_object(Bucket=bucket, Key=key)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to delete S3 patch blob", extra={"reason": str(exc)})
+        s3_ok = False
+
+    return local_ok and s3_ok
 
 
 async def get_patch_download_url_async(meta: dict) -> str | None:

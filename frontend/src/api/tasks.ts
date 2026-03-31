@@ -8,6 +8,7 @@ import type {
   TaskPollOptions,
   TaskStatus,
 } from './types'
+import { TaskFailureError, isTaskStatus } from './taskStatus'
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const asFiniteNumber = (value: number | undefined): number | undefined =>
@@ -15,15 +16,6 @@ const asFiniteNumber = (value: number | undefined): number | undefined =>
 const successStatuses = new Set(['succeeded'])
 const errorStatuses = new Set(['failed'])
 const pendingStatuses = new Set(['pending', 'running'])
-
-function isTaskStatus(payload: unknown): payload is TaskStatus {
-  return (
-    typeof payload === 'object' &&
-    payload !== null &&
-    typeof (payload as TaskStatus).task_id === 'string' &&
-    typeof (payload as TaskStatus).status === 'string'
-  )
-}
 
 export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
   const r = await api.get(`/tasks/status/${taskId}`)
@@ -51,13 +43,7 @@ export async function waitForTaskResult<T>(
     }
 
     if (errorStatuses.has(current.status)) {
-      const payloadMessage =
-        current.error_payload && typeof current.error_payload.message === 'string'
-          ? current.error_payload.message
-          : undefined
-      const err = payloadMessage ?? current.error ?? 'Task failed'
-      const message = typeof err === 'string' ? err : JSON.stringify(err)
-      throw new Error(message)
+      throw new TaskFailureError(current)
     }
 
     if (!pendingStatuses.has(current.status)) {

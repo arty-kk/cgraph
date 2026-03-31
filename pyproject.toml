@@ -14,4 +14,39 @@ warn_return_any = true
 warn_unused_ignores = true
 strict_optional = true
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "app.api.auth",
+  "app.api.nodes",
+  "app.api.orgs",
+  "app.api.projects",
+  "app.api.tasks",
+  "app.context_pack",
+  "app.contracts",
+  "app.errors",
+  "app.graph",
+  "app.indexers.php_indexer",
+  "app.infra.cache",
+  "app.infra.cpu_runtime",
+  "app.infra.rate_limit",
+  "app.infra.runtime_lifecycle",
+  "app.llm.agentic.context",
+  "app.llm.agentic.dispatch",
+  "app.llm.agentic.tools",
+  "app.main",
+  "app.policy",
+  "app.scan",
+  "app.services.auth_service",
+  "app.services.docs_service",
+  "app.services.org_service",
+  "app.services.project_service",
+  "app.services.routing_calibration_service",
+  "app.services.task_queue",
+  "app.services.task_service",
+  "app.snapshots",
+  "app.storage",
+  "app.task_handlers",
+]
 ignore_errors = true
+

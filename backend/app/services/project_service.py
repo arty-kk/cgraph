@@ -70,8 +70,8 @@ from .task_queue import get_scan_idempotency_key_async, submit_scan_async
 logger = get_logger("stubgraph.project_service")
 
 
-async def _delete_patch_blob_for_sha_async(sha: str) -> None:
-    await delete_patch_blob_for_sha_async(sha)
+async def _delete_patch_blob_for_sha_async(sha: str) -> bool:
+    return await delete_patch_blob_for_sha_async(sha)
 
 
 async def _delete_patch_blobs_async(
