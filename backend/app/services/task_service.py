@@ -184,8 +184,8 @@ async def _read_patch_blob_async(meta: dict) -> str:
     return await read_patch_blob_async(meta)
 
 
-async def _delete_patch_blob_for_sha_async(sha: str) -> None:
-    await delete_patch_blob_for_sha_async(sha)
+async def _delete_patch_blob_for_sha_async(sha: str) -> bool:
+    return await delete_patch_blob_for_sha_async(sha)
 
 
 def _json_loads_or(raw: str | None, fallback):
@@ -2341,6 +2341,7 @@ async def delete_run_async(
             "Запуск не найден",
             context={"run_id": run_id, "project_id": project_id},
         )
+    blob_sha_to_delete: str | None = None
     sha = getattr(run, "patch_blob_sha", None)
     if isinstance(sha, str) and sha:
         counts = await load_patch_blob_ref_counts_async(
@@ -2349,9 +2350,37 @@ async def delete_run_async(
             exclude_run_id=run_id,
         )
         if int(counts.get(sha, 0)) == 0:
-            await _delete_patch_blob_for_sha_async(sha)
+            blob_sha_to_delete = sha
+
     await session.delete(run)
     await session.commit()
+
+    if isinstance(blob_sha_to_delete, str) and blob_sha_to_delete:
+        try:
+            cleanup_ok = await _delete_patch_blob_for_sha_async(blob_sha_to_delete)
+            if cleanup_ok is False:
+                logger.warning(
+                    "Post-commit patch blob cleanup deferred",
+                    extra={
+                        "run_id": run_id,
+                        "project_id": project_id,
+                        "sha": blob_sha_to_delete,
+                        "reason": "cleanup returned unsuccessful status",
+                        "retryable": True,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Post-commit patch blob cleanup deferred",
+                extra={
+                    "run_id": run_id,
+                    "project_id": project_id,
+                    "sha": blob_sha_to_delete,
+                    "reason": str(exc),
+                    "retryable": True,
+                },
+            )
+
     return {"ok": True}
 
 

@@ -63,3 +63,5 @@ export {
   getTaskStatus,
   waitForTaskResult,
 } from './tasks'
+
+export { isTaskStatus, TaskFailureError } from './taskStatus'

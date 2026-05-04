@@ -11,6 +11,7 @@ vi.mock('./client', () => ({
 }))
 
 import { runTask, waitForTaskResult } from './tasks'
+import { TaskFailureError } from './taskStatus'
 
 function assertRunTaskContract(): void {
   const body = {
@@ -137,7 +138,7 @@ describe('tasks api polling', () => {
     expect(get).toHaveBeenCalledTimes(3)
   })
 
-  it('uses structured task error payload message when task fails', async () => {
+  it('uses structured task error payload fields when task fails', async () => {
     const taskId = 'task-failed'
     const initial: TaskStatus = { task_id: taskId, status: 'pending' }
     get.mockResolvedValue({
@@ -145,11 +146,37 @@ describe('tasks api polling', () => {
         task_id: taskId,
         status: 'failed',
         error: 'legacy',
-        error_payload: { message: 'structured message' },
+        error_payload: { code: 'task_failed', stage: 'run_task', message: 'structured message' },
       } satisfies TaskStatus,
     })
 
-    await expect(waitForTaskResult<RunTaskResult>(initial)).rejects.toThrow('structured message')
+    const error = await waitForTaskResult<RunTaskResult>(initial).catch((err) => err)
+
+    expect(error).toBeInstanceOf(TaskFailureError)
+    expect(error).toMatchObject({
+      name: 'TaskFailureError',
+      taskId,
+      status: 'failed',
+      errorPayload: { code: 'task_failed', stage: 'run_task', message: 'structured message' },
+    })
+  })
+
+
+  it('keeps legacy failure message when structured payload is missing', async () => {
+    const taskId = 'task-legacy-error'
+    const initial: TaskStatus = { task_id: taskId, status: 'pending' }
+    get.mockResolvedValue({
+      data: {
+        task_id: taskId,
+        status: 'failed',
+        error: 'legacy failure',
+      } satisfies TaskStatus,
+    })
+
+    const error = await waitForTaskResult<RunTaskResult>(initial).catch((err) => err)
+
+    expect(error).toBeInstanceOf(TaskFailureError)
+    expect(error.message).toContain('legacy failure')
   })
 
   it('when both maxAttempts and timeoutMs are provided, fails by earlier timeoutMs limit', async () => {

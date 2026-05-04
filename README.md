@@ -36,6 +36,7 @@ StubGraph — self-hosted система для анализа кодовой б
 - `arq==0.26.3`
 - `openai==1.99.2`
 
+
 ### Frontend
 
 - Node 20 (Docker base image `node:20-alpine`)
@@ -93,6 +94,14 @@ cd backend
 arq app.arq_worker.WorkerSettings
 ```
 
+
+### Backend type-check (changed modules)
+
+```bash
+cd backend
+python -m mypy app/services/task_service.py app/services/project_service.py app/storage.py
+```
+
 ### Frontend
 
 ```bash
@@ -123,7 +132,6 @@ npm run dev
 
 ## Ограничения и допущения
 
-- В репозитории присутствует `frontend/Dockerfile`, а `docker-compose.yml` ссылается на `frontend/Dockerfile.prod`. Это потенциальное расхождение конфигурации, которое стоит проверить перед production-запуском.
 - В этом README не перечислены все env-переменные; полный список и валидация ограничений находятся в `backend/app/config.py`.
 - Для LLM-функций требуется валидный `OPENAI_API_KEY`; без него не все task-сценарии будут работоспособны.
 

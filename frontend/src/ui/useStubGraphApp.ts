@@ -49,6 +49,8 @@ import {
   type RunRecord,
   type RunTaskBody,
   type RunTaskResult,
+  TaskFailureError,
+  isTaskStatus,
   type TaskStatus,
   type ProjectFileItem,
   type ProjectTreeEntry,
@@ -209,14 +211,6 @@ function isEntryDirty(entry: FileEditorEntry | null | undefined): boolean {
   return Boolean(entry && entry.content !== entry.original)
 }
 
-function isTaskStatus(payload: unknown): payload is TaskStatus {
-  return (
-    typeof payload === 'object' &&
-    payload !== null &&
-    typeof (payload as TaskStatus).task_id === 'string' &&
-    typeof (payload as TaskStatus).status === 'string'
-  )
-}
 
 export const GRAPH_NOT_BUILT_WARNING = 'graph not built'
 
@@ -1656,7 +1650,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
           ])
         })
         .catch((e: any) => {
-          const error = extractError(e)
+          const taskFailure = e instanceof TaskFailureError ? e : null
+          const structured = taskFailure?.errorPayload
+          const error = taskFailure
+            ? `${structured?.code ?? 'task_failed'}${structured?.stage ? ` (${structured.stage})` : ''}: ${structured?.message ?? taskFailure.message}`
+            : extractError(e)
           setFileSaveBanner({
             path,
             status: 'failed',
