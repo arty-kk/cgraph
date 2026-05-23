@@ -19,7 +19,7 @@ export async function listProjects(): Promise<Project[]> {
   return r.data
 }
 
-export async function createProjectFromSnapshot(name: string, archive: File): Promise<Project> {
+export async function createProjectFromSnapshot(name: string, archive: File): Promise<TaskStatus> {
   const data = new FormData()
   data.append('name', name)
   data.append('archive', archive)
