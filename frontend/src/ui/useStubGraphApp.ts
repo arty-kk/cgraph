@@ -55,6 +55,7 @@ import {
   type ProjectFileItem,
   type ProjectTreeEntry,
   type ProjectDocs,
+  type SnapshotCreateTaskResult,
   setSelectedOrgId,
 } from '../api'
 import { extractError, getAppErrorInfo, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '../lib/errors'
@@ -209,6 +210,31 @@ function createFileEditorEntry(path: string, opts: { dirty?: boolean } = {}): Fi
 
 function isEntryDirty(entry: FileEditorEntry | null | undefined): boolean {
   return Boolean(entry && entry.content !== entry.original)
+}
+
+function asNum(v: unknown): number | null {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+export function pickCreatedSnapshotProject(
+  projects: Project[],
+  result: SnapshotCreateTaskResult | null | undefined,
+): Project | null {
+  const projectId = asNum(result?.project_id)
+  if (projectId != null) {
+    const byId = projects.find((project) => project.id === projectId)
+    if (byId) return byId
+  }
+  const targetName = asStr(result?.name)
+  if (!targetName) return null
+  const sameName = projects.filter((project) => asStr(project.name) === targetName)
+  if (!sameName.length) return null
+  const snapshotLike = sameName.find((project) => {
+    const sourceKind = asStr(project.source?.kind).toLowerCase()
+    return sourceKind === 'snapshot' || sourceKind === 'archive'
+  })
+  return snapshotLike ?? sameName[0] ?? null
 }
 
 
@@ -1911,10 +1937,25 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     await runOp(async () => {
       const name = newName.trim()
       if (newArchive) {
-        const p = await createProjectFromSnapshot(name, newArchive)
-        selectProjectLocal(p)
+        const initial = await createProjectFromSnapshot(name, newArchive)
+        if (isTaskStatus(initial)) {
+          trackTaskStatus(initial, 'scan', `Snapshot import ${name}`)
+        }
+        const taskResult = await waitForTaskResult<SnapshotCreateTaskResult>(initial, {
+          pollIntervalMs: 1200,
+          maxAttempts: 300,
+        })
         setNewArchive(null)
         await queryClient.invalidateQueries({ queryKey: ['projects', selectedOrgId] })
+        const refreshedProjects = await queryClient.fetchQuery<Project[]>({
+          queryKey: ['projects', selectedOrgId],
+          queryFn: listProjects,
+        })
+        const created = pickCreatedSnapshotProject(refreshedProjects ?? [], taskResult)
+        if (!created) {
+          throw new Error('Snapshot import completed, but created project was not found after refresh.')
+        }
+        selectProjectLocal(created)
         return
       }
       const root = newPath.trim()
@@ -1936,6 +1977,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     newPath,
     queryClient,
     runOp,
+    trackTaskStatus,
     selectedOrgId,
     selectProjectLocal,
     setNewArchive,

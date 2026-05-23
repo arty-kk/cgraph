@@ -22,6 +22,7 @@ export type {
   RunRecord,
   RunTaskResult,
   TaskStatus,
+  SnapshotCreateTaskResult,
   TaskPollOptions,
   ScanResult,
   ProjectFileItem,

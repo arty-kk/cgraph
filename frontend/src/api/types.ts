@@ -306,6 +306,12 @@ export type TaskStatus = {
   result?: unknown
 }
 
+export type SnapshotCreateTaskResult = {
+  project_id?: number
+  name?: string
+  source?: { kind?: string; label?: string }
+}
+
 export type TaskPollOptions = {
   pollIntervalMs?: number
   timeoutMs?: number
