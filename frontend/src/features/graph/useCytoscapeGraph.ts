@@ -1,126 +1,59 @@
 // frontend/src/ui/hooks/useCytoscapeGraph.ts
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Core, ElementDefinition, LayoutOptions } from 'cytoscape'
+import type { Core, ElementDefinition } from 'cytoscape'
 import type { GraphData } from '@/api'
 import { riskColor } from '@/shared/lib/riskColor'
 import { safeStorageGet, safeStorageRemove, safeStorageSet } from '@/shared/lib/storage'
+import {
+  DEFAULT_LAYOUT,
+  BATCH_SIZE,
+  DIM_NODE_OPACITY,
+  DIM_EDGE_OPACITY,
+  STRONG_EDGE_OPACITY,
+  PINNED_BORDER,
+  LABEL_ZOOM_THRESHOLD,
+  MAX_NEIGHBOR_LABELS,
+  EDGE_BATCH_SIZE,
+  DOUBLE_TAP_MS,
+  CENTER_MIN_ZOOM,
+  CENTER_MAX_ZOOM,
+  CENTER_RETRY_ATTEMPTS,
+  CENTER_RETRY_DELAY_MS,
+  GRID_SPACING,
+  LOCK_BORDER,
+  NODE_SIZE_MIN,
+  NODE_SIZE_MAX,
+  STAR_ARC_PAD,
+  STAR_BASE_RADIUS_IN,
+  STAR_BASE_RADIUS_OUT,
+  STAR_RING_SPACING,
+  STAR_MAX_NEIGHBORS,
+  STAR_ANIMATE_MAX,
+  clamp,
+  safeStr,
+  toFiniteNumber,
+  nodeSizeFromRisk,
+  makeUniqueId,
+} from './useCytoscapeGraph.constants'
+import type {
+  GraphFilters,
+  GraphStats,
+  LabelMode,
+  EdgeDirectionHighlight,
+  NodeContextMenuPayload,
+  GraphEditSnapshot,
+  GraphEditEvent,
+} from './useCytoscapeGraph.constants'
 
-export type GraphFilters = {
-  text: string
-  minRisk: number
-  onlySelectionNeighborhood: boolean
-}
-
-export type GraphStats = {
-  totalNodes: number
-  visibleNodes: number
-  hydrating: boolean
-}
-
-export type LabelMode = 'auto' | 'on' | 'off'
-
-export type EdgeDirectionHighlight = {
-  enabled: boolean
-  inColor: string
-  outColor: string
-}
-
-export type NodeContextMenuPayload = {
-  path: string
-  x: number
-  y: number
-}
-
-export type GraphEditSnapshot = {
-  version: 1
-  zoom: number
-  pan: { x: number; y: number }
-  positions: Record<string, { x: number; y: number }> // by node id
-  hiddenKeys: string[]
-  lockedKeys: string[]
-}
-
-export type GraphEditEvent =
-  | { kind: 'dragstart' }
-  | { kind: 'dragend' }
-
-const DEFAULT_LAYOUT: LayoutOptions = ({
-  name: 'cose',
-  animate: false,
-  fit: false,
-  padding: 80,
-  randomize: true,
-  componentSpacing: 140,
-  nodeOverlap: 10,
-  nodeRepulsion: 20000,
-  idealEdgeLength: 320,
-  edgeElasticity: 0.35,
-  gravity: 0.18,
-  numIter: 1800,
-  initialTemp: 250,
-  coolingFactor: 0.95,
-  minTemp: 1.0,
-} as any)
-
-const BATCH_SIZE = 400
-const DIM_NODE_OPACITY = 0.08
-const DIM_EDGE_OPACITY = 0.05
-const STRONG_EDGE_OPACITY = 0.75
-const PINNED_BORDER = '#a855f7'
-const LABEL_ZOOM_THRESHOLD = 1.15
-const MAX_NEIGHBOR_LABELS = 28
-const EDGE_BATCH_SIZE = 1600
-const DOUBLE_TAP_MS = 320
-
-const CENTER_MIN_ZOOM = 0.6
-const CENTER_MAX_ZOOM = 2.5
-const CENTER_RETRY_ATTEMPTS = 60
-const CENTER_RETRY_DELAY_MS = 80
-
-const GRID_SPACING = 90
-const LOCK_BORDER = '#93c5fd'
-const NODE_SIZE_MIN = 14
-const NODE_SIZE_MAX = 28
-
-const STAR_ARC_PAD = Math.PI * 0.15 // отступ от краёв полуокружности
-const STAR_BASE_RADIUS_IN = 100
-const STAR_BASE_RADIUS_OUT = 150
-const STAR_RING_SPACING = 34
-const STAR_MAX_NEIGHBORS = 180 // чтобы не пытаться “взрывать” тысячи связей
-const STAR_ANIMATE_MAX = 80 // анимацию делаем только если соседей немного
-
-function clamp(v: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, v))
-}
-
-function safeStr(v: unknown): string {
-  if (v == null) return ''
-  const s = typeof v === 'string' ? v : String(v)
-  return s.trim()
-}
-
-function toFiniteNumber(v: unknown, fallback = 0): number {
-  const n = Number(v)
-  return Number.isFinite(n) ? n : fallback
-}
-
-function nodeSizeFromRisk(risk: unknown): number {
-  const v = Math.max(0, toFiniteNumber(risk, 0))
-  const t = 1 - Math.exp(-v / 18)
-  return clamp(NODE_SIZE_MIN + (NODE_SIZE_MAX - NODE_SIZE_MIN) * t, NODE_SIZE_MIN, NODE_SIZE_MAX)
-}
-
-function makeUniqueId(base: string, used: Set<string>): string {
-  const b = base || 'node'
-  let id = b
-  let i = 2
-  while (used.has(id)) {
-    id = `${b}#${i}`
-    i += 1
-  }
-  used.add(id)
-  return id
-}
+export type {
+  GraphFilters,
+  GraphStats,
+  LabelMode,
+  EdgeDirectionHighlight,
+  NodeContextMenuPayload,
+  GraphEditSnapshot,
+  GraphEditEvent,
+} from './useCytoscapeGraph.constants'
 
 export function useCytoscapeGraph({
   graph,
