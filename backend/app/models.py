@@ -11,12 +11,23 @@ from sqlmodel import Field, SQLModel
 
 class Project(SQLModel, table=True):
     __tablename__ = "project"
+    __table_args__ = (
+        Index(
+            "uq_project_task_job_id",
+            "task_job_id",
+            unique=True,
+            postgresql_where=text("task_job_id IS NOT NULL"),
+        ),
+    )
     id: Optional[int] = Field(default=None, primary_key=True)
     org_id: int = Field(index=True)
     name: str
     root_path: str
     graph_node_count: int = Field(default=0)
     graph_edge_count: int = Field(default=0)
+    # Stable link to the background TaskJob that created this project, so an
+    # at-least-once worker retry/redelivery reuses it instead of duplicating.
+    task_job_id: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

@@ -154,3 +154,69 @@ async def test_create_project_from_snapshot_cleans_prepared_root_on_flush_error(
             await session.execute(delete(RepoSnapshot).where(RepoSnapshot.org_id == org_id))
             await session.execute(delete(Project).where(Project.org_id == org_id))
             await session.commit()
+
+
+@pytest.mark.anyio
+async def test_create_project_from_snapshot_reuses_project_for_same_task_job(
+    ensure_async_postgres,
+) -> None:
+    if async_engine.sync_engine.dialect.name != "postgresql":
+        pytest.skip("Postgres is required for snapshot create tests")
+
+    org_id = 9104
+    job_id = "job-idem-9104"
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(RepoSnapshot).where(RepoSnapshot.org_id == org_id))
+        await session.execute(delete(Project).where(Project.org_id == org_id))
+        await session.commit()
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            meta = SnapshotMeta(
+                storage="local",
+                sha256="c" * 64,
+                archive_name="repo.zip",
+                archive_ext=".zip",
+                size=1,
+                file="snapshots/test/archive.zip",
+                root_dir="snapshots/test/repo",
+            )
+
+            with mock.patch.object(
+                project_service,
+                "prepare_project_snapshot_root_async",
+                new=mock.AsyncMock(return_value=Path(tmpdir)),
+            ):
+                async with AsyncSessionLocal() as session:
+                    first = await project_service.create_project_from_snapshot_async(
+                        session=session,
+                        name="idem",
+                        meta=meta,
+                        org_id=org_id,
+                        task_job_id=job_id,
+                    )
+                # Simulates an at-least-once retry/redelivery of the same job.
+                async with AsyncSessionLocal() as session:
+                    second = await project_service.create_project_from_snapshot_async(
+                        session=session,
+                        name="idem",
+                        meta=meta,
+                        org_id=org_id,
+                        task_job_id=job_id,
+                    )
+
+            assert first.id == second.id
+
+            async with AsyncSessionLocal() as session:
+                projects = (
+                    (await session.execute(select(Project).where(Project.org_id == org_id)))
+                    .scalars()
+                    .all()
+                )
+            assert len(projects) == 1
+            assert projects[0].task_job_id == job_id
+    finally:
+        async with AsyncSessionLocal() as session:
+            await session.execute(delete(RepoSnapshot).where(RepoSnapshot.org_id == org_id))
+            await session.execute(delete(Project).where(Project.org_id == org_id))
+            await session.commit()

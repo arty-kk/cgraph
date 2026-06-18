@@ -1335,6 +1335,50 @@ async def test_create_project_from_snapshot_async_uses_async_root_normalization(
     assert calls[:3] == ["prepare", "normalize:/tmp/snap", "begin"]
 
 
+@pytest.mark.anyio
+async def test_create_project_from_snapshot_async_is_idempotent_per_task_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retried/redelivered snapshot-import job must reuse the project it already
+    created instead of preparing a new root and importing a duplicate."""
+    existing = object()
+
+    async def _fake_find(session, org_id, task_job_id):
+        _ = session
+        assert org_id == 7
+        assert task_job_id == "job-abc"
+        return existing
+
+    async def _fail_prepare(meta):
+        _ = meta
+        raise AssertionError("must not prepare a new snapshot root on replay")
+
+    monkeypatch.setattr(project_service, "_find_project_by_task_job_async", _fake_find)
+    monkeypatch.setattr(
+        project_service, "prepare_project_snapshot_root_async", _fail_prepare
+    )
+
+    meta = project_service.SnapshotMeta(
+        storage="local",
+        sha256="sha",
+        archive_name="repo.zip",
+        archive_ext=".zip",
+        size=1,
+        file="snapshots/sha/archive.zip",
+        root_dir="snapshots/sha/repo",
+    )
+
+    result = await project_service.create_project_from_snapshot_async(
+        object(),  # session is unused on the replay short-circuit path
+        name="demo",
+        meta=meta,
+        org_id=7,
+        task_job_id="job-abc",
+    )
+
+    assert result is existing
+
+
 from app import graph
 
 
