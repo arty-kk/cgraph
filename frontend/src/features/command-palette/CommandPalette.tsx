@@ -1,9 +1,9 @@
 //frontend/src/ui/components/CommandPalette.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import type { Project, NodeSearchItem } from '../../api'
-import { searchNodes } from '../../api'
-import { Modal } from './Modal'
-import { LanguageIcon } from './LanguageIcon'
+import type { Project, NodeSearchItem } from '@/api'
+import { searchNodes } from '@/api'
+import { Modal } from '@/shared/ui/Modal'
+import { LanguageIcon } from '@/shared/ui/LanguageIcon'
 
 type CmdGroup = 'Project' | 'Graph' | 'UI' | 'Editor' | 'Selection' | 'Navigation'
 

@@ -1,5 +1,5 @@
 // frontend/src/api/projects.ts
-import { api } from './client'
+import { api } from '@/shared/api/client'
 import type {
   Project,
   ScanResult,
@@ -11,8 +11,8 @@ import type {
   FileDependenciesResponse,
   SemanticSearchResult,
   TextSearchResult,
-} from './types'
-import { waitForTaskResult } from './tasks'
+} from '@/shared/types'
+import { waitForTaskResult } from '@/features/analysis/api'
 
 export async function listProjects(): Promise<Project[]> {
   const r = await api.get('/projects')

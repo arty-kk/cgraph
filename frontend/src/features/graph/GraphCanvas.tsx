@@ -1,14 +1,14 @@
 // frontend/src/ui/components/GraphCanvas.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { GraphData, Project } from '../../api'
+import type { GraphData, Project } from '@/api'
 import { 
   useCytoscapeGraph, type GraphFilters, 
   type LabelMode, type NodeContextMenuPayload, 
   type GraphEditSnapshot,
   type CytoscapeGraphActions,
-} from '../hooks/useCytoscapeGraph'
-import { Modal } from './Modal'
-import { safeStorageGet, safeStorageSet } from '../../lib/storage'
+} from './useCytoscapeGraph'
+import { Modal } from '@/shared/ui/Modal'
+import { safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
 
 const FILTER_STORAGE_KEY = 'cs.graph.filters.v1'
 const LABELS_STORAGE_KEY = 'cs.graph.labels.v1'

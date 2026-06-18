@@ -1,9 +1,9 @@
 // frontend/src/ui/hooks/useCytoscapeGraph.ts
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Core, ElementDefinition, LayoutOptions } from 'cytoscape'
-import type { GraphData } from '../../api'
-import { riskColor } from '../../lib/riskColor'
-import { safeStorageGet, safeStorageRemove, safeStorageSet } from '../../lib/storage'
+import type { GraphData } from '@/api'
+import { riskColor } from '@/shared/lib/riskColor'
+import { safeStorageGet, safeStorageRemove, safeStorageSet } from '@/shared/lib/storage'
 
 export type GraphFilters = {
   text: string

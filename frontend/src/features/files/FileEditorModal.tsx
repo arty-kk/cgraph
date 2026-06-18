@@ -1,5 +1,5 @@
 // frontend/src/ui/components/FileEditorModal.tsx
-import { Modal } from './Modal'
+import { Modal } from '@/shared/ui/Modal'
 import { FileEditorPane, type FileEditorPaneProps } from './FileEditorPane'
 
 type Props = FileEditorPaneProps

@@ -1,9 +1,9 @@
 // frontend/src/ui/components/ExplorerTree.tsx
 import React from 'react'
-import type { Project, ProjectFileItem, ProjectTreeEntry } from '../../api'
-import { listProjectTreeEntries, searchNodes } from '../../api'
-import { Modal } from './Modal'
-import { safeStorageGet, safeStorageGetJson, safeStorageSet } from '../../lib/storage'
+import type { Project, ProjectFileItem, ProjectTreeEntry } from '@/api'
+import { listProjectTreeEntries, searchNodes } from '@/api'
+import { Modal } from '@/shared/ui/Modal'
+import { safeStorageGet, safeStorageGetJson, safeStorageSet } from '@/shared/lib/storage'
 
 type ExplorerTreeProps = {
   activeProject: Project | null

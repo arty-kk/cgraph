@@ -2,12 +2,12 @@
 import React, { useMemo } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { DepMode, Mode, NodeContract, NodeInfo, Project, RunRecord, RunTaskBody, RunTaskResult } from '../../api'
-import { clampInt } from '../../lib/number'
-import { formatResult } from '../../lib/formatResult'
-import { safeStorageGet, safeStorageSet } from '../../lib/storage'
-import { Modal } from './Modal'
-import { LanguageIcon } from './LanguageIcon'
+import type { DepMode, Mode, NodeContract, NodeInfo, Project, RunRecord, RunTaskBody, RunTaskResult } from '@/api'
+import { clampInt } from '@/shared/lib/number'
+import { formatResult } from '@/shared/lib/formatResult'
+import { safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
+import { Modal } from '@/shared/ui/Modal'
+import { LanguageIcon } from '@/shared/ui/LanguageIcon'
 
 type AutoOrMode = 'auto' | Mode
 type RetrievalMode = 'agentic' | 'pack'

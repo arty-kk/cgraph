@@ -1,6 +1,6 @@
 // frontend/src/api/client.ts
 import axios, { AxiosHeaders } from 'axios'
-import { safeStorageGet } from '../lib/storage'
+import { safeStorageGet } from '@/shared/lib/storage'
 
 const rawBaseURL = import.meta.env.VITE_API_BASE_URL
 const baseURL = (() => {

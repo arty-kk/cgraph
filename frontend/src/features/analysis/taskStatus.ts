@@ -1,4 +1,4 @@
-import type { TaskStatus } from './types'
+import type { TaskStatus } from '@/shared/types'
 
 export type TaskFailurePayload = {
   code?: string

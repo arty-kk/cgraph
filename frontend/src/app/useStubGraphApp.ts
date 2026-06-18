@@ -57,16 +57,16 @@ import {
   type ProjectDocs,
   type SnapshotCreateTaskResult,
   setSelectedOrgId,
-} from '../api'
-import { extractError, getAppErrorInfo, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '../lib/errors'
-import { clampInt } from '../lib/number'
+} from '@/api'
+import { extractError, getAppErrorInfo, getSemanticSearchErrorReason, type SemanticSearchErrorReason } from '@/shared/lib/errors'
+import { clampInt } from '@/shared/lib/number'
 import {
   addStorageErrorListener,
   safeStorageGet,
   safeStorageGetJson,
   safeStorageRemove,
   safeStorageSet,
-} from '../lib/storage'
+} from '@/shared/lib/storage'
 
 type AutoOrMode = 'auto' | Mode
 type GraphMode = 'local' | 'full' | 'limit'

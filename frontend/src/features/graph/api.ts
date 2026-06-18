@@ -1,6 +1,6 @@
 // frontend/src/api/graph.ts
-import { api } from './client'
-import type { GraphData, NodeSearchItem } from './types'
+import { api } from '@/shared/api/client'
+import type { GraphData, NodeSearchItem } from '@/shared/types'
 
 export async function getGraph(projectId: number, limitNodes?: number | null): Promise<GraphData> {
   const params =

@@ -2,8 +2,8 @@
 import React from 'react'
 import { DiffEditor, Editor } from '@monaco-editor/react'
 import type { editor, IPosition } from 'monaco-editor'
-import type { NodeInfo, ProjectFileItem } from '../../api'
-import { safeStorageGet, safeStorageSet } from '../../lib/storage'
+import type { NodeInfo, ProjectFileItem } from '@/api'
+import { safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
 
 export type FileEditorPaneProps = {
   open: boolean

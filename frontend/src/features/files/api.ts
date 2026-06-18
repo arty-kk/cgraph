@@ -1,7 +1,7 @@
 // frontend/src/api/nodes.ts
-import { api } from './client'
-import type { FileContent, FileSaveResult, NodeContract, NodeInfo } from './types'
-import { encodePath } from './utils'
+import { api } from '@/shared/api/client'
+import type { FileContent, FileSaveResult, NodeContract, NodeInfo } from '@/shared/types'
+import { encodePath } from '@/shared/api/utils'
 
 export async function getNode(projectId: number, path: string): Promise<NodeInfo> {
   const r = await api.get(`/nodes/${projectId}/${encodePath(path)}/node`)

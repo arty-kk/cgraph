@@ -1,5 +1,5 @@
 // frontend/src/api/tasks.ts
-import { api } from './client'
+import { api } from '@/shared/api/client'
 import type {
   RunDetails,
   RunRecord,
@@ -7,7 +7,7 @@ import type {
   RunTaskResult,
   TaskPollOptions,
   TaskStatus,
-} from './types'
+} from '@/shared/types'
 import { TaskFailureError, isTaskStatus } from './taskStatus'
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))

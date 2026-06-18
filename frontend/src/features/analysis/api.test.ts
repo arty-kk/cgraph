@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { RunTaskBody, RunTaskResult, TaskStatus } from './types'
+import type { RunTaskBody, RunTaskResult, TaskStatus } from '@/shared/types'
 
 const { post, get } = vi.hoisted(() => ({
   post: vi.fn(),
   get: vi.fn(),
 }))
 
-vi.mock('./client', () => ({
+vi.mock('@/shared/api/client', () => ({
   api: { post, get },
 }))
 
-import { runTask, waitForTaskResult } from './tasks'
+import { runTask, waitForTaskResult } from './api'
 import { TaskFailureError } from './taskStatus'
 
 function assertRunTaskContract(): void {

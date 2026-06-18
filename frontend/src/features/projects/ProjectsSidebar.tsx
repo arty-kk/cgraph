@@ -1,13 +1,13 @@
 // frontend/src/ui/components/ProjectsSidebar.tsx
 import React from 'react'
-import type { Org, Project, ProjectTreeEntry, NodeSearchItem, SemanticSearchItem } from '../../api'
-import { clampInt } from '../../lib/number'
-import { roleAtLeast } from '../../lib/roles'
-import { safeStorageGet, safeStorageSet } from '../../lib/storage'
-import type { SemanticSearchErrorReason } from '../../lib/errors'
-import { Modal } from './Modal'
-import { LanguageIcon } from './LanguageIcon'
-import { ExplorerTree } from './ExplorerTree'
+import type { Org, Project, ProjectTreeEntry, NodeSearchItem, SemanticSearchItem } from '@/api'
+import { clampInt } from '@/shared/lib/number'
+import { roleAtLeast } from '@/shared/lib/roles'
+import { safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
+import type { SemanticSearchErrorReason } from '@/shared/lib/errors'
+import { Modal } from '@/shared/ui/Modal'
+import { LanguageIcon } from '@/shared/ui/LanguageIcon'
+import { ExplorerTree } from '@/features/files/ExplorerTree'
 
 type Props = {
   onHidePanel?: () => void
