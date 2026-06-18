@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from ..errors import BadRequestError, NotFoundError
+from ..errors import BadRequestError, ForbiddenError, NotFoundError
 from ..models import Organization, OrgMembership, User
-from ..rbac import ORG_ROLES
+from ..rbac import ORG_ROLES, can_manage_member_role
 
 
 def _normalize_org_name(name: str, fallback: str = "Personal") -> str:
@@ -124,8 +124,12 @@ async def add_or_update_member_async(
     org_id: int,
     user_id: int,
     role: str,
+    *,
+    actor_role: str,
 ) -> OrgMembership:
     role = _validate_role(role)
+    if not can_manage_member_role(actor_role, role):
+        raise ForbiddenError("Недостаточно прав для назначения этой роли")
     now = datetime.now(timezone.utc)
     async with session.begin():
         org = await session.get(Organization, org_id)
@@ -146,6 +150,8 @@ async def add_or_update_member_async(
             .first()
         )
         if existing:
+            if existing.is_active and not can_manage_member_role(actor_role, existing.role):
+                raise ForbiddenError("Недостаточно прав для изменения этого участника")
             if existing.role == "owner" and existing.is_active and role != "owner":
                 await _ensure_not_last_active_owner_async(session, org_id, user_id)
             existing.role = role
@@ -165,7 +171,13 @@ async def add_or_update_member_async(
     return membership
 
 
-async def remove_member_async(session: AsyncSession, org_id: int, user_id: int) -> None:
+async def remove_member_async(
+    session: AsyncSession,
+    org_id: int,
+    user_id: int,
+    *,
+    actor_role: str,
+) -> None:
     async with session.begin():
         org = await session.get(Organization, org_id)
         if not org:
@@ -186,6 +198,8 @@ async def remove_member_async(session: AsyncSession, org_id: int, user_id: int) 
         )
         if not membership:
             raise NotFoundError("Участник не найден")
+        if membership.is_active and not can_manage_member_role(actor_role, membership.role):
+            raise ForbiddenError("Недостаточно прав для удаления этого участника")
         if membership.role == "owner" and membership.is_active:
             await _ensure_not_last_active_owner_async(session, org_id, user_id)
         await session.delete(membership)

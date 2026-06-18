@@ -73,7 +73,7 @@ async def get_org_members(request: Request, org_id: int):
 @router.post("/{org_id}/members")
 async def upsert_member(request: Request, org_id: int, body: MemberUpsert):
     session = await get_request_db_session(request)
-    await require_org_role_async(request, org_id, min_role="admin")
+    _, actor_membership = await require_org_role_async(request, org_id, min_role="admin")
     email = body.email.strip().lower()
     if not email:
         raise BadRequestError("Email обязателен")
@@ -82,13 +82,15 @@ async def upsert_member(request: Request, org_id: int, body: MemberUpsert):
     user = (await session.execute(select(User).where(User.email == email))).scalars().first()
     if not user:
         raise NotFoundError("Пользователь не найден")
-    membership = await add_or_update_member_async(session, org_id, user.id, body.role)
+    membership = await add_or_update_member_async(
+        session, org_id, user.id, body.role, actor_role=actor_membership.role
+    )
     return {"user_id": membership.user_id, "role": membership.role, "org_id": membership.org_id}
 
 
 @router.delete("/{org_id}/members/{user_id}")
 async def delete_member(request: Request, org_id: int, user_id: int):
     session = await get_request_db_session(request)
-    await require_org_role_async(request, org_id, min_role="admin")
-    await remove_member_async(session, org_id, user_id)
+    _, actor_membership = await require_org_role_async(request, org_id, min_role="admin")
+    await remove_member_async(session, org_id, user_id, actor_role=actor_membership.role)
     return {"ok": True}
