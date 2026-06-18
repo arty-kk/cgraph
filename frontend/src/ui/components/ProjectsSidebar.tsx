@@ -133,6 +133,10 @@ export function ProjectsSidebar({
     [orgs, selectedOrgId],
   )
   const canDeleteProject = activeOrg?.role == null || roleAtLeast(activeOrg.role, 'admin')
+  // Mutating project actions (create / import / scan) require at least the
+  // member role server-side; mirror that so viewers aren't shown actions that
+  // only 403 on click. Unknown role keeps prior behaviour (server enforces).
+  const canEditProjects = activeOrg?.role == null || roleAtLeast(activeOrg.role, 'member')
 
   const controlBase = 'w-full h-9 rounded-md bg-neutral-900 border border-neutral-800 px-2 text-xs outline-none'
   const controlDisabled = 'disabled:opacity-50'
@@ -403,12 +407,17 @@ export function ProjectsSidebar({
           )}
 
           <div className="mt-3 text-sm font-semibold text-neutral-200">Add</div>
+          {!canEditProjects && (
+            <div className="text-xs text-neutral-500 leading-relaxed">
+              Only org members can create projects.
+            </div>
+          )}
           <input
             className={inputSmClass}
             placeholder="name"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            disabled={busy}
+            disabled={busy || !canEditProjects}
             title="Project name (shown in the UI)"
           />
           <input
@@ -416,7 +425,7 @@ export function ProjectsSidebar({
             type="file"
             accept=".zip,.tar,.tar.gz,.tgz"
             onChange={(e) => setNewArchive(e.target.files?.[0] ?? null)}
-            disabled={busy}
+            disabled={busy || !canEditProjects}
             title="Upload repository snapshot (.zip/.tar/.tar.gz/.tgz)"
           />
           <div className="text-xs text-neutral-500 leading-relaxed">
@@ -432,7 +441,7 @@ export function ProjectsSidebar({
             placeholder="/absolute/path/to/repo"
             value={newPath}
             onChange={(e) => setNewPath(e.target.value)}
-            disabled={busy || Boolean(newArchive) || localRootDisabled}
+            disabled={busy || Boolean(newArchive) || localRootDisabled || !canEditProjects}
             title="Absolute path on the backend machine (local-only)"
           />
           <div className="text-xs text-neutral-500 leading-relaxed">
@@ -441,8 +450,17 @@ export function ProjectsSidebar({
           <button
             className={buttonPrimary}
             onClick={() => onCreateProject()}
-            disabled={!newName.trim() || (!newArchive && (!newPath.trim() || localRootDisabled)) || busy}
-            title="Create project from snapshot or local root_path"
+            disabled={
+              !newName.trim() ||
+              (!newArchive && (!newPath.trim() || localRootDisabled)) ||
+              busy ||
+              !canEditProjects
+            }
+            title={
+              canEditProjects
+                ? 'Create project from snapshot or local root_path'
+                : 'Creating projects requires the member role'
+            }
           >
             Create Project
           </button>
@@ -535,8 +553,12 @@ export function ProjectsSidebar({
             <button
               className={buttonSoft}
               onClick={() => onScan()}
-              disabled={!activeProject || busy}
-              title="Scan: reindex project and recompute dependencies"
+              disabled={!activeProject || busy || !canEditProjects}
+              title={
+                canEditProjects
+                  ? 'Scan: reindex project and recompute dependencies'
+                  : 'Scanning requires the member role'
+              }
             >
               Scan
             </button>

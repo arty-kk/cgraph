@@ -11,6 +11,13 @@ describe('roleAtLeast', () => {
     expect(roleAtLeast('member', 'viewer')).toBe(true)
   })
 
+  it('gates member-level mutations (create/import/scan) from viewers', () => {
+    expect(roleAtLeast('member', 'member')).toBe(true)
+    expect(roleAtLeast('admin', 'member')).toBe(true)
+    expect(roleAtLeast('owner', 'member')).toBe(true)
+    expect(roleAtLeast('viewer', 'member')).toBe(false)
+  })
+
   it('treats unknown or missing roles as insufficient', () => {
     expect(roleAtLeast(undefined, 'admin')).toBe(false)
     expect(roleAtLeast(null, 'admin')).toBe(false)
