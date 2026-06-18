@@ -17,7 +17,7 @@ from .api.projects import router as projects_router
 from .api.tasks import router as tasks_router
 from .auth import extract_token
 from .config import settings
-from .errors import install_exception_handlers
+from .errors import AppError, install_exception_handlers
 from .infra.rate_limit import allow_request_async, rate_limit_response
 from .infra.runtime_lifecycle import build_cleanup_steps, build_startup_steps
 from .logging import log_requests, setup_logging
@@ -90,8 +90,17 @@ async def auth_guard(request: Request, call_next):
             content={"error": {"code": "unauthorized", "message": "Требуется токен"}},
         )
 
-    session = await get_request_db_session(request)
-    user = await get_user_from_token_async(session, token)
+    # auth_guard runs outside the ExceptionMiddleware that serves the AppError
+    # handler, so an AppError raised here (e.g. invalid/expired token) must be
+    # mapped to its intended status/envelope instead of surfacing as a 500.
+    try:
+        session = await get_request_db_session(request)
+        user = await get_user_from_token_async(session, token)
+    except AppError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message}},
+        )
     request.state.user = user
     return await call_next(request)
 
