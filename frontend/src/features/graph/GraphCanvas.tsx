@@ -48,6 +48,7 @@ import {
 } from './GraphCanvas.storage'
 import { GraphHelpModal } from './GraphCanvas.HelpModal'
 import { baseName, clamp } from './GraphCanvas.helpers'
+import { GraphContextMenu } from './GraphContextMenu'
 
 type Props = {
   graph: GraphData | null
@@ -1435,165 +1436,26 @@ export function GraphCanvas({
           </button>
         </div>
       )}
-      {ctxMenu && (
-        <div
-          ref={ctxMenuRef}
-          className="absolute z-[60] w-[280px] rounded-md border border-neutral-800 bg-neutral-950/95 shadow-xl p-2"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-        >
-          <div className="px-2 py-1">
-            <div className="text-xs font-semibold text-neutral-100 truncate">{baseName(ctxMenu.path)}</div>
-            <div className="text-[11px] text-neutral-500 truncate">{ctxMenu.path}</div>
-            <div className="mt-1 text-[11px] text-neutral-300">
-              Risk: <span className="text-neutral-100">{ctxNode ? Number(ctxNode.risk ?? 0).toFixed(2) : '—'}</span>
-              {' · '}
-              LOC: <span className="text-neutral-100">{ctxNode ? String(ctxNode.loc ?? '—') : '—'}</span>
-              {' · '}
-              In/Out:{' '}
-              <span className="text-neutral-100">
-                {ctxNode ? `${ctxNode.fan_in ?? 0}/${ctxNode.fan_out ?? 0}` : '—'}
-              </span>
-            </div>
-          </div>
-          <div className="mt-2 grid grid-cols-2 gap-2 px-1">
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { actions.centerPath(ctxMenu.path); setCtxMenu(null) }}
-            >
-              Center
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={async () => { await Promise.resolve(onTogglePinPath(ctxMenu.path)); setCtxMenu(null) }}
-            >
-              {ctxPinned ? 'Unpin' : 'Pin'}
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { void Promise.resolve(onOpenFileEditor(ctxMenu.path)); setCtxMenu(null) }}
-            >
-              Open in editor
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
-              onClick={() => { void Promise.resolve(onQuickSummary(ctxMenu.path)); setCtxMenu(null) }}
-              title={quickSummaryTitleFor(ctxMenu.path)}
-              disabled={isQuickSummaryDisabledFor(ctxMenu.path)}
-            >
-              Quick summary
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { pushUndo(actions.exportSnapshot()); actions.toggleLockPath(ctxMenu.path); setCtxMenu(null); notifyInfo('Lock toggled') }}
-              title="Lock/unlock node position (freeze)"
-            >
-              Lock/Unlock
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { pushUndo(actions.exportSnapshot()); actions.unlockAll(); setCtxMenu(null); notifyInfo('Unlocked all') }}
-              title="Unlock all nodes"
-            >
-              Unlock All
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => {
-                pushUndo(actions.exportSnapshot())
-                if (selectedPath === ctxMenu.path) onClearSelection()
-                actions.hidePath(ctxMenu.path)
-                setCtxMenu(null)
-                notifyInfo('Node hidden')
-              }}
-              title="Hide node"
-            >
-              Hide node
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { pushUndo(actions.exportSnapshot()); actions.hideOthers(ctxMenu.path); setCtxMenu(null); notifyInfo('Others hidden') }}
-              title="Keep only node neighborhood"
-            >
-              Hide Others
-            </button>
-
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { pushUndo(actions.exportSnapshot()); actions.showAll(); setCtxMenu(null); notifyInfo('Show all') }}
-              title="Show all hidden nodes"
-            >
-              Show All
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { pushUndo(actions.exportSnapshot()); actions.relayoutVisible(); setCtxMenu(null); notifyInfo('Relayout visible') }}
-              title="Relayout only visible nodes"
-            >
-              Relayout visible
-            </button>
-
-            <button
-              type="button"
-              className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { saveLayout(); setCtxMenu(null) }}
-              title="Save layout"
-            >
-              Save layout
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-800 hover:bg-neutral-700 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { resetLayout(); setCtxMenu(null) }}
-              title="Reset layout"
-            >
-              Reset layout
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={async () => {
-                try { await navigator.clipboard.writeText(ctxMenu.path) } catch {}
-                notifyInfo('Path copied')
-                setCtxMenu(null)
-              }}
-            >
-              Copy Path
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { setNeighborsOpen(true); setCtxMenu(null) }}
-              disabled={!ctxMenu.path}
-            >
-              Neighbors
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { actions.fit(); setCtxMenu(null) }}
-            >
-              Fit
-            </button>
-            <button
-              type="button"
-              className="rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2 py-1 text-[11px] font-semibold"
-              onClick={() => { actions.relayout(); setCtxMenu(null) }}
-            >
-              Relayout
-            </button>
-          </div>
-        </div>
-      )}
+      <GraphContextMenu
+        ctxMenu={ctxMenu}
+        menuRef={ctxMenuRef}
+        ctxNode={ctxNode}
+        ctxPinned={ctxPinned}
+        selectedPath={selectedPath}
+        actions={actions}
+        onClose={() => setCtxMenu(null)}
+        onOpenNeighbors={() => setNeighborsOpen(true)}
+        onTogglePinPath={onTogglePinPath}
+        onOpenFileEditor={onOpenFileEditor}
+        onQuickSummary={onQuickSummary}
+        onClearSelection={onClearSelection}
+        pushUndo={pushUndo}
+        saveLayout={saveLayout}
+        resetLayout={resetLayout}
+        notifyInfo={notifyInfo}
+        quickSummaryTitleFor={quickSummaryTitleFor}
+        isQuickSummaryDisabledFor={isQuickSummaryDisabledFor}
+      />
       {/* Status bar */}
       {activeProject && (
         <div className="absolute bottom-3 right-3 z-10 flex max-w-[calc(100%-24px)] flex-wrap items-end gap-2">
