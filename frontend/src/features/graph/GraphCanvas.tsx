@@ -47,6 +47,7 @@ import {
   loadEdgeDir,
 } from './GraphCanvas.storage'
 import { GraphHelpModal } from './GraphCanvas.HelpModal'
+import { baseName, clamp } from './GraphCanvas.helpers'
 
 type Props = {
   graph: GraphData | null
@@ -136,9 +137,6 @@ export function GraphCanvas({
 
   const rootRef = useRef<HTMLDivElement | null>(null)
 
-  const clamp = (v: number, lo: number, hi: number) => {
-    return Math.max(lo, Math.min(hi, v))
-  }
   const uiBootingRef = useRef(false)
 
   const label = useCallback(
@@ -341,11 +339,6 @@ export function GraphCanvas({
     setNeighborsOpen(false)
   }, [selectedPath])
 
-  const baseName = (p: string) => {
-    const s = String(p || '')
-    const parts = s.split('/')
-    return parts[parts.length - 1] || s
-  }
 
   const [ctxMenu, setCtxMenu] = useState<null | { path: string; x: number; y: number }>(null)
   const [fileButtonPos, setFileButtonPos] = useState<null | { x: number; y: number }>(null)
