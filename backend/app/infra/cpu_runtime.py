@@ -171,8 +171,11 @@ async def run_cpu_io_async(
         started_at = time.perf_counter()
         loop = asyncio.get_running_loop()
         try:
+            # The result already round-tripped through the process pool (pickled in
+            # the worker, unpickled here), so it is provably picklable. Re-pickling
+            # it on the event loop would only duplicate that serialization for large
+            # payloads (e.g. scan parse results carrying full file texts).
             result = await loop.run_in_executor(runtime.executor, partial(fn, *args, **kwargs))
-            _ensure_pickleable(result, where="result", operation=operation_name)
         finally:
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
             with runtime.lock:
