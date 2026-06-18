@@ -225,3 +225,25 @@ async def test_admin_can_manage_member_role(ensure_async_postgres) -> None:
         )
     assert membership.role == "member"
     assert membership.is_active is True
+
+
+@pytest.mark.anyio
+async def test_list_org_memberships_returns_role_per_org(ensure_async_postgres) -> None:
+    owner_id = await _create_user("memb_owner")
+    viewer_id = await _create_user("memb_viewer")
+    async with AsyncSessionLocal() as session:
+        org = await org_service.create_org_async(session, "memberships-list", owner_id)
+    org_id = int(org.id)
+    async with AsyncSessionLocal() as session:
+        await org_service.add_or_update_member_async(
+            session, org_id, viewer_id, "viewer", actor_role="owner"
+        )
+
+    async with AsyncSessionLocal() as session:
+        owner_rows = await org_service.list_org_memberships_for_user_async(session, owner_id)
+        viewer_rows = await org_service.list_org_memberships_for_user_async(session, viewer_id)
+
+    owner_roles = {org.id: role for org, role in owner_rows}
+    viewer_roles = {org.id: role for org, role in viewer_rows}
+    assert owner_roles.get(org_id) == "owner"
+    assert viewer_roles.get(org_id) == "viewer"

@@ -170,5 +170,8 @@ async def test_list_orgs_returns_single_org_when_auth_disabled(
         assert only_org["name"] == org.name
         assert isinstance(only_org["created_at"], str)
         assert only_org["created_at"] == org.created_at.isoformat()
+        # Effective role is surfaced so the UI can gate role-restricted actions;
+        # auth-disabled callers act as owner.
+        assert only_org["role"] == "owner"
     finally:
         await _delete_all_orgs()

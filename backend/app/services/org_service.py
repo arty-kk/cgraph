@@ -68,27 +68,25 @@ async def create_org_async(session: AsyncSession, name: str, owner_user_id: int)
     return org
 
 
-async def list_orgs_for_user_async(session: AsyncSession, user_id: int) -> list[Organization]:
-    memberships = (
-        (
-            await session.execute(
-                select(OrgMembership.org_id).where(
-                    OrgMembership.user_id == user_id,
-                    OrgMembership.is_active.is_(True),
-                )
+async def list_org_memberships_for_user_async(
+    session: AsyncSession, user_id: int
+) -> list[tuple[Organization, str]]:
+    """Return each active org for the user paired with the user's role in it.
+
+    The role is the same source of truth used by ``require_org_role_async`` so
+    consumers (e.g. the UI) can gate role-restricted actions consistently with
+    server-side enforcement.
+    """
+    rows = (
+        await session.execute(
+            select(Organization, OrgMembership.role).where(
+                OrgMembership.user_id == user_id,
+                OrgMembership.is_active.is_(True),
+                OrgMembership.org_id == Organization.id,
             )
         )
-        .scalars()
-        .all()
-    )
-    org_ids = [int(row) for row in memberships]
-    if not org_ids:
-        return []
-    return list(
-        (await session.execute(select(Organization).where(Organization.id.in_(org_ids))))
-        .scalars()
-        .all()
-    )
+    ).all()
+    return [(org, str(role)) for org, role in rows]
 
 
 async def get_org_async(session: AsyncSession, org_id: int) -> Organization:

@@ -2,6 +2,7 @@
 import React from 'react'
 import type { Org, Project, ProjectTreeEntry, NodeSearchItem, SemanticSearchItem } from '../../api'
 import { clampInt } from '../../lib/number'
+import { roleAtLeast } from '../../lib/roles'
 import { safeStorageGet, safeStorageSet } from '../../lib/storage'
 import type { SemanticSearchErrorReason } from '../../lib/errors'
 import { Modal } from './Modal'
@@ -123,6 +124,15 @@ export function ProjectsSidebar({
 }: Props) {
   const [helpOpen, setHelpOpen] = React.useState<null | 'projects' | 'graph' | 'search'>(null)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = React.useState(false)
+
+  // Deleting a project requires the admin role server-side. Surface that as a
+  // disabled, explained affordance. When the role is unknown (older backend or
+  // initial load) keep the prior behaviour and let the server enforce.
+  const activeOrg = React.useMemo(
+    () => orgs.find((o) => o.id === selectedOrgId) ?? (orgs.length === 1 ? orgs[0] : undefined),
+    [orgs, selectedOrgId],
+  )
+  const canDeleteProject = activeOrg?.role == null || roleAtLeast(activeOrg.role, 'admin')
 
   const controlBase = 'w-full h-9 rounded-md bg-neutral-900 border border-neutral-800 px-2 text-xs outline-none'
   const controlDisabled = 'disabled:opacity-50'
@@ -370,9 +380,13 @@ export function ProjectsSidebar({
                   <button
                     type="button"
                     className={buttonDanger}
-                    disabled={!activeProject || busy}
+                    disabled={!activeProject || busy || !canDeleteProject}
                     onClick={() => setConfirmDeleteOpen(true)}
-                    title="Delete active project (irreversible)"
+                    title={
+                      canDeleteProject
+                        ? 'Delete active project (irreversible)'
+                        : 'Only org admins can delete projects'
+                    }
                   >
                     Delete
                   </button>

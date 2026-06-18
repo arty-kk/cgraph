@@ -10,6 +10,9 @@ export type Org = {
   id: number
   name: string
   created_at: string
+  // Caller's effective role in this org (viewer|member|admin|owner). Optional
+  // for forward/backward compatibility with cached or older responses.
+  role?: string
 }
 
 export type AgenticRetrievalSettings = {
