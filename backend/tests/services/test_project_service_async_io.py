@@ -1526,6 +1526,17 @@ async def test_compute_graph_metrics_async_runs_cpu_in_executor_and_keeps_db_asy
         async def commit(self):
             calls.append("commit")
 
+        async def get(self, model, ident):
+            _ = (model, ident)
+
+            class _Project:
+                pass
+
+            return _Project()
+
+        def add(self, obj):
+            _ = obj
+
     async def _fake_cpu_runtime(func, *args, **kwargs):
         calls.append(f"cpu:{func.__name__}")
         kwargs.pop("operation", None)

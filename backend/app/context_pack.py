@@ -69,6 +69,10 @@ async def pack_context_async(
         ),
     )
     io_semaphore = asyncio.Semaphore(effective_context_pack_read_concurrency)
+    # Contract builds touch the shared ``active_session``; AsyncSession forbids
+    # concurrent operations, so serialize the DB-bound build path while leaving
+    # the filesystem read batch free to run concurrently under ``io_semaphore``.
+    contract_db_lock = asyncio.Lock()
     hash_by_path: dict[str, str] = {}
 
     async def _read_file_cached(path: str, max_chars: int) -> str:
@@ -205,7 +209,7 @@ async def pack_context_async(
         missing.extend(path for path in paths if path not in keys_by_path and path not in result)
 
         async def _load_missing(path: str) -> tuple[str, tuple[dict | None, list[str]]]:
-            async with io_semaphore:
+            async with contract_db_lock:
                 return path, await _get_contract(path, use_cache=False)
 
         loaded = await asyncio.gather(*[_load_missing(path) for path in missing])

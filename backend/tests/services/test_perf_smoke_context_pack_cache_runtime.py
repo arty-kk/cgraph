@@ -161,3 +161,65 @@ async def test_pack_context_cache_runtime_concurrency_smoke(
     assert ticks >= 3
     assert elapsed < 5
     assert captured["value"] == expected_effective
+
+
+@pytest.mark.anyio
+async def test_pack_context_serializes_contract_builds_on_shared_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent dep-contract builds must not run on the shared AsyncSession at
+    the same time. AsyncSession forbids concurrent operations, and the error was
+    being swallowed, silently dropping dependency contracts from the pack.
+
+    Regression: the batch must serialize the session-bound build path.
+    """
+    session = _Session()
+    cache_client = _CacheClient()  # empty cache -> every dep contract is a miss
+    state = {"in_flight": 0, "max_in_flight": 0}
+
+    async def _read_file_async(path: Path, max_chars: int) -> str:
+        return (f"{path.name}:stub")[:max_chars]
+
+    async def _contract_async(sess, _project_id, _root, path):
+        assert sess is session
+        state["in_flight"] += 1
+        state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
+        try:
+            await asyncio.sleep(0.005)  # yield so a concurrent build could interleave
+            return {"exports": [], "path": path}
+        finally:
+            state["in_flight"] -= 1
+
+    async def _fake_run_cpu_io_async(fn, *args, operation=None, **kwargs):
+        _ = (operation, kwargs)
+        return fn(*args)
+
+    monkeypatch.setattr(context_pack, "_read_file_async", _read_file_async)
+    monkeypatch.setattr(context_pack, "get_or_build_contract_async", _contract_async)
+    monkeypatch.setattr(cache_module.settings, "cache_enabled", True)
+    monkeypatch.setattr(cache_module.settings, "cache_default_ttl_seconds", 60)
+    monkeypatch.setattr(cache_module.settings, "cache_entry_max_bytes", 10_000)
+    monkeypatch.setattr(cache_module, "get_async_redis_client", lambda: cache_client)
+    monkeypatch.setattr(cache_module, "run_cpu_io_async", _fake_run_cpu_io_async)
+    monkeypatch.setattr(context_pack.settings, "context_pack_read_concurrency", 8)
+    monkeypatch.setattr(
+        context_pack.settings, "fs_runtime_interactive_max_concurrency", 32
+    )
+
+    packed = await context_pack.pack_context_async(
+        project_id=1,
+        project_root=Path("."),
+        target_rel="target.py",
+        depth=1,
+        dep_mode="contracts",
+        mode="analyze",
+        session=session,
+    )
+
+    # The shared session is never touched by two contract builds concurrently.
+    assert state["max_in_flight"] == 1
+    # Both dependency contracts survive (no silent drop under concurrency).
+    dep_contract_paths = {
+        f["path"] for f in packed.files if f.get("kind") == "dep_contract"
+    }
+    assert {"dep_a.py", "dep_b.py"} <= dep_contract_paths
