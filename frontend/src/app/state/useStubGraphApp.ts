@@ -248,17 +248,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [activeProject?.id])
 
 
-  const fileEditors = useFileEditors({
-    activeProject, selectedOrgId, queryClient, draftPromptedRef,
-    activeFilePath, openFilePaths, fileEditorsByPath, draftsByPath, draftRestore,
-    confirmReason, pendingClosePath, pendingClosePaths, pendingActivePath,
-    pendingReloadPath, pendingView, workspaceView,
-    setActiveFilePath, setOpenFilePaths, setFileEditorsByPath, setDraftsByPath,
-    setDraftRestore, setFileSaveBanner, setGraphStale, setGraphStaleMessage,
-    setConfirmOpen, setConfirmReason, setPendingClosePath, setPendingClosePaths,
-    setPendingActivePath, setPendingReloadPath, setPendingJump, setPendingView,
-    setWorkspaceViewState,
-  })
+  const fileEditors = useFileEditors({ queryClient, draftPromptedRef })
   const { loadFileEditor, openFileEditor, queueMutationIndexingPoll, closeFileEditorPaths, setActiveFileContent } = fileEditors
 
   const runOp = useCallback(async (fn: () => Promise<void>) => {
@@ -295,11 +285,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   })
 
   const runActions = useGraphRunActions({
-    config,
-    activeProject, applyPatch, contract, graph, graphMode, nodeInfo, prompt,
-    queryClient, runOp, runResult, selectedOrgId, selectedPath,
-    setFullPatch, setGraphMode, setGraphStale, setGraphStaleMessage,
-    setPatchBusy, setRightPanelOpen, setRunLoadBusy, setRunResult, setSelection,
+    config, graph, queryClient, runOp, setRightPanelOpen, setSelection,
   })
 
   const fileTabs = useFileTabs({

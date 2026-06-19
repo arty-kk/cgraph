@@ -27,43 +27,13 @@ import {
 } from '../internal'
 import { useFileCloseFlow } from './useFileCloseFlow'
 import { useNotifications } from '../session'
+import { useWorkspace } from '../workspace'
 
 const FILE_EDITOR_MAX_CHARS = 200_000
 
 type Params = {
-  activeProject: Project | null
-  selectedOrgId: number | null
   queryClient: QueryClient
   draftPromptedRef: MutableRefObject<Set<string>>
-  activeFilePath: string | null
-  openFilePaths: string[]
-  fileEditorsByPath: Record<string, FileEditorEntry>
-  draftsByPath: Record<string, DraftEntry>
-  draftRestore: { path: string; draft: DraftEntry } | null
-  confirmReason: string | null
-  pendingClosePath: string | null
-  pendingClosePaths: string[]
-  pendingActivePath: string | null
-  pendingReloadPath: string | null
-  pendingView: WorkspaceView | null
-  workspaceView: WorkspaceView
-  setActiveFilePath: Dispatch<SetStateAction<string | null>>
-  setOpenFilePaths: Dispatch<SetStateAction<string[]>>
-  setFileEditorsByPath: Dispatch<SetStateAction<Record<string, FileEditorEntry>>>
-  setDraftsByPath: Dispatch<SetStateAction<Record<string, DraftEntry>>>
-  setDraftRestore: Dispatch<SetStateAction<{ path: string; draft: DraftEntry } | null>>
-  setFileSaveBanner: Dispatch<SetStateAction<FileSaveBanner | null>>
-  setGraphStale: Dispatch<SetStateAction<boolean>>
-  setGraphStaleMessage: Dispatch<SetStateAction<string | null>>
-  setConfirmOpen: Dispatch<SetStateAction<boolean>>
-  setConfirmReason: Dispatch<SetStateAction<string | null>>
-  setPendingClosePath: Dispatch<SetStateAction<string | null>>
-  setPendingClosePaths: Dispatch<SetStateAction<string[]>>
-  setPendingActivePath: Dispatch<SetStateAction<string | null>>
-  setPendingReloadPath: Dispatch<SetStateAction<string | null>>
-  setPendingJump: Dispatch<SetStateAction<PendingFileJump | null>>
-  setPendingView: Dispatch<SetStateAction<WorkspaceView | null>>
-  setWorkspaceViewState: Dispatch<SetStateAction<WorkspaceView>>
 }
 
 /**
@@ -73,41 +43,23 @@ type Params = {
  * selection change) and passed in along with selection/project deps.
  */
 export function useFileEditors({
-  activeProject,
-  selectedOrgId,
   queryClient,
   draftPromptedRef,
-  activeFilePath,
-  openFilePaths,
-  fileEditorsByPath,
-  draftsByPath,
-  draftRestore,
-  confirmReason,
-  pendingClosePath,
-  pendingClosePaths,
-  pendingActivePath,
-  pendingReloadPath,
-  pendingView,
-  workspaceView,
-  setActiveFilePath,
-  setOpenFilePaths,
-  setFileEditorsByPath,
-  setDraftsByPath,
-  setDraftRestore,
-  setFileSaveBanner,
-  setGraphStale,
-  setGraphStaleMessage,
-  setConfirmOpen,
-  setConfirmReason,
-  setPendingClosePath,
-  setPendingClosePaths,
-  setPendingActivePath,
-  setPendingReloadPath,
-  setPendingJump,
-  setPendingView,
-  setWorkspaceViewState,
 }: Params) {
   const { notifyInfo } = useNotifications()
+  const ws = useWorkspace()
+  const {
+    activeProject, selectedOrgId, activeFilePath, openFilePaths, fileEditorsByPath,
+    draftsByPath, draftRestore, confirmReason, pendingClosePath, pendingClosePaths,
+    pendingActivePath, pendingReloadPath, pendingView, workspaceView,
+  } = ws.state
+  const {
+    setActiveFilePath, setOpenFilePaths, setFileEditorsByPath, setDraftsByPath, setDraftRestore,
+    setFileSaveBanner, setGraphStale, setGraphStaleMessage, setConfirmOpen, setConfirmReason,
+    setPendingClosePath, setPendingClosePaths, setPendingActivePath, setPendingReloadPath,
+    setPendingJump, setPendingView,
+    setWorkspaceView: setWorkspaceViewState,
+  } = ws.setters
   const updateFileEditorEntry = useCallback((path: string, updater: (entry: FileEditorEntry) => FileEditorEntry) => {
     const p = String(path || '').trim()
     if (!p) return

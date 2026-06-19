@@ -21,29 +21,14 @@ import { clampInt } from '@/shared/lib/number'
 import { getRunGraphStaleState, type GraphMode } from '../internal'
 import type { useAppConfig } from '../settings/useAppConfig'
 import { useNotifications, useTaskTracking } from '../session'
+import { useWorkspace } from '../workspace'
 
 type Params = {
   config: ReturnType<typeof useAppConfig>
-  activeProject: Project | null
-  applyPatch: boolean
-  contract: NodeContract | null
   graph: GraphData | null
-  graphMode: GraphMode
-  nodeInfo: NodeInfo | null
-  prompt: string
   queryClient: QueryClient
   runOp: (fn: () => Promise<void>) => Promise<void>
-  runResult: RunTaskResult | null
-  selectedOrgId: number | null
-  selectedPath: string | null
-  setFullPatch: Dispatch<SetStateAction<string | null>>
-  setGraphMode: Dispatch<SetStateAction<GraphMode>>
-  setGraphStale: Dispatch<SetStateAction<boolean>>
-  setGraphStaleMessage: Dispatch<SetStateAction<string | null>>
-  setPatchBusy: Dispatch<SetStateAction<boolean>>
   setRightPanelOpen: Dispatch<SetStateAction<boolean>>
-  setRunLoadBusy: Dispatch<SetStateAction<boolean>>
-  setRunResult: Dispatch<SetStateAction<RunTaskResult | null>>
   setSelection: (nextRaw: string | null, opts?: { pushHistory?: boolean }) => void
 }
 
@@ -54,26 +39,10 @@ type Params = {
  */
 export function useGraphRunActions({
   config,
-  activeProject,
-  applyPatch,
-  contract,
   graph,
-  graphMode,
-  nodeInfo,
-  prompt,
   queryClient,
   runOp,
-  runResult,
-  selectedOrgId,
-  selectedPath,
-  setFullPatch,
-  setGraphMode,
-  setGraphStale,
-  setGraphStaleMessage,
-  setPatchBusy,
   setRightPanelOpen,
-  setRunLoadBusy,
-  setRunResult,
   setSelection,
 }: Params) {
   const {
@@ -88,6 +57,15 @@ export function useGraphRunActions({
   } = config
   const { notifyInfo, setErrorMessage } = useNotifications()
   const { trackTaskStatus } = useTaskTracking()
+  const ws = useWorkspace()
+  const {
+    activeProject, applyPatch, contract, graphMode, nodeInfo, prompt,
+    runResult, selectedOrgId, selectedPath,
+  } = ws.state
+  const {
+    setFullPatch, setGraphMode, setGraphStale, setGraphStaleMessage,
+    setPatchBusy, setRunLoadBusy, setRunResult,
+  } = ws.setters
 
   const onDeleteRun = useCallback(
     async (runId: number) => {
