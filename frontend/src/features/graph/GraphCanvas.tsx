@@ -2,9 +2,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { GraphData, Project } from '@/api'
 import { 
-  useCytoscapeGraph, type GraphFilters, 
-  type LabelMode, type NodeContextMenuPayload, 
-  type GraphEditSnapshot,
+  useCytoscapeGraph, type GraphFilters,
+  type LabelMode, type NodeContextMenuPayload,
   type CytoscapeGraphActions,
 } from './useCytoscapeGraph'
 import { Modal } from '@/shared/ui/Modal'
@@ -34,6 +33,7 @@ import {
   DEFAULT_FILTERS,
 } from './GraphCanvas.storage'
 import { useGraphFilters } from './useGraphFilters'
+import { useGraphHistory } from './useGraphHistory'
 import { GraphHelpModal } from './GraphCanvas.HelpModal'
 import { baseName, clamp } from './GraphCanvas.helpers'
 import { GraphContextMenu } from './GraphContextMenu'
@@ -172,47 +172,9 @@ export function GraphCanvas({
   const notifyRef = useRef<(msg: string) => void>(() => {})
   useEffect(() => { notifyRef.current = notifyInfo }, [notifyInfo])
 
-  const undoStackRef = useRef<GraphEditSnapshot[]>([])
-  const redoStackRef = useRef<GraphEditSnapshot[]>([])
-  const dragBeforeRef = useRef<GraphEditSnapshot | null>(null)
-  const [, forceRerender] = useState(0)
-  const pushUndo = (snap: GraphEditSnapshot | null) => {
-    if (!snap) return
-    undoStackRef.current = [...undoStackRef.current.slice(-19), snap]
-    redoStackRef.current = []
-    forceRerender((x) => x + 1)
-  }
-
-  const doUndo = useCallback(() => {
-    const a = actionsRef.current
-    if (!a) return
-    const prev = undoStackRef.current.pop()
-    if (!prev) return
-    const cur = a.exportSnapshot()
-    if (cur) redoStackRef.current = [...redoStackRef.current.slice(-19), cur]
-    a.applySnapshot(prev)
-    forceRerender((x) => x + 1)
-    notifyRef.current?.('Undo')
-  }, [])
-
-  const doRedo = useCallback(() => {
-    const a = actionsRef.current
-    if (!a) return
-    const next = redoStackRef.current.pop()
-    if (!next) return
-    const cur = a.exportSnapshot()
-    if (cur) undoStackRef.current = [...undoStackRef.current.slice(-19), cur]
-    a.applySnapshot(next)
-    forceRerender((x) => x + 1)
-    notifyRef.current?.('Redo')
-  }, [])
-
-  useEffect(() => {
-    onRegisterUndoRedo?.({ undo: doUndo, redo: doRedo })
-    return () => {
-      onRegisterUndoRedo?.({ undo: () => {}, redo: () => {} })
-    }
-  }, [doRedo, doUndo, onRegisterUndoRedo])
+  const {
+    undoStackRef, redoStackRef, dragBeforeRef, pushUndo, doUndo, doRedo, clearHistory,
+  } = useGraphHistory({ actionsRef, notifyRef, onRegisterUndoRedo })
 
   const layoutKey = useMemo(() => {
     const pid = activeProject?.id != null ? String(activeProject.id) : 'none'
@@ -396,10 +358,7 @@ export function GraphCanvas({
   })
 
   useEffect(() => {
-    undoStackRef.current = []
-    redoStackRef.current = []
-    dragBeforeRef.current = null
-    forceRerender((x) => x + 1)
+    clearHistory()
   }, [
     activeProject?.id,
     instanceId,
