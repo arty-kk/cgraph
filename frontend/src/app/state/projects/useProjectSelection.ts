@@ -11,11 +11,10 @@ import type {
 } from '@/api'
 import type { GraphMode, WorkspaceView, FileEditorEntry } from '../internal'
 import { useNotifications } from '../session'
+import { useWorkspace } from '../workspace'
 
 type Params = {
   orgs: Org[]
-  activeProject: Project | null
-  selectedOrgId: number | null
   queryClient: QueryClient
   applyOrgSelection: (orgId: number | null) => void
   persistWorkspace: (projectId: number) => void
@@ -26,34 +25,8 @@ type Params = {
   backStackRef: MutableRefObject<string[]>
   forwardStackRef: MutableRefObject<string[]>
   selectionTrailRef: MutableRefObject<string[]>
-  setActiveProject: Dispatch<SetStateAction<Project | null>>
-  setSelectedPath: Dispatch<SetStateAction<string | null>>
-  setBackStack: Dispatch<SetStateAction<string[]>>
-  setForwardStack: Dispatch<SetStateAction<string[]>>
-  setSelectionTrail: Dispatch<SetStateAction<string[]>>
-  setPinnedPaths: Dispatch<SetStateAction<string[]>>
-  setNodeInfo: Dispatch<SetStateAction<NodeInfo | null>>
-  setContract: Dispatch<SetStateAction<NodeContract | null>>
-  setRunResult: Dispatch<SetStateAction<RunTaskResult | null>>
-  setFullPatch: Dispatch<SetStateAction<string | null>>
-  setPrompt: Dispatch<SetStateAction<string>>
   setSearchQuery: Dispatch<SetStateAction<string>>
   setSearchResults: Dispatch<SetStateAction<NodeSearchItem[]>>
-  setGraphMode: Dispatch<SetStateAction<GraphMode>>
-  setGraphLimitN: Dispatch<SetStateAction<number>>
-  setGraphHops: Dispatch<SetStateAction<number>>
-  setGraphLocalMax: Dispatch<SetStateAction<number>>
-  setWorkspaceViewState: Dispatch<SetStateAction<WorkspaceView>>
-  setOpenFilePaths: Dispatch<SetStateAction<string[]>>
-  setFileEditorsByPath: Dispatch<SetStateAction<Record<string, FileEditorEntry>>>
-  setActiveFilePath: Dispatch<SetStateAction<string | null>>
-  setPendingClosePath: Dispatch<SetStateAction<string | null>>
-  setPendingClosePaths: Dispatch<SetStateAction<string[]>>
-  setPendingActivePath: Dispatch<SetStateAction<string | null>>
-  setPendingReloadPath: Dispatch<SetStateAction<string | null>>
-  setPendingView: Dispatch<SetStateAction<WorkspaceView | null>>
-  setConfirmOpen: Dispatch<SetStateAction<boolean>>
-  setConfirmReason: Dispatch<SetStateAction<string | null>>
 }
 
 /**
@@ -63,8 +36,6 @@ type Params = {
  */
 export function useProjectSelection({
   orgs,
-  activeProject,
-  selectedOrgId,
   queryClient,
   applyOrgSelection,
   persistWorkspace,
@@ -75,36 +46,21 @@ export function useProjectSelection({
   backStackRef,
   forwardStackRef,
   selectionTrailRef,
-  setActiveProject,
-  setSelectedPath,
-  setBackStack,
-  setForwardStack,
-  setSelectionTrail,
-  setPinnedPaths,
-  setNodeInfo,
-  setContract,
-  setRunResult,
-  setFullPatch,
-  setPrompt,
   setSearchQuery,
   setSearchResults,
-  setGraphMode,
-  setGraphLimitN,
-  setGraphHops,
-  setGraphLocalMax,
-  setWorkspaceViewState,
-  setOpenFilePaths,
-  setFileEditorsByPath,
-  setActiveFilePath,
-  setPendingClosePath,
-  setPendingClosePaths,
-  setPendingActivePath,
-  setPendingReloadPath,
-  setPendingView,
-  setConfirmOpen,
-  setConfirmReason,
 }: Params) {
   const { setErrorMessage } = useNotifications()
+  const ws = useWorkspace()
+  const { activeProject, selectedOrgId } = ws.state
+  const {
+    setActiveProject, setSelectedPath, setBackStack, setForwardStack, setSelectionTrail,
+    setPinnedPaths, setNodeInfo, setContract, setRunResult, setFullPatch, setPrompt,
+    setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax,
+    setWorkspaceView: setWorkspaceViewState,
+    setOpenFilePaths, setFileEditorsByPath, setActiveFilePath,
+    setPendingClosePath, setPendingClosePaths, setPendingActivePath, setPendingReloadPath, setPendingView,
+    setConfirmOpen, setConfirmReason,
+  } = ws.setters
   const selectProjectLocal = useCallback((p: Project) => {
     if (activeProject?.id) persistWorkspace(activeProject.id)
     workspaceBootingRef.current = true

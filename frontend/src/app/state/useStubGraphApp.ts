@@ -199,16 +199,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const {
     setSelection, resetForSelectionChange, buildWorkspaceState, persistWorkspace, hasDirtyEditors,
   } = useWorkspaceSession({
-    activeProject, activeFilePath, selectedPath, workspaceView, backStack, forwardStack,
-    selectionTrail, pinnedPaths, graphMode, graphLimitN, graphHops, graphLocalMax,
-    draftsByPath, fileEditorsByPath, openFilePaths, PIN_LIMIT,
+    PIN_LIMIT,
     nodeSeqRef, selectedPathRef, backStackRef, forwardStackRef, selectionTrailRef,
     workspaceBootingRef, workspaceSaveTimerRef, draftSaveTimerRef, restoredEditorRef, draftPromptedRef,
-    setSelectedPath, setBackStack, setForwardStack, setSelectionTrail, setPinnedPaths,
-    setNodeInfo, setContract, setRunResult, setFullPatch, setPrompt,
-    setSearchQuery, setSearchResults, setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax,
-    setWorkspaceViewState, setOpenFilePaths, setFileEditorsByPath, setActiveFilePath,
-    setDraftRestore, setDraftsByPath, setFileSaveBanner, setGraphStale, setGraphStaleMessage,
+    setSearchQuery, setSearchResults,
   })
 
   const selectionNav = useSelectionNav({
@@ -225,15 +219,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   })
 
   const { selectProjectLocal, clearActiveProject, onSelectOrg } = useProjectSelection({
-    orgs, activeProject, selectedOrgId, queryClient, applyOrgSelection, persistWorkspace,
+    orgs, queryClient, applyOrgSelection, persistWorkspace,
     prevOrgIdRef, nodeSeqRef, workspaceBootingRef, selectedPathRef, backStackRef,
-    forwardStackRef, selectionTrailRef, setActiveProject, setSelectedPath, setBackStack,
-    setForwardStack, setSelectionTrail, setPinnedPaths, setNodeInfo, setContract,
-    setRunResult, setFullPatch, setPrompt, setSearchQuery, setSearchResults,
-    setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax, setWorkspaceViewState,
-    setOpenFilePaths, setFileEditorsByPath, setActiveFilePath, setPendingClosePath,
-    setPendingClosePaths, setPendingActivePath, setPendingReloadPath, setPendingView,
-    setConfirmOpen, setConfirmReason,
+    forwardStackRef, selectionTrailRef, setSearchQuery, setSearchResults,
   })
 
   const projects = projectsQuery.data ?? []

@@ -27,23 +27,9 @@ import {
   type WorkspaceView,
 } from '../internal'
 import { useNotifications } from '../session'
+import { useWorkspace } from '../workspace'
 
 type Params = {
-  activeProject: Project | null
-  activeFilePath: string | null
-  selectedPath: string | null
-  workspaceView: WorkspaceView
-  backStack: string[]
-  forwardStack: string[]
-  selectionTrail: string[]
-  pinnedPaths: string[]
-  graphMode: GraphMode
-  graphLimitN: number
-  graphHops: number
-  graphLocalMax: number
-  draftsByPath: Record<string, DraftEntry>
-  fileEditorsByPath: Record<string, FileEditorEntry>
-  openFilePaths: string[]
   PIN_LIMIT: number
   nodeSeqRef: MutableRefObject<number>
   selectedPathRef: MutableRefObject<string | null>
@@ -55,31 +41,8 @@ type Params = {
   draftSaveTimerRef: MutableRefObject<number | null>
   restoredEditorRef: MutableRefObject<boolean>
   draftPromptedRef: MutableRefObject<Set<string>>
-  setSelectedPath: Dispatch<SetStateAction<string | null>>
-  setBackStack: Dispatch<SetStateAction<string[]>>
-  setForwardStack: Dispatch<SetStateAction<string[]>>
-  setSelectionTrail: Dispatch<SetStateAction<string[]>>
-  setPinnedPaths: Dispatch<SetStateAction<string[]>>
-  setNodeInfo: Dispatch<SetStateAction<NodeInfo | null>>
-  setContract: Dispatch<SetStateAction<NodeContract | null>>
-  setRunResult: Dispatch<SetStateAction<RunTaskResult | null>>
-  setFullPatch: Dispatch<SetStateAction<string | null>>
-  setPrompt: Dispatch<SetStateAction<string>>
   setSearchQuery: Dispatch<SetStateAction<string>>
   setSearchResults: Dispatch<SetStateAction<NodeSearchItem[]>>
-  setGraphMode: Dispatch<SetStateAction<GraphMode>>
-  setGraphLimitN: Dispatch<SetStateAction<number>>
-  setGraphHops: Dispatch<SetStateAction<number>>
-  setGraphLocalMax: Dispatch<SetStateAction<number>>
-  setWorkspaceViewState: Dispatch<SetStateAction<WorkspaceView>>
-  setOpenFilePaths: Dispatch<SetStateAction<string[]>>
-  setFileEditorsByPath: Dispatch<SetStateAction<Record<string, FileEditorEntry>>>
-  setActiveFilePath: Dispatch<SetStateAction<string | null>>
-  setDraftRestore: Dispatch<SetStateAction<{ path: string; draft: DraftEntry } | null>>
-  setDraftsByPath: Dispatch<SetStateAction<Record<string, DraftEntry>>>
-  setFileSaveBanner: Dispatch<SetStateAction<import('../internal').FileSaveBanner | null>>
-  setGraphStale: Dispatch<SetStateAction<boolean>>
-  setGraphStaleMessage: Dispatch<SetStateAction<string | null>>
 }
 
 /**
@@ -89,21 +52,6 @@ type Params = {
  * in. Returns setSelection/reset + the persistence helpers.
  */
 export function useWorkspaceSession({
-  activeProject,
-  activeFilePath,
-  selectedPath,
-  workspaceView,
-  backStack,
-  forwardStack,
-  selectionTrail,
-  pinnedPaths,
-  graphMode,
-  graphLimitN,
-  graphHops,
-  graphLocalMax,
-  draftsByPath,
-  fileEditorsByPath,
-  openFilePaths,
   PIN_LIMIT,
   nodeSeqRef,
   selectedPathRef,
@@ -115,33 +63,24 @@ export function useWorkspaceSession({
   draftSaveTimerRef,
   restoredEditorRef,
   draftPromptedRef,
-  setSelectedPath,
-  setBackStack,
-  setForwardStack,
-  setSelectionTrail,
-  setPinnedPaths,
-  setNodeInfo,
-  setContract,
-  setRunResult,
-  setFullPatch,
-  setPrompt,
   setSearchQuery,
   setSearchResults,
-  setGraphMode,
-  setGraphLimitN,
-  setGraphHops,
-  setGraphLocalMax,
-  setWorkspaceViewState,
-  setOpenFilePaths,
-  setFileEditorsByPath,
-  setActiveFilePath,
-  setDraftRestore,
-  setDraftsByPath,
-  setFileSaveBanner,
-  setGraphStale,
-  setGraphStaleMessage,
 }: Params) {
   const { setErrorMessage } = useNotifications()
+  const ws = useWorkspace()
+  const {
+    activeProject, activeFilePath, selectedPath, workspaceView, backStack, forwardStack,
+    selectionTrail, pinnedPaths, graphMode, graphLimitN, graphHops, graphLocalMax,
+    draftsByPath, fileEditorsByPath, openFilePaths,
+  } = ws.state
+  const {
+    setSelectedPath, setBackStack, setForwardStack, setSelectionTrail, setPinnedPaths,
+    setNodeInfo, setContract, setRunResult, setFullPatch, setPrompt,
+    setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax,
+    setWorkspaceView: setWorkspaceViewState,
+    setOpenFilePaths, setFileEditorsByPath, setActiveFilePath, setDraftRestore, setDraftsByPath,
+    setFileSaveBanner, setGraphStale, setGraphStaleMessage,
+  } = ws.setters
   const DRAFT_MAX_CHARS = 120_000
   const hasDirtyEditors = useMemo(() => {
     return Object.values(fileEditorsByPath).some((entry) => isEntryDirty(entry))
