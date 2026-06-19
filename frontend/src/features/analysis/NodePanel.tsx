@@ -7,6 +7,7 @@ import { LanguageIcon } from '@/shared/ui/LanguageIcon'
 import { NodePanelHelpModal } from './NodePanel.HelpModal'
 import { NodePanelResultModal } from './NodePanelResultModal'
 import { clampFloat } from './NodePanel.helpers'
+import { SectionHeader } from './NodePanel.sections'
 
 type AutoOrMode = 'auto' | Mode
 type RetrievalMode = 'agentic' | 'pack'
@@ -236,24 +237,6 @@ export function NodePanel({
     return filteredRuns.slice(start, start + runsPageSize)
   }, [filteredRuns, runsPage, runsPageSize])
 
-  const HelpButton = ({
-    topic,
-    label,
-  }: {
-    topic: 'details' | 'contract' | 'run' | 'runs' | 'ctxSettings'
-    label?: string
-  }) => (
-    <button
-      type="button"
-      className="w-3.5 h-3.5 rounded-full border border-neutral-800 bg-neutral-900 text-neutral-200 text-[10px] leading-none font-semibold hover:bg-neutral-800 shrink-0"
-      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
-      onClick={() => setHelpOpen(topic)}
-      aria-label={label || 'Open help'}
-      title={label || 'Help'}
-    >
-      ?
-    </button>
-  )
 
   const controlBase = 'w-full h-9 rounded-md bg-neutral-900 border border-neutral-800 px-2 text-xs outline-none'
   const controlDisabled = 'disabled:opacity-50'
@@ -272,53 +255,7 @@ export function NodePanel({
     if (openedRunId !== runResult.run_id) setNewRunId(runResult.run_id)
   }, [openedRunId, runResult?.run_id])
 
-  const ToggleBtn = ({
-    open,
-    onClick,
-    title,
-  }: {
-    open: boolean
-    onClick: () => void
-    title: string
-  }) => (
-    <button
-      type="button"
-      className="h-6 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2.5 text-[11px] font-semibold"
-      onClick={onClick}
-      title={title}
-    >
-      {open ? 'Hide' : 'Show'}
-    </button>
-  )
 
-  const SectionHeader = ({
-    title,
-    topic,
-    open,
-    onToggle,
-    toggleTitle,
-    actions,
-  }: {
-    title: string
-    topic: 'details' | 'contract' | 'run' | 'runs' | 'ctxSettings'
-    open?: boolean
-    onToggle?: () => void
-    toggleTitle?: string
-    actions?: React.ReactNode
-  }) => (
-    <div className="flex items-center justify-between gap-3 min-h-6">
-      <div className="flex items-center gap-2">
-        <div className="text-sm font-semibold text-neutral-200 leading-none">{title}</div>
-        <HelpButton topic={topic} label={`Help: ${title}`} />
-      </div>
-      <div className="flex items-center gap-2">
-        {actions}
-        {typeof open === 'boolean' && onToggle ? (
-          <ToggleBtn open={open} onClick={onToggle} title={toggleTitle || `${open ? 'Hide' : 'Show'} ${title}`} />
-        ) : null}
-      </div>
-    </div>
-  )
 
 
   return (
@@ -342,6 +279,7 @@ export function NodePanel({
         <div className={['p-4', showRunFooter ? 'pb-28' : 'pb-4'].join(' ')}>
           <div className="mb-2">
             <SectionHeader
+              onOpenHelp={setHelpOpen}
               title={selectedPath ? 'Details' : 'No selection'}
               topic="details"
               open={!!selectedPath && detailsOpen}
@@ -421,6 +359,7 @@ export function NodePanel({
 
               <div className="mt-3">
                 <SectionHeader
+                  onOpenHelp={setHelpOpen}
                   title="Contract"
                   topic="contract"
                   open={contractOpen}
@@ -436,6 +375,7 @@ export function NodePanel({
 
               <div className="mt-3">
                 <SectionHeader
+                  onOpenHelp={setHelpOpen}
                   title="Run Task"
                   topic="run"
                   open={runOpen}
@@ -499,6 +439,7 @@ export function NodePanel({
 
                     <div className="mt-2">
                       <SectionHeader
+                        onOpenHelp={setHelpOpen}
                         title="Advanced settings"
                         topic="ctxSettings"
                         open={ctxAdvancedOpen}
@@ -730,6 +671,7 @@ export function NodePanel({
 
               <div className="mt-4">
                 <SectionHeader
+                  onOpenHelp={setHelpOpen}
                   title="Runs"
                   topic="runs"
                   actions={(
