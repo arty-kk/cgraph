@@ -26,13 +26,13 @@ import {
   type WorkspaceView,
 } from '../internal'
 import { useFileCloseFlow } from './useFileCloseFlow'
+import { useNotifications } from '../session'
 
 const FILE_EDITOR_MAX_CHARS = 200_000
 
 type Params = {
   activeProject: Project | null
   selectedOrgId: number | null
-  notifyInfo: (message: string) => void
   queryClient: QueryClient
   draftPromptedRef: MutableRefObject<Set<string>>
   activeFilePath: string | null
@@ -75,7 +75,6 @@ type Params = {
 export function useFileEditors({
   activeProject,
   selectedOrgId,
-  notifyInfo,
   queryClient,
   draftPromptedRef,
   activeFilePath,
@@ -108,6 +107,7 @@ export function useFileEditors({
   setPendingView,
   setWorkspaceViewState,
 }: Params) {
+  const { notifyInfo } = useNotifications()
   const updateFileEditorEntry = useCallback((path: string, updater: (entry: FileEditorEntry) => FileEditorEntry) => {
     const p = String(path || '').trim()
     if (!p) return

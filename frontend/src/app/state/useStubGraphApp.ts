@@ -201,7 +201,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [pendingView, setPendingView] = useState<WorkspaceView | null>(null)
 
 
-  const search = useGraphSearch({ activeProject, notifyInfo, setErrorMessage })
+  const search = useGraphSearch({ activeProject })
   const { setSearchQuery, setSearchResults } = search
 
 
@@ -226,7 +226,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     nodeSeqRef, selectedPathRef, backStackRef, forwardStackRef, selectionTrailRef,
     workspaceBootingRef, workspaceSaveTimerRef, draftSaveTimerRef, restoredEditorRef, draftPromptedRef,
     setSelectedPath, setBackStack, setForwardStack, setSelectionTrail, setPinnedPaths,
-    setNodeInfo, setContract, setRunResult, setFullPatch, setPrompt, setErrorMessage,
+    setNodeInfo, setContract, setRunResult, setFullPatch, setPrompt,
     setSearchQuery, setSearchResults, setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax,
     setWorkspaceViewState, setOpenFilePaths, setFileEditorsByPath, setActiveFilePath,
     setDraftRestore, setDraftsByPath, setFileSaveBanner, setGraphStale, setGraphStaleMessage,
@@ -242,7 +242,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
   const { projectsQuery, runsQuery, graphQuery, nodeQuery } = useGraphData({
     selectedOrgId, activeProject, selectedPath, graphMode, graphHops, graphLimitN,
-    graphLocalMax, nodeSeqRef, setErrorMessage, setNodeInfo, setContract,
+    graphLocalMax, nodeSeqRef, setNodeInfo, setContract,
   })
 
   const { selectProjectLocal, clearActiveProject, onSelectOrg } = useProjectSelection({
@@ -250,7 +250,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     prevOrgIdRef, nodeSeqRef, workspaceBootingRef, selectedPathRef, backStackRef,
     forwardStackRef, selectionTrailRef, setActiveProject, setSelectedPath, setBackStack,
     setForwardStack, setSelectionTrail, setPinnedPaths, setNodeInfo, setContract,
-    setRunResult, setFullPatch, setPrompt, setErrorMessage, setSearchQuery, setSearchResults,
+    setRunResult, setFullPatch, setPrompt, setSearchQuery, setSearchResults,
     setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax, setWorkspaceViewState,
     setOpenFilePaths, setFileEditorsByPath, setActiveFilePath, setPendingClosePath,
     setPendingClosePaths, setPendingActivePath, setPendingReloadPath, setPendingView,
@@ -264,7 +264,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const { fileMetaByPath, registerFileMeta } = useFileMeta({ activeProject })
 
 
-  const docsApi = useDocs({ activeProject, notifyInfo, setErrorMessage, trackTaskStatus })
+  const docsApi = useDocs({ activeProject, trackTaskStatus })
 
 
   useEffect(() => {
@@ -282,7 +282,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
 
   const fileEditors = useFileEditors({
-    activeProject, selectedOrgId, notifyInfo, queryClient, draftPromptedRef,
+    activeProject, selectedOrgId, queryClient, draftPromptedRef,
     activeFilePath, openFilePaths, fileEditorsByPath, draftsByPath, draftRestore,
     confirmReason, pendingClosePath, pendingClosePaths, pendingActivePath,
     pendingReloadPath, pendingView, workspaceView,
@@ -329,9 +329,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
   const runActions = useGraphRunActions({
     config,
-    activeProject, applyPatch, contract, graph, graphMode, nodeInfo, notifyInfo, prompt,
+    activeProject, applyPatch, contract, graph, graphMode, nodeInfo, prompt,
     queryClient, runOp, runResult, selectedOrgId, selectedPath,
-    setErrorMessage, setFullPatch, setGraphMode, setGraphStale, setGraphStaleMessage,
+    setFullPatch, setGraphMode, setGraphStale, setGraphStaleMessage,
     setPatchBusy, setRightPanelOpen, setRunLoadBusy, setRunResult, setSelection, trackTaskStatus,
   })
 

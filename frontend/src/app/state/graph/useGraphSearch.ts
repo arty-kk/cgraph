@@ -12,20 +12,19 @@ import {
   getSemanticSearchErrorReason,
   type SemanticSearchErrorReason,
 } from '@/shared/lib/errors'
+import { useNotifications } from '../session'
 
 type Params = {
   activeProject: Project | null
-  notifyInfo: (message: string) => void
-  setErrorMessage: (message: string) => void
 }
 
 /**
  * Owns semantic + text search state and their query handlers (with sequence
  * guards, semantic->path fallback, and "clear when query empties" effects).
- * Extracted verbatim from useStubGraphApp; activeProject/notifyInfo/
- * setErrorMessage are passed in.
+ * Extracted verbatim from useStubGraphApp; notifications come from context.
  */
-export function useGraphSearch({ activeProject, notifyInfo, setErrorMessage }: Params) {
+export function useGraphSearch({ activeProject }: Params) {
+  const { notifyInfo, setErrorMessage } = useNotifications()
   const searchSeqRef = useRef(0)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<NodeSearchItem[]>([])

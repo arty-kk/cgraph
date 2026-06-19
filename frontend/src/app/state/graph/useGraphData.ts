@@ -17,6 +17,7 @@ import {
 import type { Dispatch, SetStateAction } from 'react'
 import { extractError } from '@/shared/lib/errors'
 import type { GraphMode } from '../internal'
+import { useNotifications } from '../session'
 
 type Params = {
   selectedOrgId: number | null
@@ -27,7 +28,6 @@ type Params = {
   graphLimitN: number
   graphLocalMax: number
   nodeSeqRef: MutableRefObject<number>
-  setErrorMessage: (message: string | null) => void
   setNodeInfo: Dispatch<SetStateAction<NodeInfo | null>>
   setContract: Dispatch<SetStateAction<NodeContract | null>>
 }
@@ -46,10 +46,10 @@ export function useGraphData({
   graphLimitN,
   graphLocalMax,
   nodeSeqRef,
-  setErrorMessage,
   setNodeInfo,
   setContract,
 }: Params) {
+  const { setErrorMessage } = useNotifications()
   const projectsQuery = useQuery<Project[]>({
     queryKey: ['projects', selectedOrgId],
     enabled: selectedOrgId !== null,

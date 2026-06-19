@@ -1,7 +1,7 @@
 // frontend/src/ui/App.tsx
 import React from 'react'
 import { Notifications, AppLayout, AppModals } from './shell'
-import { useStubGraphApp } from './state'
+import { useStubGraphApp, NotificationsProvider } from './state'
 import { CommandPalette } from '@/features/command-palette'
 import { addStorageErrorListener, safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
 
@@ -9,7 +9,15 @@ export type AppProps = {
   showDependencies?: boolean
 }
 
-export function App({ showDependencies = true }: AppProps) {
+export function App(props: AppProps) {
+  return (
+    <NotificationsProvider>
+      <AppInner {...props} />
+    </NotificationsProvider>
+  )
+}
+
+function AppInner({ showDependencies = true }: AppProps) {
   const searchInputRef = React.useRef<HTMLInputElement | null>(null)
   const appRef = React.useRef<ReturnType<typeof useStubGraphApp> | null>(null)
   const [docsOpen, setDocsOpen] = React.useState(false)

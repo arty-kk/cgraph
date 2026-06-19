@@ -21,6 +21,7 @@ import { extractError } from '@/shared/lib/errors'
 import { clampInt } from '@/shared/lib/number'
 import { getRunGraphStaleState, type GraphMode } from '../internal'
 import type { useAppConfig } from '../settings/useAppConfig'
+import { useNotifications } from '../session'
 
 type Params = {
   config: ReturnType<typeof useAppConfig>
@@ -30,14 +31,12 @@ type Params = {
   graph: GraphData | null
   graphMode: GraphMode
   nodeInfo: NodeInfo | null
-  notifyInfo: (message: string) => void
   prompt: string
   queryClient: QueryClient
   runOp: (fn: () => Promise<void>) => Promise<void>
   runResult: RunTaskResult | null
   selectedOrgId: number | null
   selectedPath: string | null
-  setErrorMessage: (message: string | null) => void
   setFullPatch: Dispatch<SetStateAction<string | null>>
   setGraphMode: Dispatch<SetStateAction<GraphMode>>
   setGraphStale: Dispatch<SetStateAction<boolean>>
@@ -63,14 +62,12 @@ export function useGraphRunActions({
   graph,
   graphMode,
   nodeInfo,
-  notifyInfo,
   prompt,
   queryClient,
   runOp,
   runResult,
   selectedOrgId,
   selectedPath,
-  setErrorMessage,
   setFullPatch,
   setGraphMode,
   setGraphStale,
@@ -92,6 +89,7 @@ export function useGraphRunActions({
     packMaxCharsPerFile, setPackMaxCharsPerFile,
     packMaxTotalChars, setPackMaxTotalChars,
   } = config
+  const { notifyInfo, setErrorMessage } = useNotifications()
 
   const onDeleteRun = useCallback(
     async (runId: number) => {

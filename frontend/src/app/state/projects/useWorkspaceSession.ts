@@ -26,6 +26,7 @@ import {
   type GraphMode,
   type WorkspaceView,
 } from '../internal'
+import { useNotifications } from '../session'
 
 type Params = {
   activeProject: Project | null
@@ -64,7 +65,6 @@ type Params = {
   setRunResult: Dispatch<SetStateAction<RunTaskResult | null>>
   setFullPatch: Dispatch<SetStateAction<string | null>>
   setPrompt: Dispatch<SetStateAction<string>>
-  setErrorMessage: (message: string | null) => void
   setSearchQuery: Dispatch<SetStateAction<string>>
   setSearchResults: Dispatch<SetStateAction<NodeSearchItem[]>>
   setGraphMode: Dispatch<SetStateAction<GraphMode>>
@@ -125,7 +125,6 @@ export function useWorkspaceSession({
   setRunResult,
   setFullPatch,
   setPrompt,
-  setErrorMessage,
   setSearchQuery,
   setSearchResults,
   setGraphMode,
@@ -142,6 +141,7 @@ export function useWorkspaceSession({
   setGraphStale,
   setGraphStaleMessage,
 }: Params) {
+  const { setErrorMessage } = useNotifications()
   const DRAFT_MAX_CHARS = 120_000
   const hasDirtyEditors = useMemo(() => {
     return Object.values(fileEditorsByPath).some((entry) => isEntryDirty(entry))

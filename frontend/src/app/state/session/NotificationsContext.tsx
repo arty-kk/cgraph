@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import type { NotificationItem, NotificationKind } from '../internal'
 
 /**
  * Owns the transient error string and the toast notification queue (with
- * auto-dismiss timers). Exposes notifyInfo / setErrorMessage / notifyError
- * used throughout the app. Extracted verbatim from useStubGraphApp.
+ * auto-dismiss timers). Exposed as an ambient service via React context so
+ * orchestration hooks can notify without receiving notify* as parameters.
  */
-export function useNotifications() {
+function useNotificationsState() {
   const [error, setError] = useState<string | null>(null)
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
 
@@ -84,4 +84,21 @@ export function useNotifications() {
     setErrorMessage,
     notifyInfo,
   }
+}
+
+export type NotificationsApi = ReturnType<typeof useNotificationsState>
+
+const NotificationsContext = createContext<NotificationsApi | null>(null)
+
+export function NotificationsProvider({ children }: { children: React.ReactNode }) {
+  const value = useNotificationsState()
+  return <NotificationsContext.Provider value={value}>{children}</NotificationsContext.Provider>
+}
+
+export function useNotifications(): NotificationsApi {
+  const ctx = useContext(NotificationsContext)
+  if (!ctx) {
+    throw new Error('useNotifications must be used within a NotificationsProvider')
+  }
+  return ctx
 }

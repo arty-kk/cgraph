@@ -10,6 +10,7 @@ import type {
   NodeSearchItem,
 } from '@/api'
 import type { GraphMode, WorkspaceView, FileEditorEntry } from '../internal'
+import { useNotifications } from '../session'
 
 type Params = {
   orgs: Org[]
@@ -36,7 +37,6 @@ type Params = {
   setRunResult: Dispatch<SetStateAction<RunTaskResult | null>>
   setFullPatch: Dispatch<SetStateAction<string | null>>
   setPrompt: Dispatch<SetStateAction<string>>
-  setErrorMessage: (message: string | null) => void
   setSearchQuery: Dispatch<SetStateAction<string>>
   setSearchResults: Dispatch<SetStateAction<NodeSearchItem[]>>
   setGraphMode: Dispatch<SetStateAction<GraphMode>>
@@ -86,7 +86,6 @@ export function useProjectSelection({
   setRunResult,
   setFullPatch,
   setPrompt,
-  setErrorMessage,
   setSearchQuery,
   setSearchResults,
   setGraphMode,
@@ -105,6 +104,7 @@ export function useProjectSelection({
   setConfirmOpen,
   setConfirmReason,
 }: Params) {
+  const { setErrorMessage } = useNotifications()
   const selectProjectLocal = useCallback((p: Project) => {
     if (activeProject?.id) persistWorkspace(activeProject.id)
     workspaceBootingRef.current = true

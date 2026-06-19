@@ -9,16 +9,16 @@ import {
   type TaskStatus,
 } from '@/api'
 import { extractError, getAppErrorInfo } from '@/shared/lib/errors'
+import { useNotifications } from './NotificationsContext'
 
 type Params = {
   activeProject: Project | null
-  notifyInfo: (message: string) => void
-  setErrorMessage: (message: string | null) => void
   trackTaskStatus: (task: TaskStatus, kind: 'scan' | 'docs' | 'run', label: string) => void
 }
 
 /** Project documentation load/build state + actions. Extracted verbatim from useStubGraphApp. */
-export function useDocs({ activeProject, notifyInfo, setErrorMessage, trackTaskStatus }: Params) {
+export function useDocs({ activeProject, trackTaskStatus }: Params) {
+  const { notifyInfo, setErrorMessage } = useNotifications()
   const [docs, setDocs] = useState<ProjectDocs | null>(null)
   const [docsBusy, setDocsBusy] = useState(false)
   const [docsBuildBusy, setDocsBuildBusy] = useState(false)
