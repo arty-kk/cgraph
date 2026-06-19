@@ -1,5 +1,5 @@
 // frontend/src/ui/useStubGraphApp.ts
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   listOrgs,
@@ -31,6 +31,7 @@ import { useGraphData, useGraphSearch, useGraphRunActions } from './graph'
 import { useSelectionNav, useDerivedAppState, useGlobalKeyboard } from './interaction'
 import { useAppConfig, useUiPrefs } from './settings'
 import { useNotifications, useTaskTracking, useDocs } from './session'
+import { useWorkspace } from './workspace'
 import {
   addStorageErrorListener,
   safeStorageGet,
@@ -95,9 +96,33 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     staleTime: 60_000,
   })
 
-  const [selectedOrgId, setSelectedOrgIdState] = useState<number | null>(null)
+  const ws = useWorkspace()
+  const {
+    selectedOrgId, orgSelectionStorageFailureMarker, activeProject, newName, newArchive, newPath,
+    graphMode, graphLimitN, graphHops, graphLocalMax,
+    gotoLineRequestId, findRequestId, replaceRequestId, outlineRequestId,
+    backStack, forwardStack, selectionTrail, pinnedPaths, selectedPath,
+    paletteOpen, nodeInfo, contract, applyPatch, prompt,
+    runResult, fullPatch, patchBusy, runLoadBusy, busyCount, focusGraph,
+    workspaceView, openFilePaths, fileEditorsByPath, activeFilePath,
+    fileSaveBanner, graphStale, graphStaleMessage, draftsByPath, draftRestore,
+    pendingClosePath, pendingClosePaths, pendingActivePath, pendingReloadPath, pendingJump,
+    confirmOpen, confirmReason, pendingView,
+  } = ws.state
+  const {
+    setSelectedOrgId: setSelectedOrgIdState,
+    setOrgSelectionStorageFailureMarker, setActiveProject, setNewName, setNewArchive, setNewPath,
+    setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax,
+    setGotoLineRequestId, setFindRequestId, setReplaceRequestId, setOutlineRequestId,
+    setBackStack, setForwardStack, setSelectionTrail, setPinnedPaths, setSelectedPath,
+    setPaletteOpen, setNodeInfo, setContract, setApplyPatch, setPrompt,
+    setRunResult, setFullPatch, setPatchBusy, setRunLoadBusy, setBusyCount, setFocusGraph,
+    setWorkspaceView: setWorkspaceViewState, setOpenFilePaths, setFileEditorsByPath, setActiveFilePath,
+    setFileSaveBanner, setGraphStale, setGraphStaleMessage, setDraftsByPath, setDraftRestore,
+    setPendingClosePath, setPendingClosePaths, setPendingActivePath, setPendingReloadPath, setPendingJump,
+    setConfirmOpen, setConfirmReason, setPendingView,
+  } = ws.setters
   const prevOrgIdRef = useRef<number | null>(null)
-  const [orgSelectionStorageFailureMarker, setOrgSelectionStorageFailureMarker] = useState(0)
 
   const applyOrgSelection = useCallback((orgId: number | null) => {
     setSelectedOrgId(orgId)
@@ -110,23 +135,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setSelectedOrgIdState(orgId)
   }, [])
 
-  const [activeProject, setActiveProject] = useState<Project | null>(null)
 
   const nodeSeqRef = useRef(0)
 
-  const [newName, setNewName] = useState('my-project')
-  const [newArchive, setNewArchive] = useState<File | null>(null)
-  const [newPath, setNewPath] = useState('')
 
-  const [graphMode, setGraphMode] = useState<GraphMode>('limit')
-  const [graphLimitN, setGraphLimitN] = useState<number>(2000)
-  const [graphHops, setGraphHops] = useState<number>(2)
-  const [graphLocalMax, setGraphLocalMax] = useState<number>(400)
 
-  const [gotoLineRequestId, setGotoLineRequestId] = useState(0)
-  const [findRequestId, setFindRequestId] = useState(0)
-  const [replaceRequestId, setReplaceRequestId] = useState(0)
-  const [outlineRequestId, setOutlineRequestId] = useState(0)
 
   const orgs = orgsQuery.data ?? []
   const allowLocalRootPath = configQuery.data?.allow_local_root_path ?? null
@@ -139,37 +152,21 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const forwardStackRef = useRef<string[]>([])
   const selectionTrailRef = useRef<string[]>([])
 
-  const [backStack, setBackStack] = useState<string[]>([])
-  const [forwardStack, setForwardStack] = useState<string[]>([])
-  const [selectionTrail, setSelectionTrail] = useState<string[]>([])
 
-  const [pinnedPaths, setPinnedPaths] = useState<string[]>([])
   const PIN_LIMIT = 3
 
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
 
   useEffect(() => { selectedPathRef.current = selectedPath }, [selectedPath])
   useEffect(() => { backStackRef.current = backStack }, [backStack])
   useEffect(() => { forwardStackRef.current = forwardStack }, [forwardStack])
   useEffect(() => { selectionTrailRef.current = selectionTrail }, [selectionTrail])
 
-  const [paletteOpen, setPaletteOpen] = useState(false)
-  const [nodeInfo, setNodeInfo] = useState<NodeInfo | null>(null)
-  const [contract, setContract] = useState<NodeContract | null>(null)
   const config = useAppConfig()
 
-  const [applyPatch, setApplyPatch] = useState(false)
-  const [prompt, setPrompt] = useState('')
 
-  const [runResult, setRunResult] = useState<RunTaskResult | null>(null)
-  const [fullPatch, setFullPatch] = useState<string | null>(null)
-  const [patchBusy, setPatchBusy] = useState(false)
-  const [runLoadBusy, setRunLoadBusy] = useState(false)
-  const [busyCount, setBusyCount] = useState(0)
   const busy = busyCount > 0
   const notif = useNotifications()
   const { error, notifyInfo, setErrorMessage } = notif
-  const [focusGraph, setFocusGraph] = useState(false)
 
 
   const taskTracking = useTaskTracking()
@@ -180,24 +177,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     toggleLeftPanel, toggleRightPanel, toggleCompactMode,
   } = uiPrefs
   
-  const [workspaceView, setWorkspaceViewState] = useState<WorkspaceView>('graph')
-  const [openFilePaths, setOpenFilePaths] = useState<string[]>([])
-  const [fileEditorsByPath, setFileEditorsByPath] = useState<Record<string, FileEditorEntry>>({})
-  const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const fileDeps = useFileDependencies({ activeProject, activeFilePath })
-  const [fileSaveBanner, setFileSaveBanner] = useState<FileSaveBanner | null>(null)
-  const [graphStale, setGraphStale] = useState(false)
-  const [graphStaleMessage, setGraphStaleMessage] = useState<string | null>(null)
-  const [draftsByPath, setDraftsByPath] = useState<Record<string, DraftEntry>>({})
-  const [draftRestore, setDraftRestore] = useState<{ path: string; draft: DraftEntry } | null>(null)
-  const [pendingClosePath, setPendingClosePath] = useState<string | null>(null)
-  const [pendingClosePaths, setPendingClosePaths] = useState<string[]>([])
-  const [pendingActivePath, setPendingActivePath] = useState<string | null>(null)
-  const [pendingReloadPath, setPendingReloadPath] = useState<string | null>(null)
-  const [pendingJump, setPendingJump] = useState<PendingFileJump | null>(null)
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [confirmReason, setConfirmReason] = useState<string | null>(null)
-  const [pendingView, setPendingView] = useState<WorkspaceView | null>(null)
 
 
   const search = useGraphSearch({ activeProject })
