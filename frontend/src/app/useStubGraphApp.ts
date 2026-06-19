@@ -34,6 +34,7 @@ import { useFileDependencies } from './useFileDependencies'
 import { useUiPrefs } from './useUiPrefs'
 import { useTaskTracking } from './useTaskTracking'
 import { useGraphData } from './useGraphData'
+import { useProjectSelection } from './useProjectSelection'
 import {
   addStorageErrorListener,
   safeStorageGet,
@@ -550,102 +551,17 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     graphLocalMax, nodeSeqRef, setErrorMessage, setNodeInfo, setContract,
   })
 
-  const selectProjectLocal = useCallback((p: Project) => {
-    if (activeProject?.id) persistWorkspace(activeProject.id)
-    workspaceBootingRef.current = true
-    setActiveProject(p)
-    setErrorMessage(null)
-
-    nodeSeqRef.current++
-
-    selectedPathRef.current = null
-    backStackRef.current = []
-    forwardStackRef.current = []
-    selectionTrailRef.current = []
-    setSelectedPath(null)
-    setNodeInfo(null)
-    setContract(null)
-    setRunResult(null)
-    setFullPatch(null)
-    setGraphMode('limit')
-    setGraphLimitN(2000)
-    setGraphHops(2)
-    setGraphLocalMax(400)
-    setWorkspaceViewState('graph')
-    setPrompt('')
-    setSearchQuery('')
-    setSearchResults([])
-    setBackStack([])
-    setForwardStack([])
-    setSelectionTrail([])
-    setPinnedPaths([])
-    setOpenFilePaths([])
-    setFileEditorsByPath({})
-    setActiveFilePath(null)
-    setPendingClosePath(null)
-    setPendingClosePaths([])
-    setPendingActivePath(null)
-    setPendingReloadPath(null)
-    setConfirmOpen(false)
-    setConfirmReason(null)
-    setPendingView(null)
-  }, [activeProject?.id, persistWorkspace])
-
-  const clearActiveProject = useCallback(() => {
-    if (activeProject?.id) persistWorkspace(activeProject.id)
-    workspaceBootingRef.current = true
-    setActiveProject(null)
-    setErrorMessage(null)
-    nodeSeqRef.current++
-    selectedPathRef.current = null
-    backStackRef.current = []
-    forwardStackRef.current = []
-    selectionTrailRef.current = []
-    setSelectedPath(null)
-    setNodeInfo(null)
-    setContract(null)
-    setRunResult(null)
-    setFullPatch(null)
-    setPrompt('')
-    setSearchQuery('')
-    setSearchResults([])
-    setBackStack([])
-    setForwardStack([])
-    setSelectionTrail([])
-    setPinnedPaths([])
-    setWorkspaceViewState('graph')
-    setOpenFilePaths([])
-    setFileEditorsByPath({})
-    setActiveFilePath(null)
-    setPendingClosePath(null)
-    setPendingClosePaths([])
-    setPendingActivePath(null)
-    setPendingReloadPath(null)
-    setConfirmOpen(false)
-    setConfirmReason(null)
-    setPendingView(null)
-  }, [activeProject?.id, persistWorkspace, setErrorMessage])
-
-  const onSelectOrg = useCallback((orgId: number | null) => {
-    if (orgId == null) {
-      applyOrgSelection(null)
-      return
-    }
-    const match = orgs.find((org) => org.id === orgId)
-    applyOrgSelection(match ? match.id : null)
-  }, [applyOrgSelection, orgs])
-
-  useEffect(() => {
-    if (prevOrgIdRef.current === selectedOrgId) return
-    prevOrgIdRef.current = selectedOrgId
-
-    clearActiveProject()
-    queryClient.invalidateQueries({ queryKey: ['projects', selectedOrgId] })
-    queryClient.invalidateQueries({ queryKey: ['runs'] })
-    queryClient.invalidateQueries({ queryKey: ['graph'] })
-    queryClient.invalidateQueries({ queryKey: ['node'] })
-    queryClient.invalidateQueries({ queryKey: ['files'] })
-  }, [clearActiveProject, queryClient, selectedOrgId])
+  const { selectProjectLocal, clearActiveProject, onSelectOrg } = useProjectSelection({
+    orgs, activeProject, selectedOrgId, queryClient, applyOrgSelection, persistWorkspace,
+    prevOrgIdRef, nodeSeqRef, workspaceBootingRef, selectedPathRef, backStackRef,
+    forwardStackRef, selectionTrailRef, setActiveProject, setSelectedPath, setBackStack,
+    setForwardStack, setSelectionTrail, setPinnedPaths, setNodeInfo, setContract,
+    setRunResult, setFullPatch, setPrompt, setErrorMessage, setSearchQuery, setSearchResults,
+    setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax, setWorkspaceViewState,
+    setOpenFilePaths, setFileEditorsByPath, setActiveFilePath, setPendingClosePath,
+    setPendingClosePaths, setPendingActivePath, setPendingReloadPath, setPendingView,
+    setConfirmOpen, setConfirmReason,
+  })
 
   const projects = projectsQuery.data ?? []
   const runs = runsQuery.data ?? []
