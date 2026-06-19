@@ -55,6 +55,7 @@ import { extractError, getAppErrorInfo } from '@/shared/lib/errors'
 import { clampInt } from '@/shared/lib/number'
 import { useGraphSearch } from './useGraphSearch'
 import { useAppConfig } from './useAppConfig'
+import { useNotifications } from './useNotifications'
 import {
   addStorageErrorListener,
   safeStorageGet,
@@ -243,8 +244,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [runLoadBusy, setRunLoadBusy] = useState(false)
   const [busyCount, setBusyCount] = useState(0)
   const busy = busyCount > 0
-  const [error, setError] = useState<string | null>(null)
-  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const {
+    error, notifications, dismissNotification, pushNotification,
+    notifyError, setErrorMessage, notifyInfo,
+  } = useNotifications()
   const [focusGraph, setFocusGraph] = useState(false)
 
   type TaskBannerItem = {
@@ -447,70 +450,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     [buildWorkspaceState],
   )
 
-  const notificationTimersRef = useRef<Record<string, number>>({})
-
-  const clearNotificationTimer = useCallback((id: string) => {
-    const t = notificationTimersRef.current[id]
-    if (t != null) window.clearTimeout(t)
-    delete notificationTimersRef.current[id]
-  }, [])
-
-  const dismissNotification = useCallback(
-    (id: string) => {
-      clearNotificationTimer(id)
-      setNotifications((prev) => prev.filter((n) => n.id !== id))
-    },
-    [clearNotificationTimer],
-  )
-
-  useEffect(() => {
-    return () => {
-      Object.values(notificationTimersRef.current).forEach((t) => window.clearTimeout(t))
-      notificationTimersRef.current = {}
-    }
-  }, [])
-
-  const pushNotification = useCallback(
-    (kind: NotificationKind, message: string) => {
-      const text = message.trim()
-      if (!text) return
-      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
-      const ttlMs = kind === 'error' ? 15_000 : 8_000
-
-      setNotifications((prev) => {
-        const next = [...prev.slice(-4), { id, kind, text }]
-        const nextIds = new Set(next.map((n) => n.id))
-        prev.forEach((n) => {
-          if (!nextIds.has(n.id)) clearNotificationTimer(n.id)
-        })
-        return next
-      })
-
-      clearNotificationTimer(id)
-      notificationTimersRef.current[id] = window.setTimeout(() => dismissNotification(id), ttlMs)
-    },
-    [clearNotificationTimer, dismissNotification]
-  )
-
-  const notifyError = useCallback((message: string) => {
-    setError(message)
-    pushNotification('error', message)
-  }, [pushNotification])
-
-  const setErrorMessage = useCallback(
-    (message: string | null) => {
-      if (message) {
-        notifyError(message)
-        return
-      }
-      setError(null)
-    },
-    [notifyError]
-  )
-
-  const notifyInfo = useCallback((message: string) => {
-    pushNotification('info', message)
-  }, [pushNotification])
   const {
     searchQuery, setSearchQuery, searchResults, setSearchResults,
     searchSemanticResults, setSearchSemanticResults, searchBusy,
