@@ -36,6 +36,9 @@ import { useTaskTracking } from './useTaskTracking'
 import { useGraphData } from './useGraphData'
 import { useProjectSelection } from './useProjectSelection'
 import { useWorkspaceSession } from './useWorkspaceSession'
+import { useDerivedAppState } from './useDerivedAppState'
+import { useFileMeta } from './useFileMeta'
+import { useOrgAutoSelect } from './useOrgAutoSelect'
 import {
   addStorageErrorListener,
   safeStorageGet,
@@ -136,31 +139,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const orgs = orgsQuery.data ?? []
   const allowLocalRootPath = configQuery.data?.allow_local_root_path ?? null
 
-  useEffect(() => {
-    if (orgs.length === 0) {
-      if (selectedOrgId !== null) applyOrgSelection(null)
-      return
-    }
-
-    if (selectedOrgId !== null && orgs.some((org) => org.id === selectedOrgId)) return
-
-    let storedId: number | null = null
-    const raw = safeStorageGet(ORG_STORAGE_KEY)
-    const n = Number(raw)
-    if (Number.isFinite(n)) storedId = Math.trunc(n)
-
-    if (storedId !== null && orgs.some((org) => org.id === storedId)) {
-      applyOrgSelection(storedId)
-      return
-    }
-
-    if (orgs.length === 1) {
-      applyOrgSelection(orgs[0].id)
-      return
-    }
-
-    applyOrgSelection(null)
-  }, [applyOrgSelection, orgs, selectedOrgId])
+  useOrgAutoSelect({ orgs, selectedOrgId, applyOrgSelection, orgStorageKey: ORG_STORAGE_KEY })
 
   const selectedPathRef = useRef<string | null>(null)
   const prevActiveFilePathRef = useRef<string | null>(null)
@@ -290,27 +269,11 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const runs = runsQuery.data ?? []
   const graph = graphQuery.data ?? null
 
-  const [fileMetaByPath, setFileMetaByPath] = useState<Record<string, ProjectFileItem>>({})
+  const { fileMetaByPath, registerFileMeta } = useFileMeta({ activeProject })
 
-  const registerFileMeta = useCallback((entries: ProjectTreeEntry[]) => {
-    setFileMetaByPath((prev) => {
-      let changed = false
-      const next = { ...prev }
-      for (const entry of entries) {
-        if (entry.type !== 'file' || !entry.file) continue
-        if (next[entry.file.path] === entry.file) continue
-        next[entry.file.path] = entry.file
-        changed = true
-      }
-      return changed ? next : prev
-    })
-  }, [])
 
   const docsApi = useDocs({ activeProject, notifyInfo, setErrorMessage, trackTaskStatus })
 
-  useEffect(() => {
-    setFileMetaByPath({})
-  }, [activeProject?.id])
 
   useEffect(() => {
     setOpenFilePaths([])
@@ -425,42 +388,15 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setSelection(activeFilePath, { pushHistory: false })
   }, [activeFilePath, selectedPath, setSelection, workspaceView])
 
-  const selectedInGraph = useMemo(() => {
-    if (!selectedPath || !graph?.nodes?.length) return false
-    return graph.nodes.some((n: GraphNode) => n.path === selectedPath || n.id === selectedPath)
-  }, [graph, selectedPath])
-
-  const activeFileEntry = useMemo(() => {
-    if (!activeFilePath) return null
-    return fileEditorsByPath[activeFilePath] ?? null
-  }, [activeFilePath, fileEditorsByPath])
-
-  const graphBusy = graphQuery.isFetching
-  const nodeBusy = nodeQuery.isFetching
-  const mutationBusy = busy || projectsQuery.isFetching
-  const fileEditorDirty = activeFileEntry ? activeFileEntry.content !== activeFileEntry.original : false
-  const fileEditorPath = activeFilePath
-  const fileEditorContent = activeFileEntry?.content ?? ''
-  const fileEditorOriginal = activeFileEntry?.original ?? ''
-  const fileEditorTruncated = activeFileEntry?.truncated ?? false
-  const fileEditorBusy = activeFileEntry?.busy ?? false
-  const fileEditorSaving = activeFileEntry?.saving ?? false
-  const fileEditorError = activeFileEntry?.error ?? null
-  const draftCount = useMemo(() => Object.keys(draftsByPath).length, [draftsByPath])
-
-  const canRun = useMemo(() => {
-    const fileReady = !!selectedPath && (contract != null || nodeInfo != null)
-    return (
-      !!activeProject &&
-      !!selectedPath &&
-      fileReady &&
-      !!prompt.trim() &&
-      !mutationBusy &&
-      !nodeBusy
-    )
-  }, [activeProject, selectedPath, contract, nodeInfo, prompt, mutationBusy, nodeBusy])
+  const derived = useDerivedAppState({
+    selectedPath, graph, activeProject, activeFilePath, fileEditorsByPath, draftsByPath,
+    contract, nodeInfo, prompt, busy, graphQuery, nodeQuery, projectsQuery,
+  })
 
   return {
+    fileMetaByPath,
+    registerFileMeta,
+    ...derived,
     ...taskTracking,
     ...uiPrefs,
     ...fileDeps,
@@ -481,23 +417,12 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     projectsLoading: projectsQuery.isFetching,
     activeProject,
     graph,
-    fileMetaByPath,
-    registerFileMeta,
     fileSaveBanner,
     graphStale,
     graphStaleMessage,
     draftRestore,
     allowLocalRootPath,
     fileEditorOpen,
-    fileEditorPath,
-    fileEditorContent,
-    fileEditorOriginal,
-    fileEditorDirty,
-    fileEditorTruncated,
-    fileEditorBusy,
-    fileEditorSaving,
-    fileEditorError,
-    draftCount,
     openFilePaths,
     fileEditorsByPath,
     activeFilePath,
@@ -514,16 +439,13 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     newArchive,
     newPath,
     selectedPath,
-    selectedInGraph,
     nodeInfo,
     contract,
     applyPatch,
     prompt,
     runResult,
     fullPatch,
-    busy: mutationBusy,
-    graphBusy,
-    nodeBusy,
+    busy: derived.mutationBusy,
     patchBusy,
     runLoadBusy,
     graphMode,
@@ -558,6 +480,5 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     // actions
 
     // derived
-    canRun,
   }
 }
