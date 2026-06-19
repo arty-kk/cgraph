@@ -1,4 +1,4 @@
-export { ExplorerTree } from './ExplorerTree'
-export { FileEditorPane, type FileEditorPaneProps } from './FileEditorPane'
-export { FileEditorModal } from './FileEditorModal'
+export { ExplorerTree } from './components/ExplorerTree'
+export { FileEditorPane, type FileEditorPaneProps } from './components/FileEditorPane'
+export { FileEditorModal } from './components/FileEditorModal'
 export * from './api'

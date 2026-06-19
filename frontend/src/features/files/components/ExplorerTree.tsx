@@ -2,7 +2,7 @@
 import React from 'react'
 import type { Project, ProjectFileItem, ProjectTreeEntry } from '@/api'
 import { ExplorerFileActions } from './ExplorerFileActions'
-import { useExplorerTree, type VisibleEntry } from './useExplorerTree'
+import { useExplorerTree, type VisibleEntry } from '../hooks/useExplorerTree'
 
 type ExplorerTreeProps = {
   activeProject: Project | null

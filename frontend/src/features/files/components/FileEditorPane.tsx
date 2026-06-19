@@ -3,7 +3,7 @@ import React from 'react'
 import { DiffEditor, Editor } from '@monaco-editor/react'
 import type { editor, IPosition } from 'monaco-editor'
 import type { NodeInfo, ProjectFileItem } from '@/api'
-import { useFileEditorPaneState } from './useFileEditorPaneState'
+import { useFileEditorPaneState } from '../hooks/useFileEditorPaneState'
 import { FileDependenciesPanel } from './FileDependenciesPanel'
 
 export type FileEditorPaneProps = {

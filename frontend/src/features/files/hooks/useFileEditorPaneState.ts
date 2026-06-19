@@ -1,7 +1,7 @@
 import React from 'react'
 import type { editor, IPosition } from 'monaco-editor'
 import { safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
-import type { FileEditorPaneProps } from './FileEditorPane'
+import type { FileEditorPaneProps } from '../components/FileEditorPane'
 
 export function useFileEditorPaneState(props: FileEditorPaneProps) {
   const {
