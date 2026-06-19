@@ -1,7 +1,7 @@
 // frontend/src/ui/App.tsx
 import React from 'react'
 import { Notifications, AppLayout, AppModals } from './shell'
-import { useStubGraphApp, NotificationsProvider } from './state'
+import { useStubGraphApp, NotificationsProvider, TaskTrackingProvider } from './state'
 import { CommandPalette } from '@/features/command-palette'
 import { addStorageErrorListener, safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
 
@@ -12,7 +12,9 @@ export type AppProps = {
 export function App(props: AppProps) {
   return (
     <NotificationsProvider>
-      <AppInner {...props} />
+      <TaskTrackingProvider>
+        <AppInner {...props} />
+      </TaskTrackingProvider>
     </NotificationsProvider>
   )
 }

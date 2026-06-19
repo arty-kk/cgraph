@@ -1,3 +1,3 @@
 export { NotificationsProvider, useNotifications, type NotificationsApi } from './NotificationsContext'
-export { useTaskTracking } from './useTaskTracking'
+export { TaskTrackingProvider, useTaskTracking, type TaskTrackingApi } from './TaskTrackingContext'
 export { useDocs } from './useDocs'

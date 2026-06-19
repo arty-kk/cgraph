@@ -15,7 +15,6 @@ import {
   type Project,
   type SnapshotCreateTaskResult,
   type FileSaveResult,
-  type TaskStatus,
 } from '@/api'
 import { safeStorageRemove } from '@/shared/lib/storage'
 import {
@@ -24,6 +23,7 @@ import {
   type FileEditorEntry,
   type FileSaveBanner,
 } from '../internal'
+import { useTaskTracking } from '../session'
 
 type Params = {
   activeProject: Project | null
@@ -39,7 +39,6 @@ type Params = {
   runOpThrow: (fn: () => Promise<void>) => Promise<void>
   selectProjectLocal: (p: Project) => void
   clearActiveProject: () => void
-  trackTaskStatus: (task: TaskStatus, kind: 'scan' | 'docs' | 'run', label: string) => void
   queueMutationIndexingPoll: (
     projectId: number,
     path: string,
@@ -77,7 +76,6 @@ export function useProjectActions({
   runOpThrow,
   selectProjectLocal,
   clearActiveProject,
-  trackTaskStatus,
   queueMutationIndexingPoll,
   setSelection,
   setNewArchive,
@@ -90,6 +88,7 @@ export function useProjectActions({
   setGraphStale,
   setGraphStaleMessage,
 }: Params) {
+  const { trackTaskStatus } = useTaskTracking()
   const onPickProject = useCallback((p: Project) => selectProjectLocal(p), [selectProjectLocal])
 
   const onCreateProject = useCallback(async () => {

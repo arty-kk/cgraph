@@ -6,19 +6,19 @@ import {
   waitForTaskResult,
   type Project,
   type ProjectDocs,
-  type TaskStatus,
 } from '@/api'
 import { extractError, getAppErrorInfo } from '@/shared/lib/errors'
 import { useNotifications } from './NotificationsContext'
+import { useTaskTracking } from './TaskTrackingContext'
 
 type Params = {
   activeProject: Project | null
-  trackTaskStatus: (task: TaskStatus, kind: 'scan' | 'docs' | 'run', label: string) => void
 }
 
 /** Project documentation load/build state + actions. Extracted verbatim from useStubGraphApp. */
-export function useDocs({ activeProject, trackTaskStatus }: Params) {
+export function useDocs({ activeProject }: Params) {
   const { notifyInfo, setErrorMessage } = useNotifications()
+  const { trackTaskStatus } = useTaskTracking()
   const [docs, setDocs] = useState<ProjectDocs | null>(null)
   const [docsBusy, setDocsBusy] = useState(false)
   const [docsBuildBusy, setDocsBuildBusy] = useState(false)

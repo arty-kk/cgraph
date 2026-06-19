@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { getTaskStatus, isTaskStatus, type TaskStatus } from '@/api'
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { getTaskStatus, type TaskStatus } from '@/api'
 import type { TaskBannerItem } from '../internal'
 
-export function useTaskTracking() {
+/**
+ * Owns the task banner queue (scan/docs/run task status) with background
+ * polling. Exposed as an ambient service via context so orchestration hooks
+ * can call trackTaskStatus without receiving it as a parameter.
+ */
+function useTaskTrackingState() {
   const [taskStatuses, setTaskStatuses] = useState<TaskBannerItem[]>([])
   const taskStatusesRef = useRef<TaskBannerItem[]>([])
   useEffect(() => {
@@ -80,4 +85,21 @@ export function useTaskTracking() {
   }, [])
 
   return { taskStatuses, trackTaskStatus, refreshTaskStatuses, clearFinishedTasks, dismissTaskStatus }
+}
+
+export type TaskTrackingApi = ReturnType<typeof useTaskTrackingState>
+
+const TaskTrackingContext = createContext<TaskTrackingApi | null>(null)
+
+export function TaskTrackingProvider({ children }: { children: React.ReactNode }) {
+  const value = useTaskTrackingState()
+  return <TaskTrackingContext.Provider value={value}>{children}</TaskTrackingContext.Provider>
+}
+
+export function useTaskTracking(): TaskTrackingApi {
+  const ctx = useContext(TaskTrackingContext)
+  if (!ctx) {
+    throw new Error('useTaskTracking must be used within a TaskTrackingProvider')
+  }
+  return ctx
 }

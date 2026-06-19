@@ -173,7 +173,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
 
   const taskTracking = useTaskTracking()
-  const { trackTaskStatus } = taskTracking
 
   const uiPrefs = useUiPrefs()
   const {
@@ -264,7 +263,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const { fileMetaByPath, registerFileMeta } = useFileMeta({ activeProject })
 
 
-  const docsApi = useDocs({ activeProject, trackTaskStatus })
+  const docsApi = useDocs({ activeProject })
 
 
   useEffect(() => {
@@ -322,7 +321,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const projectActions = useProjectActions({
     activeProject, allowLocalRootPath, newName, newArchive, newPath, selectedOrgId,
     selectedPathRef, projectsQuery, queryClient, runOp, runOpThrow, selectProjectLocal,
-    clearActiveProject, trackTaskStatus, queueMutationIndexingPoll, setSelection,
+    clearActiveProject, queueMutationIndexingPoll, setSelection,
     setNewArchive, setNewPath, setPinnedPaths, setActiveFilePath, setOpenFilePaths,
     setFileEditorsByPath, setFileSaveBanner, setGraphStale, setGraphStaleMessage,
   })
@@ -332,7 +331,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     activeProject, applyPatch, contract, graph, graphMode, nodeInfo, prompt,
     queryClient, runOp, runResult, selectedOrgId, selectedPath,
     setFullPatch, setGraphMode, setGraphStale, setGraphStaleMessage,
-    setPatchBusy, setRightPanelOpen, setRunLoadBusy, setRunResult, setSelection, trackTaskStatus,
+    setPatchBusy, setRightPanelOpen, setRunLoadBusy, setRunResult, setSelection,
   })
 
   const fileTabs = useFileTabs({

@@ -15,13 +15,12 @@ import {
   type GraphData,
   type NodeInfo,
   type NodeContract,
-  type TaskStatus,
 } from '@/api'
 import { extractError } from '@/shared/lib/errors'
 import { clampInt } from '@/shared/lib/number'
 import { getRunGraphStaleState, type GraphMode } from '../internal'
 import type { useAppConfig } from '../settings/useAppConfig'
-import { useNotifications } from '../session'
+import { useNotifications, useTaskTracking } from '../session'
 
 type Params = {
   config: ReturnType<typeof useAppConfig>
@@ -46,7 +45,6 @@ type Params = {
   setRunLoadBusy: Dispatch<SetStateAction<boolean>>
   setRunResult: Dispatch<SetStateAction<RunTaskResult | null>>
   setSelection: (nextRaw: string | null, opts?: { pushHistory?: boolean }) => void
-  trackTaskStatus: (task: TaskStatus, kind: 'scan' | 'docs' | 'run', label: string) => void
 }
 
 /**
@@ -77,7 +75,6 @@ export function useGraphRunActions({
   setRunLoadBusy,
   setRunResult,
   setSelection,
-  trackTaskStatus,
 }: Params) {
   const {
     mode, depth, depMode, retrievalMode,
@@ -90,6 +87,7 @@ export function useGraphRunActions({
     packMaxTotalChars, setPackMaxTotalChars,
   } = config
   const { notifyInfo, setErrorMessage } = useNotifications()
+  const { trackTaskStatus } = useTaskTracking()
 
   const onDeleteRun = useCallback(
     async (runId: number) => {
