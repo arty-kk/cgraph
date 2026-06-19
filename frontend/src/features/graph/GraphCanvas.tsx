@@ -1,9 +1,9 @@
 // frontend/src/ui/components/GraphCanvas.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { GraphData, Project } from '@/api'
 import { 
   useCytoscapeGraph, type GraphFilters,
-  type LabelMode, type NodeContextMenuPayload,
+  type LabelMode,
   type CytoscapeGraphActions,
 } from './useCytoscapeGraph'
 import { Modal } from '@/shared/ui/Modal'
@@ -21,6 +21,8 @@ import { useGraphHistory } from './useGraphHistory'
 import { GraphControlPanel, type GraphControlView } from './GraphControlPanel'
 import { useGraphKeyboard } from './useGraphKeyboard'
 import { useGraphLayout } from './useGraphLayout'
+import { useGraphPanels } from './useGraphPanels'
+import { useGraphContextMenu } from './useGraphContextMenu'
 import { GraphHelpModal } from './GraphCanvas.HelpModal'
 import { baseName, clamp } from './GraphCanvas.helpers'
 import { GraphContextMenu } from './GraphContextMenu'
@@ -149,6 +151,11 @@ export function GraphCanvas({
     [quickSummaryTitle, selectedPath]
   )
 
+  const {
+    ctxMenu, setCtxMenu, fileButtonPos, setFileButtonPos,
+    ctxMenuRef, fileButtonsRef, fileButtonsSizeRef, openNodeMenu,
+  } = useGraphContextMenu({ rootRef })
+
   const onEscAction = useCallback(() => {
     setCtxMenu(null)
     if (focusGraph) return void setFocusGraph(false)
@@ -172,121 +179,10 @@ export function GraphCanvas({
   } = useGraphFilters(projectId)
   const isGraphActive = focusGraph || workspaceView === 'graph'
 
-  const [panelOpen, setPanelOpen] = useState(false)
-  const [neighborsOpen, setNeighborsOpen] = useState(false)
-  const [helpOpen, setHelpOpen] = useState(false)
-
-  const panelRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    if (!panelOpen) return
-    const onDown = (e: MouseEvent) => {
-      const el = e.target as Node | null
-      if (!el) return
-      if (panelRef.current && panelRef.current.contains(el)) return
-      setPanelOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [panelOpen])
-
-  const neighbors = useMemo(() => {
-    const inSet = new Set<string>()
-    const outSet = new Set<string>()
-    if (!graph || !selectedPath) return { inbound: [] as string[], outbound: [] as string[] }
-
-    const keyToPath = new Map<string, string>()
-    for (const n of graph.nodes || []) {
-      const id = typeof (n as any)?.id === 'string' ? String((n as any).id) : ''
-      const path = typeof (n as any)?.path === 'string' ? String((n as any).path) : ''
-      if (path) keyToPath.set(path, path)
-      if (id && path) keyToPath.set(id, path)
-      if (id && !keyToPath.has(id)) keyToPath.set(id, id)
-    }
-
-    const selNode =
-      (graph.nodes || []).find((n: any) => n?.path === selectedPath || n?.id === selectedPath) ?? null
-    const selId = selNode && typeof (selNode as any).id === 'string' ? String((selNode as any).id) : null
-
-    const isSel = (k: string) => k === selectedPath || (selId != null && k === selId)
-    const toPath = (k: string) => keyToPath.get(k) || k
-
-    for (const e of graph.edges || []) {
-      const s = typeof (e as any)?.source === 'string' ? String((e as any).source) : ''
-      const t = typeof (e as any)?.target === 'string' ? String((e as any).target) : ''
-      if (!s || !t) continue
-      if (isSel(t)) inSet.add(toPath(s))
-      if (isSel(s)) outSet.add(toPath(t))
-    }
-
-    const inbound = Array.from(inSet).filter(Boolean).sort()
-    const outbound = Array.from(outSet).filter(Boolean).sort()
-    return { inbound, outbound }
-  }, [graph, selectedPath])
-
-  useEffect(() => {
-    setNeighborsOpen(false)
-  }, [selectedPath])
-
-
-  const [ctxMenu, setCtxMenu] = useState<null | { path: string; x: number; y: number }>(null)
-  const [fileButtonPos, setFileButtonPos] = useState<null | { x: number; y: number }>(null)
-  const ctxMenuRef = useRef<HTMLDivElement | null>(null)
-  const fileButtonsRef = useRef<HTMLDivElement | null>(null)
-  const fileButtonsSizeRef = useRef({ width: 0, height: 0 })
-
-  useEffect(() => {
-    if (!ctxMenu) return
-    const onDown = (e: MouseEvent) => {
-      const el = e.target as Node | null
-      if (!el) return
-      if (ctxMenuRef.current && ctxMenuRef.current.contains(el)) return
-      setCtxMenu(null)
-    }
-    document.addEventListener('mousedown', onDown, true)
-    return () => document.removeEventListener('mousedown', onDown, true)
-  }, [ctxMenu])
-
-  useEffect(() => {
-    if (!ctxMenu) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      e.preventDefault()
-      e.stopImmediatePropagation()
-      setCtxMenu(null)
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [ctxMenu])
-
-  useEffect(() => {
-    if (!ctxMenu) return
-    const t = window.setTimeout(() => {
-      const root = rootRef.current
-      const menu = ctxMenuRef.current
-      if (!root || !menu) return
-
-      const pad = 12
-      const rootRect = root.getBoundingClientRect()
-      const menuRect = menu.getBoundingClientRect()
-
-      // x/y are in the same coordinate space as the graph canvas (absolute inside root)
-      const maxX = Math.max(pad, rootRect.width - menuRect.width - pad)
-      const maxY = Math.max(pad, rootRect.height - menuRect.height - pad)
-
-      const nextX = clamp(ctxMenu.x, pad, maxX)
-      const nextY = clamp(ctxMenu.y, pad, maxY)
-
-      if (nextX !== ctxMenu.x || nextY !== ctxMenu.y) {
-        setCtxMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev))
-      }
-    }, 0)
-    return () => window.clearTimeout(t)
-  }, [ctxMenu])
-
-  const openNodeMenu = (p: NodeContextMenuPayload) => {
-    if (!p.path) return
-    setCtxMenu({ path: p.path, x: p.x, y: p.y })
-  }
+  const {
+    panelOpen, setPanelOpen, neighborsOpen, setNeighborsOpen, helpOpen, setHelpOpen,
+    panelRef, neighbors,
+  } = useGraphPanels({ graph, selectedPath })
 
   const goTo = async (path: string) => {
     await Promise.resolve(onNavigatePath(path))
