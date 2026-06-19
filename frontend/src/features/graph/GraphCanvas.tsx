@@ -7,7 +7,6 @@ import {
   type CytoscapeGraphActions,
 } from './useCytoscapeGraph'
 import { Modal } from '@/shared/ui/Modal'
-import { safeStorageGet } from '@/shared/lib/storage'
 import {
   EyeIcon,
   SummaryIcon,
@@ -21,6 +20,7 @@ import { useGraphFilters } from './useGraphFilters'
 import { useGraphHistory } from './useGraphHistory'
 import { GraphControlPanel, type GraphControlView } from './GraphControlPanel'
 import { useGraphKeyboard } from './useGraphKeyboard'
+import { useGraphLayout } from './useGraphLayout'
 import { GraphHelpModal } from './GraphCanvas.HelpModal'
 import { baseName, clamp } from './GraphCanvas.helpers'
 import { GraphContextMenu } from './GraphContextMenu'
@@ -163,12 +163,6 @@ export function GraphCanvas({
     undoStackRef, redoStackRef, dragBeforeRef, pushUndo, doUndo, doRedo, clearHistory,
   } = useGraphHistory({ actionsRef, notifyRef, onRegisterUndoRedo })
 
-  const layoutKey = useMemo(() => {
-    const pid = activeProject?.id != null ? String(activeProject.id) : 'none'
-    const localSel = graphMode === 'local' ? (selectedPath || 'none') : 'global'
-    return `cs.layout.v1.${pid}.${graphMode}.${localSel}`
-  }, [activeProject?.id, graphMode, selectedPath])
-  const loadedLayoutKeyRef = useRef<string | null>(null)
 
   const projectId = activeProject?.id ?? null
 
@@ -406,33 +400,18 @@ export function GraphCanvas({
     return (Number(limitNodes ?? 0) > 0) || graphMode === 'limit'
   }, [graphMode, limitNodes])
 
-  useEffect(() => {
-    if (!graph || !activeProject) return
-    const applyKey = `${layoutKey}::${instanceId}`
-    if (loadedLayoutKeyRef.current === applyKey) return
-    const has = Boolean(safeStorageGet(layoutKey))
-    if (!has) {
-      loadedLayoutKeyRef.current = applyKey
-      return
-    }
-    actions.loadLayout(layoutKey, { onApplied: () => notifyInfo('Layout loaded') })
-    loadedLayoutKeyRef.current = applyKey
-  }, [actions, activeProject, graph, instanceId, layoutKey, notifyInfo])
-
-  const saveLayout = () => {
-    const a = actionsRef.current
-    if (!a) return
-    const ok = a.saveLayout(layoutKey)
-    notifyRef.current(ok ? 'Layout saved' : 'Layout save failed')
-  }
-  const resetLayout = () => {
-    const a = actionsRef.current
-    if (!a) return
-    pushUndo(a.exportSnapshot())
-    a.clearLayout(layoutKey)
-    a.relayout()
-    notifyRef.current('Layout reset')
-  }
+  const { saveLayout, resetLayout } = useGraphLayout({
+    activeProject,
+    graphMode,
+    selectedPath,
+    graph,
+    instanceId,
+    actions,
+    actionsRef,
+    notifyInfo,
+    notifyRef,
+    pushUndo,
+  })
 
   const maxRisk = useMemo(() => {
     if (!graph?.nodes?.length) return 0
