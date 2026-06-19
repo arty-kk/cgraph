@@ -1,5 +1,5 @@
 // frontend/src/api/index.ts
-export { api, setSelectedOrgId, getSelectedOrgId } from './client'
+export { api, setSelectedOrgId, getSelectedOrgId } from '@/shared/api/client'
 
 export type {
   Org,
@@ -32,7 +32,7 @@ export type {
   ProjectTreeResponse,
   FileDependenciesResponse,
   AppConfig,
-} from './types'
+} from '@/shared/types'
 
 export {
   listProjects,
@@ -49,11 +49,11 @@ export {
   buildProjectDocsStatus,
   searchProjectSemantic,
   searchProjectText,
-} from './projects'
-export { getAppConfig } from './config'
-export { listOrgs, getOrg, createOrg } from './orgs'
-export { getGraph, getLocalGraph, searchNodes } from './graph'
-export { getNode, getContract, getFileContent, updateFileContent, createFile, renameFile, deleteFile } from './nodes'
+} from '@/features/projects/api'
+export { getAppConfig } from '@/shared/api/config'
+export { listOrgs, getOrg, createOrg } from '@/features/orgs/api'
+export { getGraph, getLocalGraph, searchNodes } from '@/features/graph/api'
+export { getNode, getContract, getFileContent, updateFileContent, createFile, renameFile, deleteFile } from '@/features/files/api'
 export {
   runTask,
   listRuns,
@@ -63,6 +63,6 @@ export {
   deleteRun,
   getTaskStatus,
   waitForTaskResult,
-} from './tasks'
+} from '@/features/analysis/api'
 
-export { isTaskStatus, TaskFailureError } from './taskStatus'
+export { isTaskStatus, TaskFailureError } from '@/features/analysis/lib/taskStatus'

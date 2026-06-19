@@ -16,7 +16,7 @@ from ..services.org_service import (
     create_org_async,
     get_org_async,
     list_members_async,
-    list_orgs_for_user_async,
+    list_org_memberships_for_user_async,
     remove_member_async,
 )
 
@@ -36,13 +36,28 @@ class MemberUpsert(BaseModel):
 async def list_orgs(request: Request):
     session = await get_request_db_session(request)
     if not settings.auth_enabled:
-        _, org_id, _ = await require_org_context_async(request)
+        _, org_id, membership = await require_org_context_async(request)
         org = await get_org_async(session, org_id)
-        return [{"id": org.id, "name": org.name, "created_at": org.created_at.isoformat()}]
+        return [
+            {
+                "id": org.id,
+                "name": org.name,
+                "created_at": org.created_at.isoformat(),
+                "role": membership.role,
+            }
+        ]
 
     user = await require_user_async(request)
-    orgs = await list_orgs_for_user_async(session, user.id)
-    return [{"id": o.id, "name": o.name, "created_at": o.created_at.isoformat()} for o in orgs]
+    memberships = await list_org_memberships_for_user_async(session, user.id)
+    return [
+        {
+            "id": o.id,
+            "name": o.name,
+            "created_at": o.created_at.isoformat(),
+            "role": role,
+        }
+        for o, role in memberships
+    ]
 
 
 @router.post("")
@@ -58,9 +73,14 @@ async def create_org_endpoint(request: Request, body: OrgCreate):
 @router.get("/{org_id}")
 async def get_org_endpoint(request: Request, org_id: int):
     session = await get_request_db_session(request)
-    await require_org_role_async(request, org_id, min_role="viewer")
+    _, membership = await require_org_role_async(request, org_id, min_role="viewer")
     org = await get_org_async(session, org_id)
-    return {"id": org.id, "name": org.name, "created_at": org.created_at.isoformat()}
+    return {
+        "id": org.id,
+        "name": org.name,
+        "created_at": org.created_at.isoformat(),
+        "role": membership.role,
+    }
 
 
 @router.get("/{org_id}/members")
@@ -73,7 +93,7 @@ async def get_org_members(request: Request, org_id: int):
 @router.post("/{org_id}/members")
 async def upsert_member(request: Request, org_id: int, body: MemberUpsert):
     session = await get_request_db_session(request)
-    await require_org_role_async(request, org_id, min_role="admin")
+    _, actor_membership = await require_org_role_async(request, org_id, min_role="admin")
     email = body.email.strip().lower()
     if not email:
         raise BadRequestError("Email обязателен")
@@ -82,13 +102,15 @@ async def upsert_member(request: Request, org_id: int, body: MemberUpsert):
     user = (await session.execute(select(User).where(User.email == email))).scalars().first()
     if not user:
         raise NotFoundError("Пользователь не найден")
-    membership = await add_or_update_member_async(session, org_id, user.id, body.role)
+    membership = await add_or_update_member_async(
+        session, org_id, user.id, body.role, actor_role=actor_membership.role
+    )
     return {"user_id": membership.user_id, "role": membership.role, "org_id": membership.org_id}
 
 
 @router.delete("/{org_id}/members/{user_id}")
 async def delete_member(request: Request, org_id: int, user_id: int):
     session = await get_request_db_session(request)
-    await require_org_role_async(request, org_id, min_role="admin")
-    await remove_member_async(session, org_id, user_id)
+    _, actor_membership = await require_org_role_async(request, org_id, min_role="admin")
+    await remove_member_async(session, org_id, user_id, actor_role=actor_membership.role)
     return {"ok": True}

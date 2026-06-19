@@ -1825,3 +1825,29 @@ async def test_prepare_scan_files_async_cached_import_edges_cpu_stage_keeps_loop
     assert fs_calls["cached_import_resolve"] > 0
     assert cpu_calls["cached_import_edges"] > 0
     assert prepared.edge_map
+
+
+@pytest.mark.anyio
+async def test_parse_index_batch_runs_on_real_cpu_process_runtime(tmp_path: Path) -> None:
+    """Parsing must dispatch a top-level, pickle-safe callable to the CPU process
+    runtime. A local closure violates the process contract and raises TypeError,
+    so this exercises the real runtime instead of a monkeypatched stub."""
+    from app.infra import cpu_runtime
+
+    await cpu_runtime.close_cpu_runtime()
+    await cpu_runtime.init_cpu_runtime()
+    try:
+        text = "x = 1\n"
+        batch = [
+            scan.FileReadResult(rel="a.py", text=text, mtime_ns=1, size=len(text), oversized=False)
+        ]
+        rows = await scan._parse_index_batch_async(1, tmp_path, batch)
+    finally:
+        await cpu_runtime.close_cpu_runtime()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["rel"] == "a.py"
+    assert row["snapshot_kind"] == "content"
+    assert row["node_row"] is not None
+    assert row["text"] == text

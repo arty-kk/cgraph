@@ -8,7 +8,7 @@ from sqlmodel import select
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app.async_db import AsyncSessionLocal
-from app.errors import BadRequestError, NotFoundError
+from app.errors import BadRequestError, ForbiddenError, NotFoundError
 from app.models import Organization, OrgMembership, User
 from app.services import org_service
 
@@ -59,7 +59,9 @@ async def test_cannot_remove_last_owner(ensure_async_postgres) -> None:
 
     async with AsyncSessionLocal() as session:
         with pytest.raises(BadRequestError) as exc:
-            await org_service.remove_member_async(session, int(org.id), owner_id)
+            await org_service.remove_member_async(
+                session, int(org.id), owner_id, actor_role="owner"
+            )
     assert exc.value.code == "bad_request"
 
     membership = await _membership(int(org.id), owner_id)
@@ -76,7 +78,9 @@ async def test_cannot_downgrade_last_owner(ensure_async_postgres) -> None:
 
     async with AsyncSessionLocal() as session:
         with pytest.raises(BadRequestError) as exc:
-            await org_service.add_or_update_member_async(session, int(org.id), owner_id, "member")
+            await org_service.add_or_update_member_async(
+                session, int(org.id), owner_id, "member", actor_role="owner"
+            )
     assert exc.value.code == "bad_request"
 
     membership = await _membership(int(org.id), owner_id)
@@ -97,21 +101,28 @@ async def test_can_remove_or_downgrade_owner_when_second_active_owner_exists(
     org_id = int(org.id)
 
     async with AsyncSessionLocal() as session:
-        await org_service.add_or_update_member_async(session, org_id, owner_two_id, "owner")
+        await org_service.add_or_update_member_async(
+            session, org_id, owner_two_id, "owner", actor_role="owner"
+        )
 
     async with AsyncSessionLocal() as session:
-        await org_service.remove_member_async(session, org_id, owner_one_id)
+        await org_service.remove_member_async(
+            session, org_id, owner_one_id, actor_role="owner"
+        )
     owner_one_membership = await _membership(org_id, owner_one_id)
     assert owner_one_membership is None
 
     async with AsyncSessionLocal() as session:
-        await org_service.add_or_update_member_async(session, org_id, owner_one_id, "owner")
+        await org_service.add_or_update_member_async(
+            session, org_id, owner_one_id, "owner", actor_role="owner"
+        )
     async with AsyncSessionLocal() as session:
         updated = await org_service.add_or_update_member_async(
             session,
             org_id,
             owner_two_id,
             "member",
+            actor_role="owner",
         )
     assert updated.role == "member"
     assert updated.is_active is True
@@ -134,7 +145,9 @@ async def test_add_or_update_member_raises_not_found_for_missing_org(ensure_asyn
 
     async with AsyncSessionLocal() as session:
         with pytest.raises(NotFoundError) as exc:
-            await org_service.add_or_update_member_async(session, org_id, user_id, "member")
+            await org_service.add_or_update_member_async(
+                session, org_id, user_id, "member", actor_role="owner"
+            )
 
     assert exc.value.code == "not_found"
     assert exc.value.context == {"org_id": org_id}
@@ -147,7 +160,90 @@ async def test_remove_member_raises_not_found_for_missing_org(ensure_async_postg
 
     async with AsyncSessionLocal() as session:
         with pytest.raises(NotFoundError) as exc:
-            await org_service.remove_member_async(session, org_id, user_id)
+            await org_service.remove_member_async(
+                session, org_id, user_id, actor_role="owner"
+            )
 
     assert exc.value.code == "not_found"
     assert exc.value.context == {"org_id": org_id}
+
+
+@pytest.mark.anyio
+async def test_admin_cannot_grant_owner_role(ensure_async_postgres) -> None:
+    owner_id = await _create_user("esc_owner")
+    target_id = await _create_user("esc_target")
+    async with AsyncSessionLocal() as session:
+        org = await org_service.create_org_async(session, "no-escalation", owner_id)
+    org_id = int(org.id)
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(ForbiddenError) as exc:
+            await org_service.add_or_update_member_async(
+                session, org_id, target_id, "owner", actor_role="admin"
+            )
+    assert exc.value.code == "forbidden"
+    assert await _membership(org_id, target_id) is None
+
+
+@pytest.mark.anyio
+async def test_admin_cannot_modify_or_remove_owner(ensure_async_postgres) -> None:
+    owner_id = await _create_user("protect_owner")
+    async with AsyncSessionLocal() as session:
+        org = await org_service.create_org_async(session, "protect-owner", owner_id)
+    org_id = int(org.id)
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(ForbiddenError) as exc:
+            await org_service.add_or_update_member_async(
+                session, org_id, owner_id, "member", actor_role="admin"
+            )
+    assert exc.value.code == "forbidden"
+
+    async with AsyncSessionLocal() as session:
+        with pytest.raises(ForbiddenError):
+            await org_service.remove_member_async(
+                session, org_id, owner_id, actor_role="admin"
+            )
+
+    membership = await _membership(org_id, owner_id)
+    assert membership is not None
+    assert membership.role == "owner"
+    assert membership.is_active is True
+
+
+@pytest.mark.anyio
+async def test_admin_can_manage_member_role(ensure_async_postgres) -> None:
+    owner_id = await _create_user("mgr_owner")
+    target_id = await _create_user("mgr_target")
+    async with AsyncSessionLocal() as session:
+        org = await org_service.create_org_async(session, "admin-manages-member", owner_id)
+    org_id = int(org.id)
+
+    async with AsyncSessionLocal() as session:
+        membership = await org_service.add_or_update_member_async(
+            session, org_id, target_id, "member", actor_role="admin"
+        )
+    assert membership.role == "member"
+    assert membership.is_active is True
+
+
+@pytest.mark.anyio
+async def test_list_org_memberships_returns_role_per_org(ensure_async_postgres) -> None:
+    owner_id = await _create_user("memb_owner")
+    viewer_id = await _create_user("memb_viewer")
+    async with AsyncSessionLocal() as session:
+        org = await org_service.create_org_async(session, "memberships-list", owner_id)
+    org_id = int(org.id)
+    async with AsyncSessionLocal() as session:
+        await org_service.add_or_update_member_async(
+            session, org_id, viewer_id, "viewer", actor_role="owner"
+        )
+
+    async with AsyncSessionLocal() as session:
+        owner_rows = await org_service.list_org_memberships_for_user_async(session, owner_id)
+        viewer_rows = await org_service.list_org_memberships_for_user_async(session, viewer_id)
+
+    owner_roles = {org.id: role for org, role in owner_rows}
+    viewer_roles = {org.id: role for org, role in viewer_rows}
+    assert owner_roles.get(org_id) == "owner"
+    assert viewer_roles.get(org_id) == "viewer"

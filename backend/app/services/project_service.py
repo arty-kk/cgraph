@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import delete, select
 
@@ -959,17 +960,59 @@ async def create_project_async(
     return project
 
 
+async def _find_project_by_task_job_async(
+    session: AsyncSession, org_id: int, task_job_id: str
+) -> Project | None:
+    return (
+        (
+            await session.execute(
+                select(Project).where(
+                    Project.org_id == org_id,
+                    Project.task_job_id == task_job_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
+async def _safe_delete_snapshot_root_async(root: Path) -> None:
+    try:
+        await delete_project_snapshot_root_async(root)
+    except Exception as cleanup_exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to cleanup prepared snapshot project root",
+            extra={"reason": str(cleanup_exc)},
+        )
+
+
 async def create_project_from_snapshot_async(
     session: AsyncSession,
     name: str,
     meta: SnapshotMeta,
     org_id: int,
+    *,
+    task_job_id: str | None = None,
 ) -> Project:
+    # Replay safety: a background snapshot-import job is delivered at least once,
+    # so a worker crash or retry after the project commit must reuse the project
+    # this job already created instead of importing a duplicate.
+    if task_job_id:
+        existing = await _find_project_by_task_job_async(session, org_id, task_job_id)
+        if existing is not None:
+            return existing
+
     root = await prepare_project_snapshot_root_async(meta)
     root = await _normalize_project_root_async(str(root))
     try:
         async with session.begin():
-            project = Project(name=name, root_path=str(root), org_id=org_id)
+            project = Project(
+                name=name,
+                root_path=str(root),
+                org_id=org_id,
+                task_job_id=task_job_id,
+            )
             session.add(project)
             await session.flush()
             snapshot = RepoSnapshot(
@@ -980,18 +1023,21 @@ async def create_project_from_snapshot_async(
                 storage_json=json.dumps(asdict(meta), ensure_ascii=False),
             )
             session.add(snapshot)
+    except IntegrityError:
+        # A concurrent attempt of the same job won the unique-index race; reuse it.
+        if task_job_id:
+            existing = await _find_project_by_task_job_async(session, org_id, task_job_id)
+            if existing is not None:
+                await _safe_delete_snapshot_root_async(root)
+                return existing
+        await _safe_delete_snapshot_root_async(root)
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Snapshot project create failed; cleaning up prepared project root",
             extra={"reason": str(exc)},
         )
-        try:
-            await delete_project_snapshot_root_async(root)
-        except Exception as cleanup_exc:  # noqa: BLE001
-            logger.warning(
-                "Failed to cleanup prepared snapshot project root",
-                extra={"reason": str(cleanup_exc)},
-            )
+        await _safe_delete_snapshot_root_async(root)
         raise
     await session.refresh(project)
     return project

@@ -44,7 +44,17 @@ class CpuRuntime:
 
 
 _cpu_runtime: CpuRuntime | None = None
-_cpu_runtime_lock = asyncio.Lock()
+_cpu_runtime_lock: asyncio.Lock | None = None
+_cpu_runtime_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_cpu_runtime_lock() -> asyncio.Lock:
+    global _cpu_runtime_lock, _cpu_runtime_lock_loop
+    loop = asyncio.get_running_loop()
+    if _cpu_runtime_lock is None or _cpu_runtime_lock_loop is not loop:
+        _cpu_runtime_lock = asyncio.Lock()
+        _cpu_runtime_lock_loop = loop
+    return _cpu_runtime_lock
 
 
 def _cpu_max_workers() -> int:
@@ -69,7 +79,7 @@ def _cpu_slow_task_ms() -> float:
 
 async def init_cpu_runtime() -> None:
     global _cpu_runtime
-    async with _cpu_runtime_lock:
+    async with _get_cpu_runtime_lock():
         if _cpu_runtime is not None:
             return
         loop = asyncio.get_running_loop()
@@ -94,7 +104,7 @@ async def _get_cpu_runtime() -> CpuRuntime:
         return runtime
 
     old_runtime: CpuRuntime | None = None
-    async with _cpu_runtime_lock:
+    async with _get_cpu_runtime_lock():
         runtime = _cpu_runtime
         if runtime is not None and runtime.loop is current_loop:
             return runtime
@@ -120,7 +130,7 @@ async def _get_cpu_runtime() -> CpuRuntime:
 
 async def close_cpu_runtime() -> None:
     global _cpu_runtime
-    async with _cpu_runtime_lock:
+    async with _get_cpu_runtime_lock():
         runtime = _cpu_runtime
         _cpu_runtime = None
     if runtime is None:
@@ -161,8 +171,11 @@ async def run_cpu_io_async(
         started_at = time.perf_counter()
         loop = asyncio.get_running_loop()
         try:
+            # The result already round-tripped through the process pool (pickled in
+            # the worker, unpickled here), so it is provably picklable. Re-pickling
+            # it on the event loop would only duplicate that serialization for large
+            # payloads (e.g. scan parse results carrying full file texts).
             result = await loop.run_in_executor(runtime.executor, partial(fn, *args, **kwargs))
-            _ensure_pickleable(result, where="result", operation=operation_name)
         finally:
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
             with runtime.lock:

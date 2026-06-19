@@ -587,11 +587,13 @@ async def _read_file_batch_async(
     return [item for batch in batch_results for item in batch]
 
 
-async def _parse_index_batch_async(
+def _parse_index_batch_sync(
     project_id: int,
-    project_root: Path,
+    project_root_str: str,
     file_batch: list[FileReadResult],
 ) -> list[dict]:
+    project_root = Path(project_root_str)
+
     def _sync_parse() -> list[dict]:
         parsed: list[dict] = []
         js_ts_exts = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")
@@ -798,7 +800,21 @@ async def _parse_index_batch_async(
             )
         return parsed
 
-    return await _run_scan_cpu_batch(_sync_parse, operation="scan.cpu.parse_batch")
+    return _sync_parse()
+
+
+async def _parse_index_batch_async(
+    project_id: int,
+    project_root: Path,
+    file_batch: list[FileReadResult],
+) -> list[dict]:
+    return await _run_scan_cpu_batch(
+        _parse_index_batch_sync,
+        int(project_id),
+        str(project_root),
+        list(file_batch),
+        operation="scan.cpu.parse_batch",
+    )
 
 
 def _is_missing_table_error(e: Exception, table: str) -> bool:

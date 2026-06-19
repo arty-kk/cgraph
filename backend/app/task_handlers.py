@@ -185,7 +185,9 @@ async def _snapshot_import_task_async(
     try:
         meta = await store_snapshot_upload_from_path_async(staged_path, archive_name)
         async with AsyncSessionLocal() as session:
-            project = await create_project_from_snapshot_async(session, name, meta, org_id)
+            project = await create_project_from_snapshot_async(
+                session, name, meta, org_id, task_job_id=job_id
+            )
     except asyncio.CancelledError as exc:
         logger.warning("Snapshot import task cancelled", extra={"job_id": job_id})
         await _cleanup_snapshot_on_failure_async()

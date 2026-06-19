@@ -443,10 +443,13 @@ async def test_snapshot_import_task_async_tracks_lifecycle_and_result(
         assert archive_name == "repo.zip"
         return type("Meta", (), {"archive_name": "repo.zip"})()
 
-    async def _fake_create_project_from_snapshot_async(session, name: str, meta, org_id: int):
+    async def _fake_create_project_from_snapshot_async(
+        session, name: str, meta, org_id: int, *, task_job_id=None
+    ):
         _ = (session, meta)
         assert name == "snapshot-project"
         assert org_id == 12
+        assert task_job_id == "job-1"
         return _Project()
 
     async def _fake_delete_staged_snapshot_upload_async(path: str) -> None:
@@ -511,8 +514,10 @@ async def test_snapshot_import_task_async_cleans_snapshot_on_failure(
         _ = (path, archive_name)
         return meta
 
-    async def _fake_create_project_from_snapshot_async(session, name: str, _meta, org_id: int):
-        _ = (session, name, _meta, org_id)
+    async def _fake_create_project_from_snapshot_async(
+        session, name: str, _meta, org_id: int, *, task_job_id=None
+    ):
+        _ = (session, name, _meta, org_id, task_job_id)
         raise RuntimeError("db failure")
 
     async def _fake_delete_snapshot_async(cleanup_meta) -> None:
@@ -578,8 +583,10 @@ async def test_snapshot_import_task_async_cleans_snapshot_on_cancellation(
         _ = (path, archive_name)
         return meta
 
-    async def _fake_create_project_from_snapshot_async(session, name: str, _meta, org_id: int):
-        _ = (session, name, _meta, org_id)
+    async def _fake_create_project_from_snapshot_async(
+        session, name: str, _meta, org_id: int, *, task_job_id=None
+    ):
+        _ = (session, name, _meta, org_id, task_job_id)
         raise asyncio.CancelledError("cancelled")
 
     async def _fake_delete_snapshot_async(cleanup_meta) -> None:

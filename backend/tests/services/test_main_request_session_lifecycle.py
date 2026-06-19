@@ -12,6 +12,7 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from app import main
 from app import request_session
+from app.errors import UnauthorizedError
 
 
 async def _noop_async():
@@ -177,6 +178,43 @@ def test_session_rolls_back_when_error_happens_after_auth(monkeypatch):
     assert response.status_code == 500
     assert session_factory.counters["rollback"] == 1
     assert session_factory.counters["exit"] == 1
+
+
+def test_invalid_token_returns_401_envelope_not_500(monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(main.settings, "auth_enabled", True)
+    session_factory = _SessionFactory()
+    monkeypatch.setattr(request_session, "AsyncSessionLocal", session_factory)
+
+    reached = {"value": False}
+
+    async def _protected(_request: Request):
+        reached["value"] = True
+        return {"ok": True}
+
+    async def _raise_unauthorized(_session, _token):
+        raise UnauthorizedError("Неверный токен")
+
+    monkeypatch.setattr(main, "get_user_from_token_async", _raise_unauthorized)
+
+    with _temporary_get("/api/_invalid_token_probe", _protected):
+        with TestClient(main.app, raise_server_exceptions=False) as client:
+            response = client.get(
+                "/api/_invalid_token_probe",
+                headers={"Authorization": "Bearer bad-token"},
+            )
+
+    # The auth boundary must answer with the 401 envelope, not a 500 server error.
+    assert response.status_code == 401
+    assert response.json() == {
+        "error": {"code": "unauthorized", "message": "Неверный токен"}
+    }
+    # Request is denied at the edge and never reaches the handler.
+    assert reached["value"] is False
+    # The session opened for the auth lookup is converted to a response (no
+    # propagating exception), so it is closed without a rollback.
+    assert session_factory.counters["rollback"] == 0
+    assert session_factory.counters["exit"] == session_factory.counters["created"]
 
 
 def test_concurrent_and_prefixed_auth_requests_use_single_session_per_request(monkeypatch):

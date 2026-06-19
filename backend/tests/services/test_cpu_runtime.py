@@ -26,6 +26,10 @@ def _add_one(value: int) -> int:
     return value + 1
 
 
+def _echo(value: object) -> object:
+    return value
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -179,5 +183,36 @@ async def test_run_cpu_io_async_rejects_non_pickle_safe_contract() -> None:
             threading.Lock(),
             operation="test.bad.args",
         )
+
+    await cpu_runtime.close_cpu_runtime()
+
+
+@pytest.mark.anyio
+async def test_run_cpu_io_async_does_not_repickle_result_on_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The result already round-tripped through the process pool, so it must not
+    be re-pickled on the event loop (a redundant serialization of large payloads)."""
+    await cpu_runtime.close_cpu_runtime()
+    await cpu_runtime.init_cpu_runtime()
+
+    pickled_objects: list[object] = []
+    real_dumps = cpu_runtime.pickle.dumps
+
+    def _tracking_dumps(obj, *args, **kwargs):
+        pickled_objects.append(obj)
+        return real_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr(cpu_runtime.pickle, "dumps", _tracking_dumps)
+
+    payload = ["x" * 4096]
+    result = await cpu_runtime.run_cpu_io_async(
+        _echo, payload, operation="test.no_result_repickle"
+    )
+
+    assert result == payload
+    # Arg/kwarg validation may pickle the call inputs, but the returned result
+    # object must never be passed to pickle.dumps on the event loop.
+    assert all(obj is not result for obj in pickled_objects)
 
     await cpu_runtime.close_cpu_runtime()
