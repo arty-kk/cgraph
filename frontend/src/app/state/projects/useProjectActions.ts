@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import type { MutableRefObject } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import {
   createFile,
@@ -20,18 +20,12 @@ import { safeStorageRemove } from '@/shared/lib/storage'
 import {
   pickCreatedSnapshotProject,
   wsKey,
-  type FileEditorEntry,
-  type FileSaveBanner,
 } from '../internal'
 import { useTaskTracking } from '../session'
+import { useWorkspace } from '../workspace'
 
 type Params = {
-  activeProject: Project | null
   allowLocalRootPath: boolean | null
-  newName: string
-  newArchive: File | null
-  newPath: string
-  selectedOrgId: number | null
   selectedPathRef: MutableRefObject<string | null>
   projectsQuery: { data: Project[] | undefined }
   queryClient: QueryClient
@@ -46,15 +40,6 @@ type Params = {
     successMessage: string,
   ) => void
   setSelection: (nextRaw: string | null, opts?: { pushHistory?: boolean }) => void
-  setNewArchive: Dispatch<SetStateAction<File | null>>
-  setNewPath: Dispatch<SetStateAction<string>>
-  setPinnedPaths: Dispatch<SetStateAction<string[]>>
-  setActiveFilePath: Dispatch<SetStateAction<string | null>>
-  setOpenFilePaths: Dispatch<SetStateAction<string[]>>
-  setFileEditorsByPath: Dispatch<SetStateAction<Record<string, FileEditorEntry>>>
-  setFileSaveBanner: Dispatch<SetStateAction<FileSaveBanner | null>>
-  setGraphStale: Dispatch<SetStateAction<boolean>>
-  setGraphStaleMessage: Dispatch<SetStateAction<string | null>>
 }
 
 /**
@@ -63,12 +48,7 @@ type Params = {
  * mutation indexing poll). Extracted verbatim from useStubGraphApp.
  */
 export function useProjectActions({
-  activeProject,
   allowLocalRootPath,
-  newName,
-  newArchive,
-  newPath,
-  selectedOrgId,
   selectedPathRef,
   projectsQuery,
   queryClient,
@@ -78,17 +58,14 @@ export function useProjectActions({
   clearActiveProject,
   queueMutationIndexingPoll,
   setSelection,
-  setNewArchive,
-  setNewPath,
-  setPinnedPaths,
-  setActiveFilePath,
-  setOpenFilePaths,
-  setFileEditorsByPath,
-  setFileSaveBanner,
-  setGraphStale,
-  setGraphStaleMessage,
 }: Params) {
   const { trackTaskStatus } = useTaskTracking()
+  const ws = useWorkspace()
+  const { activeProject, newName, newArchive, newPath, selectedOrgId } = ws.state
+  const {
+    setNewArchive, setNewPath, setPinnedPaths, setActiveFilePath, setOpenFilePaths,
+    setFileEditorsByPath, setFileSaveBanner, setGraphStale, setGraphStaleMessage,
+  } = ws.setters
   const onPickProject = useCallback((p: Project) => selectProjectLocal(p), [selectProjectLocal])
 
   const onCreateProject = useCallback(async () => {

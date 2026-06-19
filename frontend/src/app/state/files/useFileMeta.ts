@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Project, ProjectFileItem, ProjectTreeEntry } from '@/api'
+import type { ProjectFileItem, ProjectTreeEntry } from '@/api'
+import { useWorkspace } from '../workspace'
 
 /** Per-path file metadata registry (cleared on project change). Extracted verbatim from useStubGraphApp. */
-export function useFileMeta({ activeProject }: { activeProject: Project | null }) {
+export function useFileMeta() {
+  const { activeProject } = useWorkspace().state
   const [fileMetaByPath, setFileMetaByPath] = useState<Record<string, ProjectFileItem>>({})
 
   const registerFileMeta = useCallback((entries: ProjectTreeEntry[]) => {

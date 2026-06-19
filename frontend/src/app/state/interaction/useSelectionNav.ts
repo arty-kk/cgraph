@@ -1,21 +1,13 @@
 import { useCallback, useMemo } from 'react'
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import type { MutableRefObject } from 'react'
+import { useWorkspace } from '../workspace'
 
 type Params = {
-  selectedPath: string | null
-  pinnedPaths: string[]
-  backStack: string[]
-  forwardStack: string[]
   PIN_LIMIT: number
   selectedPathRef: MutableRefObject<string | null>
   backStackRef: MutableRefObject<string[]>
   forwardStackRef: MutableRefObject<string[]>
   selectionTrailRef: MutableRefObject<string[]>
-  setSelectedPath: Dispatch<SetStateAction<string | null>>
-  setPinnedPaths: Dispatch<SetStateAction<string[]>>
-  setBackStack: Dispatch<SetStateAction<string[]>>
-  setForwardStack: Dispatch<SetStateAction<string[]>>
-  setSelectionTrail: Dispatch<SetStateAction<string[]>>
   setSelection: (nextRaw: string | null, opts?: { pushHistory?: boolean }) => void
   resetForSelectionChange: () => void
 }
@@ -26,23 +18,18 @@ type Params = {
  * useStubGraphApp.
  */
 export function useSelectionNav({
-  selectedPath,
-  pinnedPaths,
-  backStack,
-  forwardStack,
   PIN_LIMIT,
   selectedPathRef,
   backStackRef,
   forwardStackRef,
   selectionTrailRef,
-  setSelectedPath,
-  setPinnedPaths,
-  setBackStack,
-  setForwardStack,
-  setSelectionTrail,
   setSelection,
   resetForSelectionChange,
 }: Params) {
+  const ws = useWorkspace()
+  const { selectedPath, pinnedPaths, backStack, forwardStack } = ws.state
+  const { setSelectedPath, setPinnedPaths, setBackStack, setForwardStack, setSelectionTrail } =
+    ws.setters
   const onClearSelection = useCallback(() => {
     setSelection(null, { pushHistory: true })
   }, [setSelection])

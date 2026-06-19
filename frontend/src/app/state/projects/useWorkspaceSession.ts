@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
-import type { Project, NodeInfo, NodeContract, RunTaskResult, NodeSearchItem } from '@/api'
+import type { NodeSearchItem } from '@/api'
 import {
   safeStorageGet,
   safeStorageGetJson,
@@ -23,8 +23,6 @@ import {
   type WorkspaceStateV3,
   type DraftEntry,
   type FileEditorEntry,
-  type GraphMode,
-  type WorkspaceView,
 } from '../internal'
 import { useNotifications } from '../session'
 import { useWorkspace } from '../workspace'

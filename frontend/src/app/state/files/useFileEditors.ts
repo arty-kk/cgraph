@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import type { MutableRefObject } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import {
   getFileContent,
@@ -8,7 +8,6 @@ import {
   TaskFailureError,
   type FileContent,
   type FileSaveResult,
-  type Project,
 } from '@/api'
 import { extractError } from '@/shared/lib/errors'
 import { safeStorageRemove, safeStorageSet } from '@/shared/lib/storage'
@@ -21,9 +20,6 @@ import {
   isEntryDirty,
   type DraftEntry,
   type FileEditorEntry,
-  type FileSaveBanner,
-  type PendingFileJump,
-  type WorkspaceView,
 } from '../internal'
 import { useFileCloseFlow } from './useFileCloseFlow'
 import { useNotifications } from '../session'

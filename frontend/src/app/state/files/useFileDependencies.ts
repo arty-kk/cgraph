@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { getFileDependencies, type Project } from '@/api'
+import { getFileDependencies } from '@/api'
 import type { DependencyMeta } from '../internal'
-
-type Params = {
-  activeProject: Project | null
-  activeFilePath: string | null
-}
+import { useWorkspace } from '../workspace'
 
 /** File inbound/outbound dependency loading + pagination. Extracted verbatim from useStubGraphApp. */
-export function useFileDependencies({ activeProject, activeFilePath }: Params) {
+export function useFileDependencies() {
+  const { activeProject, activeFilePath } = useWorkspace().state
   const [fileDependencies, setFileDependencies] = useState<{ in: string[]; out: string[] } | null>(null)
   const [fileDependenciesMeta, setFileDependenciesMeta] = useState<DependencyMeta | null>(null)
   const [fileDependenciesBusy, setFileDependenciesBusy] = useState(false)

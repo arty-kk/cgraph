@@ -11,14 +11,11 @@ import {
   waitForTaskResult,
   type RunTaskBody,
   type RunTaskResult,
-  type Project,
   type GraphData,
-  type NodeInfo,
-  type NodeContract,
 } from '@/api'
 import { extractError } from '@/shared/lib/errors'
 import { clampInt } from '@/shared/lib/number'
-import { getRunGraphStaleState, type GraphMode } from '../internal'
+import { getRunGraphStaleState } from '../internal'
 import type { useAppConfig } from '../settings/useAppConfig'
 import { useNotifications, useTaskTracking } from '../session'
 import { useWorkspace } from '../workspace'

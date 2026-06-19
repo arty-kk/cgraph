@@ -4,21 +4,18 @@ import {
   buildProjectDocsStatus,
   isTaskStatus,
   waitForTaskResult,
-  type Project,
   type ProjectDocs,
 } from '@/api'
 import { extractError, getAppErrorInfo } from '@/shared/lib/errors'
 import { useNotifications } from './NotificationsContext'
 import { useTaskTracking } from './TaskTrackingContext'
-
-type Params = {
-  activeProject: Project | null
-}
+import { useWorkspace } from '../workspace'
 
 /** Project documentation load/build state + actions. Extracted verbatim from useStubGraphApp. */
-export function useDocs({ activeProject }: Params) {
+export function useDocs() {
   const { notifyInfo, setErrorMessage } = useNotifications()
   const { trackTaskStatus } = useTaskTracking()
+  const { activeProject } = useWorkspace().state
   const [docs, setDocs] = useState<ProjectDocs | null>(null)
   const [docsBusy, setDocsBusy] = useState(false)
   const [docsBuildBusy, setDocsBuildBusy] = useState(false)

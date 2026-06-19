@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
-  Project,
   NodeSearchItem,
   SemanticSearchItem,
   TextSearchMatch,
@@ -13,18 +12,17 @@ import {
   type SemanticSearchErrorReason,
 } from '@/shared/lib/errors'
 import { useNotifications } from '../session'
-
-type Params = {
-  activeProject: Project | null
-}
+import { useWorkspace } from '../workspace'
 
 /**
  * Owns semantic + text search state and their query handlers (with sequence
  * guards, semantic->path fallback, and "clear when query empties" effects).
- * Extracted verbatim from useStubGraphApp; notifications come from context.
+ * Extracted verbatim from useStubGraphApp; notifications + active project come
+ * from context.
  */
-export function useGraphSearch({ activeProject }: Params) {
+export function useGraphSearch() {
   const { notifyInfo, setErrorMessage } = useNotifications()
+  const { activeProject } = useWorkspace().state
   const searchSeqRef = useRef(0)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<NodeSearchItem[]>([])

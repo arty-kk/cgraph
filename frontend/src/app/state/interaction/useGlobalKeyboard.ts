@@ -2,21 +2,15 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { GraphData } from '@/api'
 import { isAnyModalOpen } from '../internal'
-import type { WorkspaceView } from '../internal'
+import { useWorkspace } from '../workspace'
 
 type Params = {
   canGoBack: boolean
   canGoForward: boolean
   goBack: () => void
   goForward: () => void
-  paletteOpen: boolean
-  setPaletteOpen: Dispatch<SetStateAction<boolean>>
-  focusGraph: boolean
-  setFocusGraph: Dispatch<SetStateAction<boolean>>
-  selectedPath: string | null
   onClearSelection: () => void
   onFocusSearch?: () => void
-  workspaceView: WorkspaceView
   toggleWorkspaceView: () => void
   graph: GraphData | null
   leftPanelOpen: boolean
@@ -27,13 +21,10 @@ type Params = {
   toggleRightPanel: () => void
   toggleCompactMode: () => void
   fileEditorOpen: boolean
-  activeFilePath: string | null
-  openFilePaths: string[]
   openFileEditor: (path: string) => void | Promise<void>
   requestFindInFile: () => void
   requestReplaceInFile: () => void
   requestOutlineInFile: () => void
-  setGotoLineRequestId: Dispatch<SetStateAction<number>>
 }
 
 /**
@@ -47,14 +38,8 @@ export function useGlobalKeyboard({
   canGoForward,
   goBack,
   goForward,
-  paletteOpen,
-  setPaletteOpen,
-  focusGraph,
-  setFocusGraph,
-  selectedPath,
   onClearSelection,
   onFocusSearch,
-  workspaceView,
   toggleWorkspaceView,
   graph,
   leftPanelOpen,
@@ -65,14 +50,15 @@ export function useGlobalKeyboard({
   toggleRightPanel,
   toggleCompactMode,
   fileEditorOpen,
-  activeFilePath,
-  openFilePaths,
   openFileEditor,
   requestFindInFile,
   requestReplaceInFile,
   requestOutlineInFile,
-  setGotoLineRequestId,
 }: Params) {
+  const ws = useWorkspace()
+  const { paletteOpen, focusGraph, selectedPath, workspaceView, activeFilePath, openFilePaths } =
+    ws.state
+  const { setPaletteOpen, setFocusGraph, setGotoLineRequestId } = ws.setters
   const undoRedoHandlersRef = useRef<{ undo?: () => void; redo?: () => void } | null>(null)
 
   const registerUndoRedoHandlers = useCallback(

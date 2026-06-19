@@ -1,30 +1,16 @@
 import { useCallback } from 'react'
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import type { MutableRefObject } from 'react'
 import {
   isEntryDirty,
-  type FileEditorEntry,
   type WorkspaceView,
 } from '../internal'
+import { useWorkspace } from '../workspace'
 
 type Params = {
-  activeFilePath: string | null
-  openFilePaths: string[]
-  fileEditorsByPath: Record<string, FileEditorEntry>
-  workspaceView: WorkspaceView
   selectedPathRef: MutableRefObject<string | null>
   closeFileEditorPaths: (paths: string[]) => void
   openFileEditor: (path: string) => void | Promise<void>
   setSelection: (nextRaw: string | null, opts?: { pushHistory?: boolean }) => void
-  setConfirmOpen: Dispatch<SetStateAction<boolean>>
-  setConfirmReason: Dispatch<SetStateAction<string | null>>
-  setPendingClosePath: Dispatch<SetStateAction<string | null>>
-  setPendingClosePaths: Dispatch<SetStateAction<string[]>>
-  setPendingActivePath: Dispatch<SetStateAction<string | null>>
-  setPendingView: Dispatch<SetStateAction<WorkspaceView | null>>
-  setWorkspaceViewState: Dispatch<SetStateAction<WorkspaceView>>
-  setFindRequestId: Dispatch<SetStateAction<number>>
-  setReplaceRequestId: Dispatch<SetStateAction<number>>
-  setOutlineRequestId: Dispatch<SetStateAction<number>>
 }
 
 /**
@@ -33,25 +19,19 @@ type Params = {
  * verbatim from useStubGraphApp.
  */
 export function useFileTabs({
-  activeFilePath,
-  openFilePaths,
-  fileEditorsByPath,
-  workspaceView,
   selectedPathRef,
   closeFileEditorPaths,
   openFileEditor,
   setSelection,
-  setConfirmOpen,
-  setConfirmReason,
-  setPendingClosePath,
-  setPendingClosePaths,
-  setPendingActivePath,
-  setPendingView,
-  setWorkspaceViewState,
-  setFindRequestId,
-  setReplaceRequestId,
-  setOutlineRequestId,
 }: Params) {
+  const ws = useWorkspace()
+  const { activeFilePath, openFilePaths, fileEditorsByPath, workspaceView } = ws.state
+  const {
+    setConfirmOpen, setConfirmReason, setPendingClosePath, setPendingClosePaths,
+    setPendingActivePath, setPendingView,
+    setWorkspaceView: setWorkspaceViewState,
+    setFindRequestId, setReplaceRequestId, setOutlineRequestId,
+  } = ws.setters
   const closeFileEditor = useCallback(
     (path: string) => {
       const p = String(path || '').trim()

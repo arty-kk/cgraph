@@ -14,22 +14,12 @@ import {
   type Project,
   type RunRecord,
 } from '@/api'
-import type { Dispatch, SetStateAction } from 'react'
 import { extractError } from '@/shared/lib/errors'
-import type { GraphMode } from '../internal'
 import { useNotifications } from '../session'
+import { useWorkspace } from '../workspace'
 
 type Params = {
-  selectedOrgId: number | null
-  activeProject: Project | null
-  selectedPath: string | null
-  graphMode: GraphMode
-  graphHops: number
-  graphLimitN: number
-  graphLocalMax: number
   nodeSeqRef: MutableRefObject<number>
-  setNodeInfo: Dispatch<SetStateAction<NodeInfo | null>>
-  setContract: Dispatch<SetStateAction<NodeContract | null>>
 }
 
 /**
@@ -37,19 +27,13 @@ type Params = {
  * info/contract, plus the effects syncing query errors and node data into
  * parent state. Extracted verbatim from useStubGraphApp.
  */
-export function useGraphData({
-  selectedOrgId,
-  activeProject,
-  selectedPath,
-  graphMode,
-  graphHops,
-  graphLimitN,
-  graphLocalMax,
-  nodeSeqRef,
-  setNodeInfo,
-  setContract,
-}: Params) {
+export function useGraphData({ nodeSeqRef }: Params) {
   const { setErrorMessage } = useNotifications()
+  const ws = useWorkspace()
+  const {
+    selectedOrgId, activeProject, selectedPath, graphMode, graphHops, graphLimitN, graphLocalMax,
+  } = ws.state
+  const { setNodeInfo, setContract } = ws.setters
   const projectsQuery = useQuery<Project[]>({
     queryKey: ['projects', selectedOrgId],
     enabled: selectedOrgId !== null,

@@ -1,25 +1,8 @@
 // frontend/src/ui/useStubGraphApp.ts
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  listOrgs,
-  waitForTaskResult,
-  getAppConfig,
-  type DepMode,
-  type GraphNode,
-  type NodeContract,
-  type NodeInfo,
-  type Org,
-  type Project,
-  type RunTaskResult,
-  isTaskStatus,
-  type TaskStatus,
-  type ProjectFileItem,
-  type ProjectTreeEntry,
-  setSelectedOrgId,
-} from '@/api'
-import { extractError, getAppErrorInfo } from '@/shared/lib/errors'
-import { clampInt } from '@/shared/lib/number'
+import { listOrgs, getAppConfig, type Org, setSelectedOrgId } from '@/api'
+import { extractError } from '@/shared/lib/errors'
 import { useFileEditors, useFileTabs, useFileDependencies, useFileMeta } from './files'
 import {
   useProjectActions,
@@ -32,31 +15,8 @@ import { useSelectionNav, useDerivedAppState, useGlobalKeyboard } from './intera
 import { useAppConfig, useUiPrefs } from './settings'
 import { useNotifications, useTaskTracking, useDocs } from './session'
 import { useWorkspace } from './workspace'
-import {
-  addStorageErrorListener,
-  safeStorageGet,
-  safeStorageRemove,
-  safeStorageSet,
-} from '@/shared/lib/storage'
-import {
-  GRAPH_NOT_BUILT_WARNING,
-  pickCreatedSnapshotProject,
-  getRunGraphStaleState,
-  getMutationTaskSeed,
-} from './internal'
-import type {
-  GraphMode,
-  WorkspaceView,
-  FileEditorEntry,
-  PendingFileJump,
-  NotificationKind,
-  NotificationItem,
-  IndexStatus,
-  FileSaveBanner,
-  DraftEntry,
-  TaskBannerItem,
-  UseStubGraphAppOptions,
-} from './internal'
+import { addStorageErrorListener, safeStorageRemove, safeStorageSet } from '@/shared/lib/storage'
+import type { UseStubGraphAppOptions } from './internal'
 
 // Preserve the existing public surface for external consumers (Notifications, tests).
 export type {
@@ -103,23 +63,18 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     gotoLineRequestId, findRequestId, replaceRequestId, outlineRequestId,
     backStack, forwardStack, selectionTrail, pinnedPaths, selectedPath,
     paletteOpen, nodeInfo, contract, applyPatch, prompt,
-    runResult, fullPatch, patchBusy, runLoadBusy, busyCount, focusGraph,
+    runResult, fullPatch, patchBusy, runLoadBusy, focusGraph,
     workspaceView, openFilePaths, fileEditorsByPath, activeFilePath,
-    fileSaveBanner, graphStale, graphStaleMessage, draftsByPath, draftRestore,
-    pendingClosePath, pendingClosePaths, pendingActivePath, pendingReloadPath, pendingJump,
-    confirmOpen, confirmReason, pendingView,
+    fileSaveBanner, graphStale, graphStaleMessage, draftRestore, pendingJump,
+    confirmOpen, confirmReason,
   } = ws.state
   const {
     setSelectedOrgId: setSelectedOrgIdState,
-    setOrgSelectionStorageFailureMarker, setActiveProject, setNewName, setNewArchive, setNewPath,
+    setOrgSelectionStorageFailureMarker, setNewName, setNewArchive, setNewPath,
     setGraphMode, setGraphLimitN, setGraphHops, setGraphLocalMax,
-    setGotoLineRequestId, setFindRequestId, setReplaceRequestId, setOutlineRequestId,
-    setBackStack, setForwardStack, setSelectionTrail, setPinnedPaths, setSelectedPath,
-    setPaletteOpen, setNodeInfo, setContract, setApplyPatch, setPrompt,
-    setRunResult, setFullPatch, setPatchBusy, setRunLoadBusy, setBusyCount, setFocusGraph,
-    setWorkspaceView: setWorkspaceViewState, setOpenFilePaths, setFileEditorsByPath, setActiveFilePath,
-    setFileSaveBanner, setGraphStale, setGraphStaleMessage, setDraftsByPath, setDraftRestore,
-    setPendingClosePath, setPendingClosePaths, setPendingActivePath, setPendingReloadPath, setPendingJump,
+    setPaletteOpen, setApplyPatch, setPrompt, setBusyCount, setFocusGraph,
+    setOpenFilePaths, setFileEditorsByPath, setActiveFilePath,
+    setPendingClosePath, setPendingClosePaths, setPendingActivePath, setPendingReloadPath,
     setConfirmOpen, setConfirmReason, setPendingView,
   } = ws.setters
   const prevOrgIdRef = useRef<number | null>(null)
@@ -164,9 +119,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const config = useAppConfig()
 
 
-  const busy = busyCount > 0
   const notif = useNotifications()
-  const { error, notifyInfo, setErrorMessage } = notif
+  const { notifyInfo, setErrorMessage } = notif
 
 
   const taskTracking = useTaskTracking()
@@ -177,10 +131,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     toggleLeftPanel, toggleRightPanel, toggleCompactMode,
   } = uiPrefs
   
-  const fileDeps = useFileDependencies({ activeProject, activeFilePath })
+  const fileDeps = useFileDependencies()
 
 
-  const search = useGraphSearch({ activeProject })
+  const search = useGraphSearch()
   const { setSearchQuery, setSearchResults } = search
 
 
@@ -197,7 +151,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
 
   const {
-    setSelection, resetForSelectionChange, buildWorkspaceState, persistWorkspace, hasDirtyEditors,
+    setSelection, resetForSelectionChange, persistWorkspace,
   } = useWorkspaceSession({
     PIN_LIMIT,
     nodeSeqRef, selectedPathRef, backStackRef, forwardStackRef, selectionTrailRef,
@@ -206,17 +160,12 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   })
 
   const selectionNav = useSelectionNav({
-    selectedPath, pinnedPaths, backStack, forwardStack, PIN_LIMIT,
-    selectedPathRef, backStackRef, forwardStackRef, selectionTrailRef,
-    setSelectedPath, setPinnedPaths, setBackStack, setForwardStack, setSelectionTrail,
+    PIN_LIMIT, selectedPathRef, backStackRef, forwardStackRef, selectionTrailRef,
     setSelection, resetForSelectionChange,
   })
   const { onClearSelection, canGoBack, canGoForward, goBack, goForward } = selectionNav
 
-  const { projectsQuery, runsQuery, graphQuery, nodeQuery } = useGraphData({
-    selectedOrgId, activeProject, selectedPath, graphMode, graphHops, graphLimitN,
-    graphLocalMax, nodeSeqRef, setNodeInfo, setContract,
-  })
+  const { projectsQuery, runsQuery, graphQuery, nodeQuery } = useGraphData({ nodeSeqRef })
 
   const { selectProjectLocal, clearActiveProject, onSelectOrg } = useProjectSelection({
     orgs, queryClient, applyOrgSelection, persistWorkspace,
@@ -228,10 +177,10 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const runs = runsQuery.data ?? []
   const graph = graphQuery.data ?? null
 
-  const { fileMetaByPath, registerFileMeta } = useFileMeta({ activeProject })
+  const { fileMetaByPath, registerFileMeta } = useFileMeta()
 
 
-  const docsApi = useDocs({ activeProject })
+  const docsApi = useDocs()
 
 
   useEffect(() => {
@@ -277,11 +226,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [setErrorMessage])
 
   const projectActions = useProjectActions({
-    activeProject, allowLocalRootPath, newName, newArchive, newPath, selectedOrgId,
-    selectedPathRef, projectsQuery, queryClient, runOp, runOpThrow, selectProjectLocal,
-    clearActiveProject, queueMutationIndexingPoll, setSelection,
-    setNewArchive, setNewPath, setPinnedPaths, setActiveFilePath, setOpenFilePaths,
-    setFileEditorsByPath, setFileSaveBanner, setGraphStale, setGraphStaleMessage,
+    allowLocalRootPath, selectedPathRef, projectsQuery, queryClient, runOp, runOpThrow,
+    selectProjectLocal, clearActiveProject, queueMutationIndexingPoll, setSelection,
   })
 
   const runActions = useGraphRunActions({
@@ -289,11 +235,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   })
 
   const fileTabs = useFileTabs({
-    activeFilePath, openFilePaths, fileEditorsByPath, workspaceView, selectedPathRef,
-    closeFileEditorPaths, openFileEditor, setSelection,
-    setConfirmOpen, setConfirmReason, setPendingClosePath, setPendingClosePaths,
-    setPendingActivePath, setPendingView, setWorkspaceViewState,
-    setFindRequestId, setReplaceRequestId, setOutlineRequestId,
+    selectedPathRef, closeFileEditorPaths, openFileEditor, setSelection,
   })
   const { toggleWorkspaceView, requestFindInFile, requestReplaceInFile, requestOutlineInFile } = fileTabs
 
@@ -301,14 +243,12 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
 
   const { registerUndoRedoHandlers } = useGlobalKeyboard({
     canGoBack, canGoForward, goBack, goForward,
-    paletteOpen, setPaletteOpen, focusGraph, setFocusGraph,
-    selectedPath, onClearSelection, onFocusSearch,
-    workspaceView, toggleWorkspaceView, graph,
+    onClearSelection, onFocusSearch,
+    toggleWorkspaceView, graph,
     leftPanelOpen, rightPanelOpen, setLeftPanelOpen, setRightPanelOpen,
     toggleLeftPanel, toggleRightPanel, toggleCompactMode,
-    fileEditorOpen, activeFilePath, openFilePaths, openFileEditor,
+    fileEditorOpen, openFileEditor,
     requestFindInFile, requestReplaceInFile, requestOutlineInFile,
-    setGotoLineRequestId,
   })
 
   useEffect(() => {
@@ -333,10 +273,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setSelection(activeFilePath, { pushHistory: false })
   }, [activeFilePath, selectedPath, setSelection, workspaceView])
 
-  const derived = useDerivedAppState({
-    selectedPath, graph, activeProject, activeFilePath, fileEditorsByPath, draftsByPath,
-    contract, nodeInfo, prompt, busy, graphQuery, nodeQuery, projectsQuery,
-  })
+  const derived = useDerivedAppState({ graph, graphQuery, nodeQuery, projectsQuery })
 
   return {
     fileMetaByPath,
