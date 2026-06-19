@@ -8,7 +8,7 @@ import { Modal } from '@/shared/ui/Modal'
 import { ExplorerTree } from '@/features/files'
 import { ProjectManagePanel } from './ProjectManagePanel'
 import { SectionHeader } from './SectionHeader'
-import { tabBase, tabActive, tabIdle, miniButtonClass, confirmDangerClass, confirmCancelClass } from './projectsSidebar.styles'
+import { tabBase, tabActive, tabIdle, miniButtonClass, confirmDangerClass, confirmCancelClass } from '../lib/projectsSidebar.styles'
 
 export type Props = {
   onHidePanel?: () => void

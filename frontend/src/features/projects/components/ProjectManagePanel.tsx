@@ -8,7 +8,7 @@ import type { Props as SidebarProps } from './ProjectsSidebar'
 import {
   buttonDanger, buttonNeutral, buttonPrimary, buttonSoft, controlClass, fieldLabelClass,
   inputSmClass, inputSmFlexClass, labelRowClass, loadingCardPulse, searchResultRowClass, selectSmFlexClass,
-} from './projectsSidebar.styles'
+} from '../lib/projectsSidebar.styles'
 
 type Params = SidebarProps & {
   canEditProjects: boolean
