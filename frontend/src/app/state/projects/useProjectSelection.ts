@@ -9,7 +9,7 @@ import type {
   RunTaskResult,
   NodeSearchItem,
 } from '@/api'
-import type { GraphMode, WorkspaceView, FileEditorEntry } from './useStubGraphApp.internal'
+import type { GraphMode, WorkspaceView, FileEditorEntry } from '../internal'
 
 type Params = {
   orgs: Org[]

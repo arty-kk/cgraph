@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { GraphData, GraphNode, NodeInfo, NodeContract, Project } from '@/api'
-import type { DraftEntry, FileEditorEntry } from './useStubGraphApp.internal'
+import type { DraftEntry, FileEditorEntry } from '../internal'
 
 type Params = {
   selectedPath: string | null

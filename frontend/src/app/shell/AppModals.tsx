@@ -2,7 +2,7 @@ import React from 'react'
 import { Modal } from '@/shared/ui/Modal'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { useStubGraphApp } from './useStubGraphApp'
+import type { useStubGraphApp } from '../state'
 
 type Params = {
   app: ReturnType<typeof useStubGraphApp>

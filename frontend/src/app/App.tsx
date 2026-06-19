@@ -1,9 +1,7 @@
 // frontend/src/ui/App.tsx
 import React from 'react'
-import { Notifications } from './Notifications'
-import { useStubGraphApp } from './useStubGraphApp'
-import { AppLayout } from './AppLayout'
-import { AppModals } from './AppModals'
+import { Notifications, AppLayout, AppModals } from './shell'
+import { useStubGraphApp } from './state'
 import { CommandPalette } from '@/features/command-palette'
 import { addStorageErrorListener, safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { NotificationItem, NotificationKind } from './useStubGraphApp.internal'
+import type { NotificationItem, NotificationKind } from '../internal'
 
 /**
  * Owns the transient error string and the toast notification queue (with

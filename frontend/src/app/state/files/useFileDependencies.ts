@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { getFileDependencies, type Project } from '@/api'
-import type { DependencyMeta } from './useStubGraphApp.internal'
+import type { DependencyMeta } from '../internal'
 
 type Params = {
   activeProject: Project | null

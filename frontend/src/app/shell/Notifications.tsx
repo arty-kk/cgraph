@@ -1,7 +1,7 @@
 // frontend/src/ui/components/Notifications.tsx
 import React from 'react'
 import clsx from 'clsx'
-import type { NotificationItem } from './useStubGraphApp'
+import type { NotificationItem } from '../state'
 
 type Props = {
   notifications: NotificationItem[]

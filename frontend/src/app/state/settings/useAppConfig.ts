@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { DepMode } from '@/api'
 import { safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
-import type { AutoOrMode, RetrievalMode } from './useStubGraphApp.internal'
+import type { AutoOrMode, RetrievalMode } from '../internal'
 
 /**
  * Owns the persisted "context" configuration shared by the task runner and

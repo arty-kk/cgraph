@@ -23,7 +23,7 @@ import {
   wsKey,
   type FileEditorEntry,
   type FileSaveBanner,
-} from './useStubGraphApp.internal'
+} from '../internal'
 
 type Params = {
   activeProject: Project | null

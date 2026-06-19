@@ -4,7 +4,7 @@ import {
   isEntryDirty,
   type FileEditorEntry,
   type WorkspaceView,
-} from './useStubGraphApp.internal'
+} from '../internal'
 
 type Params = {
   activeFilePath: string | null

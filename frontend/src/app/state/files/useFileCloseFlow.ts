@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { FileEditorEntry, WorkspaceView } from './useStubGraphApp.internal'
+import type { FileEditorEntry, WorkspaceView } from '../internal'
 
 type Params = {
   activeFilePath: string | null

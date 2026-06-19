@@ -24,7 +24,7 @@ import {
   type FileSaveBanner,
   type PendingFileJump,
   type WorkspaceView,
-} from './useStubGraphApp.internal'
+} from '../internal'
 import { useFileCloseFlow } from './useFileCloseFlow'
 
 const FILE_EDITOR_MAX_CHARS = 200_000

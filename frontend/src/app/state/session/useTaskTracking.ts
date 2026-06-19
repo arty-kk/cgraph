@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getTaskStatus, isTaskStatus, type TaskStatus } from '@/api'
-import type { TaskBannerItem } from './useStubGraphApp.internal'
+import type { TaskBannerItem } from '../internal'
 
 export function useTaskTracking() {
   const [taskStatuses, setTaskStatuses] = useState<TaskBannerItem[]>([])

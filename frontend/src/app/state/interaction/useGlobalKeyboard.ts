@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { GraphData } from '@/api'
-import { isAnyModalOpen } from './useStubGraphApp.internal'
-import type { WorkspaceView } from './useStubGraphApp.internal'
+import { isAnyModalOpen } from '../internal'
+import type { WorkspaceView } from '../internal'
 
 type Params = {
   canGoBack: boolean

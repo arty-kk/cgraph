@@ -19,8 +19,8 @@ import {
 } from '@/api'
 import { extractError } from '@/shared/lib/errors'
 import { clampInt } from '@/shared/lib/number'
-import { getRunGraphStaleState, type GraphMode } from './useStubGraphApp.internal'
-import type { useAppConfig } from './useAppConfig'
+import { getRunGraphStaleState, type GraphMode } from '../internal'
+import type { useAppConfig } from '../settings/useAppConfig'
 
 type Params = {
   config: ReturnType<typeof useAppConfig>

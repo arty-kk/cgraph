@@ -1,4 +1,4 @@
-// frontend/src/app/useStubGraphApp.internal.ts
+// frontend/src/app/state/internal.ts
 // Pure types, constants and helpers extracted from useStubGraphApp (no React, no side effects).
 import type { Mode, Project, SnapshotCreateTaskResult, FileSaveResult, TaskStatus } from '@/api'
 

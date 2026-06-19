@@ -20,25 +20,17 @@ import {
 } from '@/api'
 import { extractError, getAppErrorInfo } from '@/shared/lib/errors'
 import { clampInt } from '@/shared/lib/number'
-import { useGraphSearch } from './useGraphSearch'
-import { useAppConfig } from './useAppConfig'
-import { useNotifications } from './useNotifications'
-import { useGlobalKeyboard } from './useGlobalKeyboard'
-import { useGraphRunActions } from './useGraphRunActions'
-import { useFileEditors } from './useFileEditors'
-import { useProjectActions } from './useProjectActions'
-import { useFileTabs } from './useFileTabs'
-import { useSelectionNav } from './useSelectionNav'
-import { useDocs } from './useDocs'
-import { useFileDependencies } from './useFileDependencies'
-import { useUiPrefs } from './useUiPrefs'
-import { useTaskTracking } from './useTaskTracking'
-import { useGraphData } from './useGraphData'
-import { useProjectSelection } from './useProjectSelection'
-import { useWorkspaceSession } from './useWorkspaceSession'
-import { useDerivedAppState } from './useDerivedAppState'
-import { useFileMeta } from './useFileMeta'
-import { useOrgAutoSelect } from './useOrgAutoSelect'
+import { useFileEditors, useFileTabs, useFileDependencies, useFileMeta } from './files'
+import {
+  useProjectActions,
+  useProjectSelection,
+  useWorkspaceSession,
+  useOrgAutoSelect,
+} from './projects'
+import { useGraphData, useGraphSearch, useGraphRunActions } from './graph'
+import { useSelectionNav, useDerivedAppState, useGlobalKeyboard } from './interaction'
+import { useAppConfig, useUiPrefs } from './settings'
+import { useNotifications, useTaskTracking, useDocs } from './session'
 import {
   addStorageErrorListener,
   safeStorageGet,
@@ -50,7 +42,7 @@ import {
   pickCreatedSnapshotProject,
   getRunGraphStaleState,
   getMutationTaskSeed,
-} from './useStubGraphApp.internal'
+} from './internal'
 import type {
   GraphMode,
   WorkspaceView,
@@ -63,7 +55,7 @@ import type {
   DraftEntry,
   TaskBannerItem,
   UseStubGraphAppOptions,
-} from './useStubGraphApp.internal'
+} from './internal'
 
 // Preserve the existing public surface for external consumers (Notifications, tests).
 export type {
@@ -71,13 +63,13 @@ export type {
   PendingFileJump,
   NotificationKind,
   NotificationItem,
-} from './useStubGraphApp.internal'
+} from './internal'
 export {
   GRAPH_NOT_BUILT_WARNING,
   pickCreatedSnapshotProject,
   getRunGraphStaleState,
   getMutationTaskSeed,
-} from './useStubGraphApp.internal'
+} from './internal'
 
 export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const { onFocusSearch } = options

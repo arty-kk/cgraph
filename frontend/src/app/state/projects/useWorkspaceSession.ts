@@ -25,7 +25,7 @@ import {
   type FileEditorEntry,
   type GraphMode,
   type WorkspaceView,
-} from './useStubGraphApp.internal'
+} from '../internal'
 
 type Params = {
   activeProject: Project | null
@@ -77,7 +77,7 @@ type Params = {
   setActiveFilePath: Dispatch<SetStateAction<string | null>>
   setDraftRestore: Dispatch<SetStateAction<{ path: string; draft: DraftEntry } | null>>
   setDraftsByPath: Dispatch<SetStateAction<Record<string, DraftEntry>>>
-  setFileSaveBanner: Dispatch<SetStateAction<import('./useStubGraphApp.internal').FileSaveBanner | null>>
+  setFileSaveBanner: Dispatch<SetStateAction<import('../internal').FileSaveBanner | null>>
   setGraphStale: Dispatch<SetStateAction<boolean>>
   setGraphStaleMessage: Dispatch<SetStateAction<string | null>>
 }

@@ -4,7 +4,7 @@ import { GraphCanvas } from '@/features/graph'
 import { NodePanel } from '@/features/analysis'
 import { FileEditorPane } from '@/features/files'
 import { ExplorerTree } from '@/features/files'
-import type { useStubGraphApp } from './useStubGraphApp'
+import type { useStubGraphApp } from '../state'
 
 type Params = {
   app: ReturnType<typeof useStubGraphApp>

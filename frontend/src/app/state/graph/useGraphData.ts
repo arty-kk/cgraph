@@ -16,7 +16,7 @@ import {
 } from '@/api'
 import type { Dispatch, SetStateAction } from 'react'
 import { extractError } from '@/shared/lib/errors'
-import type { GraphMode } from './useStubGraphApp.internal'
+import type { GraphMode } from '../internal'
 
 type Params = {
   selectedOrgId: number | null
