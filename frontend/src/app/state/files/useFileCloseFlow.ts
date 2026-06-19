@@ -1,21 +1,8 @@
 import { useCallback } from 'react'
-import type { Dispatch, SetStateAction } from 'react'
-import type { FileEditorEntry, WorkspaceView } from '../internal'
+import type { FileEditorEntry } from '../internal'
+import { useWorkspace } from '../workspace'
 
 type Params = {
-  activeFilePath: string | null
-  confirmReason: string | null
-  fileEditorsByPath: Record<string, FileEditorEntry>
-  pendingClosePath: string | null
-  pendingClosePaths: string[]
-  pendingActivePath: string | null
-  pendingReloadPath: string | null
-  pendingView: WorkspaceView | null
-  setActiveFilePath: Dispatch<SetStateAction<string | null>>
-  setOpenFilePaths: Dispatch<SetStateAction<string[]>>
-  setFileEditorsByPath: Dispatch<SetStateAction<Record<string, FileEditorEntry>>>
-  setPendingReloadPath: Dispatch<SetStateAction<string | null>>
-  setWorkspaceViewState: Dispatch<SetStateAction<WorkspaceView>>
   clearConfirm: () => void
   updateFileEditorEntry: (path: string, updater: (entry: FileEditorEntry) => FileEditorEntry) => void
   loadFileEditor: (path: string) => Promise<void> | void
@@ -29,25 +16,21 @@ type Params = {
  * Extracted verbatim from useFileEditors.
  */
 export function useFileCloseFlow({
-  activeFilePath,
-  confirmReason,
-  fileEditorsByPath,
-  pendingClosePath,
-  pendingClosePaths,
-  pendingActivePath,
-  pendingReloadPath,
-  pendingView,
-  setActiveFilePath,
-  setOpenFilePaths,
-  setFileEditorsByPath,
-  setPendingReloadPath,
-  setWorkspaceViewState,
   clearConfirm,
   updateFileEditorEntry,
   loadFileEditor,
   openFileEditor,
   saveFileEditorPath,
 }: Params) {
+  const ws = useWorkspace()
+  const {
+    activeFilePath, confirmReason, fileEditorsByPath, pendingClosePath, pendingClosePaths,
+    pendingActivePath, pendingReloadPath, pendingView,
+  } = ws.state
+  const {
+    setActiveFilePath, setOpenFilePaths, setFileEditorsByPath, setPendingReloadPath,
+    setWorkspaceView: setWorkspaceViewState,
+  } = ws.setters
   const closeFileEditorPaths = useCallback((paths: string[]) => {
     if (paths.length === 0) return
     const closingSet = new Set(paths)

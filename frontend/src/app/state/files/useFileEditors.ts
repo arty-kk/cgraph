@@ -46,8 +46,7 @@ export function useFileEditors({
   const ws = useWorkspace()
   const {
     activeProject, selectedOrgId, activeFilePath, openFilePaths, fileEditorsByPath,
-    draftsByPath, draftRestore, confirmReason, pendingClosePath, pendingClosePaths,
-    pendingActivePath, pendingReloadPath, pendingView, workspaceView,
+    draftsByPath, draftRestore, workspaceView,
   } = ws.state
   const {
     setActiveFilePath, setOpenFilePaths, setFileEditorsByPath, setDraftsByPath, setDraftRestore,
@@ -360,10 +359,7 @@ export function useFileEditors({
   }, [fileEditorsByPath, openFilePaths, saveFileEditorPath])
 
   const closeFlow = useFileCloseFlow({
-    activeFilePath, confirmReason, fileEditorsByPath, pendingClosePath, pendingClosePaths,
-    pendingActivePath, pendingReloadPath, pendingView, setActiveFilePath, setOpenFilePaths,
-    setFileEditorsByPath, setPendingReloadPath, setWorkspaceViewState, clearConfirm,
-    updateFileEditorEntry, loadFileEditor, openFileEditor, saveFileEditorPath,
+    clearConfirm, updateFileEditorEntry, loadFileEditor, openFileEditor, saveFileEditorPath,
   })
 
   return {
