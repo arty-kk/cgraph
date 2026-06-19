@@ -211,14 +211,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [nodeInfo, setNodeInfo] = useState<NodeInfo | null>(null)
   const [contract, setContract] = useState<NodeContract | null>(null)
   const config = useAppConfig()
-  const {
-    mode, setMode, depth, setDepth, depMode, setDepMode, retrievalMode, setRetrievalMode,
-    agenticMaxCalls, setAgenticMaxCalls, agenticMaxFileChars, setAgenticMaxFileChars,
-    agenticMaxTotalToolOutputChars, setAgenticMaxTotalToolOutputChars,
-    agenticTemperature, setAgenticTemperature, agenticEvidenceMode, setAgenticEvidenceMode,
-    packMaxFiles, setPackMaxFiles, packMaxCharsPerFile, setPackMaxCharsPerFile,
-    packMaxTotalChars, setPackMaxTotalChars,
-  } = config
 
   const [applyPatch, setApplyPatch] = useState(false)
   const [prompt, setPrompt] = useState('')
@@ -229,10 +221,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const [runLoadBusy, setRunLoadBusy] = useState(false)
   const [busyCount, setBusyCount] = useState(0)
   const busy = busyCount > 0
-  const {
-    error, notifications, dismissNotification, pushNotification,
-    notifyError, setErrorMessage, notifyInfo,
-  } = useNotifications()
+  const notif = useNotifications()
+  const { error, notifyInfo, setErrorMessage } = notif
   const [focusGraph, setFocusGraph] = useState(false)
 
   type TaskBannerItem = {
@@ -434,15 +424,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     [buildWorkspaceState],
   )
 
-  const {
-    searchQuery, setSearchQuery, searchResults, setSearchResults,
-    searchSemanticResults, setSearchSemanticResults, searchBusy,
-    semanticSearchEnabled, setSemanticSearchEnabled, semanticSearchFallbackUsed,
-    semanticSearchUnavailableReason, textSearchQuery, setTextSearchQuery,
-    textSearchResults, textSearchMeta, textSearchBusy, textSearchCaseSensitive,
-    setTextSearchCaseSensitive, textSearchPrefix, setTextSearchPrefix,
-    textSearchError, onSearchNodes, onSearchText,
-  } = useGraphSearch({ activeProject, notifyInfo, setErrorMessage })
+  const search = useGraphSearch({ activeProject, notifyInfo, setErrorMessage })
+  const { setSearchQuery, setSearchResults } = search
 
 
   useEffect(() => {
@@ -736,16 +719,13 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     [resetForSelectionChange],
   )
 
-  const {
-    onClearSelection, isSelectedPinned, togglePinPath, togglePinSelected,
-    unpinPath, clearPins, canGoBack, canGoForward, goBack, goForward,
-    onGraphBackgroundTap,
-  } = useSelectionNav({
+  const selectionNav = useSelectionNav({
     selectedPath, pinnedPaths, backStack, forwardStack, PIN_LIMIT,
     selectedPathRef, backStackRef, forwardStackRef, selectionTrailRef,
     setSelectedPath, setPinnedPaths, setBackStack, setForwardStack, setSelectionTrail,
     setSelection, resetForSelectionChange,
   })
+  const { onClearSelection, canGoBack, canGoForward, goBack, goForward } = selectionNav
 
   const projectsQuery = useQuery<Project[]>({
     queryKey: ['projects', selectedOrgId],
@@ -1037,13 +1017,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     }
   }, [activeProject, notifyInfo, setErrorMessage, trackTaskStatus])
 
-  const {
-    updateFileEditorEntry, setActiveFileContent, loadFileEditor, clearConfirm,
-    openFileEditor, openFileEditorAt, persistDrafts, restoreDraft, discardDraft,
-    clearDrafts, clearPendingJump, requestReloadFileEditor, queueMutationIndexingPoll,
-    saveFileEditorPath, saveFileEditor, saveAllOpenFiles, closeFileEditorPaths,
-    confirmSave, confirmDiscard, confirmCancel,
-  } = useFileEditors({
+  const fileEditors = useFileEditors({
     activeProject, selectedOrgId, notifyInfo, queryClient, draftPromptedRef,
     activeFilePath, openFilePaths, fileEditorsByPath, draftsByPath, draftRestore,
     confirmReason, pendingClosePath, pendingClosePaths, pendingActivePath,
@@ -1054,6 +1028,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setPendingActivePath, setPendingReloadPath, setPendingJump, setPendingView,
     setWorkspaceViewState,
   })
+  const { loadFileEditor, openFileEditor, queueMutationIndexingPoll, closeFileEditorPaths, setActiveFileContent } = fileEditors
 
   const runOp = useCallback(async (fn: () => Promise<void>) => {
     setBusyCount((count) => count + 1)
@@ -1096,17 +1071,14 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setPatchBusy, setRightPanelOpen, setRunLoadBusy, setRunResult, setSelection, trackTaskStatus,
   })
 
-  const {
-    closeFileEditor, closeAllTabs, closeOtherTabs, closeTabsToRight,
-    setWorkspaceView, toggleWorkspaceView,
-    requestFindInFile, requestReplaceInFile, requestOutlineInFile,
-  } = useFileTabs({
+  const fileTabs = useFileTabs({
     activeFilePath, openFilePaths, fileEditorsByPath, workspaceView, selectedPathRef,
     closeFileEditorPaths, openFileEditor, setSelection,
     setConfirmOpen, setConfirmReason, setPendingClosePath, setPendingClosePaths,
     setPendingActivePath, setPendingView, setWorkspaceViewState,
     setFindRequestId, setReplaceRequestId, setOutlineRequestId,
   })
+  const { toggleWorkspaceView, requestFindInFile, requestReplaceInFile, requestOutlineInFile } = fileTabs
 
   const fileEditorOpen = workspaceView === 'editor'
 
@@ -1180,6 +1152,12 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [activeProject, selectedPath, contract, nodeInfo, prompt, mutationBusy, nodeBusy])
 
   return {
+    ...config,
+    ...fileEditors,
+    ...notif,
+    ...selectionNav,
+    ...fileTabs,
+    ...search,
     ...projectActions,
     ...runActions,
     // state
@@ -1200,9 +1178,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     graphStale,
     graphStaleMessage,
     draftRestore,
-    restoreDraft,
-    discardDraft,
-    clearDrafts,
     allowLocalRootPath,
     docs,
     docsBusy,
@@ -1230,20 +1205,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setFileEditorContent: setActiveFileContent,
     confirmOpen,
     confirmReason,
-    confirmSave,
-    confirmDiscard,
-    confirmCancel,
-    openFileEditor,
-    openFileEditorAt,
-    closeFileEditor,
-    requestFindInFile,
-    requestReplaceInFile,
-    requestOutlineInFile,
-    requestReloadFileEditor,
-    saveFileEditor,
-    saveAllOpenFiles,
     pendingJump,
-    clearPendingJump,
     runs,
     newName,
     newArchive,
@@ -1252,18 +1214,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     selectedInGraph,
     nodeInfo,
     contract,
-    mode,
-    depth,
-    depMode,
-    retrievalMode,
-    agenticMaxCalls,
-    agenticMaxFileChars,
-    agenticMaxTotalToolOutputChars,
-    agenticTemperature,
-    agenticEvidenceMode,
-    packMaxFiles,
-    packMaxCharsPerFile,
-    packMaxTotalChars,
     applyPatch,
     prompt,
     runResult,
@@ -1273,7 +1223,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     nodeBusy,
     patchBusy,
     runLoadBusy,
-    error,
     graphMode,
     graphLimitN,
 
@@ -1289,46 +1238,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setGraphLocalMax,
     onSelectOrg,
 
-    searchQuery,
-    setSearchQuery,
-    searchResults,
-    searchSemanticResults,
-    semanticSearchFallbackUsed,
-    semanticSearchEnabled,
-    setSemanticSearchEnabled,
-    semanticSearchUnavailableReason,
-    searchBusy,
-    onSearchNodes,
-    textSearchQuery,
-    setTextSearchQuery,
-    textSearchResults,
-    textSearchMeta,
-    textSearchBusy,
-    textSearchCaseSensitive,
-    setTextSearchCaseSensitive,
-    textSearchPrefix,
-    setTextSearchPrefix,
-    textSearchError,
-    onSearchText,
-    setMode,
-    setDepth,
-    setDepMode,
-    setRetrievalMode,
-    setAgenticMaxCalls,
-    setAgenticMaxFileChars,
-    setAgenticMaxTotalToolOutputChars,
-    setAgenticTemperature,
-    setAgenticEvidenceMode,
-    setPackMaxFiles,
-    setPackMaxCharsPerFile,
-    setPackMaxTotalChars,
     setApplyPatch,
     setPrompt,
 
-    notifications,
-    dismissNotification,
-    notifyInfo,
-    notifyError,
     taskStatuses,
     refreshTaskStatuses,
     clearFinishedTasks,
@@ -1339,8 +1251,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setCompactMode,
     toggleCompactMode,
     workspaceView,
-    setWorkspaceView,
-    toggleWorkspaceView,
     leftPanelOpen,
     rightPanelOpen,
     setLeftPanelOpen,
@@ -1354,22 +1264,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     selectionTrail,
 
     pinnedPaths,
-    isSelectedPinned,
-    togglePinSelected,
-    togglePinPath,
-    unpinPath,
-    clearPins,
     
     // actions
-    onClearSelection,
-    canGoBack,
-    canGoForward,
-    goBack,
-    goForward,
-    onGraphBackgroundTap,
-    closeAllTabs,
-    closeOtherTabs,
-    closeTabsToRight,
 
     // derived
     canRun,
