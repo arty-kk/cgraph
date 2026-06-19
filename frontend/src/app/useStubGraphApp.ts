@@ -1080,10 +1080,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     }
   }, [setErrorMessage])
 
-  const {
-    onPickProject, onCreateProject, onDeleteActiveProject, onScan, onRefresh,
-    onCreateFile, onRenameFile, onDeleteFile,
-  } = useProjectActions({
+  const projectActions = useProjectActions({
     activeProject, allowLocalRootPath, newName, newArchive, newPath, selectedOrgId,
     selectedPathRef, projectsQuery, queryClient, runOp, runOpThrow, selectProjectLocal,
     clearActiveProject, trackTaskStatus, queueMutationIndexingPoll, setSelection,
@@ -1091,11 +1088,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setFileEditorsByPath, setFileSaveBanner, setGraphStale, setGraphStaleMessage,
   })
 
-  const {
-    onDeleteRun, onLoadFullGraph, onNavigatePath, onSelectNodePath, onGraphNodeTap,
-    onLoadFullPatch, onApplyRunPatch, onLoadRun, onRun, onQuickSummary,
-    onRunWithExpandedContext,
-  } = useGraphRunActions({
+  const runActions = useGraphRunActions({
     config,
     activeProject, applyPatch, contract, graph, graphMode, nodeInfo, notifyInfo, prompt,
     queryClient, runOp, runResult, selectedOrgId, selectedPath,
@@ -1187,6 +1180,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [activeProject, selectedPath, contract, nodeInfo, prompt, mutationBusy, nodeBusy])
 
   return {
+    ...projectActions,
+    ...runActions,
     // state
     orgs,
     orgsLoading: orgsQuery.isFetching,
@@ -1357,7 +1352,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     registerUndoRedoHandlers,
 
     selectionTrail,
-    onNavigatePath,
 
     pinnedPaths,
     isSelectedPinned,
@@ -1367,30 +1361,12 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     clearPins,
     
     // actions
-    onPickProject,
-    onCreateProject,
-    onDeleteActiveProject,
-    onScan,
-    onRefresh,
-    onLoadFullGraph,
     onClearSelection,
     canGoBack,
     canGoForward,
     goBack,
     goForward,
     onGraphBackgroundTap,
-    onSelectNodePath,
-    onGraphNodeTap,
-    onRun,
-    onRunWithExpandedContext,
-    onQuickSummary,
-    onDeleteRun,
-    onLoadFullPatch,
-    onApplyRunPatch,
-    onLoadRun,
-    onCreateFile,
-    onRenameFile,
-    onDeleteFile,
     closeAllTabs,
     closeOtherTabs,
     closeTabsToRight,
