@@ -1,6 +1,6 @@
 import React from 'react'
 import type { GraphData } from '@/api'
-import { baseName } from './GraphCanvas.helpers'
+import { baseName } from '../lib/GraphCanvas.helpers'
 import { ClearIcon } from './GraphCanvas.icons'
 
 type Props = {

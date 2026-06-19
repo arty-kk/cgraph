@@ -5,21 +5,21 @@ import {
   useCytoscapeGraph, type GraphFilters,
   type LabelMode,
   type CytoscapeGraphActions,
-} from './useCytoscapeGraph'
+} from '../hooks/useCytoscapeGraph'
 import {
   EDGE_IN_COLOR,
   EDGE_OUT_COLOR,
   DEFAULT_FILTERS,
-} from './GraphCanvas.storage'
-import { useGraphFilters } from './useGraphFilters'
-import { useGraphHistory } from './useGraphHistory'
+} from '../lib/GraphCanvas.storage'
+import { useGraphFilters } from '../hooks/useGraphFilters'
+import { useGraphHistory } from '../hooks/useGraphHistory'
 import { GraphControlPanel, type GraphControlView } from './GraphControlPanel'
-import { useGraphKeyboard } from './useGraphKeyboard'
-import { useGraphLayout } from './useGraphLayout'
-import { useGraphPanels } from './useGraphPanels'
-import { useGraphContextMenu } from './useGraphContextMenu'
+import { useGraphKeyboard } from '../hooks/useGraphKeyboard'
+import { useGraphLayout } from '../hooks/useGraphLayout'
+import { useGraphPanels } from '../hooks/useGraphPanels'
+import { useGraphContextMenu } from '../hooks/useGraphContextMenu'
 import { GraphLoadingBanner, GraphLimitBanner, GraphEmptyState, GraphFileButtons } from './GraphOverlays'
-import { useGraphFileButtonPosition } from './useGraphFileButtonPosition'
+import { useGraphFileButtonPosition } from '../hooks/useGraphFileButtonPosition'
 import { GraphHelpModal } from './GraphCanvas.HelpModal'
 import { GraphContextMenu } from './GraphContextMenu'
 import { GraphStatusBar } from './GraphStatusBar'

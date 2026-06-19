@@ -1,4 +1,4 @@
-import type { GraphFilters, LabelMode } from './useCytoscapeGraph'
+import type { GraphFilters, LabelMode } from '../hooks/useCytoscapeGraph'
 import { safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
 
 export const FILTER_STORAGE_KEY = 'cs.graph.filters.v1'

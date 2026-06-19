@@ -1,3 +1,3 @@
-export { GraphCanvas } from './GraphCanvas'
-export { useCytoscapeGraph } from './useCytoscapeGraph'
+export { GraphCanvas } from './components/GraphCanvas'
+export { useCytoscapeGraph } from './hooks/useCytoscapeGraph'
 export * from './api'

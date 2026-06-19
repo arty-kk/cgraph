@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import type { NodeContextMenuPayload } from './useCytoscapeGraph'
-import { clamp } from './GraphCanvas.helpers'
+import { clamp } from '../lib/GraphCanvas.helpers'
 
 type Params = {
   /** Ref to the graph root element, used to clamp the menu within bounds. */

@@ -2,7 +2,7 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import type { CytoscapeGraphActions } from './useCytoscapeGraph'
+import type { CytoscapeGraphActions } from '../hooks/useCytoscapeGraph'
 import { GraphStatusBar } from './GraphStatusBar'
 
 const noopActions = {} as unknown as CytoscapeGraphActions

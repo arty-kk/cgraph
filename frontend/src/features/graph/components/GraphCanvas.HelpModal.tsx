@@ -1,5 +1,5 @@
 import { Modal } from '@/shared/ui/Modal'
-import { EDGE_IN_COLOR, EDGE_OUT_COLOR } from './GraphCanvas.storage'
+import { EDGE_IN_COLOR, EDGE_OUT_COLOR } from '../lib/GraphCanvas.storage'
 
 export function GraphHelpModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (

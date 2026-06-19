@@ -1,10 +1,10 @@
 import React, { useMemo } from 'react'
 import type { Dispatch, SetStateAction, MutableRefObject, ReactNode } from 'react'
 import type { GraphData, Project } from '@/api'
-import type { GraphFilters, LabelMode, CytoscapeGraphActions, GraphEditSnapshot } from './useCytoscapeGraph'
-import type { GraphStats } from './useCytoscapeGraph.constants'
-import { EDGE_IN_COLOR, EDGE_OUT_COLOR } from './GraphCanvas.storage'
-import { baseName } from './GraphCanvas.helpers'
+import type { GraphFilters, LabelMode, CytoscapeGraphActions, GraphEditSnapshot } from '../hooks/useCytoscapeGraph'
+import type { GraphStats } from '../lib/useCytoscapeGraph.constants'
+import { EDGE_IN_COLOR, EDGE_OUT_COLOR } from '../lib/GraphCanvas.storage'
+import { baseName } from '../lib/GraphCanvas.helpers'
 import {
   GraphIcon, PencilIcon, UndoIcon, RedoIcon, FitIcon, CenterIcon, RelayoutIcon,
   BackIcon, ForwardIcon, ClearIcon, PinIcon, UnpinIcon, FocusIcon, ResetFiltersIcon, NeighborsIcon,

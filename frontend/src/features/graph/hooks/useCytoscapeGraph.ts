@@ -4,10 +4,10 @@ import type { Core, ElementDefinition } from 'cytoscape'
 import type { GraphData } from '@/api'
 import { riskColor } from '@/shared/lib/riskColor'
 import { useCytoscapeActions } from './useCytoscapeActions'
-import { buildGraphElements } from './graphElements'
-import { runStarburst } from './starburst'
-import { runApplyFilters } from './applyGraphFilters'
-import { buildStylesheet } from './graphStylesheet'
+import { buildGraphElements } from '../lib/graphElements'
+import { runStarburst } from '../lib/starburst'
+import { runApplyFilters } from '../lib/applyGraphFilters'
+import { buildStylesheet } from '../lib/graphStylesheet'
 import { safeStorageGet, safeStorageRemove, safeStorageSet } from '@/shared/lib/storage'
 import {
   DEFAULT_LAYOUT,
@@ -39,7 +39,7 @@ import {
   toFiniteNumber,
   nodeSizeFromRisk,
   makeUniqueId,
-} from './useCytoscapeGraph.constants'
+} from '../lib/useCytoscapeGraph.constants'
 import type {
   GraphFilters,
   GraphStats,
@@ -48,7 +48,7 @@ import type {
   NodeContextMenuPayload,
   GraphEditSnapshot,
   GraphEditEvent,
-} from './useCytoscapeGraph.constants'
+} from '../lib/useCytoscapeGraph.constants'
 
 export type {
   GraphFilters,
@@ -58,7 +58,7 @@ export type {
   NodeContextMenuPayload,
   GraphEditSnapshot,
   GraphEditEvent,
-} from './useCytoscapeGraph.constants'
+} from '../lib/useCytoscapeGraph.constants'
 
 export function useCytoscapeGraph({
   graph,

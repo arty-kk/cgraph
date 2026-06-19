@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import type { CytoscapeGraphActions } from './useCytoscapeGraph'
-import { clamp } from './GraphCanvas.helpers'
+import { clamp } from '../lib/GraphCanvas.helpers'
 
 type Pos = { x: number; y: number }
 

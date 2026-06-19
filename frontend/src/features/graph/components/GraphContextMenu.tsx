@@ -1,7 +1,7 @@
 import React from 'react'
 import type { GraphData } from '@/api'
-import type { CytoscapeGraphActions, GraphEditSnapshot } from './useCytoscapeGraph'
-import { baseName } from './GraphCanvas.helpers'
+import type { CytoscapeGraphActions, GraphEditSnapshot } from '../hooks/useCytoscapeGraph'
+import { baseName } from '../lib/GraphCanvas.helpers'
 
 type CtxMenuState = { path: string; x: number; y: number }
 

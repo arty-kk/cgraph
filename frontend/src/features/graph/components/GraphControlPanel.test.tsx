@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import type { GraphData, Project } from '@/api'
-import type { CytoscapeGraphActions, GraphEditSnapshot } from './useCytoscapeGraph'
-import type { GraphStats } from './useCytoscapeGraph.constants'
-import { DEFAULT_FILTERS } from './GraphCanvas.storage'
+import type { CytoscapeGraphActions, GraphEditSnapshot } from '../hooks/useCytoscapeGraph'
+import type { GraphStats } from '../lib/useCytoscapeGraph.constants'
+import { DEFAULT_FILTERS } from '../lib/GraphCanvas.storage'
 import { GraphControlPanel, type GraphControlView } from './GraphControlPanel'
 
 const noopActions = {} as unknown as CytoscapeGraphActions

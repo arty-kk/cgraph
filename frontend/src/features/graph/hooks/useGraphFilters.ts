@@ -11,7 +11,7 @@ import {
   loadLabelMode,
   loadSpotlight,
   loadEdgeDir,
-} from './GraphCanvas.storage'
+} from '../lib/GraphCanvas.storage'
 
 /**
  * Owns per-project graph UI settings (filters, label mode, spotlight, edge

@@ -7,8 +7,8 @@ import {
   CENTER_RETRY_ATTEMPTS,
   CENTER_RETRY_DELAY_MS,
   safeStr,
-} from './useCytoscapeGraph.constants'
-import type { GraphEditSnapshot } from './useCytoscapeGraph.constants'
+} from '../lib/useCytoscapeGraph.constants'
+import type { GraphEditSnapshot } from '../lib/useCytoscapeGraph.constants'
 
 type Params = {
   cyRef: MutableRefObject<Core | null>
