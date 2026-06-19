@@ -12,8 +12,6 @@ import {
   getTaskStatus,
   waitForTaskResult,
   getFileDependencies,
-  getProjectDocs,
-  buildProjectDocsStatus,
   getAppConfig,
   type DepMode,
   type GraphData,
@@ -29,7 +27,6 @@ import {
   type TaskStatus,
   type ProjectFileItem,
   type ProjectTreeEntry,
-  type ProjectDocs,
   setSelectedOrgId,
 } from '@/api'
 import { extractError, getAppErrorInfo } from '@/shared/lib/errors'
@@ -43,6 +40,7 @@ import { useFileEditors } from './useFileEditors'
 import { useProjectActions } from './useProjectActions'
 import { useFileTabs } from './useFileTabs'
 import { useSelectionNav } from './useSelectionNav'
+import { useDocs } from './useDocs'
 import {
   addStorageErrorListener,
   safeStorageGet,
@@ -942,15 +940,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     })
   }, [])
 
-  const [docs, setDocs] = useState<ProjectDocs | null>(null)
-  const [docsBusy, setDocsBusy] = useState(false)
-  const [docsBuildBusy, setDocsBuildBusy] = useState(false)
-  const [docsBuildError, setDocsBuildError] = useState<string | null>(null)
-
-  useEffect(() => {
-    setDocs(null)
-    setDocsBuildError(null)
-  }, [activeProject?.id])
+  const docsApi = useDocs({ activeProject, notifyInfo, setErrorMessage, trackTaskStatus })
 
   useEffect(() => {
     setFileMetaByPath({})
@@ -969,53 +959,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setPendingView(null)
   }, [activeProject?.id])
 
-  const loadDocs = useCallback(async () => {
-    if (!activeProject) return
-    setDocsBusy(true)
-    setDocsBuildError(null)
-    setErrorMessage(null)
-    try {
-      const d = await getProjectDocs(activeProject.id)
-      setDocs(d)
-    } catch (e: any) {
-      const info = getAppErrorInfo(e)
-      const message = info?.message?.toLowerCase() ?? ''
-      const isDocsMissing =
-        info?.code === 'not_found' &&
-        ((message.includes('документац') && message.includes('не найден')) ||
-          (message.includes('docs') && (message.includes('not found') || message.includes('missing'))))
-      if (isDocsMissing) {
-        setDocs(null)
-        return
-      }
-      setDocs(null)
-      setErrorMessage(extractError(e))
-    } finally {
-      setDocsBusy(false)
-    }
-  }, [activeProject, setErrorMessage])
-
-  const buildDocs = useCallback(async () => {
-    if (!activeProject) return
-    setDocsBuildBusy(true)
-    setDocsBuildError(null)
-    setErrorMessage(null)
-    try {
-      const initial = await buildProjectDocsStatus(activeProject.id)
-      if (isTaskStatus(initial)) {
-        trackTaskStatus(initial, 'docs', `Docs ${activeProject.name}`)
-      }
-      const d = await waitForTaskResult<ProjectDocs>(initial, { pollIntervalMs: 1200, maxAttempts: 300 })
-      setDocs(d)
-      setDocsBuildError(null)
-      notifyInfo('Docs built')
-    } catch (e: any) {
-      setDocsBuildError(extractError(e))
-      setErrorMessage(extractError(e))
-    } finally {
-      setDocsBuildBusy(false)
-    }
-  }, [activeProject, notifyInfo, setErrorMessage, trackTaskStatus])
 
   const fileEditors = useFileEditors({
     activeProject, selectedOrgId, notifyInfo, queryClient, draftPromptedRef,
@@ -1152,6 +1095,7 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [activeProject, selectedPath, contract, nodeInfo, prompt, mutationBusy, nodeBusy])
 
   return {
+    ...docsApi,
     ...config,
     ...fileEditors,
     ...notif,
@@ -1179,12 +1123,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     graphStaleMessage,
     draftRestore,
     allowLocalRootPath,
-    docs,
-    docsBusy,
-    docsBuildBusy,
-    docsBuildError,
-    loadDocs,
-    buildDocs,
     fileEditorOpen,
     fileEditorPath,
     fileEditorContent,
