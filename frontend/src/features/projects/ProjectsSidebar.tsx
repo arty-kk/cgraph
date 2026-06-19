@@ -1,15 +1,16 @@
 // frontend/src/ui/components/ProjectsSidebar.tsx
 import React from 'react'
 import type { Org, Project, ProjectTreeEntry, NodeSearchItem, SemanticSearchItem } from '@/api'
-import { clampInt } from '@/shared/lib/number'
 import { roleAtLeast } from '@/shared/lib/roles'
 import { safeStorageGet, safeStorageSet } from '@/shared/lib/storage'
 import type { SemanticSearchErrorReason } from '@/shared/lib/errors'
 import { Modal } from '@/shared/ui/Modal'
-import { LanguageIcon } from '@/shared/ui/LanguageIcon'
 import { ExplorerTree } from '@/features/files/ExplorerTree'
+import { ProjectManagePanel } from './ProjectManagePanel'
+import { SectionHeader } from './SectionHeader'
+import { tabBase, tabActive, tabIdle, miniButtonClass, confirmDangerClass, confirmCancelClass } from './projectsSidebar.styles'
 
-type Props = {
+export type Props = {
   onHidePanel?: () => void
   orgs: Org[]
   selectedOrgId: number | null
@@ -70,7 +71,8 @@ type Props = {
   onOpenDocs: () => void | Promise<void>
 }
 
-export function ProjectsSidebar({
+export function ProjectsSidebar(props: Props) {
+  const {
   onHidePanel,
   orgs,
   selectedOrgId,
@@ -121,7 +123,7 @@ export function ProjectsSidebar({
   pinnedPaths,
   allowLocalRootPath,
   onOpenDocs,
-}: Props) {
+  } = props
   const [helpOpen, setHelpOpen] = React.useState<null | 'projects' | 'graph' | 'search'>(null)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = React.useState(false)
 
@@ -138,33 +140,6 @@ export function ProjectsSidebar({
   // only 403 on click. Unknown role keeps prior behaviour (server enforces).
   const canEditProjects = activeOrg?.role == null || roleAtLeast(activeOrg.role, 'member')
 
-  const controlBase = 'w-full h-9 rounded-md bg-neutral-900 border border-neutral-800 px-2 text-xs outline-none'
-  const controlDisabled = 'disabled:opacity-50'
-  const controlClass = `${controlBase} ${controlDisabled}`
-  const labelRowClass = 'flex items-center gap-2 leading-none'
-  const fieldLabelClass = 'text-[11px] font-semibold text-neutral-200'
-
-  const controlSmBase = 'h-9 rounded-md bg-neutral-900 border border-neutral-800 text-sm outline-none disabled:opacity-50'
-  const inputSmClass = `w-full ${controlSmBase} px-3`
-  const inputSmFlexClass = `flex-1 ${controlSmBase} px-3`
-  const selectSmFlexClass = `min-w-0 flex-1 ${controlSmBase} px-2`
-
-  const buttonBase = 'h-9 rounded-md border border-neutral-800 px-3 text-sm font-semibold disabled:opacity-50'
-  const buttonNeutral = `${buttonBase} bg-neutral-900 hover:bg-neutral-800`
-  const buttonSoft = `${buttonBase} bg-neutral-800 hover:bg-neutral-700 border-neutral-800`
-  const buttonDanger = 'h-9 rounded-md bg-neutral-900 hover:bg-red-950 border border-neutral-800 hover:border-red-800 px-3 text-sm font-semibold disabled:opacity-50'
-  const buttonPrimary = 'h-9 rounded-md bg-indigo-600 hover:bg-indigo-500 px-3 text-sm font-semibold disabled:opacity-50'
-  const miniButtonClass = 'h-6 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 px-2.5 text-[11px] font-semibold disabled:opacity-50'
-  
-  const tabBase = 'flex-1 h-9 rounded-md border px-3 text-sm font-semibold transition-colors disabled:opacity-50'
-  const tabActive = 'bg-neutral-900 border-neutral-700'
-  const tabIdle = 'bg-neutral-950 border-neutral-900 hover:border-neutral-700'
-
-  const loadingCardBase = 'rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-400'
-  const loadingCardPulse = `${loadingCardBase} animate-pulse`
-  const searchResultRowClass = 'text-left text-xs bg-neutral-950 border border-neutral-800 rounded-md p-2 hover:border-neutral-700 disabled:opacity-50'
-  const confirmDangerClass = 'h-9 rounded-md bg-red-700 hover:bg-red-600 px-3 text-sm font-semibold disabled:opacity-50'
-  const confirmCancelClass = 'h-9 rounded-md bg-neutral-900 hover:bg-neutral-800 px-3 text-sm font-semibold disabled:opacity-50'
   const semanticUnavailableText = semanticSearchUnavailableReason === 'missing_api_key'
     ? 'OPENAI_API_KEY required'
     : semanticSearchUnavailableReason === 'embeddings_disabled'
@@ -174,45 +149,7 @@ export function ProjectsSidebar({
       : ''
   const localRootDisabled = allowLocalRootPath === false
 
-  const HelpButton = ({
-    topic,
-    label,
-  }: {
-    topic: 'projects' | 'graph' | 'search'
-    label?: string
-  }) => (
-    <button
-      type="button"
-      className="w-3.5 h-3.5 rounded-full border border-neutral-800 bg-neutral-900 text-neutral-200 text-[10px] leading-none font-semibold hover:bg-neutral-800 shrink-0"
-      onMouseDown={(e) => {
-        e.preventDefault()
-        e.stopPropagation()
-      }}
-      onClick={() => setHelpOpen(topic)}
-      aria-label={label || 'Open help'}
-      title={label || 'Help'}
-    >
-      ?
-    </button>
-  )
 
-  const SectionHeader = ({
-    title,
-    topic,
-    right,
-  }: {
-    title: string
-    topic?: 'projects' | 'graph' | 'search'
-    right?: React.ReactNode
-  }) => (
-    <div className="flex items-center justify-between gap-3 min-h-6">
-      <div className="flex items-center gap-2">
-        <div className="text-sm font-semibold text-neutral-200 leading-none">{title}</div>
-        {topic ? <HelpButton topic={topic} label={`Help: ${title}`} /> : null}
-      </div>
-      {right ?? null}
-    </div>
-  )
 
   type View = 'explorer' | 'manage'
   const [view, setView] = React.useState<View>(() => {
@@ -245,7 +182,7 @@ export function ProjectsSidebar({
           <div className="text-lg font-semibold">StubGraph</div>
 
           <div className="mt-2">
-            <SectionHeader title="Project" topic="projects" />
+            <SectionHeader onOpenHelp={setHelpOpen} title="Project" topic="projects" />
           </div>
 
           <div className="flex gap-2">
@@ -278,7 +215,7 @@ export function ProjectsSidebar({
           {view === 'explorer' && (
             <>
               <div className="mt-2">
-                <SectionHeader
+                <SectionHeader onOpenHelp={setHelpOpen}
                   title="Explorer"
                   right={
                     <button
@@ -313,381 +250,17 @@ export function ProjectsSidebar({
             </>
           )}
 
-          {view === 'manage' && (
-            <>
-              <div className="mt-2">
-                <div className={labelRowClass}>
-                  <div className={fieldLabelClass}>Organization</div>
-                </div>
-              </div>
-
-              {orgsLoading && orgs.length === 0 ? (
-                <div className={loadingCardPulse}>
-                  Loading organizations…
-                </div>
-              ) : orgs.length === 1 ? (
-                <div className="text-xs text-neutral-300 truncate" title={orgs[0]?.name ?? ''}>
-                  {orgs[0]?.name ?? 'Unknown organization'}
-                </div>
-              ) : (
-                <div className="flex gap-2 w-full">
-                  <select
-                    className={selectSmFlexClass}
-                    value={selectedOrgId ?? ''}
-                    disabled={busy || orgs.length === 0}
-                    onChange={(e) => {
-                      const id = Number(e.target.value)
-                      const org = orgs.find((x) => x.id === id)
-                      onSelectOrg(org ? org.id : null)
-                    }}
-                    title="Select organization"
-                  >
-                    <option value="" disabled>
-                      {orgs.length ? 'Pick an organization…' : 'No organizations'}
-                    </option>
-                    {orgs.map((org) => (
-                      <option key={org.id} value={org.id}>
-                        {org.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {projectsLoading && projects.length === 0 ? (
-                <div className={loadingCardPulse}>
-                  Loading project list…
-                </div>
-              ) : (
-                <div className="flex gap-2 w-full">
-                  <select
-                    className={selectSmFlexClass}
-                    value={activeProject?.id ?? ''}
-                    disabled={busy || projects.length === 0}
-                    onChange={(e) => {
-                      const id = Number(e.target.value)
-                      const p = projects.find((x) => x.id === id)
-                      if (p) onPickProject(p)
-                    }}
-                    title="Select active project"
-                  >
-                    <option value="" disabled>
-                      {projects.length ? 'Pick a project…' : 'No projects'}
-                    </option>
-                    {projects.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-
-                  <button
-                    type="button"
-                    className={buttonDanger}
-                    disabled={!activeProject || busy || !canDeleteProject}
-                    onClick={() => setConfirmDeleteOpen(true)}
-                    title={
-                      canDeleteProject
-                        ? 'Delete active project (irreversible)'
-                        : 'Only org admins can delete projects'
-                    }
-                  >
-                    Delete
-                  </button>
-                </div>
-              )}
-
-          {activeProject && (
-            <div
-              className="text-xs text-neutral-400 truncate"
-              title={activeProject.source?.label ?? activeProject.root_path ?? ''}
-            >
-              {activeProject.source?.label ?? activeProject.root_path}
-            </div>
-          )}
-
-          <div className="mt-3 text-sm font-semibold text-neutral-200">Add</div>
-          {!canEditProjects && (
-            <div className="text-xs text-neutral-500 leading-relaxed">
-              Only org members can create projects.
-            </div>
-          )}
-          <input
-            className={inputSmClass}
-            placeholder="name"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            disabled={busy || !canEditProjects}
-            title="Project name (shown in the UI)"
-          />
-          <input
-            className={inputSmClass}
-            type="file"
-            accept=".zip,.tar,.tar.gz,.tgz"
-            onChange={(e) => setNewArchive(e.target.files?.[0] ?? null)}
-            disabled={busy || !canEditProjects}
-            title="Upload repository snapshot (.zip/.tar/.tar.gz/.tgz)"
-          />
-          <div className="text-xs text-neutral-500 leading-relaxed">
-            Upload snapshot archive (zip/tar).
-          </div>
-          {newArchive && (
-            <div className="text-xs text-neutral-500 truncate" title={newArchive.name}>
-              Selected: {newArchive.name}
-            </div>
-          )}
-          <input
-            className={inputSmClass}
-            placeholder="/absolute/path/to/repo"
-            value={newPath}
-            onChange={(e) => setNewPath(e.target.value)}
-            disabled={busy || Boolean(newArchive) || localRootDisabled || !canEditProjects}
-            title="Absolute path on the backend machine (local-only)"
-          />
-          <div className="text-xs text-neutral-500 leading-relaxed">
-            {localRootDisabled ? 'Local root_path is disabled on this server.' : 'Local root_path works only when enabled on the backend.'}
-          </div>
-          <button
-            className={buttonPrimary}
-            onClick={() => onCreateProject()}
-            disabled={
-              !newName.trim() ||
-              (!newArchive && (!newPath.trim() || localRootDisabled)) ||
-              busy ||
-              !canEditProjects
-            }
-            title={
-              canEditProjects
-                ? 'Create project from snapshot or local root_path'
-                : 'Creating projects requires the member role'
-            }
-          >
-            Create Project
-          </button>
-
-          <div className="mt-4">
-            <SectionHeader title="Graph" topic="graph" />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-xs text-neutral-300">
-              <div className={labelRowClass}>
-                <span className={fieldLabelClass}>Mode</span>
-              </div>
-              <select
-                className={controlClass + ' mt-1'}
-                value={graphMode}
-                onChange={(e) => setGraphMode(e.target.value as any)}
-                disabled={busy || !activeProject}
-                title="local — neighborhood of the selected file; full — entire graph; top-N — limited graph of N nodes"
-              >
-                <option value="local">Local</option>
-                <option value="full">Full</option>
-                <option value="limit">Top-N</option>
-              </select>
-            </label>
-
-            <label className="text-xs text-neutral-300">
-              <div className={labelRowClass}>
-                <span className={fieldLabelClass}>N</span>
-              </div>
-              <input
-                type="number"
-                className={controlClass + ' mt-1'}
-                value={graphLimitN}
-                min={100}
-                max={20000}
-                step={100}
-                disabled={busy || !activeProject || graphMode !== 'limit'}
-                onChange={(e) => {
-                  const raw = e.target.value
-                  const next = raw === '' ? 2000 : clampInt(Number(raw), 100, 20000)
-                  setGraphLimitN(next)
-                }}
-                title="Number of nodes for top-N mode"
-              />
-            </label>
-
-            <label className="text-xs text-neutral-300">
-              <div className={labelRowClass}>
-                <span className={fieldLabelClass}>Hops</span>
-              </div>
-              <input
-                type="number"
-                className={controlClass + ' mt-1'}
-                value={graphHops}
-                min={1}
-                max={6}
-                disabled={busy || !activeProject}
-                onChange={(e) => {
-                  const raw = e.target.value
-                  const next = raw === '' ? 1 : clampInt(Number(raw), 1, 6)
-                  setGraphHops(next)
-                }}
-                title="Dependency depth (hops) for graph building"
-              />
-            </label>
-
-            <label className="text-xs text-neutral-300">
-              <div className={labelRowClass}>
-                <span className={fieldLabelClass}>Max Nodes (Local)</span>
-              </div>
-              <input
-                type="number"
-                className={controlClass + ' mt-1'}
-                value={graphLocalMax}
-                min={50}
-                max={2000}
-                step={50}
-                disabled={busy || !activeProject}
-                onChange={(e) => {
-                  const raw = e.target.value
-                  const next = raw === '' ? 400 : clampInt(Number(raw), 50, 2000)
-                  setGraphLocalMax(next)
-                }}
-                title="Local graph size limit (for performance)"
-              />
-            </label>
-          </div>
-
-          <div className="mt-2 flex gap-2">
-            <button
-              className={buttonSoft}
-              onClick={() => onScan()}
-              disabled={!activeProject || busy || !canEditProjects}
-              title={
-                canEditProjects
-                  ? 'Scan: reindex project and recompute dependencies'
-                  : 'Scanning requires the member role'
-              }
-            >
-              Scan
-            </button>
-            <button
-              className={buttonNeutral}
-              onClick={() => onRefresh()}
-              disabled={!activeProject || busy}
-              title="Refresh: reload graph and panel data"
-            >
-              Refresh
-            </button>
-          </div>
-
-          <div className="mt-4">
-            <SectionHeader title="File Search" topic="search" />
-          </div>
-          <label className="mt-2 flex items-center gap-2 text-xs text-neutral-300">
-            <input
-              type="checkbox"
-              checked={semanticSearchEnabled}
-              onChange={(e) => setSemanticSearchEnabled(e.target.checked)}
-              disabled={!activeProject || busy}
-            />
-            <span>Semantic search</span>
-            {semanticSearchUnavailableReason ? (
-              <span className="text-[11px] text-neutral-500">{semanticUnavailableText}</span>
-            ) : null}
-          </label>
-          {semanticSearchUnavailableReason === 'no_embeddings' ? (
-            <div className="mt-1 text-[11px] text-neutral-500">
-              Enable embeddings and run Scan to restore search.
-            </div>
-          ) : null}
-          <div className="flex gap-2">
-            <input
-              className={inputSmFlexClass}
-              placeholder={semanticSearchEnabled ? 'semantic query' : 'path substring'}
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') onSearchNodes(searchQuery)
-              }}
-              disabled={!activeProject || busy}
-              title="Search by path substring via backend (Enter to search)"
-            />
-            <button
-              className={buttonSoft}
-              onClick={() => onSearchNodes(searchQuery)}
-              disabled={!activeProject || busy || searchBusy || !searchQuery.trim()}
-              title="Run search"
-            >
-              {searchBusy ? '...' : 'Search'}
-            </button>
-          </div>
-
-          {!semanticSearchEnabled && searchResults.length > 0 && (
-            <div className="mt-2 flex flex-col gap-1 max-h-40 overflow-auto">
-              {searchResults.map((r) => (
-                <button
-                  key={r.path}
-                  className={searchResultRowClass}
-                  onClick={() => onSelectPath(r.path)}
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={!activeProject || busy}
-                  title="Select file (and open it in the right panel / local graph)"
-                >
-                  <div className="text-neutral-200 font-semibold">{r.path}</div>
-                  <div className="text-neutral-500 inline-flex items-center gap-1">
-                    <LanguageIcon language={r.language} className="h-3.5 w-3.5 text-neutral-400" />
-                    <span>· In:{r.fan_in ?? 0} · Out:{r.fan_out ?? 0}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {semanticSearchEnabled && semanticSearchFallbackUsed && searchResults.length > 0 && (
-            <div className="mt-2 flex flex-col gap-1 max-h-40 overflow-auto">
-              <div className="text-[11px] text-neutral-500">
-                Showing fallback path search
-              </div>
-              {searchResults.map((r) => (
-                <button
-                  key={r.path}
-                  className={searchResultRowClass}
-                  onClick={() => onSelectPath(r.path)}
-                  onMouseDown={(e) => e.preventDefault()}
-                  disabled={!activeProject || busy}
-                  title="Select file (and open it in the right panel / local graph)"
-                >
-                  <div className="text-neutral-200 font-semibold">{r.path}</div>
-                  <div className="text-neutral-500 inline-flex items-center gap-1">
-                    <LanguageIcon language={r.language} className="h-3.5 w-3.5 text-neutral-400" />
-                    <span>· In:{r.fan_in ?? 0} · Out:{r.fan_out ?? 0}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {semanticSearchEnabled && searchSemanticResults.length > 0 && (
-            <div className="mt-2 flex flex-col gap-1 max-h-40 overflow-auto">
-              {searchSemanticResults.map((r, idx) => {
-                const score = Number.isFinite(r.score) ? r.score.toFixed(3) : '—'
-                return (
-                  <button
-                    key={`${r.path}-${idx}`}
-                    className={searchResultRowClass}
-                    onClick={() => onSelectPath(r.path)}
-                    onMouseDown={(e) => e.preventDefault()}
-                    disabled={!activeProject || busy}
-                    title="Select file (and open it in the right panel / local graph)"
-                  >
-                    <div className="text-neutral-200 font-semibold">{r.path}</div>
-                    <div className="text-neutral-500">Score: {score}</div>
-                    {r.snippet ? (
-                      <div className="mt-1 text-[11px] text-neutral-400 whitespace-pre-wrap line-clamp-3">
-                        {r.snippet}
-                      </div>
-                    ) : null}
-                  </button>
-                )
-              })}
-            </div>
-          )}
-
-          {error && <div className="mt-2 text-xs text-red-300 whitespace-pre-wrap">{error}</div>}
-            </>
-          )}
+      {view === 'manage' && (
+        <ProjectManagePanel
+          {...props}
+          canEditProjects={canEditProjects}
+          canDeleteProject={canDeleteProject}
+          localRootDisabled={localRootDisabled}
+          semanticUnavailableText={semanticUnavailableText}
+          setConfirmDeleteOpen={setConfirmDeleteOpen}
+          onOpenHelp={setHelpOpen}
+        />
+      )}
 
           <Modal
             open={helpOpen != null}
