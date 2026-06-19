@@ -236,3 +236,13 @@ export type UseStubGraphAppOptions = {
   onFocusSearch?: () => void
 }
 
+
+export type TaskBannerItem = {
+  id: string
+  kind: 'scan' | 'docs' | 'run'
+  status: TaskStatus['status']
+  label: string
+  startedAt: number
+  finishedAt?: number | null
+  error?: string | null
+}

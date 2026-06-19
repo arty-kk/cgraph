@@ -9,7 +9,6 @@ import {
   getNode,
   listProjects,
   listRuns,
-  getTaskStatus,
   waitForTaskResult,
   getAppConfig,
   type DepMode,
@@ -41,6 +40,8 @@ import { useFileTabs } from './useFileTabs'
 import { useSelectionNav } from './useSelectionNav'
 import { useDocs } from './useDocs'
 import { useFileDependencies } from './useFileDependencies'
+import { useUiPrefs } from './useUiPrefs'
+import { useTaskTracking } from './useTaskTracking'
 import {
   addStorageErrorListener,
   safeStorageGet,
@@ -81,6 +82,7 @@ import type {
   IndexStatus,
   FileSaveBanner,
   DraftEntry,
+  TaskBannerItem,
   UseStubGraphAppOptions,
 } from './useStubGraphApp.internal'
 
@@ -222,35 +224,15 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   const { error, notifyInfo, setErrorMessage } = notif
   const [focusGraph, setFocusGraph] = useState(false)
 
-  type TaskBannerItem = {
-    id: string
-    kind: 'scan' | 'docs' | 'run'
-    status: TaskStatus['status']
-    label: string
-    startedAt: number
-    finishedAt?: number | null
-    error?: string | null
-  }
 
-  const [taskStatuses, setTaskStatuses] = useState<TaskBannerItem[]>([])
-  const taskStatusesRef = useRef<TaskBannerItem[]>([])
-  useEffect(() => {
-    taskStatusesRef.current = taskStatuses
-  }, [taskStatuses])
+  const taskTracking = useTaskTracking()
+  const { trackTaskStatus } = taskTracking
 
-  const [compactMode, setCompactMode] = useState<boolean>(() => (safeStorageGet('cs.ui.compactMode', '0') || '0') === '1')
-  useEffect(() => {
-    safeStorageSet('cs.ui.compactMode', compactMode ? '1' : '0')
-  }, [compactMode])
-  const toggleCompactMode = useCallback(() => setCompactMode((v) => !v), [])
-
-  const [leftPanelOpen, setLeftPanelOpen] = useState<boolean>(() => (safeStorageGet('cs.ui.leftPanelOpen', '1') || '1') !== '0')
-  const [rightPanelOpen, setRightPanelOpen] = useState<boolean>(() => (safeStorageGet('cs.ui.rightPanelOpen', '1') || '1') !== '0')
-  useEffect(() => { safeStorageSet('cs.ui.leftPanelOpen', leftPanelOpen ? '1' : '0') }, [leftPanelOpen])
-  useEffect(() => { safeStorageSet('cs.ui.rightPanelOpen', rightPanelOpen ? '1' : '0') }, [rightPanelOpen])
-
-  const toggleLeftPanel = useCallback(() => setLeftPanelOpen((v) => !v), [])
-  const toggleRightPanel = useCallback(() => setRightPanelOpen((v) => !v), [])
+  const uiPrefs = useUiPrefs()
+  const {
+    leftPanelOpen, rightPanelOpen, setLeftPanelOpen, setRightPanelOpen,
+    toggleLeftPanel, toggleRightPanel, toggleCompactMode,
+  } = uiPrefs
   
   const [workspaceView, setWorkspaceViewState] = useState<WorkspaceView>('graph')
   const [openFilePaths, setOpenFilePaths] = useState<string[]>([])
@@ -352,75 +334,6 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     })
   }, [notifyInfo])
 
-  const trackTaskStatus = useCallback((task: TaskStatus, kind: TaskBannerItem['kind'], label: string) => {
-    setTaskStatuses((prev) => {
-      const existing = prev.find((item) => item.id === task.task_id)
-      if (existing) {
-        return prev.map((item) =>
-          item.id === task.task_id
-            ? { ...item, status: task.status, error: task.error ? String(task.error) : item.error }
-            : item
-        )
-      }
-      const next: TaskBannerItem = {
-        id: task.task_id,
-        kind,
-        status: task.status,
-        label,
-        startedAt: Date.now(),
-        finishedAt: null,
-        error: task.error ? String(task.error) : null,
-      }
-      return [...prev, next].slice(-5)
-    })
-  }, [])
-
-  const refreshTaskStatuses = useCallback(async () => {
-    const pending = taskStatusesRef.current.filter((item) => item.status === 'pending' || item.status === 'running')
-    if (!pending.length) return
-    const updates = await Promise.all(
-      pending.map(async (item) => {
-        try {
-          const status = await getTaskStatus(item.id)
-          return { item, status }
-        } catch {
-          return { item, status: null }
-        }
-      })
-    )
-    setTaskStatuses((prev) =>
-      prev.map((item) => {
-        const update = updates.find((u) => u.item.id === item.id)
-        if (!update || !update.status) return item
-        const finishedAt =
-          update.status.status === 'succeeded' || update.status.status === 'failed'
-            ? Date.now()
-            : item.finishedAt
-        return {
-          ...item,
-          status: update.status.status,
-          error: update.status.error ? String(update.status.error) : item.error,
-          finishedAt,
-        }
-      })
-    )
-  }, [])
-
-  useEffect(() => {
-    if (!taskStatuses.length) return
-    const interval = window.setInterval(() => {
-      void refreshTaskStatuses()
-    }, 3000)
-    return () => window.clearInterval(interval)
-  }, [refreshTaskStatuses, taskStatuses.length])
-
-  const clearFinishedTasks = useCallback(() => {
-    setTaskStatuses((prev) => prev.filter((item) => item.status === 'pending' || item.status === 'running'))
-  }, [])
-
-  const dismissTaskStatus = useCallback((taskId: string) => {
-    setTaskStatuses((prev) => prev.filter((item) => item.id !== taskId))
-  }, [])
 
   const resetForSelectionChange = useCallback(() => {
     nodeSeqRef.current++
@@ -1010,6 +923,8 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
   }, [activeProject, selectedPath, contract, nodeInfo, prompt, mutationBusy, nodeBusy])
 
   return {
+    ...taskTracking,
+    ...uiPrefs,
     ...fileDeps,
     ...docsApi,
     ...config,
@@ -1091,22 +1006,9 @@ export function useStubGraphApp(options: UseStubGraphAppOptions = {}) {
     setApplyPatch,
     setPrompt,
 
-    taskStatuses,
-    refreshTaskStatuses,
-    clearFinishedTasks,
-    dismissTaskStatus,
     focusGraph,
     setFocusGraph,
-    compactMode,
-    setCompactMode,
-    toggleCompactMode,
     workspaceView,
-    leftPanelOpen,
-    rightPanelOpen,
-    setLeftPanelOpen,
-    setRightPanelOpen,
-    toggleLeftPanel,
-    toggleRightPanel,
     paletteOpen,
     setPaletteOpen,
     registerUndoRedoHandlers,
