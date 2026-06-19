@@ -20,6 +20,7 @@ import {
 import { useGraphFilters } from './useGraphFilters'
 import { useGraphHistory } from './useGraphHistory'
 import { GraphControlPanel, type GraphControlView } from './GraphControlPanel'
+import { useGraphKeyboard } from './useGraphKeyboard'
 import { GraphHelpModal } from './GraphCanvas.HelpModal'
 import { baseName, clamp } from './GraphCanvas.helpers'
 import { GraphContextMenu } from './GraphContextMenu'
@@ -553,122 +554,18 @@ export function GraphCanvas({
     return c
   }, [filters.minRisk, filters.onlySelectionNeighborhood, filters.text, labelMode, spotlight])
 
-  useEffect(() => {
-    if (!focusGraph) return
-    const onKey = (e: KeyboardEvent) => {
-      const modalCount = (() => {
-        try {
-          const raw = String(document.body?.dataset?.csModalOpenCount ?? '').trim()
-          const n = Number(raw)
-          return Number.isFinite(n) ? n : 0
-        } catch {
-          return 0
-        }
-      })()
-      if (modalCount > 0) return
-
-      const el = e.target as HTMLElement | null
-      const tag = (el?.tagName || '').toLowerCase()
-      const typing =
-        tag === 'input' ||
-        tag === 'textarea' ||
-        tag === 'select' ||
-        Boolean((el as any)?.isContentEditable) ||
-        Boolean(el?.closest?.('input, textarea, select, [contenteditable="true"]'))
-      if (typing) return
-
-      const isMac = String((navigator as any)?.platform ?? '').toLowerCase().includes('mac')
-      const mod = isMac ? e.metaKey : e.ctrlKey
-      if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-        e.preventDefault()
-        doUndo()
-      }
-      if (mod && (e.key.toLowerCase() === 'z') && e.shiftKey) {
-        e.preventDefault()
-        doRedo()
-      }
-      if (mod && e.key.toLowerCase() === 'y') {
-        e.preventDefault()
-        doRedo()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [focusGraph, doUndo, doRedo])
-
-  useEffect(() => {
-    if (workspaceView !== 'graph') return
-    const onKey = (e: KeyboardEvent) => {
-      const modalCount = (() => {
-        try {
-          const raw = String(document.body?.dataset?.csModalOpenCount ?? '').trim()
-          const n = Number(raw)
-          return Number.isFinite(n) ? n : 0
-        } catch {
-          return 0
-        }
-      })()
-      if (modalCount > 0) return
-
-      const el = e.target as HTMLElement | null
-      const tag = (el?.tagName || '').toLowerCase()
-      const typing =
-        tag === 'input' ||
-        tag === 'textarea' ||
-        tag === 'select' ||
-        Boolean((el as any)?.isContentEditable) ||
-        Boolean(el?.closest?.('input, textarea, select, [contenteditable="true"]'))
-      if (typing) return
-
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-
-      const key = e.key
-      if (key === 'ArrowUp' || key === 'ArrowDown') {
-        if (!selectedPath) return
-        const actions = actionsRef.current
-        const neighbors = actions?.getNeighbors?.(selectedPath)
-        const candidates = key === 'ArrowUp' ? neighbors?.inbound : neighbors?.outbound
-        const nextPath =
-          (candidates && candidates[0]) ||
-          actions?.getNextNode?.(selectedPath, { loop: true }) ||
-          null
-        if (!nextPath || nextPath === selectedPath) return
-        e.preventDefault()
-        Promise.resolve(onNodeTap(nextPath)).then(() => actionsRef.current?.centerPath(nextPath))
-        return
-      }
-
-      if (key === 'Enter') {
-        if (!selectedPath) return
-        e.preventDefault()
-        void Promise.resolve(onOpenFileEditor(selectedPath))
-        return
-      }
-
-      const keyLower = key.toLowerCase()
-      if (keyLower === 'p') {
-        if (!selectedPath) return
-        e.preventDefault()
-        void Promise.resolve(onTogglePinSelected())
-        return
-      }
-      if (keyLower === 'h') {
-        if (!selectedPath) return
-        e.preventDefault()
-        actionsRef.current?.hidePath(selectedPath)
-        onClearSelection()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [
-    onClearSelection,
+  useGraphKeyboard({
+    focusGraph,
+    doUndo,
+    doRedo,
+    workspaceView,
+    selectedPath,
+    actionsRef,
     onNodeTap,
     onOpenFileEditor,
     onTogglePinSelected,
-    selectedPath,
-    workspaceView,
-  ])
+    onClearSelection,
+  })
 
   const controlView: GraphControlView = {
     graph, activeProject, busy, selectedPath, selectedInGraph, workspaceView,
