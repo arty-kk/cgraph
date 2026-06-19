@@ -65,4 +65,4 @@ export {
   waitForTaskResult,
 } from '@/features/analysis/api'
 
-export { isTaskStatus, TaskFailureError } from '@/features/analysis/taskStatus'
+export { isTaskStatus, TaskFailureError } from '@/features/analysis/lib/taskStatus'

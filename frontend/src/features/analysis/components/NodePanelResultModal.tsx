@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import type { Project, RunTaskBody, RunTaskResult } from '@/api'
 import { formatResult } from '@/shared/lib/formatResult'
 import { Modal } from '@/shared/ui/Modal'
-import { isRecord } from './NodePanel.helpers'
+import { isRecord } from '../lib/NodePanel.helpers'
 import { resultMarkdownComponents } from './NodePanel.markdown'
 import { NodePanelRetrievalDetails } from './NodePanelRetrievalDetails'
 

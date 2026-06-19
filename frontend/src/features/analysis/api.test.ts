@@ -11,7 +11,7 @@ vi.mock('@/shared/api/client', () => ({
 }))
 
 import { runTask, waitForTaskResult } from './api'
-import { TaskFailureError } from './taskStatus'
+import { TaskFailureError } from './lib/taskStatus'
 
 function assertRunTaskContract(): void {
   const body = {

@@ -1,3 +1,3 @@
-export { NodePanel } from './NodePanel'
+export { NodePanel } from './components/NodePanel'
 export * from './api'
-export { isTaskStatus, TaskFailureError } from './taskStatus'
+export { isTaskStatus, TaskFailureError } from './lib/taskStatus'

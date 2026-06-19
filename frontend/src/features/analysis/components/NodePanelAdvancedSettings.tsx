@@ -1,7 +1,7 @@
 import React from 'react'
 import type { DepMode, Mode } from '@/api'
 import { clampInt } from '@/shared/lib/number'
-import { clampFloat } from './NodePanel.helpers'
+import { clampFloat } from '../lib/NodePanel.helpers'
 import { SectionHeader, type HelpTopic } from './NodePanel.sections'
 
 type AutoOrMode = 'auto' | Mode

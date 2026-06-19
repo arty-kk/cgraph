@@ -8,7 +8,7 @@ import type {
   TaskPollOptions,
   TaskStatus,
 } from '@/shared/types'
-import { TaskFailureError, isTaskStatus } from './taskStatus'
+import { TaskFailureError, isTaskStatus } from './lib/taskStatus'
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const asFiniteNumber = (value: number | undefined): number | undefined =>

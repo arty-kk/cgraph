@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react'
 import type { Project, RunTaskBody, RunTaskResult } from '@/api'
 import { clampInt } from '@/shared/lib/number'
-import { asStringList, fmtDuration, fmtK, fmtTraceArgs, formatTraceCommand, isRecord } from './NodePanel.helpers'
+import { asStringList, fmtDuration, fmtK, fmtTraceArgs, formatTraceCommand, isRecord } from '../lib/NodePanel.helpers'
 
 type RetrievalMode = 'agentic' | 'pack'
 
